@@ -1,0 +1,598 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tauri::{Emitter, Manager, WebviewWindow};
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::{Child, Command};
+use tokio::sync::Mutex;
+
+#[derive(Clone)]
+pub struct ClaudeProcessState {
+    pub processes: Arc<Mutex<HashMap<String, Child>>>,
+}
+
+impl Default for ClaudeProcessState {
+    fn default() -> Self {
+        Self {
+            processes: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+}
+
+/// Discover the claude binary on the system.
+/// Checks: which claude → NVM paths → standard paths → bare fallback.
+fn find_claude_binary() -> Result<String, String> {
+    // 1. Try `which claude`
+    if let Ok(output) = std::process::Command::new("which")
+        .arg("claude")
+        .output()
+    {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() && PathBuf::from(&path).exists() {
+                return Ok(path);
+            }
+        }
+    }
+
+    // 2. Check NVM directories
+    if let Some(home) = dirs::home_dir() {
+        let nvm_dir = home.join(".nvm").join("versions").join("node");
+        if nvm_dir.exists() {
+            if let Ok(entries) = std::fs::read_dir(&nvm_dir) {
+                let mut candidates: Vec<PathBuf> = entries
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.path().join("bin").join("claude"))
+                    .filter(|p| p.exists())
+                    .collect();
+                // Sort by version (directory name) descending to prefer latest
+                candidates.sort();
+                candidates.reverse();
+                if let Some(path) = candidates.first() {
+                    return Ok(path.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+
+    // 3. Check standard paths
+    let standard_paths = [
+        "/usr/local/bin/claude",
+        "/opt/homebrew/bin/claude",
+        "/usr/bin/claude",
+        "/bin/claude",
+    ];
+    for path in &standard_paths {
+        if PathBuf::from(path).exists() {
+            return Ok(path.to_string());
+        }
+    }
+
+    // 4. Check user-specific paths
+    if let Some(home) = dirs::home_dir() {
+        let user_paths = [
+            home.join(".claude").join("local").join("claude"),
+            home.join(".local").join("bin").join("claude"),
+            home.join(".npm-global").join("bin").join("claude"),
+            home.join(".yarn").join("bin").join("claude"),
+            home.join(".bun").join("bin").join("claude"),
+            home.join("bin").join("claude"),
+        ];
+        for path in &user_paths {
+            if path.exists() {
+                return Ok(path.to_string_lossy().to_string());
+            }
+        }
+    }
+
+    // 5. Bare fallback — hope it's in PATH
+    Ok("claude".to_string())
+}
+
+/// Create a tokio Command with appropriate environment variables.
+fn create_command(program: &str, args: Vec<String>, cwd: &str) -> Command {
+    let mut cmd = Command::new(program);
+    cmd.args(&args);
+    cmd.current_dir(cwd);
+
+    // Pipe stdout and stderr for streaming
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    // Inherit essential environment variables
+    for (key, value) in std::env::vars() {
+        if key == "PATH"
+            || key == "HOME"
+            || key == "USER"
+            || key == "SHELL"
+            || key == "LANG"
+            || key == "LC_ALL"
+            || key.starts_with("LC_")
+            || key == "NODE_PATH"
+            || key == "NVM_DIR"
+            || key == "NVM_BIN"
+            || key == "HOMEBREW_PREFIX"
+            || key == "HOMEBREW_CELLAR"
+            || key == "HTTP_PROXY"
+            || key == "HTTPS_PROXY"
+            || key == "NO_PROXY"
+            || key == "ALL_PROXY"
+        {
+            cmd.env(&key, &value);
+        }
+    }
+
+    // Add NVM support if the program is in an NVM directory
+    if program.contains("/.nvm/versions/node/") {
+        if let Some(node_bin_dir) = std::path::Path::new(program).parent() {
+            let current_path = std::env::var("PATH").unwrap_or_default();
+            let node_bin_str = node_bin_dir.to_string_lossy();
+            if !current_path.contains(node_bin_str.as_ref()) {
+                let new_path = format!("{}:{}", node_bin_str, current_path);
+                cmd.env("PATH", new_path);
+            }
+        }
+    }
+
+    // Add Homebrew support
+    if program.contains("/homebrew/") || program.contains("/opt/homebrew/") {
+        if let Some(program_dir) = std::path::Path::new(program).parent() {
+            let current_path = std::env::var("PATH").unwrap_or_default();
+            let homebrew_bin_str = program_dir.to_string_lossy();
+            if !current_path.contains(homebrew_bin_str.as_ref()) {
+                let new_path = format!("{}:{}", homebrew_bin_str, current_path);
+                cmd.env("PATH", new_path);
+            }
+        }
+    }
+
+    cmd
+}
+
+/// Spawn the Claude CLI process and stream output via Tauri events.
+/// Events are emitted only to the originating window.
+async fn spawn_claude_process(
+    window: WebviewWindow,
+    mut cmd: Command,
+) -> Result<(), String> {
+    let window_label = window.label().to_string();
+
+    // Spawn the process
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to spawn Claude process: {}. Is Claude Code CLI installed?", e))?;
+
+    let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
+    let stderr = child.stderr.take().ok_or("Failed to capture stderr")?;
+
+    // Get a clone of the process state Arc before any moves
+    let process_arc = window.state::<ClaudeProcessState>().inner().processes.clone();
+
+    // Store the child process in state (kill any existing process for this window first)
+    {
+        let mut processes = process_arc.lock().await;
+        if let Some(mut existing) = processes.remove(&window_label) {
+            let _ = existing.kill().await;
+        }
+        processes.insert(window_label.clone(), child);
+    }
+
+    let stdout_reader = BufReader::new(stdout);
+    let stderr_reader = BufReader::new(stderr);
+    let session_id_holder: Arc<std::sync::Mutex<Option<String>>> =
+        Arc::new(std::sync::Mutex::new(None));
+
+    // Spawn stdout streaming task — emit only to the originating window
+    let win_stdout = window.clone();
+    let session_id_stdout = session_id_holder.clone();
+    let stdout_task = tokio::spawn(async move {
+        let mut lines = stdout_reader.lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            // Parse for system:init to extract session_id
+            if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
+                if msg["type"] == "system" && msg["subtype"] == "init" {
+                    if let Some(sid) = msg["session_id"].as_str() {
+                        let mut guard = session_id_stdout.lock().unwrap();
+                        *guard = Some(sid.to_string());
+                    }
+                }
+            }
+
+            // Emit session-scoped event to this window only
+            if let Some(ref sid) = *session_id_stdout.lock().unwrap() {
+                let _ = win_stdout.emit(&format!("claude-output:{}", sid), &line);
+            }
+            // Always emit generic event to this window
+            let _ = win_stdout.emit("claude-output", &line);
+        }
+    });
+
+    // Spawn stderr streaming task — emit only to the originating window
+    let win_stderr = window.clone();
+    let session_id_stderr = session_id_holder.clone();
+    let stderr_task = tokio::spawn(async move {
+        let mut lines = stderr_reader.lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if let Some(ref sid) = *session_id_stderr.lock().unwrap() {
+                let _ = win_stderr.emit(&format!("claude-error:{}", sid), &line);
+            }
+            let _ = win_stderr.emit("claude-error", &line);
+        }
+    });
+
+    // Spawn wait task — wait for process completion
+    let process_arc_wait = process_arc.clone();
+    let win_wait = window;
+    let window_label_wait = window_label;
+    let session_id_wait = session_id_holder.clone();
+    tokio::spawn(async move {
+        // Wait for stdout/stderr to finish
+        let _ = stdout_task.await;
+        let _ = stderr_task.await;
+
+        // Wait for process exit and remove from map
+        let mut processes = process_arc_wait.lock().await;
+        let success = if let Some(mut child) = processes.remove(&window_label_wait) {
+            match child.wait().await {
+                Ok(status) => status.success(),
+                Err(_) => false,
+            }
+        } else {
+            false
+        };
+        drop(processes);
+
+        // Small delay to ensure all events are flushed
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        // Emit completion event to this window only
+        if let Some(ref sid) = *session_id_wait.lock().unwrap() {
+            let _ = win_wait.emit(&format!("claude-complete:{}", sid), success);
+        }
+        let _ = win_wait.emit("claude-complete", success);
+    });
+
+    Ok(())
+}
+
+// ─── Tauri Commands ───
+
+#[tauri::command]
+pub async fn execute_claude_code(
+    window: WebviewWindow,
+    project_path: String,
+    prompt: String,
+    model: String,
+) -> Result<(), String> {
+    let claude_path = find_claude_binary()?;
+
+    let args = vec![
+        "-p".to_string(),
+        prompt,
+        "--model".to_string(),
+        model,
+        "--output-format".to_string(),
+        "stream-json".to_string(),
+        "--verbose".to_string(),
+        "--dangerously-skip-permissions".to_string(),
+    ];
+
+    let cmd = create_command(&claude_path, args, &project_path);
+    spawn_claude_process(window, cmd).await
+}
+
+#[tauri::command]
+pub async fn continue_claude_code(
+    window: WebviewWindow,
+    project_path: String,
+    prompt: String,
+    model: String,
+) -> Result<(), String> {
+    let claude_path = find_claude_binary()?;
+
+    let args = vec![
+        "-c".to_string(),
+        "-p".to_string(),
+        prompt,
+        "--model".to_string(),
+        model,
+        "--output-format".to_string(),
+        "stream-json".to_string(),
+        "--verbose".to_string(),
+        "--dangerously-skip-permissions".to_string(),
+    ];
+
+    let cmd = create_command(&claude_path, args, &project_path);
+    spawn_claude_process(window, cmd).await
+}
+
+#[tauri::command]
+pub async fn resume_claude_code(
+    window: WebviewWindow,
+    project_path: String,
+    session_id: String,
+    prompt: String,
+    model: String,
+) -> Result<(), String> {
+    let claude_path = find_claude_binary()?;
+
+    let args = vec![
+        "--resume".to_string(),
+        session_id,
+        "-p".to_string(),
+        prompt,
+        "--model".to_string(),
+        model,
+        "--output-format".to_string(),
+        "stream-json".to_string(),
+        "--verbose".to_string(),
+        "--dangerously-skip-permissions".to_string(),
+    ];
+
+    let cmd = create_command(&claude_path, args, &project_path);
+    spawn_claude_process(window, cmd).await
+}
+
+#[tauri::command]
+pub async fn cancel_claude_execution(
+    window: WebviewWindow,
+) -> Result<(), String> {
+    let window_label = window.label().to_string();
+    let claude_state = window.state::<ClaudeProcessState>();
+    let mut processes = claude_state.processes.lock().await;
+    if let Some(mut child) = processes.remove(&window_label) {
+        let _ = child.kill().await;
+        let _ = window.emit("claude-complete", false);
+    }
+    Ok(())
+}
+
+/// Kill the Claude process associated with a specific window label.
+/// Called when a window is destroyed.
+pub async fn kill_process_for_window(state: &ClaudeProcessState, window_label: &str) {
+    let mut processes = state.processes.lock().await;
+    if let Some(mut child) = processes.remove(window_label) {
+        let _ = child.kill().await;
+    }
+}
+
+// ─── Session Listing ───
+
+#[derive(serde::Serialize)]
+pub struct ClaudeSessionInfo {
+    pub session_id: String,
+    pub title: String,
+    pub last_modified: i64,
+}
+
+/// Resolve the Claude Code sessions directory for a given project path.
+/// Claude Code encodes paths by replacing all non-alphanumeric characters with '-'.
+/// e.g. "/Users/dev/my_project" → "-Users-dev-my-project"
+fn get_sessions_dir(project_path: &str) -> Result<PathBuf, String> {
+    let home = dirs::home_dir()
+        .ok_or("Could not determine home directory")?;
+
+    let encoded: String = project_path
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+
+    eprintln!("[session] project_path={} encoded={}", project_path, encoded);
+
+    Ok(home.join(".claude").join("projects").join(&encoded))
+}
+
+/// Clean raw user message text into a display title.
+fn clean_user_message_title(text: &str) -> Option<String> {
+    // Skip IDE context tags
+    if text.starts_with("<ide_") || text.starts_with("<system-reminder>") {
+        return None;
+    }
+    // Skip command tags
+    if text.starts_with("<command-name>") || text.starts_with("<local-command-stdout>") {
+        return None;
+    }
+
+    // Strip context prefix like "[Currently open file: ...]\n\n"
+    let clean = if let Some(idx) = text.rfind("]\n\n") {
+        &text[idx + 3..]
+    } else {
+        text
+    };
+
+    // Skip if still an IDE tag after stripping context
+    if clean.starts_with("<ide_") {
+        return None;
+    }
+
+    let clean = clean.trim();
+    if clean.is_empty() {
+        return None;
+    }
+
+    let title = if clean.len() > 80 {
+        format!("{}...", &clean[..77])
+    } else {
+        clean.to_string()
+    };
+
+    Some(title)
+}
+
+/// Extract the first valid user message from a JSONL session file.
+/// Handles both string content (stored JSONL) and array content (streaming format).
+fn extract_first_user_message(path: &PathBuf) -> (Option<String>, Option<String>) {
+    let file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return (None, None),
+    };
+    let reader = std::io::BufReader::new(file);
+    use std::io::BufRead;
+
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+        let msg = match serde_json::from_str::<serde_json::Value>(&line) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+
+        if msg["type"] != "user" {
+            continue;
+        }
+
+        let content_val = &msg["message"]["content"];
+        let timestamp = msg["timestamp"].as_str().map(|s| s.to_string());
+
+        // Case 1: content is a plain string (Claude Code stored JSONL format)
+        if let Some(text) = content_val.as_str() {
+            if let Some(title) = clean_user_message_title(text) {
+                return (Some(title), timestamp);
+            }
+            continue;
+        }
+
+        // Case 2: content is an array of blocks (streaming format)
+        if let Some(blocks) = content_val.as_array() {
+            for block in blocks {
+                if block["type"] == "text" {
+                    if let Some(text) = block["text"].as_str() {
+                        if let Some(title) = clean_user_message_title(text) {
+                            return (Some(title), timestamp);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    (None, None)
+}
+
+#[tauri::command]
+pub async fn list_claude_sessions(
+    project_path: String,
+) -> Result<Vec<ClaudeSessionInfo>, String> {
+    eprintln!("[session] list_claude_sessions called with project_path={}", project_path);
+    let sessions_dir = get_sessions_dir(&project_path)?;
+    eprintln!("[session] sessions_dir={:?} exists={}", sessions_dir, sessions_dir.exists());
+
+    if !sessions_dir.exists() {
+        eprintln!("[session] sessions_dir does not exist, returning empty");
+        return Ok(Vec::new());
+    }
+
+    let mut sessions = Vec::new();
+    let entries = std::fs::read_dir(&sessions_dir)
+        .map_err(|e| format!("Failed to read sessions directory: {}", e))?;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+            continue;
+        }
+
+        let session_id = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+
+        if session_id.is_empty() {
+            continue;
+        }
+
+        let metadata = std::fs::metadata(&path).ok();
+        let modified = metadata
+            .and_then(|m| m.modified().ok())
+            .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64)
+            .unwrap_or(0);
+
+        let (first_message, _timestamp) = extract_first_user_message(&path);
+        let title = first_message.unwrap_or_else(|| "Untitled session".to_string());
+
+        sessions.push(ClaudeSessionInfo {
+            session_id,
+            title,
+            last_modified: modified,
+        });
+    }
+
+    sessions.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
+
+    eprintln!("[session] found {} sessions", sessions.len());
+    for s in &sessions {
+        eprintln!("[session]   id={} title={} modified={}", s.session_id, s.title, s.last_modified);
+    }
+
+    Ok(sessions)
+}
+
+/// Load the full JSONL history for a specific session.
+#[tauri::command]
+pub async fn load_session_history(
+    project_path: String,
+    session_id: String,
+) -> Result<Vec<serde_json::Value>, String> {
+    eprintln!("[session] load_session_history called: session_id={} project_path={}", session_id, project_path);
+    let sessions_dir = get_sessions_dir(&project_path)?;
+    let session_path = sessions_dir.join(format!("{}.jsonl", session_id));
+    eprintln!("[session] session_path={:?} exists={}", session_path, session_path.exists());
+
+    if !session_path.exists() {
+        return Err(format!("Session file not found: {}", session_id));
+    }
+
+    let file = std::fs::File::open(&session_path)
+        .map_err(|e| format!("Failed to open session file: {}", e))?;
+
+    let reader = std::io::BufReader::new(file);
+    use std::io::BufRead;
+    let mut messages = Vec::new();
+
+    for line in reader.lines() {
+        if let Ok(line) = line {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
+                messages.push(json);
+            }
+        }
+    }
+
+    eprintln!("[session] loaded {} messages from session {}", messages.len(), session_id);
+
+    Ok(messages)
+}
+
+// ─── Shell Command Execution ───
+
+#[derive(serde::Serialize)]
+pub struct ShellCommandResult {
+    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+#[tauri::command]
+pub async fn run_shell_command(
+    command: String,
+    cwd: String,
+) -> Result<ShellCommandResult, String> {
+    let args = vec!["-c".to_string(), command];
+    let mut cmd = create_command("sh", args, &cwd);
+
+    let child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to spawn command: {}", e))?;
+
+    let output = child
+        .wait_with_output()
+        .await
+        .map_err(|e| format!("Failed to wait for command: {}", e))?;
+
+    Ok(ShellCommandResult {
+        exit_code: output.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    })
+}

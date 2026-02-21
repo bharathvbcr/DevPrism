@@ -1,8 +1,8 @@
-# Open-Prism
+# ClaudePrism
 
 Open-source AI-powered LaTeX writing workspace with live preview.
 
-![Open-Prism Screenshot](./assets/OpenPrism.png)
+![ClaudePrism Screenshot](./assets/ClaudePrism.png)
 
 ## Features
 
@@ -16,8 +16,8 @@ Open-source AI-powered LaTeX writing workspace with live preview.
 
 ```bash
 # Clone the repository
-git clone https://github.com/assistant-ui/open-prism.git
-cd open-prism
+git clone https://github.com/delibae/claude-prism.git
+cd claude-prism
 
 # Install dependencies
 pnpm install
@@ -38,7 +38,7 @@ pnpm dev:web
 ## Project Structure
 
 ```
-open-prism/
+claude-prism/
 ├── apps/
 │   ├── web/          # Next.js frontend application
 │   └── latex-api/    # LaTeX compilation API (Hono + TeX Live)
@@ -78,8 +78,8 @@ Hono-based API for LaTeX compilation:
 
 ```bash
 cd apps/latex-api
-docker build -t open-prism-latex-api .
-docker run -p 3001:3001 open-prism-latex-api
+docker build -t claude-prism-latex-api .
+docker run -p 3001:3001 claude-prism-latex-api
 ```
 
 ## Contributing

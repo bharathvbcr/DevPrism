@@ -1,4 +1,4 @@
-# Contributing to Open-Prism
+# Contributing to ClaudePrism
 
 ## Development Environment
 
@@ -12,8 +12,8 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/assistant-ui/open-prism.git
-cd open-prism
+git clone https://github.com/delibae/claude-prism.git
+cd claude-prism
 
 # Install dependencies
 pnpm install

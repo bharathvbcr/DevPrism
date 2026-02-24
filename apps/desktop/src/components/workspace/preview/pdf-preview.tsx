@@ -364,6 +364,15 @@ export function PdfPreview() {
     }
   };
 
+  // Listen for global Capture & Ask shortcut (Cmd+X / Ctrl+X)
+  useEffect(() => {
+    const handleToggleCapture = () => {
+      if (pdfData) setCaptureMode((prev) => !prev);
+    };
+    window.addEventListener("toggle-capture-mode", handleToggleCapture);
+    return () => window.removeEventListener("toggle-capture-mode", handleToggleCapture);
+  }, [pdfData]);
+
   const renderContent = () => {
     if (compileError) {
       const errors = [...new Set(
@@ -556,6 +565,10 @@ export function PdfPreview() {
             </span>
             <kbd className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
               ESC
+            </kbd>
+            <span className="text-[10px] text-muted-foreground">or</span>
+            <kbd className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+              {navigator.userAgent.includes("Mac") ? "⌘" : "Ctrl+"}X
             </kbd>
             <span className="text-[10px] text-muted-foreground">to cancel</span>
           </div>

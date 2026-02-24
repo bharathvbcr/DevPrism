@@ -1,5 +1,6 @@
 import { type FC, useState } from "react";
 import {
+  BotIcon,
   CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
@@ -7,6 +8,7 @@ import {
   FileIcon,
   FileOutputIcon,
   LoaderIcon,
+  SparklesIcon,
   TerminalIcon,
   WrenchIcon,
 } from "lucide-react";
@@ -199,6 +201,39 @@ const GenericWidget: FC<{ name: string; input: any; result?: ContentBlock }> = (
         <div className="max-h-32 overflow-auto border-t border-border px-3 py-2">
           <pre className="whitespace-pre-wrap font-mono text-xs text-muted-foreground">
             {JSON.stringify(input, null, 2)}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ─── Thinking Widget ───
+
+export const ThinkingWidget: FC<{ thinking: string; signature?: string }> = ({ thinking }) => {
+  const [expanded, setExpanded] = useState(false);
+  const trimmed = thinking.trim();
+
+  return (
+    <div className="my-1.5 rounded-lg border border-muted-foreground/20 bg-muted-foreground/5 overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setExpanded(!expanded)}
+        className="flex w-full items-center justify-between px-3 py-2 hover:bg-muted-foreground/10 transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <div className="relative">
+            <BotIcon className="size-4 text-muted-foreground" />
+            <SparklesIcon className="size-2.5 text-muted-foreground/70 absolute -top-1 -right-1 animate-pulse" />
+          </div>
+          <span className="text-sm font-medium text-muted-foreground italic">Thinking...</span>
+        </div>
+        <ChevronRightIcon className={`size-4 text-muted-foreground transition-transform ${expanded ? "rotate-90" : ""}`} />
+      </button>
+      {expanded && (
+        <div className="border-t border-muted-foreground/20 px-3 pb-3 pt-2">
+          <pre className="whitespace-pre-wrap rounded-lg bg-muted-foreground/5 p-3 font-mono text-xs text-muted-foreground italic">
+            {trimmed}
           </pre>
         </div>
       )}

@@ -18,6 +18,12 @@ export function useKeyboardShortcuts() {
         e.preventDefault();
         invoke("create_new_window").catch(console.error);
       }
+
+      // Cmd+X (macOS) / Ctrl+X (others): Capture & Ask
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "x" && !e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent("toggle-capture-mode"));
+      }
     };
 
     window.addEventListener("keydown", handleKeyDown);

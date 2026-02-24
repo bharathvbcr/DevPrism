@@ -16,7 +16,7 @@ export function offsetToLineCol(
 // ─── Types ───
 
 export interface ContentBlock {
-  type: "text" | "tool_use" | "tool_result";
+  type: "text" | "tool_use" | "tool_result" | "thinking";
   // text block
   text?: string;
   // tool_use block
@@ -27,6 +27,9 @@ export interface ContentBlock {
   tool_use_id?: string;
   content?: any;
   is_error?: boolean;
+  // thinking block
+  thinking?: string;
+  signature?: string;
 }
 
 export interface ClaudeStreamMessage {
@@ -119,6 +122,9 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     const { sessionId, isStreaming } = get();
     if (isStreaming) return;
 
+    console.time("[claude] total-send");
+    console.log("[claude] sendPrompt start", { sessionId: !!sessionId, hasContext: !!contextOverride });
+
     const docState = useDocumentStore.getState();
     const projectPath = docState.projectRoot;
     if (!projectPath) {
@@ -161,13 +167,17 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
 
     // Flush unsaved edits to disk so Claude reads the latest content
     if (docState.files.some((f) => f.isDirty)) {
+      console.timeLog("[claude] total-send", "saving dirty files...");
       await docState.saveAllFiles();
+      console.timeLog("[claude] total-send", "saveAllFiles done");
     }
 
     // Snapshot before Claude edit
     if (projectPath) {
       try {
+        console.timeLog("[claude] total-send", "creating snapshot...");
         await useHistoryStore.getState().createSnapshot(projectPath, "[claude] Before Claude edit");
+        console.timeLog("[claude] total-send", "snapshot done");
       } catch { /* snapshot failure should not block Claude */ }
     }
 
@@ -192,7 +202,8 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       }
       prompt = `${ctx}\n\n${userPrompt}`;
     }
-    const model = "sonnet";
+    console.timeLog("[claude] total-send", "invoking CLI...");
+    console.log("[claude] prompt length:", prompt.length, "chars | mode:", sessionId ? "resume" : "new");
 
     try {
       if (sessionId) {
@@ -201,17 +212,18 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
           projectPath,
           sessionId,
           prompt,
-          model,
         });
       } else {
         // New session
         await invoke("execute_claude_code", {
           projectPath,
           prompt,
-          model,
         });
       }
+      console.timeEnd("[claude] total-send");
     } catch (err: any) {
+      console.timeEnd("[claude] total-send");
+      console.error("[claude] invoke failed:", err);
       set({
         isStreaming: false,
         error: err?.message || String(err),
@@ -250,8 +262,6 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
 
   resumeSession: async (sessionId: string) => {
     const projectPath = useDocumentStore.getState().projectRoot;
-    console.log("[store] resumeSession called:", { sessionId, projectPath });
-
     // Reset state with new session ID
     set({
       messages: [],
@@ -265,12 +275,10 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     // Load session history from JSONL file
     if (projectPath) {
       try {
-        console.log("[store] loading session history...");
         const history = await invoke<any[]>("load_session_history", {
           projectPath,
           sessionId,
         });
-        console.log("[store] received history entries:", history.length);
 
         // Filter to displayable message types and map to ClaudeStreamMessage
         const messages: ClaudeStreamMessage[] = [];
@@ -281,13 +289,10 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
           }
         }
 
-        console.log("[store] filtered to displayable messages:", messages.length);
         set({ messages });
-      } catch (err) {
-        console.error("[store] Failed to load session history:", err);
+      } catch {
+        // Failed to load session history
       }
-    } else {
-      console.warn("[store] no projectPath, skipping history load");
     }
   },
 

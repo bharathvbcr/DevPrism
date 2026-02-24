@@ -99,28 +99,17 @@ fn create_command(program: &str, args: Vec<String>, cwd: &str) -> Command {
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 
-    // Inherit essential environment variables
-    for (key, value) in std::env::vars() {
-        if key == "PATH"
-            || key == "HOME"
-            || key == "USER"
-            || key == "SHELL"
-            || key == "LANG"
-            || key == "LC_ALL"
-            || key.starts_with("LC_")
-            || key == "NODE_PATH"
-            || key == "NVM_DIR"
-            || key == "NVM_BIN"
-            || key == "HOMEBREW_PREFIX"
-            || key == "HOMEBREW_CELLAR"
-            || key == "HTTP_PROXY"
-            || key == "HTTPS_PROXY"
-            || key == "NO_PROXY"
-            || key == "ALL_PROXY"
-        {
-            cmd.env(&key, &value);
+    // Remove all Claude Code internal env vars to prevent nested session detection
+    // and other interference. Tauri inherits these when launched from a Claude Code session.
+    cmd.env_remove("CLAUDECODE");
+    cmd.env_remove("CLAUDE_AGENT_SDK_VERSION");
+    for (key, _) in std::env::vars() {
+        if key.starts_with("CLAUDE_CODE_") || key.starts_with("CLAUDE_AGENT_") {
+            cmd.env_remove(&key);
         }
     }
+    // Re-set effort level after clearing CLAUDE_CODE_* vars (default: low for fast responses)
+    cmd.env("CLAUDE_CODE_EFFORT_LEVEL", "low");
 
     // Add NVM support if the program is in an NVM directory
     if program.contains("/.nvm/versions/node/") {
@@ -182,14 +171,24 @@ async fn spawn_claude_process(
     let session_id_holder: Arc<std::sync::Mutex<Option<String>>> =
         Arc::new(std::sync::Mutex::new(None));
 
+    let start_time = std::time::Instant::now();
+
     // Spawn stdout streaming task — emit only to the originating window
     let win_stdout = window.clone();
     let session_id_stdout = session_id_holder.clone();
     let stdout_task = tokio::spawn(async move {
         let mut lines = stdout_reader.lines();
+        let mut line_count: u64 = 0;
         while let Ok(Some(line)) = lines.next_line().await {
+            line_count += 1;
+            let elapsed = start_time.elapsed().as_secs_f64();
+
             // Parse for system:init to extract session_id
             if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
+                let msg_type = msg["type"].as_str().unwrap_or("?");
+                let msg_sub = msg["subtype"].as_str().unwrap_or("");
+                eprintln!("[claude-stdout] +{:.1}s #{} type={} sub={} len={}", elapsed, line_count, msg_type, msg_sub, line.len());
+
                 if msg["type"] == "system" && msg["subtype"] == "init" {
                     if let Some(sid) = msg["session_id"].as_str() {
                         let mut guard = session_id_stdout.lock().unwrap();
@@ -198,24 +197,18 @@ async fn spawn_claude_process(
                 }
             }
 
-            // Emit session-scoped event to this window only
-            if let Some(ref sid) = *session_id_stdout.lock().unwrap() {
-                let _ = win_stdout.emit(&format!("claude-output:{}", sid), &line);
-            }
-            // Always emit generic event to this window
+            // Emit output event to this window
             let _ = win_stdout.emit("claude-output", &line);
         }
+        eprintln!("[claude-stdout] stream ended after {} lines ({:.1}s)", line_count, start_time.elapsed().as_secs_f64());
     });
 
     // Spawn stderr streaming task — emit only to the originating window
     let win_stderr = window.clone();
-    let session_id_stderr = session_id_holder.clone();
     let stderr_task = tokio::spawn(async move {
         let mut lines = stderr_reader.lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            if let Some(ref sid) = *session_id_stderr.lock().unwrap() {
-                let _ = win_stderr.emit(&format!("claude-error:{}", sid), &line);
-            }
+            eprintln!("[claude-stderr] +{:.1}s {}", start_time.elapsed().as_secs_f64(), &line[..line.len().min(200)]);
             let _ = win_stderr.emit("claude-error", &line);
         }
     });
@@ -224,7 +217,6 @@ async fn spawn_claude_process(
     let process_arc_wait = process_arc.clone();
     let win_wait = window;
     let window_label_wait = window_label;
-    let session_id_wait = session_id_holder.clone();
     tokio::spawn(async move {
         // Wait for stdout/stderr to finish
         let _ = stdout_task.await;
@@ -234,21 +226,22 @@ async fn spawn_claude_process(
         let mut processes = process_arc_wait.lock().await;
         let success = if let Some(mut child) = processes.remove(&window_label_wait) {
             match child.wait().await {
-                Ok(status) => status.success(),
-                Err(_) => false,
+                Ok(status) => {
+                    eprintln!("[claude-process] exited with status={} ({:.1}s)", status, start_time.elapsed().as_secs_f64());
+                    status.success()
+                }
+                Err(e) => {
+                    eprintln!("[claude-process] wait error: {} ({:.1}s)", e, start_time.elapsed().as_secs_f64());
+                    false
+                }
             }
         } else {
+            eprintln!("[claude-process] no child found in map ({:.1}s)", start_time.elapsed().as_secs_f64());
             false
         };
         drop(processes);
 
-        // Small delay to ensure all events are flushed
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-        // Emit completion event to this window only
-        if let Some(ref sid) = *session_id_wait.lock().unwrap() {
-            let _ = win_wait.emit(&format!("claude-complete:{}", sid), success);
-        }
+        // Emit completion event to this window
         let _ = win_wait.emit("claude-complete", success);
     });
 
@@ -401,7 +394,6 @@ pub async fn install_claude_cli(window: WebviewWindow) -> Result<(), String> {
             Err(_) => false,
         };
 
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         let _ = win_complete.emit("install-complete", success);
     });
 
@@ -485,7 +477,6 @@ pub async fn login_claude(window: WebviewWindow) -> Result<(), String> {
             Err(_) => false,
         };
 
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         let _ = win_complete.emit("login-complete", success);
     });
 
@@ -499,20 +490,24 @@ pub async fn execute_claude_code(
     window: WebviewWindow,
     project_path: String,
     prompt: String,
-    model: String,
+    model: Option<String>,
 ) -> Result<(), String> {
     let claude_path = find_claude_binary()?;
 
-    let args = vec![
+    let mut args = vec![
         "-p".to_string(),
         prompt,
-        "--model".to_string(),
-        model,
+    ];
+    if let Some(m) = model {
+        args.push("--model".to_string());
+        args.push(m);
+    }
+    args.extend([
         "--output-format".to_string(),
         "stream-json".to_string(),
         "--verbose".to_string(),
         "--dangerously-skip-permissions".to_string(),
-    ];
+    ]);
 
     let cmd = create_command(&claude_path, args, &project_path);
     spawn_claude_process(window, cmd).await
@@ -523,21 +518,25 @@ pub async fn continue_claude_code(
     window: WebviewWindow,
     project_path: String,
     prompt: String,
-    model: String,
+    model: Option<String>,
 ) -> Result<(), String> {
     let claude_path = find_claude_binary()?;
 
-    let args = vec![
+    let mut args = vec![
         "-c".to_string(),
         "-p".to_string(),
         prompt,
-        "--model".to_string(),
-        model,
+    ];
+    if let Some(m) = model {
+        args.push("--model".to_string());
+        args.push(m);
+    }
+    args.extend([
         "--output-format".to_string(),
         "stream-json".to_string(),
         "--verbose".to_string(),
         "--dangerously-skip-permissions".to_string(),
-    ];
+    ]);
 
     let cmd = create_command(&claude_path, args, &project_path);
     spawn_claude_process(window, cmd).await
@@ -549,22 +548,26 @@ pub async fn resume_claude_code(
     project_path: String,
     session_id: String,
     prompt: String,
-    model: String,
+    model: Option<String>,
 ) -> Result<(), String> {
     let claude_path = find_claude_binary()?;
 
-    let args = vec![
+    let mut args = vec![
         "--resume".to_string(),
         session_id,
         "-p".to_string(),
         prompt,
-        "--model".to_string(),
-        model,
+    ];
+    if let Some(m) = model {
+        args.push("--model".to_string());
+        args.push(m);
+    }
+    args.extend([
         "--output-format".to_string(),
         "stream-json".to_string(),
         "--verbose".to_string(),
         "--dangerously-skip-permissions".to_string(),
-    ];
+    ]);
 
     let cmd = create_command(&claude_path, args, &project_path);
     spawn_claude_process(window, cmd).await
@@ -647,8 +650,9 @@ fn clean_user_message_title(text: &str) -> Option<String> {
         return None;
     }
 
-    let title = if clean.len() > 80 {
-        format!("{}...", &clean[..77])
+    let title = if clean.chars().count() > 80 {
+        let truncated: String = clean.chars().take(77).collect();
+        format!("{}...", truncated)
     } else {
         clean.to_string()
     };

@@ -96,13 +96,13 @@ export function TemplateGallery({ onSelectTemplate }: TemplateGalleryProps) {
               </p>
             </div>
           ) : showGrouped ? (
-            <GroupedGrid onSelect={onSelectTemplate} />
+            <GroupedGrid />
           ) : (
             <>
               <h2 className="mb-4 font-medium text-sm text-muted-foreground">{heading}</h2>
               <div className="grid grid-cols-2 gap-5 sm:grid-cols-3 lg:grid-cols-4">
                 {filteredTemplates.map((t) => (
-                  <TemplateCard key={t.id} template={t} onSelect={onSelectTemplate} />
+                  <TemplateCard key={t.id} template={t} />
                 ))}
               </div>
             </>
@@ -110,7 +110,7 @@ export function TemplateGallery({ onSelectTemplate }: TemplateGalleryProps) {
         </div>
       </div>
 
-      {/* Preview modal */}
+      {/* Preview modal — "Use Template" triggers onSelectTemplate */}
       <TemplatePreview onUseTemplate={onSelectTemplate} />
     </div>
   );
@@ -118,7 +118,7 @@ export function TemplateGallery({ onSelectTemplate }: TemplateGalleryProps) {
 
 // ─── Grouped Grid (shows categories as sections) ───
 
-function GroupedGrid({ onSelect }: { onSelect: (id: string) => void }) {
+function GroupedGrid() {
   const filteredTemplates = useTemplateStore((s) => s.filteredTemplates);
 
   // Group by category preserving order
@@ -139,7 +139,7 @@ function GroupedGrid({ onSelect }: { onSelect: (id: string) => void }) {
           </h2>
           <div className="grid grid-cols-2 gap-5 sm:grid-cols-3 lg:grid-cols-4">
             {group.templates.map((t) => (
-              <TemplateCard key={t.id} template={t} onSelect={onSelect} />
+              <TemplateCard key={t.id} template={t} />
             ))}
           </div>
         </div>

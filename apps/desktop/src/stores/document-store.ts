@@ -172,6 +172,10 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
       cursorPosition: 0,
       selectionRange: null,
     });
+
+    // Initialize history system early so snapshots work before the panel is opened
+    const historyStore = useHistoryStore.getState();
+    historyStore.init(rootPath).then(() => historyStore.loadSnapshots(rootPath)).catch(() => {});
   },
 
   closeProject: () => {
@@ -204,12 +208,16 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
     return id;
   },
 
-  deleteFile: (id) => {
+  deleteFile: async (id) => {
     const state = get();
     if (state.files.length <= 1) return;
     const file = state.files.find((f) => f.id === id);
     if (file) {
-      deleteFileFromDisk(file.absolutePath).catch(console.error);
+      try {
+        await deleteFileFromDisk(file.absolutePath);
+      } catch (e) {
+        console.error("Failed to delete file from disk:", e);
+      }
     }
     const newFiles = state.files.filter((f) => f.id !== id);
     const newActiveId =
@@ -217,7 +225,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
     set({ files: newFiles, activeFileId: newActiveId });
   },
 
-  renameFile: (id, name) => {
+  renameFile: async (id, name) => {
     const state = get();
     const file = state.files.find((f) => f.id === id);
     if (!file || !state.projectRoot) return;
@@ -227,23 +235,27 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
       : "";
     const newRelativePath = dir ? `${dir}/${name}` : name;
 
-    join(state.projectRoot, newRelativePath).then((newAbsPath) => {
-      renameFileOnDisk(file.absolutePath, newAbsPath).catch(console.error);
-      set((s) => ({
-        files: s.files.map((f) =>
-          f.id === id
-            ? {
-                ...f,
-                name,
-                relativePath: newRelativePath,
-                absolutePath: newAbsPath,
-                id: newRelativePath,
-              }
-            : f,
-        ),
-        activeFileId: s.activeFileId === id ? newRelativePath : s.activeFileId,
-      }));
-    });
+    const newAbsPath = await join(state.projectRoot, newRelativePath);
+    try {
+      await renameFileOnDisk(file.absolutePath, newAbsPath);
+    } catch (e) {
+      console.error("Failed to rename file on disk:", e);
+      return;
+    }
+    set((s) => ({
+      files: s.files.map((f) =>
+        f.id === id
+          ? {
+              ...f,
+              name,
+              relativePath: newRelativePath,
+              absolutePath: newAbsPath,
+              id: newRelativePath,
+            }
+          : f,
+      ),
+      activeFileId: s.activeFileId === id ? newRelativePath : s.activeFileId,
+    }));
   },
 
   updateFileContent: (id, content) => {
@@ -259,7 +271,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
 
   setPdfData: (data) => set({ pdfData: data, compileError: null }),
 
-  setCompileError: (error) => set({ compileError: error, pdfData: null }),
+  setCompileError: (error) => set({ compileError: error }),
 
   setIsCompiling: (isCompiling) => set({ isCompiling }),
 
@@ -345,12 +357,21 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
   saveAllFiles: async () => {
     const state = get();
     const dirtyFiles = state.files.filter((f) => f.isDirty && f.content);
-    await Promise.all(
+    const results = await Promise.allSettled(
       dirtyFiles.map((f) => writeTexFileContent(f.absolutePath, f.content!)),
     );
-    set((s) => ({
-      files: s.files.map((f) => ({ ...f, isDirty: false })),
-    }));
+    // Only mark successfully saved files as clean
+    const savedIds = new Set<string>();
+    results.forEach((r, i) => {
+      if (r.status === "fulfilled") savedIds.add(dirtyFiles[i].id);
+    });
+    if (savedIds.size > 0) {
+      set((s) => ({
+        files: s.files.map((f) =>
+          savedIds.has(f.id) ? { ...f, isDirty: false } : f,
+        ),
+      }));
+    }
   },
 
   saveCurrentFile: async () => {

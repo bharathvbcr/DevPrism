@@ -255,6 +255,243 @@ async fn spawn_claude_process(
     Ok(())
 }
 
+// ─── Setup / Status Commands ───
+
+#[derive(serde::Serialize)]
+pub struct ClaudeStatus {
+    pub installed: bool,
+    pub authenticated: bool,
+    pub binary_path: Option<String>,
+    pub version: Option<String>,
+    pub account_email: Option<String>,
+}
+
+#[tauri::command]
+pub async fn check_claude_status() -> Result<ClaudeStatus, String> {
+    // Try to find binary
+    let binary_path = match find_claude_binary() {
+        Ok(path) => path,
+        Err(_) => {
+            return Ok(ClaudeStatus {
+                installed: false,
+                authenticated: false,
+                binary_path: None,
+                version: None,
+                account_email: None,
+            });
+        }
+    };
+
+    // Verify binary actually works by running --version
+    let version_output = std::process::Command::new(&binary_path)
+        .arg("--version")
+        .output();
+
+    let version = match version_output {
+        Ok(output) if output.status.success() => {
+            Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        }
+        _ => {
+            // Binary found but doesn't work (bare "claude" fallback or broken install)
+            return Ok(ClaudeStatus {
+                installed: false,
+                authenticated: false,
+                binary_path: None,
+                version: None,
+                account_email: None,
+            });
+        }
+    };
+
+    // Check auth status
+    let auth_output = std::process::Command::new(&binary_path)
+        .args(["auth", "status"])
+        .output();
+
+    let (authenticated, account_email) = match auth_output {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            // Parse for email — claude auth status outputs account info
+            let email = stdout
+                .lines()
+                .find(|line| line.contains('@'))
+                .map(|line| {
+                    // Extract email-like substring
+                    line.split_whitespace()
+                        .find(|word| word.contains('@'))
+                        .unwrap_or(line.trim())
+                        .to_string()
+                });
+            (true, email)
+        }
+        _ => (false, None),
+    };
+
+    Ok(ClaudeStatus {
+        installed: true,
+        authenticated,
+        binary_path: Some(binary_path),
+        version,
+        account_email,
+    })
+}
+
+#[tauri::command]
+pub async fn install_claude_cli(window: WebviewWindow) -> Result<(), String> {
+    let mut cmd = tokio::process::Command::new("bash");
+    cmd.args(["-c", "curl -fsSL https://claude.ai/install.sh | bash"]);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    // Inherit essential environment variables
+    for (key, value) in std::env::vars() {
+        if key == "PATH"
+            || key == "HOME"
+            || key == "USER"
+            || key == "SHELL"
+            || key == "LANG"
+            || key.starts_with("LC_")
+            || key == "HOMEBREW_PREFIX"
+            || key == "HOMEBREW_CELLAR"
+            || key == "HTTP_PROXY"
+            || key == "HTTPS_PROXY"
+            || key == "NO_PROXY"
+            || key == "ALL_PROXY"
+        {
+            cmd.env(&key, &value);
+        }
+    }
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to run installer: {}", e))?;
+
+    let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
+    let stderr = child.stderr.take().ok_or("Failed to capture stderr")?;
+
+    let stdout_reader = BufReader::new(stdout);
+    let stderr_reader = BufReader::new(stderr);
+
+    // Stream stdout
+    let win_stdout = window.clone();
+    let stdout_task = tokio::spawn(async move {
+        let mut lines = stdout_reader.lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let _ = win_stdout.emit("install-output", &line);
+        }
+    });
+
+    // Stream stderr
+    let win_stderr = window.clone();
+    let stderr_task = tokio::spawn(async move {
+        let mut lines = stderr_reader.lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let _ = win_stderr.emit("install-error", &line);
+        }
+    });
+
+    // Wait for completion and emit result
+    let win_complete = window;
+    tokio::spawn(async move {
+        let _ = stdout_task.await;
+        let _ = stderr_task.await;
+
+        let success = match child.wait().await {
+            Ok(status) => status.success(),
+            Err(_) => false,
+        };
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        let _ = win_complete.emit("install-complete", success);
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn login_claude(window: WebviewWindow) -> Result<(), String> {
+    let binary_path = find_claude_binary()
+        .map_err(|e| format!("Claude CLI not found: {}", e))?;
+
+    // Verify it actually exists
+    let version_check = std::process::Command::new(&binary_path)
+        .arg("--version")
+        .output();
+
+    if version_check.is_err() || !version_check.unwrap().status.success() {
+        return Err("Claude CLI is not properly installed".to_string());
+    }
+
+    let mut cmd = tokio::process::Command::new(&binary_path);
+    cmd.args(["auth", "login"]);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    // Inherit essential environment variables
+    for (key, value) in std::env::vars() {
+        if key == "PATH"
+            || key == "HOME"
+            || key == "USER"
+            || key == "SHELL"
+            || key == "LANG"
+            || key.starts_with("LC_")
+            || key == "HOMEBREW_PREFIX"
+            || key == "HOMEBREW_CELLAR"
+            || key == "HTTP_PROXY"
+            || key == "HTTPS_PROXY"
+            || key == "NO_PROXY"
+            || key == "ALL_PROXY"
+        {
+            cmd.env(&key, &value);
+        }
+    }
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to run auth login: {}", e))?;
+
+    let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
+    let stderr = child.stderr.take().ok_or("Failed to capture stderr")?;
+
+    let stdout_reader = BufReader::new(stdout);
+    let stderr_reader = BufReader::new(stderr);
+
+    // Stream stdout
+    let win_stdout = window.clone();
+    let stdout_task = tokio::spawn(async move {
+        let mut lines = stdout_reader.lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let _ = win_stdout.emit("login-output", &line);
+        }
+    });
+
+    // Stream stderr
+    let win_stderr = window.clone();
+    let stderr_task = tokio::spawn(async move {
+        let mut lines = stderr_reader.lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let _ = win_stderr.emit("login-error", &line);
+        }
+    });
+
+    // Wait for completion and emit result
+    let win_complete = window;
+    tokio::spawn(async move {
+        let _ = stdout_task.await;
+        let _ = stderr_task.await;
+
+        let success = match child.wait().await {
+            Ok(status) => status.success(),
+            Err(_) => false,
+        };
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        let _ = win_complete.emit("login-complete", success);
+    });
+
+    Ok(())
+}
+
 // ─── Tauri Commands ───
 
 #[tauri::command]

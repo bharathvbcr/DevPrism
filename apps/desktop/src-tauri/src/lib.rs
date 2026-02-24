@@ -1,9 +1,8 @@
 mod claude;
 mod history;
+mod latex;
 mod zotero;
 
-use std::process::Command;
-use std::sync::Mutex;
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 #[cfg(target_os = "macos")]
@@ -24,35 +23,6 @@ fn set_macos_app_icon() {
             }
         }
     }
-}
-
-struct SidecarState {
-    child: Option<std::process::Child>,
-}
-
-fn start_sidecar(sidecar_path: &str, port: u16) -> Option<std::process::Child> {
-    let child = Command::new("node")
-        .arg(sidecar_path)
-        .env("PORT", port.to_string())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn();
-
-    match child {
-        Ok(child) => {
-            println!("Sidecar started with PID: {}", child.id());
-            Some(child)
-        }
-        Err(e) => {
-            eprintln!("Failed to start sidecar: {}", e);
-            None
-        }
-    }
-}
-
-#[tauri::command]
-fn get_sidecar_url() -> String {
-    "http://localhost:3001".to_string()
 }
 
 #[tauri::command]
@@ -91,48 +61,22 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
-        .manage(Mutex::new(SidecarState { child: None }))
         .manage(claude::ClaudeProcessState::default())
+        .manage(latex::LatexCompilerState::default())
         .manage(zotero::ZoteroOAuthState::default())
-        .setup(|app| {
-            // Set macOS Dock icon (dev mode doesn't use bundle, so set it at runtime)
+        .setup(|_app| {
             #[cfg(target_os = "macos")]
             set_macos_app_icon();
-
-            // In dev mode, the sidecar is started separately (via pnpm dev:desktop)
-            // In production, start the sidecar from the bundled resources
-            let sidecar_path = if let Ok(path) = std::env::var("SIDECAR_PATH") {
-                Some(path)
-            } else if cfg!(not(debug_assertions)) {
-                let resource_dir = app
-                    .path()
-                    .resource_dir()
-                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
-                Some(
-                    resource_dir
-                        .join("sidecar")
-                        .join("index.js")
-                        .to_string_lossy()
-                        .to_string(),
-                )
-            } else {
-                // Dev mode: sidecar is managed by the dev script
-                println!("Dev mode: expecting sidecar on port 3001 (start with pnpm dev:desktop)");
-                None
-            };
-
-            if let Some(path) = sidecar_path {
-                let child = start_sidecar(&path, 3001);
-                let state = app.state::<Mutex<SidecarState>>();
-                let mut state = state.lock().unwrap();
-                state.child = child;
-            }
 
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            get_sidecar_url,
             create_new_window,
+            latex::compile_latex,
+            latex::synctex_edit,
+            claude::check_claude_status,
+            claude::install_claude_cli,
+            claude::login_claude,
             claude::execute_claude_code,
             claude::continue_claude_code,
             claude::resume_claude_code,
@@ -172,14 +116,12 @@ pub fn run() {
                 }
             }
             tauri::RunEvent::ExitRequested { .. } => {
-                // Kill sidecar on exit
-                let state = app_handle.state::<Mutex<SidecarState>>();
-                if let Ok(mut guard) = state.lock() {
-                    if let Some(ref mut child) = guard.child {
-                        let _ = child.kill();
-                        println!("Sidecar process killed");
-                    }
-                };
+                // Clean up LaTeX build temp directories
+                let latex_state = app_handle.state::<latex::LatexCompilerState>();
+                let state_clone = latex_state.inner().clone();
+                tauri::async_runtime::spawn(async move {
+                    latex::cleanup_all_builds(&state_clone).await;
+                });
             }
             _ => {}
         }

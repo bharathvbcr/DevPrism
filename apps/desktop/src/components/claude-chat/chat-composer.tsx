@@ -1,8 +1,11 @@
 import { type FC, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowUpIcon, SquareIcon, XIcon, FileTextIcon, FileCodeIcon, FileIcon, ImageIcon, FileSpreadsheetIcon, PaperclipIcon } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { writeFile, mkdir, exists } from "@tauri-apps/plugin-fs";
+import { join } from "@tauri-apps/api/path";
 import { useClaudeChatStore, offsetToLineCol } from "@/stores/claude-chat-store";
 import { useDocumentStore, type ProjectFile } from "@/stores/document-store";
+import { getUniqueTargetName } from "@/lib/tauri/fs";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { cn } from "@/lib/utils";
 
@@ -10,6 +13,7 @@ interface PinnedContext {
   label: string;       // @file:line:col-line:col
   filePath: string;
   selectedText: string;
+  imageDataUrl?: string; // thumbnail for captured images
 }
 
 function getFileIcon(file: ProjectFile) {
@@ -44,7 +48,25 @@ export const ChatComposer: FC = () => {
   const activeFileId = useDocumentStore((s) => s.activeFileId);
   const files = useDocumentStore((s) => s.files);
   const importFiles = useDocumentStore((s) => s.importFiles);
+  const refreshFiles = useDocumentStore((s) => s.refreshFiles);
   const projectRoot = useDocumentStore((s) => s.projectRoot);
+
+  // Consume pending attachments from external sources (e.g. PDF capture)
+  const pendingAttachments = useClaudeChatStore((s) => s.pendingAttachments);
+  const consumePendingAttachments = useClaudeChatStore((s) => s.consumePendingAttachments);
+
+  useEffect(() => {
+    if (pendingAttachments.length === 0) return;
+    const attachments = consumePendingAttachments();
+    if (attachments.length === 0) return;
+    setPinnedContexts((prev) => {
+      const existingLabels = new Set(prev.map((c) => c.label));
+      const unique = attachments.filter((a) => !existingLabels.has(a.label));
+      return [...prev, ...unique];
+    });
+    // Focus textarea so user can type immediately
+    setTimeout(() => textareaRef.current?.focus(), 0);
+  }, [pendingAttachments, consumePendingAttachments]);
 
   const currentContextLabel = useMemo(() => {
     if (!selectionRange) return null;
@@ -212,6 +234,73 @@ export const ChatComposer: FC = () => {
     };
   }, []);
 
+  // Handle clipboard paste — detect files (screenshots, images) and save to attachments/
+  const handlePaste = useCallback(
+    async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      const clipboardFiles = e.clipboardData?.files;
+      if (!clipboardFiles || clipboardFiles.length === 0 || !projectRoot) return;
+
+      // Check if there are actual file items (not just text)
+      const fileItems = Array.from(clipboardFiles);
+      if (fileItems.length === 0) return;
+
+      e.preventDefault();
+
+      const newContexts: PinnedContext[] = [];
+
+      for (const file of fileItems) {
+        // Generate a filename — use the original name or a timestamp-based name for screenshots
+        let fileName = file.name;
+        if (!fileName || fileName === "image.png") {
+          const ext = file.type.split("/")[1] || "png";
+          fileName = `paste-${Date.now()}.${ext}`;
+        }
+
+        const targetName = `attachments/${fileName}`;
+
+        try {
+          // Ensure attachments/ directory exists
+          const attachmentsDir = await join(projectRoot, "attachments");
+          if (!(await exists(attachmentsDir))) {
+            await mkdir(attachmentsDir, { recursive: true });
+          }
+
+          // Deduplicate filename
+          const uniqueName = await getUniqueTargetName(projectRoot, targetName);
+          const fullPath = await join(projectRoot, uniqueName);
+
+          // Read file data and write to disk
+          const buffer = await file.arrayBuffer();
+          await writeFile(fullPath, new Uint8Array(buffer));
+
+          // Determine if it's a text file
+          const isText = file.type.startsWith("text/");
+          const content = isText ? await file.text() : `[Attached file: ${uniqueName} (${file.type})]`;
+
+          newContexts.push({
+            label: `@${uniqueName}`,
+            filePath: uniqueName,
+            selectedText: content,
+          });
+        } catch (err) {
+          console.error("[chat-paste] failed to save file:", fileName, err);
+        }
+      }
+
+      if (newContexts.length > 0) {
+        // Refresh file list so the store knows about new files
+        await refreshFiles();
+
+        setPinnedContexts((prev) => {
+          const existingLabels = new Set(prev.map((c) => c.label));
+          const unique = newContexts.filter((c) => !existingLabels.has(c.label));
+          return [...prev, ...unique];
+        });
+      }
+    },
+    [projectRoot, refreshFiles],
+  );
+
   const handleSend = useCallback(() => {
     const trimmed = input.trim();
     if (!trimmed || isStreaming) return;
@@ -353,21 +442,40 @@ export const ChatComposer: FC = () => {
       >
         {/* Pinned context chips */}
         {pinnedContexts.length > 0 && (
-          <div className="flex flex-wrap items-center gap-1 px-4 pt-3 pb-0">
-            {pinnedContexts.map((ctx, i) => (
-              <span
-                key={`${ctx.label}-${i}`}
-                className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 font-mono text-xs text-muted-foreground"
-              >
-                {ctx.label}
-                <button
-                  onClick={() => setPinnedContexts((prev) => prev.filter((_, idx) => idx !== i))}
-                  className="ml-0.5 rounded-sm p-0.5 transition-colors hover:bg-muted-foreground/20"
+          <div className="flex flex-wrap items-center gap-1.5 px-4 pt-3 pb-0">
+            {pinnedContexts.map((ctx, i) =>
+              ctx.imageDataUrl ? (
+                <div
+                  key={`${ctx.label}-${i}`}
+                  className="group relative overflow-hidden rounded-lg border border-border bg-muted"
                 >
-                  <XIcon className="size-3" />
-                </button>
-              </span>
-            ))}
+                  <img
+                    src={ctx.imageDataUrl}
+                    alt={ctx.label}
+                    className="block h-16 w-auto object-contain"
+                  />
+                  <button
+                    onClick={() => setPinnedContexts((prev) => prev.filter((_, idx) => idx !== i))}
+                    className="absolute top-0.5 right-0.5 rounded-full bg-background/80 p-0.5 opacity-0 transition-opacity group-hover:opacity-100"
+                  >
+                    <XIcon className="size-3" />
+                  </button>
+                </div>
+              ) : (
+                <span
+                  key={`${ctx.label}-${i}`}
+                  className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 font-mono text-xs text-muted-foreground"
+                >
+                  {ctx.label}
+                  <button
+                    onClick={() => setPinnedContexts((prev) => prev.filter((_, idx) => idx !== i))}
+                    className="ml-0.5 rounded-sm p-0.5 transition-colors hover:bg-muted-foreground/20"
+                  >
+                    <XIcon className="size-3" />
+                  </button>
+                </span>
+              ),
+            )}
           </div>
         )}
 
@@ -382,7 +490,8 @@ export const ChatComposer: FC = () => {
             value={input}
             onChange={handleInput}
             onKeyDown={handleKeyDown}
-            placeholder="Ask me anything (@ to mention, drop to attach)"
+            onPaste={handlePaste}
+            placeholder="Ask me anything (@ to mention, drop or paste to attach)"
             className="max-h-40 min-h-10 w-full resize-none bg-transparent px-4 py-2 text-sm outline-none placeholder:text-muted-foreground"
             autoFocus
             rows={1}

@@ -1,4 +1,10 @@
-import { PackageIcon, FileCodeIcon, SparklesIcon } from "lucide-react";
+import { useState, useCallback, useEffect, useRef } from "react";
+import {
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  SparklesIcon,
+  LoaderIcon,
+} from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -9,6 +15,9 @@ import {
 import { Button } from "@/components/ui/button";
 import { useTemplateStore } from "@/stores/template-store";
 import { getTemplateById } from "@/lib/template-registry";
+import { getTemplatePdfUrl } from "@/lib/template-preview-cache";
+import { getMupdfClient } from "@/lib/mupdf/mupdf-client";
+import type { PageSize } from "@/lib/mupdf/types";
 
 interface TemplatePreviewProps {
   onUseTemplate: (id: string) => void;
@@ -20,120 +29,233 @@ export function TemplatePreview({ onUseTemplate }: TemplatePreviewProps) {
 
   const template = previewTemplateId ? getTemplateById(previewTemplateId) : null;
 
+  const [numPages, setNumPages] = useState(0);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [isLandscape, setIsLandscape] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(false);
+
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const docIdRef = useRef(0);
+  const pageSizesRef = useRef<PageSize[]>([]);
+  const loadGenRef = useRef(0);
+
+  const handleOpenChange = useCallback(
+    (open: boolean) => {
+      if (!open) {
+        closePreview();
+        setCurrentPage(1);
+        setNumPages(0);
+        setIsLandscape(false);
+        setError(false);
+        // Close document
+        if (docIdRef.current > 0) {
+          getMupdfClient().closeDocument(docIdRef.current).catch(() => {});
+          docIdRef.current = 0;
+        }
+      }
+    },
+    [closePreview],
+  );
+
+  // Load document when template changes
+  useEffect(() => {
+    if (!previewTemplateId) return;
+
+    const gen = ++loadGenRef.current;
+    setLoading(true);
+    setError(false);
+    setNumPages(0);
+    setCurrentPage(1);
+
+    (async () => {
+      try {
+        const url = getTemplatePdfUrl(previewTemplateId);
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const buffer = await response.arrayBuffer();
+
+        if (gen !== loadGenRef.current) return;
+
+        const client = getMupdfClient();
+
+        // Close previous
+        if (docIdRef.current > 0) {
+          await client.closeDocument(docIdRef.current).catch(() => {});
+        }
+
+        const docId = await client.openDocument(buffer);
+        if (gen !== loadGenRef.current) {
+          client.closeDocument(docId).catch(() => {});
+          return;
+        }
+        docIdRef.current = docId;
+
+        const count = await client.countPages(docId);
+        if (gen !== loadGenRef.current) return;
+
+        const sizes: PageSize[] = [];
+        for (let i = 0; i < count; i++) {
+          const size = await client.getPageSize(docId, i);
+          if (gen !== loadGenRef.current) return;
+          sizes.push(size);
+        }
+
+        pageSizesRef.current = sizes;
+        setNumPages(count);
+        setCurrentPage(1);
+        if (sizes.length > 0) {
+          setIsLandscape(sizes[0].width > sizes[0].height);
+        }
+        setLoading(false);
+      } catch (err) {
+        if (gen !== loadGenRef.current) return;
+        console.warn("[template-preview] load error:", err);
+        setLoading(false);
+        setError(true);
+      }
+    })();
+  }, [previewTemplateId]);
+
+  // Render current page
+  useEffect(() => {
+    if (docIdRef.current <= 0 || numPages === 0 || !canvasRef.current) return;
+
+    const pageIndex = currentPage - 1;
+    const size = pageSizesRef.current[pageIndex];
+    if (!size) return;
+
+    setIsLandscape(size.width > size.height);
+
+    const targetWidth = isLandscape ? 1100 : 800;
+    const scale = targetWidth / size.width;
+    const dpr = window.devicePixelRatio || 1;
+    const dpi = scale * 72 * dpr;
+
+    const client = getMupdfClient();
+    client.drawPage(docIdRef.current, pageIndex, dpi).then((imageData) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      canvas.width = imageData.width;
+      canvas.height = imageData.height;
+      canvas.style.width = `${size.width * scale}px`;
+      canvas.style.height = `${size.height * scale}px`;
+      const ctx = canvas.getContext("2d")!;
+      ctx.putImageData(imageData, 0, 0);
+    }).catch((err) => {
+      console.warn("[template-preview] render error:", err);
+    });
+  }, [currentPage, numPages, isLandscape]);
+
+  const goToPrevPage = useCallback(
+    () => setCurrentPage((p) => Math.max(1, p - 1)),
+    [],
+  );
+  const goToNextPage = useCallback(
+    () => setCurrentPage((p) => Math.min(numPages, p + 1)),
+    [numPages],
+  );
+
+  // Arrow key navigation
+  useEffect(() => {
+    if (!previewTemplateId) return;
+
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        goToPrevPage();
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        goToNextPage();
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [previewTemplateId, goToPrevPage, goToNextPage]);
+
   if (!template) return null;
 
   return (
-    <Dialog open={!!previewTemplateId} onOpenChange={(open) => !open && closePreview()}>
-      <DialogContent className="max-h-[85vh] max-w-3xl overflow-hidden p-0">
-        <div className="flex h-full max-h-[85vh] flex-col">
-          {/* Header */}
-          <DialogHeader className="shrink-0 border-b border-border px-6 py-4">
-            <div className="flex items-start gap-4">
-              <div
-                className="flex size-10 shrink-0 items-center justify-center rounded-lg"
-                style={{ backgroundColor: template.accentColor + "18" }}
-              >
-                <div
-                  className="size-5 rounded"
-                  style={{ backgroundColor: template.accentColor }}
-                />
-              </div>
-              <div className="flex-1">
-                <DialogTitle className="text-base">{template.name}</DialogTitle>
-                <DialogDescription className="mt-0.5">
-                  {template.description}
-                </DialogDescription>
-              </div>
+    <Dialog open={!!previewTemplateId} onOpenChange={handleOpenChange}>
+      <DialogContent showCloseButton={false} className={`flex h-[70vh] max-w-none sm:max-w-none flex-col gap-0 overflow-hidden p-0 ${isLandscape ? "w-[min(72rem,calc(100vw-4rem))]" : "w-[min(48rem,calc(100vw-6rem))]"}`}>
+        {/* Header */}
+        <DialogHeader className="shrink-0 border-b border-border px-6 py-3">
+          <div className="flex items-center gap-4">
+            <div className="min-w-0 flex-1">
+              <DialogTitle className="text-sm">{template.name}</DialogTitle>
+              <DialogDescription className="mt-0.5 truncate text-xs">
+                {template.description} — {template.documentClass}
+                {template.packages.length > 0 && ` — ${template.packages.length} packages`}
+              </DialogDescription>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
               <Button
+                size="sm"
                 onClick={() => {
                   closePreview();
                   onUseTemplate(template.id);
                 }}
                 className="gap-1.5"
               >
-                <SparklesIcon className="size-4" />
+                <SparklesIcon className="size-3.5" />
                 Use Template
               </Button>
             </div>
-          </DialogHeader>
+          </div>
+        </DialogHeader>
 
-          {/* Content split: code preview + info */}
-          <div className="flex flex-1 overflow-hidden">
-            {/* LaTeX source preview */}
-            <div className="flex-1 overflow-y-auto border-r border-border bg-muted/30 p-4">
-              <div className="mb-2 flex items-center gap-1.5 text-muted-foreground text-xs">
-                <FileCodeIcon className="size-3.5" />
-                <span>{template.mainFileName}</span>
-              </div>
-              <pre className="whitespace-pre-wrap font-mono text-xs leading-relaxed text-foreground/80">
-                {template.content}
-              </pre>
-            </div>
-
-            {/* Info sidebar */}
-            <div className="flex w-56 shrink-0 flex-col gap-4 overflow-y-auto p-4">
-              {/* Metadata */}
-              <div>
-                <div className="mb-2 font-medium text-xs text-muted-foreground uppercase tracking-wider">
-                  Details
-                </div>
-                <div className="space-y-1.5 text-sm">
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Class</span>
-                    <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
-                      {template.documentClass}
-                    </code>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Category</span>
-                    <span className="text-xs capitalize">{template.category}</span>
-                  </div>
-                  {template.hasBibliography && (
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Bibliography</span>
-                      <span className="text-xs">Yes</span>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Packages */}
-              {template.packages.length > 0 && (
-                <div>
-                  <div className="mb-2 flex items-center gap-1.5 font-medium text-xs text-muted-foreground uppercase tracking-wider">
-                    <PackageIcon className="size-3" />
-                    Packages ({template.packages.length})
-                  </div>
-                  <div className="space-y-1.5">
-                    {template.packages.map((pkg) => (
-                      <div key={pkg.name} className="text-xs">
-                        <code className="font-mono text-foreground/80">{pkg.name}</code>
-                        <p className="mt-0.5 text-muted-foreground leading-snug">
-                          {pkg.description}
-                        </p>
-                      </div>
-                    ))}
-                  </div>
+        {/* Main content area */}
+        <div className="flex flex-1 overflow-hidden">
+          <div className="relative flex flex-1 flex-col">
+            <div className="flex flex-1 items-center justify-center overflow-hidden bg-muted/30 p-6">
+              {loading && (
+                <div className="flex flex-col items-center gap-2 text-muted-foreground">
+                  <LoaderIcon className="size-5 animate-spin" />
+                  <span className="text-sm">Loading preview...</span>
                 </div>
               )}
-
-              {/* Tags */}
-              <div>
-                <div className="mb-2 font-medium text-xs text-muted-foreground uppercase tracking-wider">
-                  Tags
+              {error && (
+                <div className="flex flex-col items-center gap-2 text-muted-foreground">
+                  <span className="text-sm">Preview not available</span>
+                  <span className="text-xs opacity-60">
+                    Run `pnpm generate-previews` to generate
+                  </span>
                 </div>
-                <div className="flex flex-wrap gap-1">
-                  {template.tags.map((tag) => (
-                    <span
-                      key={tag}
-                      className="rounded-md bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
-                    >
-                      {tag}
-                    </span>
-                  ))}
-                </div>
-              </div>
+              )}
+              {!loading && !error && numPages > 0 && (
+                <canvas
+                  ref={canvasRef}
+                  className="max-h-[calc(70vh-10rem)] w-auto shadow-xl"
+                />
+              )}
             </div>
+
+            {/* Page navigation */}
+            {numPages > 0 && (
+              <div className="flex shrink-0 items-center justify-center gap-3 border-t border-border bg-background py-2.5">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-7"
+                  onClick={goToPrevPage}
+                  disabled={currentPage <= 1}
+                >
+                  <ChevronLeftIcon className="size-4" />
+                </Button>
+                <span className="min-w-[4rem] text-center text-xs tabular-nums text-muted-foreground">
+                  {numPages > 1 ? `${currentPage} / ${numPages}` : "1 page"}
+                </span>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-7"
+                  onClick={goToNextPage}
+                  disabled={currentPage >= numPages}
+                >
+                  <ChevronRightIcon className="size-4" />
+                </Button>
+              </div>
+            )}
           </div>
         </div>
       </DialogContent>

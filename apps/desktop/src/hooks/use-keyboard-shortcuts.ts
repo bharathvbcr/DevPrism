@@ -14,7 +14,7 @@ export function useKeyboardShortcuts() {
         });
       }
 
-      if ((e.metaKey || e.ctrlKey) && e.key === "n") {
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "n") {
         e.preventDefault();
         invoke("create_new_window").catch(console.error);
       }

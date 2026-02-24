@@ -62,6 +62,11 @@ interface ClaudeChatState {
   setPendingInitialPrompt: (prompt: string | null) => void;
   consumePendingInitialPrompt: () => string | null;
 
+  /** Pending attachments from external sources (e.g. PDF capture) */
+  pendingAttachments: { label: string; filePath: string; selectedText: string; imageDataUrl?: string }[];
+  addPendingAttachment: (attachment: { label: string; filePath: string; selectedText: string; imageDataUrl?: string }) => void;
+  consumePendingAttachments: () => { label: string; filePath: string; selectedText: string; imageDataUrl?: string }[];
+
   // Actions
   sendPrompt: (userPrompt: string, contextOverride?: { label: string; filePath: string; selectedText: string }) => Promise<void>;
   cancelExecution: () => Promise<void>;
@@ -94,6 +99,20 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       set({ pendingInitialPrompt: null });
     }
     return pendingInitialPrompt;
+  },
+
+  pendingAttachments: [],
+  addPendingAttachment: (attachment) => {
+    set((state) => ({
+      pendingAttachments: [...state.pendingAttachments, attachment],
+    }));
+  },
+  consumePendingAttachments: () => {
+    const { pendingAttachments } = get();
+    if (pendingAttachments.length > 0) {
+      set({ pendingAttachments: [] });
+    }
+    return pendingAttachments;
   },
 
   sendPrompt: async (userPrompt: string, contextOverride?: { label: string; filePath: string; selectedText: string }) => {

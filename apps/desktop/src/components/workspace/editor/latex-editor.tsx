@@ -260,7 +260,7 @@ export function LatexEditor() {
   const handleFindNext = () => { const view = viewRef.current; if (view) { findNext(view); view.focus(); } };
   const handleFindPrevious = () => { const view = viewRef.current; if (view) { findPrevious(view); view.focus(); } };
 
-  // Compile: save all files first, then compile via sidecar using projectDir
+  // Compile: save all files first, then compile via Tauri command
   compileRef.current = async () => {
     if (isCompiling || !projectRoot || activeFile?.type !== "tex") return;
     useHistoryStore.getState().stopReview();
@@ -921,7 +921,6 @@ function InlinePdfViewer({
             data={pdfData}
             scale={imageScale}
             onScaleChange={onImageScaleChange}
-            onError={(msg) => setError(msg)}
           />
         ) : error ? (
           <div className="flex h-full items-center justify-center text-muted-foreground text-sm">

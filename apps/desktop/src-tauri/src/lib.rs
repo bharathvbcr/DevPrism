@@ -3,7 +3,71 @@ mod history;
 mod latex;
 mod zotero;
 
+use std::path::Path;
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+
+// --- External editor detection & opening ---
+
+#[derive(serde::Serialize, Clone)]
+struct EditorInfo {
+    id: String,
+    name: String,
+}
+
+struct EditorDef {
+    id: &'static str,
+    name: &'static str,
+    app_path: &'static str,
+    cli: &'static str,
+}
+
+const KNOWN_EDITORS: &[EditorDef] = &[
+    EditorDef { id: "cursor", name: "Cursor", app_path: "/Applications/Cursor.app", cli: "cursor" },
+    EditorDef { id: "vscode", name: "VS Code", app_path: "/Applications/Visual Studio Code.app", cli: "code" },
+    EditorDef { id: "zed", name: "Zed", app_path: "/Applications/Zed.app", cli: "zed" },
+    EditorDef { id: "sublime", name: "Sublime Text", app_path: "/Applications/Sublime Text.app", cli: "subl" },
+];
+
+#[tauri::command]
+fn detect_editors() -> Vec<EditorInfo> {
+    KNOWN_EDITORS
+        .iter()
+        .filter(|e| Path::new(e.app_path).exists())
+        .map(|e| EditorInfo { id: e.id.to_string(), name: e.name.to_string() })
+        .collect()
+}
+
+#[tauri::command]
+fn open_in_editor(
+    editor_id: String,
+    project_path: String,
+    file_path: Option<String>,
+    line: Option<u32>,
+) -> Result<(), String> {
+    let editor = KNOWN_EDITORS
+        .iter()
+        .find(|e| e.id == editor_id)
+        .ok_or_else(|| format!("Unknown editor: {}", editor_id))?;
+
+    let mut cmd = std::process::Command::new(editor.cli);
+
+    // Open the project folder
+    cmd.arg(&project_path);
+
+    // If a specific file is given, open it (with optional line number via -g)
+    if let Some(ref fp) = file_path {
+        let full_path = Path::new(&project_path).join(fp);
+        if let Some(ln) = line {
+            cmd.arg("-g");
+            cmd.arg(format!("{}:{}", full_path.display(), ln));
+        } else {
+            cmd.arg(full_path);
+        }
+    }
+
+    cmd.spawn().map_err(|e| format!("Failed to open {}: {}", editor.name, e))?;
+    Ok(())
+}
 
 #[cfg(target_os = "macos")]
 fn set_macos_app_icon() {
@@ -72,6 +136,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             create_new_window,
+            detect_editors,
+            open_in_editor,
             latex::compile_latex,
             latex::synctex_edit,
             claude::check_claude_status,

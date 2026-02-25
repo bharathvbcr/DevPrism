@@ -1,22 +1,18 @@
 import { invoke } from "@tauri-apps/api/core";
-import { readFile } from "@tauri-apps/plugin-fs";
-
-interface CompileResult {
-  pdf_path: string;
-}
 
 export async function compileLatex(
   projectDir: string,
   mainFile: string = "document.tex",
   compiler?: string,
 ): Promise<Uint8Array> {
-  const result = await invoke<CompileResult>("compile_latex", {
+  // compile_latex returns raw PDF bytes via Tauri IPC Response
+  const buffer = await invoke<ArrayBuffer>("compile_latex", {
     projectDir,
     mainFile,
     compiler: compiler ?? null,
   });
 
-  return readFile(result.pdf_path);
+  return new Uint8Array(buffer);
 }
 
 export interface SynctexResult {

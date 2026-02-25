@@ -15,6 +15,7 @@ import {
   type ProjectFileType,
 } from "@/lib/tauri/fs";
 import { useHistoryStore } from "@/stores/history-store";
+import { useClaudeChatStore } from "@/stores/claude-chat-store";
 
 export interface ProjectFile {
   id: string; // relativePath is the id
@@ -188,6 +189,8 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
       compileError: null,
       initialized: false,
     });
+    // Reset chat session so stale messages don't leak into the next project
+    useClaudeChatStore.getState().newSession();
   },
 
   setActiveFile: (id) =>

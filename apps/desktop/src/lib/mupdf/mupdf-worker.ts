@@ -39,13 +39,21 @@ methods.drawPage = (docId: number, pageIndex: number, dpi: number): ImageData =>
   const page = doc.loadPage(pageIndex);
   const scale = dpi / 72;
   const matrix = mupdf.Matrix.scale(scale, scale);
-  // alpha=true to get RGBA pixels compatible with ImageData
-  const pixmap = page.toPixmap(matrix, mupdf.ColorSpace.DeviceRGB, true, true);
+  // alpha=false so the PDF's white background is rendered opaquely (RGB, 3 bytes/pixel)
+  const pixmap = page.toPixmap(matrix, mupdf.ColorSpace.DeviceRGB, false, true);
   const w = pixmap.getWidth();
   const h = pixmap.getHeight();
-  const pixels = pixmap.getPixels().slice();
+  const rgb = pixmap.getPixels();
   pixmap.destroy();
-  return new ImageData(new Uint8ClampedArray(pixels.buffer), w, h);
+  // Convert RGB (3 bytes/pixel) → RGBA (4 bytes/pixel) for ImageData
+  const rgba = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0, j = 0; i < rgb.length; i += 3, j += 4) {
+    rgba[j] = rgb[i];
+    rgba[j + 1] = rgb[i + 1];
+    rgba[j + 2] = rgb[i + 2];
+    rgba[j + 3] = 255; // fully opaque
+  }
+  return new ImageData(rgba, w, h);
 };
 
 methods.getPageText = (docId: number, pageIndex: number): unknown => {

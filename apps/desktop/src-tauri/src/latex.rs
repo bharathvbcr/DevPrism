@@ -9,6 +9,9 @@ const COMPILE_TIMEOUT_SECS: u64 = 30;
 struct BuildInfo {
     work_dir: PathBuf,
     main_file_name: String, // stem without extension, e.g. "document"
+    aux_hash: Option<u64>,  // hash of .aux file from last build (for single-pass optimization)
+    preamble_hash: Option<u64>, // hash of preamble text (for format regeneration)
+    fmt_ok: bool,               // whether .fmt was successfully generated
 }
 
 #[derive(Clone)]
@@ -26,10 +29,7 @@ impl Default for LatexCompilerState {
     }
 }
 
-#[derive(serde::Serialize)]
-pub struct CompileResult {
-    pub pdf_path: String,
-}
+// CompileResult is no longer needed — compile_latex returns raw PDF bytes via Response.
 
 #[derive(serde::Serialize)]
 pub struct SynctexResult {
@@ -176,6 +176,169 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Sync only source files (.tex, .bib, .sty, .cls, .bst, images) from project to build dir.
+/// Skips build artifacts (.aux, .log, .toc, .pdf, .synctex.gz, etc.) to preserve them.
+fn sync_source_files(src: &Path, dst: &Path) -> std::io::Result<()> {
+    if !dst.exists() {
+        std::fs::create_dir_all(dst)?;
+    }
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if src_path.is_dir() {
+            let name = entry.file_name();
+            if name.to_string_lossy().starts_with('.') {
+                continue;
+            }
+            sync_source_files(&src_path, &dst_path)?;
+        } else {
+            let ext = src_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            let is_artifact = matches!(ext, "aux" | "log" | "toc" | "lof" | "lot" | "out"
+                | "nav" | "snm" | "vrb" | "bbl" | "blg" | "fls" | "fdb_latexmk"
+                | "synctex" | "pdf" | "idx" | "ind" | "ilg" | "glo" | "gls" | "glg");
+            let is_synctex = src_path.to_string_lossy().ends_with(".synctex.gz");
+            if !is_artifact && !is_synctex {
+                std::fs::copy(&src_path, &dst_path)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Persistent build directory inside the project.
+/// Stored in `<project>/.prism/build/` — hidden from file tree (dot-prefix is filtered).
+fn persistent_build_dir(project_dir: &str) -> PathBuf {
+    PathBuf::from(project_dir).join(".prism").join("build")
+}
+
+/// Recover preamble hash from on-disk `_prism_preamble.tex` (has `\dump\n` suffix).
+fn recover_preamble_hash(work_dir: &Path) -> Option<u64> {
+    let preamble_tex = work_dir.join("_prism_preamble.tex");
+    if !preamble_tex.exists() {
+        return None;
+    }
+    let content = std::fs::read_to_string(&preamble_tex).ok()?;
+    let preamble = content
+        .strip_suffix("\\dump\n")
+        .or_else(|| content.strip_suffix("\\dump"))
+        .unwrap_or(&content);
+    Some(hash_string(preamble))
+}
+
+/// Hash a string (for preamble change detection).
+fn hash_string(s: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    s.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Extract preamble info from a .tex file.
+/// Returns (preamble_text, byte_pos_of_begin_document, newline_count_in_preamble).
+fn extract_preamble_info(content: &str) -> Option<(String, usize, usize)> {
+    let marker = "\\begin{document}";
+    if let Some(pos) = content.find(marker) {
+        let preamble = content[..pos].to_string();
+        let newlines = content[..pos].chars().filter(|&c| c == '\n').count();
+        Some((preamble, pos, newlines))
+    } else {
+        None
+    }
+}
+
+/// Try to generate a pre-compiled format (.fmt) from the preamble.
+/// Returns true if the format was successfully generated.
+async fn try_generate_format(
+    preamble: &str,
+    work_dir: &Path,
+    compiler_cmd: &str,
+) -> bool {
+    // Write preamble + \dump to a temp .tex file
+    let preamble_path = work_dir.join("_prism_preamble.tex");
+    let dump_content = format!("{}\\dump\n", preamble);
+    if std::fs::write(&preamble_path, &dump_content).is_err() {
+        eprintln!("[latex] failed to write format preamble file");
+        return false;
+    }
+
+    let ini_load = format!("&{}", compiler_cmd);
+    match run_with_timeout(
+        compiler_cmd,
+        &["-ini", "-jobname=_prism_fmt", &ini_load, "_prism_preamble.tex"],
+        work_dir,
+        COMPILE_TIMEOUT_SECS,
+    )
+    .await
+    {
+        Ok(result) => {
+            let fmt_path = work_dir.join("_prism_fmt.fmt");
+            if fmt_path.exists() {
+                let size = std::fs::metadata(&fmt_path).map(|m| m.len()).unwrap_or(0);
+                eprintln!(
+                    "[latex] format generated ({} bytes, exit={})",
+                    size, result.exit_code
+                );
+                true
+            } else {
+                eprintln!(
+                    "[latex] format generation failed (exit={}, no .fmt)",
+                    result.exit_code
+                );
+                if !result.stderr.is_empty() {
+                    let n = result.stderr.len().min(300);
+                    eprintln!("[latex] fmt stderr: {}", &result.stderr[..n]);
+                }
+                false
+            }
+        }
+        Err(e) => {
+            eprintln!("[latex] format generation error: {}", e);
+            false
+        }
+    }
+}
+
+/// Write a body file with padding comment lines to preserve line numbers.
+/// The body file starts with `newline_count` padding lines, then \begin{document}...
+/// For pdflatex, injects `\pdfcompresslevel=0` to speed up PDF generation.
+fn write_body_file(
+    content: &str,
+    begin_doc_pos: usize,
+    newline_count: usize,
+    work_dir: &Path,
+    compiler: &str,
+) -> std::io::Result<()> {
+    let body = &content[begin_doc_pos..];
+    // Only inject pdfcompresslevel for pdflatex (undefined in xelatex/lualatex)
+    let inject = if compiler == "pdflatex" {
+        "\\pdfcompresslevel=0 \\pdfobjcompresslevel=0\n"
+    } else {
+        "%\n"
+    };
+    let mut result = String::with_capacity(body.len() + newline_count * 2 + 80);
+    if newline_count > 1 {
+        for _ in 0..newline_count - 1 {
+            result.push_str("%\n");
+        }
+        result.push_str(inject);
+    } else if newline_count == 1 {
+        result.push_str(inject);
+    }
+    // else newline_count == 0: no room for injection, skip
+    result.push_str(body);
+    std::fs::write(work_dir.join("_prism_body.tex"), &result)
+}
+
+/// Hash the contents of a file (for aux-file change detection).
+fn hash_file(path: &Path) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let data = std::fs::read(path).ok()?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    data.hash(&mut hasher);
+    Some(hasher.finish())
+}
+
 // --- Tauri Commands ---
 
 #[tauri::command]
@@ -184,7 +347,7 @@ pub async fn compile_latex(
     project_dir: String,
     main_file: String,
     compiler: Option<String>,
-) -> Result<CompileResult, String> {
+) -> Result<tauri::ipc::Response, String> {
     // Acquire semaphore permit (non-blocking)
     let _permit = state
         .semaphore
@@ -192,31 +355,13 @@ pub async fn compile_latex(
         .try_acquire_owned()
         .map_err(|_| "Server busy, too many concurrent compilations".to_string())?;
 
+    let t0 = std::time::Instant::now();
+
     let compiler_cmd = match compiler.as_deref() {
         Some("xelatex") => "xelatex",
         Some("lualatex") => "lualatex",
         _ => "pdflatex",
     };
-
-    // Create temp build directory
-    let raw_work_dir =
-        std::env::temp_dir().join(format!("latex-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&raw_work_dir)
-        .map_err(|e| format!("Failed to create temp dir: {}", e))?;
-    // Resolve symlinks (macOS: /var → /private/var) so synctex paths match
-    let work_dir = std::fs::canonicalize(&raw_work_dir).unwrap_or(raw_work_dir);
-
-    // Clean up previous build for this project
-    {
-        let mut builds = state.last_builds.lock().await;
-        if let Some(prev) = builds.remove(&project_dir) {
-            let _ = std::fs::remove_dir_all(&prev.work_dir);
-        }
-    }
-
-    // Copy project to temp dir
-    copy_dir_recursive(Path::new(&project_dir), &work_dir)
-        .map_err(|e| format!("Failed to copy project: {}", e))?;
 
     let main_file_name = Path::new(&main_file)
         .file_stem()
@@ -224,60 +369,208 @@ pub async fn compile_latex(
         .unwrap_or("document")
         .to_string();
 
-    // Detect .bib files
-    let has_bib = has_bib_files(&work_dir);
-    let latex_args: Vec<&str> = vec!["-interaction=nonstopmode", "-synctex=1", &main_file];
-    let mut last_result;
-
-    if has_bib {
-        // Pass 1
-        last_result =
-            run_with_timeout(compiler_cmd, &latex_args, &work_dir, COMPILE_TIMEOUT_SECS).await?;
-        if last_result.timed_out {
-            return Err("Compilation timed out".to_string());
-        }
-
-        // BibTeX
-        let aux_path = work_dir.join(format!("{}.aux", main_file_name));
-        if aux_path.exists() {
-            last_result = run_with_timeout(
-                "bibtex",
-                &[main_file_name.as_str()],
-                &work_dir,
-                COMPILE_TIMEOUT_SECS,
-            )
-            .await?;
-            if last_result.timed_out {
-                return Err("BibTeX timed out".to_string());
+    // Reuse existing build directory: check in-memory cache, then persistent disk cache
+    let (work_dir, prev_aux_hash, prev_preamble_hash, prev_fmt_ok, is_reuse) = {
+        let builds = state.last_builds.lock().await;
+        if let Some(prev) = builds.get(&project_dir) {
+            if prev.work_dir.exists() {
+                // In-memory cache hit
+                (
+                    prev.work_dir.clone(),
+                    prev.aux_hash,
+                    prev.preamble_hash,
+                    prev.fmt_ok,
+                    true,
+                )
+            } else {
+                (PathBuf::new(), None, None, false, false)
+            }
+        } else {
+            // Check persistent disk cache (survives app restarts)
+            let persistent = persistent_build_dir(&project_dir);
+            if persistent.exists() {
+                let aux_hash =
+                    hash_file(&persistent.join(format!("{}.aux", main_file_name)));
+                let preamble_hash = recover_preamble_hash(&persistent);
+                let fmt_ok = persistent.join("_prism_fmt.fmt").exists();
+                eprintln!(
+                    "[latex] recovered persistent cache (fmt={}, aux={}, preamble={})",
+                    fmt_ok,
+                    aux_hash.is_some(),
+                    preamble_hash.is_some()
+                );
+                (persistent, aux_hash, preamble_hash, fmt_ok, true)
+            } else {
+                (PathBuf::new(), None, None, false, false)
             }
         }
+    };
 
-        // Pass 2 & 3
-        for _ in 0..2 {
+    let work_dir = if is_reuse {
+        // Sync only source files, preserving build artifacts (.aux, .toc, .fmt, etc.)
+        sync_source_files(Path::new(&project_dir), &work_dir)
+            .map_err(|e| format!("Failed to sync project: {}", e))?;
+        eprintln!(
+            "[latex] +{:.0}ms sync source files (reuse)",
+            t0.elapsed().as_millis()
+        );
+        work_dir
+    } else {
+        // First build ever: create persistent build directory
+        let work_dir = persistent_build_dir(&project_dir);
+        std::fs::create_dir_all(&work_dir)
+            .map_err(|e| format!("Failed to create build dir: {}", e))?;
+        copy_dir_recursive(Path::new(&project_dir), &work_dir)
+            .map_err(|e| format!("Failed to copy project: {}", e))?;
+        eprintln!(
+            "[latex] +{:.0}ms full copy (first build)",
+            t0.elapsed().as_millis()
+        );
+        work_dir
+    };
+
+    // Pre-compiled format optimization: cache preamble loading in .fmt file
+    let main_tex_path = work_dir.join(&main_file);
+    let tex_content = std::fs::read_to_string(&main_tex_path).unwrap_or_default();
+
+    let (use_fmt, new_preamble_hash) =
+        if let Some((preamble, begin_doc_pos, newline_count)) =
+            extract_preamble_info(&tex_content)
+        {
+            let p_hash = hash_string(&preamble);
+            let fmt_path = work_dir.join("_prism_fmt.fmt");
+
+            let need_regen = !(is_reuse
+                && prev_preamble_hash == Some(p_hash)
+                && fmt_path.exists()
+                && prev_fmt_ok);
+
+            if need_regen {
+                eprintln!("[latex] preamble changed or no format — generating .fmt");
+                let t_fmt = std::time::Instant::now();
+                let ok = try_generate_format(&preamble, &work_dir, compiler_cmd).await;
+                eprintln!(
+                    "[latex] +{:.0}ms format generation (ok={})",
+                    t_fmt.elapsed().as_millis(),
+                    ok
+                );
+                if ok {
+                    write_body_file(&tex_content, begin_doc_pos, newline_count, &work_dir, compiler_cmd)
+                        .map_err(|e| format!("Failed to write body file: {}", e))?;
+                    (true, Some(p_hash))
+                } else {
+                    (false, Some(p_hash))
+                }
+            } else {
+                // Format cached and valid — just update body file (content may have changed)
+                write_body_file(&tex_content, begin_doc_pos, newline_count, &work_dir, compiler_cmd)
+                    .map_err(|e| format!("Failed to write body file: {}", e))?;
+                eprintln!("[latex] reusing cached format");
+                (true, Some(p_hash))
+            }
+        } else {
+            (false, None)
+        };
+
+    eprintln!(
+        "[latex] +{:.0}ms format setup (use_fmt={})",
+        t0.elapsed().as_millis(),
+        use_fmt
+    );
+
+    // Detect .bib files
+    let has_bib = has_bib_files(&work_dir);
+
+    // Build compilation arguments
+    let fmt_arg = "-fmt=_prism_fmt".to_string();
+    let jobname_arg = format!("-jobname={}", main_file_name);
+    let latex_args: Vec<&str> = if use_fmt {
+        vec![
+            "-interaction=nonstopmode",
+            "-synctex=1",
+            &fmt_arg,
+            &jobname_arg,
+            "_prism_body.tex",
+        ]
+    } else {
+        vec!["-interaction=nonstopmode", "-synctex=1", &main_file]
+    };
+
+    let mut last_result;
+    let mut pass_count = 0;
+
+    // Pass 1 — always needed
+    last_result =
+        run_with_timeout(compiler_cmd, &latex_args, &work_dir, COMPILE_TIMEOUT_SECS).await?;
+    pass_count += 1;
+    eprintln!("[latex] +{:.0}ms pass {} done (exit={})", t0.elapsed().as_millis(), pass_count, last_result.exit_code);
+    if last_result.timed_out {
+        return Err("Compilation timed out".to_string());
+    }
+
+    // Decide whether extra passes are needed
+    let aux_path = work_dir.join(format!("{}.aux", main_file_name));
+    let aux_hash_after_pass1 = hash_file(&aux_path);
+    let aux_stable = prev_aux_hash.is_some() && aux_hash_after_pass1 == prev_aux_hash;
+
+    // Check .log for rerun warnings — avoids unnecessary pass 2 even on first build
+    let log_path = work_dir.join(format!("{}.log", main_file_name));
+    let log_after_pass1 = std::fs::read_to_string(&log_path).unwrap_or_default();
+    let needs_rerun = log_after_pass1.contains("Rerun to get")
+        || log_after_pass1.contains("Rerun LaTeX")
+        || log_after_pass1.contains("Label(s) may have changed");
+
+    eprintln!(
+        "[latex] aux_stable={} needs_rerun={} prev_hash={:?} new_hash={:?}",
+        aux_stable, needs_rerun, prev_aux_hash, aux_hash_after_pass1
+    );
+
+    if !aux_stable && needs_rerun {
+        if has_bib {
+            // BibTeX + 2 more passes
+            if aux_path.exists() {
+                last_result = run_with_timeout(
+                    "bibtex",
+                    &[main_file_name.as_str()],
+                    &work_dir,
+                    COMPILE_TIMEOUT_SECS,
+                )
+                .await?;
+                eprintln!("[latex] +{:.0}ms bibtex done (exit={})", t0.elapsed().as_millis(), last_result.exit_code);
+                if last_result.timed_out {
+                    return Err("BibTeX timed out".to_string());
+                }
+            }
+            for _ in 0..2 {
+                last_result =
+                    run_with_timeout(compiler_cmd, &latex_args, &work_dir, COMPILE_TIMEOUT_SECS)
+                        .await?;
+                pass_count += 1;
+                eprintln!("[latex] +{:.0}ms pass {} done (exit={})", t0.elapsed().as_millis(), pass_count, last_result.exit_code);
+                if last_result.timed_out {
+                    return Err("Compilation timed out".to_string());
+                }
+            }
+        } else {
+            // One more pass to resolve cross-references
             last_result =
                 run_with_timeout(compiler_cmd, &latex_args, &work_dir, COMPILE_TIMEOUT_SECS)
                     .await?;
+            pass_count += 1;
+            eprintln!("[latex] +{:.0}ms pass {} done (exit={})", t0.elapsed().as_millis(), pass_count, last_result.exit_code);
             if last_result.timed_out {
                 return Err("Compilation timed out".to_string());
             }
         }
     } else {
-        // Two passes — beamer, hyperref, TOC, etc. need multiple passes
-        // to resolve cross-references, navigation elements, and page numbers
-        last_result =
-            run_with_timeout(compiler_cmd, &latex_args, &work_dir, COMPILE_TIMEOUT_SECS).await?;
-        if last_result.timed_out {
-            return Err("Compilation timed out".to_string());
-        }
-        last_result =
-            run_with_timeout(compiler_cmd, &latex_args, &work_dir, COMPILE_TIMEOUT_SECS).await?;
-        if last_result.timed_out {
-            return Err("Compilation timed out".to_string());
-        }
+        eprintln!("[latex] skipping extra passes (aux_stable={}, needs_rerun={})", aux_stable, needs_rerun);
     }
 
-    // Read log file
-    let log_path = work_dir.join(format!("{}.log", main_file_name));
+    // Final aux hash for next compilation
+    let final_aux_hash = hash_file(&aux_path);
+    eprintln!("[latex] +{:.0}ms total ({} passes, reuse={}, bib={})", t0.elapsed().as_millis(), pass_count, is_reuse, has_bib);
+
+    // Re-read log file (may have been updated by extra passes)
     let log_content = std::fs::read_to_string(&log_path).unwrap_or_default();
 
     // Check for PDF; if "No pages of output", retry with \null injection
@@ -297,16 +590,19 @@ pub async fn compile_latex(
             BuildInfo {
                 work_dir: work_dir.clone(),
                 main_file_name: main_file_name.clone(),
+                aux_hash: final_aux_hash,
+                preamble_hash: new_preamble_hash,
+                fmt_ok: use_fmt,
             },
         );
     };
 
     if pdf_path.exists() {
+        let pdf_bytes = std::fs::read(&pdf_path)
+            .map_err(|e| format!("Failed to read PDF: {}", e))?;
         let mut builds = state.last_builds.lock().await;
         store_build(&mut builds);
-        Ok(CompileResult {
-            pdf_path: pdf_path.to_string_lossy().to_string(),
-        })
+        Ok(tauri::ipc::Response::new(pdf_bytes))
     } else {
         let mut builds = state.last_builds.lock().await;
         store_build(&mut builds);
@@ -351,6 +647,7 @@ pub async fn synctex_edit(
     let pdf_file = format!("{}.pdf", build.main_file_name);
     let coord_arg = format!("{}:{}:{}:{}", page, x, y, pdf_file);
     let work_dir = build.work_dir.clone();
+    let main_file_name = build.main_file_name.clone();
     drop(builds); // Release lock before spawning process
 
     let result = run_with_timeout("synctex", &["edit", "-o", &coord_arg], &work_dir, 10).await?;
@@ -388,13 +685,17 @@ pub async fn synctex_edit(
         file = rest.to_string();
     }
 
+    // Map format body file back to original main file
+    if file == "_prism_body.tex" {
+        file = format!("{}.tex", main_file_name);
+    }
+
     Ok(SynctexResult { file, line, column })
 }
 
-/// Clean up all remaining build directories on app exit.
+/// Clear in-memory build state on app exit.
+/// Persistent build directories are intentionally kept for fast restart.
 pub async fn cleanup_all_builds(state: &LatexCompilerState) {
     let mut builds = state.last_builds.lock().await;
-    for (_, build) in builds.drain() {
-        let _ = std::fs::remove_dir_all(&build.work_dir);
-    }
+    builds.clear();
 }

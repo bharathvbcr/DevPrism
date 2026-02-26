@@ -10,7 +10,10 @@ import {
   XIcon,
   SparklesIcon,
   UploadIcon,
-  ChevronRightIcon,
+  ChevronDownIcon,
+  FileTextIcon,
+  MapPinIcon,
+  Loader2Icon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -21,24 +24,21 @@ import { useClaudeChatStore } from "@/stores/claude-chat-store";
 import { exists, join } from "@/lib/tauri/fs";
 import { getTemplateById, getTemplateSkeleton, BIB_TEMPLATE } from "@/lib/template-registry";
 import { TemplateGallery } from "@/components/template-gallery";
-import { getFallbackThumbnail } from "@/components/template-gallery/template-card";
 
 // ─── Helpers ───
 
-function slugify(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, "")
-    .trim()
-    .replace(/\s+/g, "-")
-    .slice(0, 40)
-    .replace(/-+$/, "");
+function randomProjectName(): string {
+  const adjectives = ["swift", "bright", "calm", "bold", "keen", "warm", "pure", "vast", "deep", "fair"];
+  const nouns = ["paper", "draft", "thesis", "note", "study", "essay", "report", "brief", "folio", "opus"];
+  const adj = adjectives[Math.floor(Math.random() * adjectives.length)];
+  const noun = nouns[Math.floor(Math.random() * nouns.length)];
+  const id = Math.random().toString(36).slice(2, 6);
+  return `${adj}-${noun}-${id}`;
 }
 
 // ─── Wizard Component ───
 
 export type CreationMode = "template" | "scratch";
-type WizardStep = "template" | "details";
 
 interface ProjectWizardProps {
   mode: CreationMode;
@@ -46,15 +46,35 @@ interface ProjectWizardProps {
 }
 
 export function ProjectWizard({ mode, onBack }: ProjectWizardProps) {
-  const [step, setStep] = useState<WizardStep>(mode === "scratch" ? "details" : "template");
-  const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(
-    mode === "scratch" ? "blank" : null,
-  );
+  // ── Template mode: just show the gallery ──
+  // The TemplatePreview modal inside the gallery handles details + creation.
+  if (mode === "template") {
+    return (
+      <div className="flex h-full flex-col bg-background">
+        <div className="flex shrink-0 items-center gap-3 border-b border-border/60 px-4 pt-[var(--titlebar-height)] h-[calc(48px+var(--titlebar-height))]">
+          <Button variant="ghost" size="icon" className="size-7 rounded-lg" onClick={onBack}>
+            <ArrowLeftIcon className="size-4" />
+          </Button>
+          <span className="font-semibold text-sm">Choose a Template</span>
+        </div>
+        <div className="flex-1 overflow-hidden">
+          <TemplateGallery />
+        </div>
+      </div>
+    );
+  }
+
+  // ── Scratch mode: inline details form ──
+  return <ScratchForm onBack={onBack} />;
+}
+
+// ─── Scratch mode form (no template preview) ───
+
+function ScratchForm({ onBack }: { onBack: () => void }) {
   const [purpose, setPurpose] = useState("");
   const [attachments, setAttachments] = useState<string[]>([]);
   const [projectFolder, setProjectFolder] = useState<string | null>(null);
-  const [projectName, setProjectName] = useState("");
-  const [nameManuallyEdited, setNameManuallyEdited] = useState(false);
+  const [projectName, setProjectName] = useState(randomProjectName);
   const [isCreating, setIsCreating] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const [refFilesOpen, setRefFilesOpen] = useState(false);
@@ -67,18 +87,13 @@ export function ProjectWizard({ mode, onBack }: ProjectWizardProps) {
   const setLastProjectFolder = useProjectStore((s) => s.setLastProjectFolder);
   const openProject = useDocumentStore((s) => s.openProject);
 
-  const template = selectedTemplateId ? getTemplateById(selectedTemplateId) : undefined;
+  const template = getTemplateById("blank")!;
 
-  // Auto-focus textarea when entering details step
   useEffect(() => {
-    if (step === "details") {
-      // Small delay to let the DOM settle after step transition
-      const timer = setTimeout(() => textareaRef.current?.focus(), 100);
-      return () => clearTimeout(timer);
-    }
-  }, [step]);
+    const timer = setTimeout(() => textareaRef.current?.focus(), 100);
+    return () => clearTimeout(timer);
+  }, []);
 
-  // Default project folder from lastProjectFolder or ~/Documents
   useEffect(() => {
     if (projectFolder) return;
     if (lastProjectFolder) {
@@ -88,32 +103,8 @@ export function ProjectWizard({ mode, onBack }: ProjectWizardProps) {
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Auto-generate project name from purpose (unless manually edited)
-  useEffect(() => {
-    if (nameManuallyEdited) return;
-    const slug = slugify(purpose);
-    setProjectName(slug || "");
-  }, [purpose, nameManuallyEdited]);
-
-  const handleSelectTemplate = (id: string) => {
-    setSelectedTemplateId(id);
-    setStep("details");
-  };
-
-  const handleBack = () => {
-    if (step === "template" || mode === "scratch") {
-      onBack();
-    } else {
-      setStep("template");
-    }
-  };
-
   const handleChooseFolder = useCallback(async () => {
-    const selected = await open({
-      directory: true,
-      multiple: false,
-      title: "Choose Location for New Project",
-    });
+    const selected = await open({ directory: true, multiple: false, title: "Choose Location for New Project" });
     if (selected) {
       setProjectFolder(selected);
       setLastProjectFolder(selected);
@@ -124,16 +115,10 @@ export function ProjectWizard({ mode, onBack }: ProjectWizardProps) {
     const selected = await open({
       multiple: true,
       title: "Add Reference Files",
-      filters: [
-        {
-          name: "Documents & Images",
-          extensions: [
-            "pdf", "tex", "bib", "txt", "md",
-            "png", "jpg", "jpeg", "gif", "svg",
-            "csv", "tsv", "json",
-          ],
-        },
-      ],
+      filters: [{
+        name: "Documents & Images",
+        extensions: ["pdf", "tex", "bib", "txt", "md", "png", "jpg", "jpeg", "gif", "svg", "csv", "tsv", "json"],
+      }],
     });
     if (selected) {
       const paths = Array.isArray(selected) ? selected : [selected];
@@ -145,9 +130,8 @@ export function ProjectWizard({ mode, onBack }: ProjectWizardProps) {
     setAttachments((prev) => prev.filter((p) => p !== path));
   };
 
-  // Listen for Tauri drag-drop events (OS file drops)
+  // Drag-drop
   useEffect(() => {
-    if (step !== "details") return;
     let unlisten: (() => void) | undefined;
     let cancelled = false;
 
@@ -157,7 +141,7 @@ export function ProjectWizard({ mode, onBack }: ProjectWizardProps) {
         const { type } = event.payload;
         if (type === "enter") {
           setIsDragOver(true);
-          setRefFilesOpen(true); // auto-open section on drag
+          setRefFilesOpen(true);
         } else if (type === "drop") {
           setIsDragOver(false);
           const paths = (event.payload as { paths: string[] }).paths;
@@ -168,16 +152,11 @@ export function ProjectWizard({ mode, onBack }: ProjectWizardProps) {
           setIsDragOver(false);
         }
       })
-      .then((fn) => {
-        if (cancelled) fn(); else unlisten = fn;
-      })
+      .then((fn) => { if (cancelled) fn(); else unlisten = fn; })
       .catch(() => {});
 
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-  }, [step]);
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
 
   const handleCreate = async () => {
     if (!template || !projectFolder || !projectName.trim()) return;
@@ -187,14 +166,12 @@ export function ProjectWizard({ mode, onBack }: ProjectWizardProps) {
       const projectPath = await join(projectFolder, projectName.trim());
       await mkdir(projectPath, { recursive: true }).catch(() => {});
 
-      // Write main.tex — skeleton only (preamble + empty body).
       const mainTexPath = await join(projectPath, template.mainFileName);
       const mainExists = await exists(mainTexPath);
       if (!mainExists) {
         await writeTextFile(mainTexPath, getTemplateSkeleton(template));
       }
 
-      // Write references.bib for templates that use bibliography
       if (template.hasBibliography) {
         const bibPath = await join(projectPath, "references.bib");
         const bibExists = await exists(bibPath);
@@ -203,13 +180,11 @@ export function ProjectWizard({ mode, onBack }: ProjectWizardProps) {
         }
       }
 
-      // Import attachments into project
       if (attachments.length > 0) {
         const attachmentsDir = await join(projectPath, "attachments");
         await mkdir(attachmentsDir, { recursive: true }).catch(() => {});
       }
 
-      // Build the initial prompt for Claude
       if (purpose.trim()) {
         const attachmentNames = attachments.map((p) => p.split("/").pop()).filter(Boolean);
         const attachmentSection = attachmentNames.length > 0
@@ -239,14 +214,10 @@ export function ProjectWizard({ mode, onBack }: ProjectWizardProps) {
         useClaudeChatStore.getState().setPendingInitialPrompt(prompt);
       }
 
-      // Persist folder choice
       setLastProjectFolder(projectFolder);
-
-      // Open the project
       addRecentProject(projectPath);
       await openProject(projectPath);
 
-      // Import attachments after project is open
       if (attachments.length > 0) {
         await useDocumentStore.getState().importFiles(attachments, "attachments");
       }
@@ -259,214 +230,189 @@ export function ProjectWizard({ mode, onBack }: ProjectWizardProps) {
 
   const canCreate = template && projectFolder && projectName.trim();
 
-  // Step indicator
-  const totalSteps = mode === "template" ? 2 : 1;
-  const currentStepIndex = step === "template" ? 0 : mode === "template" ? 1 : 0;
-
-  const headerTitle = step === "template" ? "Choose a Template" : "Project Details";
-
-  const FallbackThumbnail = template ? getFallbackThumbnail(template) : null;
-
   return (
     <div className="flex h-full flex-col bg-background">
       {/* Header */}
-      <div className="flex shrink-0 items-center gap-3 border-b border-border px-4 pt-[var(--titlebar-height)] h-[calc(48px+var(--titlebar-height))]">
-        <Button variant="ghost" size="icon" className="size-7" onClick={handleBack}>
+      <div className="flex shrink-0 items-center gap-3 border-b border-border/60 px-4 pt-[var(--titlebar-height)] h-[calc(48px+var(--titlebar-height))]">
+        <Button variant="ghost" size="icon" className="size-7 rounded-lg" onClick={onBack}>
           <ArrowLeftIcon className="size-4" />
         </Button>
-        <div className="flex items-center gap-2">
-          <SparklesIcon className="size-4 text-muted-foreground" />
-          <span className="font-medium text-sm">{headerTitle}</span>
-        </div>
-        <div className="flex items-center gap-1.5 ml-auto">
-          {Array.from({ length: totalSteps }, (_, i) => (
-            <div
-              key={i}
-              className={`size-2 rounded-full ${i <= currentStepIndex ? "bg-foreground" : "bg-muted-foreground/30"}`}
-            />
-          ))}
-        </div>
+        <span className="font-semibold text-sm">New Document</span>
       </div>
 
-      {/* Content */}
-      <div className="flex-1 overflow-hidden">
-        {step === "template" ? (
-          <TemplateGallery onSelectTemplate={handleSelectTemplate} />
-        ) : (
-          <div className="flex h-full items-center justify-center overflow-y-auto">
-            <div className="mx-auto w-full max-w-lg space-y-5 p-6">
-              {/* Template indicator with thumbnail */}
-              {template && mode === "template" && (
-                <button
-                  onClick={() => setStep("template")}
-                  className="flex w-full items-center gap-3 rounded-lg border border-border bg-muted/30 p-3 text-left transition-colors hover:bg-muted/50"
-                >
-                  {FallbackThumbnail && (
-                    <div
-                      className="size-10 shrink-0 overflow-hidden rounded-md border border-border bg-card"
-                      style={{ aspectRatio: template.aspectRatio }}
-                    >
-                      <FallbackThumbnail color={template.accentColor} />
-                    </div>
-                  )}
-                  <div className="min-w-0 flex-1">
-                    <div className="font-medium text-sm">{template.name}</div>
-                    <div className="text-muted-foreground text-xs truncate">{template.description}</div>
-                  </div>
-                  <span className="shrink-0 text-muted-foreground text-xs">Change</span>
-                </button>
-              )}
+      {/* Form */}
+      <div className="flex-1 overflow-y-auto">
+        <div className="mx-auto w-full max-w-[520px] space-y-4 px-6 py-10">
+          {/* Purpose */}
+          <div className="space-y-2.5">
+            <div>
+              <label className="font-semibold text-sm">What are you writing?</label>
+              <p className="mt-0.5 text-muted-foreground text-xs leading-relaxed">
+                Describe your document and Claude will generate tailored content.
+              </p>
+            </div>
+            <Textarea
+              ref={textareaRef}
+              placeholder="e.g., A research paper on transformer architectures for protein structure prediction, targeting NeurIPS 2025..."
+              value={purpose}
+              onChange={(e) => setPurpose(e.target.value)}
+              rows={4}
+              className="resize-none rounded-xl border-border/60 bg-card/30 text-sm leading-relaxed placeholder:text-muted-foreground/50 focus-visible:bg-card/50"
+            />
+          </div>
 
-              {/* Purpose — hero element */}
-              <div className="space-y-2">
-                <label className="font-medium text-sm">What are you writing?</label>
-                <Textarea
-                  ref={textareaRef}
-                  placeholder="e.g., A research paper on transformer architectures for protein structure prediction, targeting NeurIPS 2025..."
-                  value={purpose}
-                  onChange={(e) => setPurpose(e.target.value)}
-                  rows={5}
-                  className="resize-none text-base"
-                />
-                <p className="text-muted-foreground text-xs">
-                  Claude will use this to customize your template with relevant content and structure.
-                </p>
-              </div>
-
-              {/* Reference files — collapsible */}
-              <div>
-                <button
-                  onClick={() => setRefFilesOpen(!refFilesOpen)}
-                  className="flex w-full items-center gap-2 py-1.5 text-left"
-                >
-                  <ChevronRightIcon
-                    className={`size-4 text-muted-foreground transition-transform ${refFilesOpen ? "rotate-90" : ""}`}
-                  />
-                  <span className="text-sm text-muted-foreground">Reference files</span>
-                  <span className="text-xs text-muted-foreground/60">(optional)</span>
+          {/* Collapsible sections */}
+          <div className="rounded-xl border border-border/60 bg-card/30 divide-y divide-border/40 overflow-hidden">
+            {/* Reference files */}
+            <div>
+              <button
+                onClick={() => setRefFilesOpen(!refFilesOpen)}
+                className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/30"
+              >
+                <div className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-muted/50">
+                  <FileTextIcon className="size-3.5 text-muted-foreground" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <span className="text-sm font-medium">Reference files</span>
                   {attachments.length > 0 && (
-                    <span className="ml-auto rounded-full bg-foreground/10 px-2 py-0.5 text-xs text-muted-foreground">
+                    <span className="ml-2 inline-flex items-center justify-center rounded-full bg-primary/15 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-primary">
                       {attachments.length}
                     </span>
                   )}
-                </button>
-                {refFilesOpen && (
-                  <div className="mt-2 space-y-2">
-                    <div
-                      className={`rounded-lg border-2 border-dashed p-3 transition-colors ${
-                        isDragOver
-                          ? "border-primary bg-primary/5"
-                          : attachments.length > 0
-                            ? "border-border bg-muted/20"
-                            : "border-muted-foreground/20 bg-muted/10"
-                      }`}
-                    >
-                      {attachments.length > 0 && (
-                        <div className="mb-2 space-y-1.5">
-                          {attachments.map((path) => (
-                            <div
-                              key={path}
-                              className="flex items-center gap-2 rounded-md bg-background px-3 py-1.5 text-sm"
-                            >
-                              <PaperclipIcon className="size-3.5 shrink-0 text-muted-foreground" />
-                              <span className="min-w-0 flex-1 truncate text-xs">{path.split("/").pop()}</span>
-                              <button
-                                onClick={() => handleRemoveAttachment(path)}
-                                className="shrink-0 text-muted-foreground hover:text-foreground"
-                              >
-                                <XIcon className="size-3.5" />
-                              </button>
-                            </div>
-                          ))}
+                </div>
+                <ChevronDownIcon
+                  className={`size-4 text-muted-foreground/60 transition-transform duration-200 ${refFilesOpen ? "rotate-180" : ""}`}
+                />
+              </button>
+              {refFilesOpen && (
+                <div className="px-4 pb-4 space-y-3">
+                  {attachments.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {attachments.map((path) => (
+                        <div
+                          key={path}
+                          className="flex items-center gap-1.5 rounded-lg border border-border/50 bg-muted/40 pl-2.5 pr-1.5 py-1 text-xs transition-colors hover:bg-muted/60"
+                        >
+                          <PaperclipIcon className="size-3 shrink-0 text-muted-foreground/70" />
+                          <span className="max-w-[140px] truncate text-foreground/80">{path.split("/").pop()}</span>
+                          <button
+                            onClick={() => handleRemoveAttachment(path)}
+                            className="flex size-4 shrink-0 items-center justify-center rounded-md text-muted-foreground/50 transition-colors hover:bg-destructive/10 hover:text-destructive"
+                          >
+                            <XIcon className="size-3" />
+                          </button>
                         </div>
-                      )}
-                      {isDragOver ? (
-                        <div className="flex flex-col items-center gap-1.5 py-2 text-primary">
-                          <UploadIcon className="size-5" />
-                          <span className="text-xs font-medium">Drop to add</span>
-                        </div>
-                      ) : (
-                        <div className="flex flex-col items-center gap-1.5 py-2">
-                          <span className="text-xs text-muted-foreground">
-                            Drag & drop files here
-                          </span>
-                          <Button variant="outline" size="sm" className="gap-1.5 text-xs" onClick={handleAddAttachments}>
-                            <PaperclipIcon className="size-3.5" />
-                            Browse files
-                          </Button>
-                        </div>
-                      )}
+                      ))}
                     </div>
-                    <p className="text-muted-foreground text-xs">
-                      PDFs, images, .bib, .tex, or data files to include as references.
-                    </p>
-                  </div>
-                )}
-              </div>
-
-              {/* Project location — collapsible */}
-              <div>
-                <button
-                  onClick={() => setLocationOpen(!locationOpen)}
-                  className="flex w-full items-center gap-2 py-1.5 text-left"
-                >
-                  <ChevronRightIcon
-                    className={`size-4 text-muted-foreground transition-transform ${locationOpen ? "rotate-90" : ""}`}
-                  />
-                  <span className="text-sm text-muted-foreground">Project location</span>
-                  {projectFolder && projectName.trim() && (
-                    <span className="ml-auto min-w-0 truncate text-xs text-muted-foreground/60 max-w-[200px]">
-                      .../{projectFolder.split("/").pop()}/{projectName.trim()}
-                    </span>
                   )}
-                </button>
-                {locationOpen && (
-                  <div className="mt-2 space-y-2">
-                    <div className="flex gap-2">
-                      <Input
-                        placeholder="Project name"
-                        value={projectName}
-                        onChange={(e) => {
-                          setProjectName(e.target.value);
-                          setNameManuallyEdited(true);
-                        }}
-                        className="flex-1"
-                      />
-                      <Button variant="outline" className="shrink-0 gap-1.5" onClick={handleChooseFolder}>
-                        <FolderOpenIcon className="size-4" />
-                        {projectFolder ? "Change" : "Choose folder"}
-                      </Button>
-                    </div>
-                    {projectFolder && (
-                      <p className="truncate text-muted-foreground text-xs">
-                        {projectFolder}/{projectName.trim() || "..."}
-                      </p>
+                  <div
+                    className={`flex flex-col items-center gap-2 rounded-lg border border-dashed p-4 transition-all ${
+                      isDragOver
+                        ? "border-primary bg-primary/5 scale-[1.01]"
+                        : "border-border/60 hover:border-border hover:bg-muted/20"
+                    }`}
+                  >
+                    {isDragOver ? (
+                      <>
+                        <UploadIcon className="size-5 text-primary" />
+                        <span className="text-xs font-medium text-primary">Drop to add</span>
+                      </>
+                    ) : (
+                      <>
+                        <UploadIcon className="size-5 text-muted-foreground/40" />
+                        <div className="text-center">
+                          <span className="text-xs text-muted-foreground/70">Drag & drop or </span>
+                          <button
+                            onClick={handleAddAttachments}
+                            className="text-xs font-medium text-foreground/70 underline underline-offset-2 decoration-border hover:text-foreground hover:decoration-foreground/50 transition-colors"
+                          >
+                            browse files
+                          </button>
+                        </div>
+                        <span className="text-[10px] text-muted-foreground/40">
+                          PDF, TEX, BIB, images, or data files
+                        </span>
+                      </>
                     )}
                   </div>
-                )}
-              </div>
+                </div>
+              )}
+            </div>
 
-              {/* Create button */}
-              <Button
-                className="w-full gap-2"
-                size="lg"
-                disabled={!canCreate || isCreating}
-                onClick={handleCreate}
+            {/* Project location */}
+            <div>
+              <button
+                onClick={() => setLocationOpen(!locationOpen)}
+                className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/30"
               >
-                {isCreating ? (
-                  "Creating..."
-                ) : purpose.trim() ? (
-                  <>
-                    <SparklesIcon className="size-4" />
-                    Create & Generate with AI
-                  </>
-                ) : (
-                  "Create Project"
+                <div className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-muted/50">
+                  <MapPinIcon className="size-3.5 text-muted-foreground" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <span className="text-sm font-medium">Project location</span>
+                </div>
+                {!locationOpen && projectFolder && projectName.trim() && (
+                  <span className="min-w-0 max-w-[180px] truncate rounded-md bg-muted/40 px-2 py-0.5 text-[11px] font-mono text-muted-foreground/60">
+                    .../{projectFolder.split("/").pop()}/{projectName.trim()}
+                  </span>
                 )}
-              </Button>
+                <ChevronDownIcon
+                  className={`size-4 text-muted-foreground/60 transition-transform duration-200 ${locationOpen ? "rotate-180" : ""}`}
+                />
+              </button>
+              {locationOpen && (
+                <div className="px-4 pb-4 space-y-2.5">
+                  <div className="flex gap-2">
+                    <Input
+                      placeholder="Project name"
+                      value={projectName}
+                      onChange={(e) => setProjectName(e.target.value)}
+                      className="flex-1 rounded-lg border-border/60 bg-background/50"
+                    />
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="shrink-0 gap-1.5 rounded-lg border-border/60"
+                      onClick={handleChooseFolder}
+                    >
+                      <FolderOpenIcon className="size-3.5" />
+                      {projectFolder ? "Change" : "Choose"}
+                    </Button>
+                  </div>
+                  {projectFolder && (
+                    <p className="truncate rounded-md bg-muted/30 px-2.5 py-1.5 font-mono text-[11px] text-muted-foreground/60">
+                      {projectFolder}/{projectName.trim() || "..."}
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
           </div>
-        )}
+
+          {/* Create button */}
+          <div className="pt-1">
+            <Button
+              className="w-full gap-2 rounded-xl font-semibold shadow-sm transition-all hover:shadow-md active:scale-[0.99]"
+              size="lg"
+              disabled={!canCreate || isCreating}
+              onClick={handleCreate}
+            >
+              {isCreating ? (
+                <>
+                  <Loader2Icon className="size-4 animate-spin" />
+                  Creating project...
+                </>
+              ) : purpose.trim() ? (
+                <>
+                  <SparklesIcon className="size-4" />
+                  Create & Generate with AI
+                </>
+              ) : (
+                "Create Project"
+              )}
+            </Button>
+          </div>
+        </div>
       </div>
     </div>
   );

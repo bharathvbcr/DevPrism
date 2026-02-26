@@ -49,7 +49,6 @@ export function ThumbnailSlides({ color }: { color: string }) {
 export function ThumbnailPoster({ color }: { color: string }) {
   return (
     <div className="flex h-full w-full flex-col px-2 py-2">
-      <div className="mb-1.5 h-2 w-16 self-center rounded-full" style={{ backgroundColor: color }} />
       <div className="mb-2 h-1 w-10 self-center rounded-full bg-muted-foreground/20" />
       <div className="flex flex-1 gap-1.5">
         <div className="flex flex-1 flex-col gap-1 rounded-sm bg-muted-foreground/6 p-1">

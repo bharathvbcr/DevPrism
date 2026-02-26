@@ -10,11 +10,7 @@ import { TemplateCard } from "./template-card";
 import { CategorySidebar } from "./category-sidebar";
 import { TemplatePreview } from "./template-preview";
 
-interface TemplateGalleryProps {
-  onSelectTemplate: (templateId: string) => void;
-}
-
-export function TemplateGallery({ onSelectTemplate }: TemplateGalleryProps) {
+export function TemplateGallery() {
   const searchQuery = useTemplateStore((s) => s.searchQuery);
   const setSearchQuery = useTemplateStore((s) => s.setSearchQuery);
   const selectedCategory = useTemplateStore((s) => s.selectedCategory);
@@ -110,8 +106,8 @@ export function TemplateGallery({ onSelectTemplate }: TemplateGalleryProps) {
         </div>
       </div>
 
-      {/* Preview modal — "Use Template" triggers onSelectTemplate */}
-      <TemplatePreview onUseTemplate={onSelectTemplate} />
+      {/* Preview modal — handles template selection + project creation */}
+      <TemplatePreview />
     </div>
   );
 }

@@ -97,7 +97,15 @@ export function PdfViewer({
     const client = getMupdfClient();
 
     const pdfData =
-      data instanceof Uint8Array ? data : new Uint8Array(Object.values(data));
+      data instanceof Uint8Array ? data : new Uint8Array(data as ArrayBuffer);
+
+    // Validate PDF header — must start with %PDF-
+    if (pdfData.length < 5 || pdfData[0] !== 0x25 || pdfData[1] !== 0x50 || pdfData[2] !== 0x44 || pdfData[3] !== 0x46) {
+      console.error("[pdf-viewer] invalid PDF data: missing %PDF- header, length=", pdfData.length, "first bytes:", Array.from(pdfData.slice(0, 16)));
+      setLoading(false);
+      onError?.("Invalid PDF data received. Try recompiling the document.");
+      return;
+    }
 
     // Save scroll position before reloading
     if (containerRef.current && !isFirstLoad.current) {

@@ -90,7 +90,7 @@ fn find_claude_binary() -> Result<String, String> {
 }
 
 /// Create a tokio Command with appropriate environment variables.
-fn create_command(program: &str, args: Vec<String>, cwd: &str) -> Command {
+fn create_command(program: &str, args: Vec<String>, cwd: &str, effort_level: Option<&str>) -> Command {
     let mut cmd = Command::new(program);
     cmd.args(&args);
     cmd.current_dir(cwd);
@@ -108,8 +108,8 @@ fn create_command(program: &str, args: Vec<String>, cwd: &str) -> Command {
             cmd.env_remove(&key);
         }
     }
-    // Re-set effort level after clearing CLAUDE_CODE_* vars (default: low for fast responses)
-    cmd.env("CLAUDE_CODE_EFFORT_LEVEL", "low");
+    // Set effort level (default: low for fast responses)
+    cmd.env("CLAUDE_CODE_EFFORT_LEVEL", effort_level.unwrap_or("low"));
 
     // Add NVM support if the program is in an NVM directory
     if program.contains("/.nvm/versions/node/") {
@@ -483,6 +483,31 @@ pub async fn login_claude(window: WebviewWindow) -> Result<(), String> {
     Ok(())
 }
 
+/// Common CLI flags shared across all Claude invocations.
+fn common_claude_args() -> Vec<String> {
+    vec![
+        "--output-format".to_string(),
+        "stream-json".to_string(),
+        "--verbose".to_string(),
+        "--dangerously-skip-permissions".to_string(),
+        "--append-system-prompt".to_string(),
+        concat!(
+            "You are an AI assistant integrated into a LaTeX document editor (Prism). ",
+            "Follow these rules strictly:\n",
+            "1. PLANNING FIRST: Before making changes, use TodoWrite to create a step-by-step plan. ",
+            "Break large tasks into small, incremental steps (one section or one logical unit per step).\n",
+            "2. INCREMENTAL EDITS: Use the Edit tool to make small, targeted changes — one step at a time. ",
+            "NEVER write or rewrite an entire file at once. Always prefer editing existing content over replacing it wholesale.\n",
+            "3. STEP BY STEP: After each edit, mark the todo item as completed, then proceed to the next step. ",
+            "This lets the user review changes incrementally.\n",
+            "4. PRESERVE EXISTING CONTENT: Always read the file first. Keep the existing preamble, packages, ",
+            "and structure intact. Only add or modify what is needed for the current step.\n",
+            "5. LaTeX BEST PRACTICES: Use proper sectioning (\\chapter, \\section, \\subsection), ",
+            "citations (\\cite), cross-references (\\label, \\ref), and BibTeX for bibliographies."
+        ).to_string(),
+    ]
+}
+
 // ─── Tauri Commands ───
 
 #[tauri::command]
@@ -491,6 +516,7 @@ pub async fn execute_claude_code(
     project_path: String,
     prompt: String,
     model: Option<String>,
+    effort_level: Option<String>,
 ) -> Result<(), String> {
     let claude_path = find_claude_binary()?;
 
@@ -502,14 +528,9 @@ pub async fn execute_claude_code(
         args.push("--model".to_string());
         args.push(m);
     }
-    args.extend([
-        "--output-format".to_string(),
-        "stream-json".to_string(),
-        "--verbose".to_string(),
-        "--dangerously-skip-permissions".to_string(),
-    ]);
+    args.extend(common_claude_args());
 
-    let cmd = create_command(&claude_path, args, &project_path);
+    let cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref());
     spawn_claude_process(window, cmd).await
 }
 
@@ -519,6 +540,7 @@ pub async fn continue_claude_code(
     project_path: String,
     prompt: String,
     model: Option<String>,
+    effort_level: Option<String>,
 ) -> Result<(), String> {
     let claude_path = find_claude_binary()?;
 
@@ -531,14 +553,9 @@ pub async fn continue_claude_code(
         args.push("--model".to_string());
         args.push(m);
     }
-    args.extend([
-        "--output-format".to_string(),
-        "stream-json".to_string(),
-        "--verbose".to_string(),
-        "--dangerously-skip-permissions".to_string(),
-    ]);
+    args.extend(common_claude_args());
 
-    let cmd = create_command(&claude_path, args, &project_path);
+    let cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref());
     spawn_claude_process(window, cmd).await
 }
 
@@ -549,6 +566,7 @@ pub async fn resume_claude_code(
     session_id: String,
     prompt: String,
     model: Option<String>,
+    effort_level: Option<String>,
 ) -> Result<(), String> {
     let claude_path = find_claude_binary()?;
 
@@ -562,14 +580,9 @@ pub async fn resume_claude_code(
         args.push("--model".to_string());
         args.push(m);
     }
-    args.extend([
-        "--output-format".to_string(),
-        "stream-json".to_string(),
-        "--verbose".to_string(),
-        "--dangerously-skip-permissions".to_string(),
-    ]);
+    args.extend(common_claude_args());
 
-    let cmd = create_command(&claude_path, args, &project_path);
+    let cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref());
     spawn_claude_process(window, cmd).await
 }
 
@@ -820,7 +833,7 @@ pub async fn run_shell_command(
     cwd: String,
 ) -> Result<ShellCommandResult, String> {
     let args = vec!["-c".to_string(), command];
-    let mut cmd = create_command("sh", args, &cwd);
+    let mut cmd = create_command("sh", args, &cwd, None);
 
     let child = cmd
         .spawn()
@@ -836,4 +849,61 @@ pub async fn run_shell_command(
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
     })
+}
+
+// ─── Claude Settings (fast mode, etc.) ───
+
+fn get_claude_settings_path() -> Result<std::path::PathBuf, String> {
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    Ok(home.join(".claude").join("settings.json"))
+}
+
+#[tauri::command]
+pub async fn get_claude_fast_mode() -> Result<bool, String> {
+    let path = get_claude_settings_path()?;
+    if !path.exists() {
+        return Ok(false);
+    }
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("Failed to read settings: {}", e))?;
+    let settings: serde_json::Value = serde_json::from_str(&content)
+        .unwrap_or(serde_json::json!({}));
+    Ok(settings["fastMode"].as_bool().unwrap_or(false))
+}
+
+#[tauri::command]
+pub async fn set_claude_fast_mode(enabled: bool) -> Result<(), String> {
+    let path = get_claude_settings_path()?;
+
+    // Ensure directory exists
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create settings dir: {}", e))?;
+    }
+
+    // Read existing settings or create new
+    let mut settings: serde_json::Value = if path.exists() {
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| format!("Failed to read settings: {}", e))?;
+        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    // Update fastMode
+    if let Some(obj) = settings.as_object_mut() {
+        if enabled {
+            obj.insert("fastMode".to_string(), serde_json::json!(true));
+        } else {
+            obj.remove("fastMode");
+        }
+    }
+
+    // Write back
+    let content = serde_json::to_string_pretty(&settings)
+        .map_err(|e| format!("Failed to serialize settings: {}", e))?;
+    std::fs::write(&path, content)
+        .map_err(|e| format!("Failed to write settings: {}", e))?;
+
+    Ok(())
 }

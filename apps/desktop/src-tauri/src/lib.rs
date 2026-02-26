@@ -1,6 +1,7 @@
 mod claude;
 mod history;
 mod latex;
+mod slash_commands;
 mod zotero;
 
 use std::path::Path;
@@ -148,6 +149,8 @@ pub fn run() {
             claude::resume_claude_code,
             claude::cancel_claude_execution,
             claude::run_shell_command,
+            claude::get_claude_fast_mode,
+            claude::set_claude_fast_mode,
             claude::list_claude_sessions,
             claude::load_session_history,
             zotero::zotero_start_oauth,
@@ -161,6 +164,10 @@ pub fn run() {
             history::history_restore,
             history::history_add_label,
             history::history_remove_label,
+            slash_commands::slash_commands_list,
+            slash_commands::slash_command_get,
+            slash_commands::slash_command_save,
+            slash_commands::slash_command_delete,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

@@ -11,7 +11,7 @@ import {
 // ─── CSS Fallback Thumbnails ───
 // Shown while real PDF previews are loading.
 
-function ThumbnailPaper({ color }: { color: string }) {
+export function ThumbnailPaper({ color }: { color: string }) {
   return (
     <div className="flex h-full w-full flex-col items-center px-4 py-3">
       <div className="mb-1.5 h-1.5 w-12 rounded-full" style={{ backgroundColor: color }} />
@@ -30,7 +30,7 @@ function ThumbnailPaper({ color }: { color: string }) {
   );
 }
 
-function ThumbnailSlides({ color }: { color: string }) {
+export function ThumbnailSlides({ color }: { color: string }) {
   return (
     <div className="flex h-full w-full flex-col items-center justify-center gap-1.5 px-3 py-2">
       <div className="flex w-full flex-1 flex-col items-center justify-center rounded-sm border border-muted-foreground/10 bg-muted-foreground/5 p-1">
@@ -46,7 +46,7 @@ function ThumbnailSlides({ color }: { color: string }) {
   );
 }
 
-function ThumbnailPoster({ color }: { color: string }) {
+export function ThumbnailPoster({ color }: { color: string }) {
   return (
     <div className="flex h-full w-full flex-col px-2 py-2">
       <div className="mb-1.5 h-2 w-16 self-center rounded-full" style={{ backgroundColor: color }} />
@@ -67,7 +67,7 @@ function ThumbnailPoster({ color }: { color: string }) {
   );
 }
 
-function ThumbnailBlank(_props: { color: string }) {
+export function ThumbnailBlank(_props: { color: string }) {
   return (
     <div className="flex h-full w-full items-center justify-center">
       <div className="text-muted-foreground/20 text-xs font-medium">Empty</div>
@@ -75,7 +75,7 @@ function ThumbnailBlank(_props: { color: string }) {
   );
 }
 
-const THUMBNAIL_MAP: Record<string, React.FC<{ color: string }>> = {
+export const THUMBNAIL_MAP: Record<string, React.FC<{ color: string }>> = {
   "paper-standard": ThumbnailPaper,
   "paper-ieee": ThumbnailPaper,
   "paper-acm": ThumbnailPaper,
@@ -90,7 +90,7 @@ const THUMBNAIL_MAP: Record<string, React.FC<{ color: string }>> = {
   "blank": ThumbnailBlank,
 };
 
-function getFallbackThumbnail(template: TemplateDefinition): React.FC<{ color: string }> {
+export function getFallbackThumbnail(template: TemplateDefinition): React.FC<{ color: string }> {
   return THUMBNAIL_MAP[template.id] || ThumbnailPaper;
 }
 

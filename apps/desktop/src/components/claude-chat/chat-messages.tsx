@@ -95,7 +95,10 @@ export const ChatMessages: FC = () => {
   // Auto-scroll to bottom (only if user hasn't scrolled up)
   useEffect(() => {
     if (shouldAutoScrollRef.current && viewportRef.current) {
-      viewportRef.current.scrollTop = viewportRef.current.scrollHeight;
+      viewportRef.current.scrollTo({
+        top: viewportRef.current.scrollHeight,
+        behavior: "smooth",
+      });
     }
   }, [displayMessages]);
 

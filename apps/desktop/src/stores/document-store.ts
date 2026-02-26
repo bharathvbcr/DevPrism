@@ -509,13 +509,29 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
     if (!projectRoot) return;
 
     const { files: fsFiles, folders: fsFolders } = await scanProjectFolder(projectRoot);
-    const existingPaths = new Set(files.map((f) => f.relativePath));
+    const existingMap = new Map(files.map((f) => [f.relativePath, f]));
     const diskPaths = new Set(fsFiles.map((f) => f.relativePath));
 
-    // Find new files on disk that aren't in the store
-    const newFiles: ProjectFile[] = [];
+    const merged: ProjectFile[] = [];
+
     for (const fsFile of fsFiles) {
-      if (!existingPaths.has(fsFile.relativePath)) {
+      const existing = existingMap.get(fsFile.relativePath);
+
+      if (existing) {
+        // Existing file — reload content from disk unless the user has unsaved edits
+        if (existing.isDirty) {
+          merged.push(existing);
+        } else {
+          const updated = { ...existing };
+          if (updated.type === "tex" || updated.type === "bib" || updated.type === "style" || updated.type === "other") {
+            try {
+              updated.content = await readTexFileContent(updated.absolutePath);
+            } catch { /* keep previous content */ }
+          }
+          merged.push(updated);
+        }
+      } else {
+        // New file on disk
         const pf: ProjectFile = {
           id: fsFile.relativePath,
           name: fsFile.relativePath.split("/").pop() || fsFile.relativePath,
@@ -535,16 +551,17 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
         } else if (pf.type === "pdf") {
           pf.dataUrl = getAssetUrl(pf.absolutePath);
         }
-        newFiles.push(pf);
+        merged.push(pf);
       }
     }
 
-    // Remove files from store that no longer exist on disk (keep dirty ones)
-    const kept = files.filter(
-      (f) => diskPaths.has(f.relativePath) || f.isDirty,
-    );
+    // Keep dirty files that were deleted from disk (user hasn't saved yet)
+    for (const f of files) {
+      if (!diskPaths.has(f.relativePath) && f.isDirty) {
+        merged.push(f);
+      }
+    }
 
-    const merged = [...kept, ...newFiles];
     const newActiveId = merged.some((f) => f.id === activeFileId)
       ? activeFileId
       : merged[0]?.id ?? "";

@@ -70,6 +70,14 @@ interface ClaudeChatState {
   addPendingAttachment: (attachment: { label: string; filePath: string; selectedText: string; imageDataUrl?: string }) => void;
   consumePendingAttachments: () => { label: string; filePath: string; selectedText: string; imageDataUrl?: string }[];
 
+  /** Currently selected model (passed per-prompt to Claude CLI) */
+  selectedModel: "sonnet" | "opus" | "haiku" | "opusplan";
+  setSelectedModel: (model: "sonnet" | "opus" | "haiku" | "opusplan") => void;
+
+  /** Effort level for Opus 4.6 adaptive reasoning */
+  effortLevel: "low" | "medium" | "high";
+  setEffortLevel: (level: "low" | "medium" | "high") => void;
+
   // Actions
   sendPrompt: (userPrompt: string, contextOverride?: { label: string; filePath: string; selectedText: string }) => Promise<void>;
   cancelExecution: () => Promise<void>;
@@ -93,6 +101,12 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
   error: null,
   totalInputTokens: 0,
   totalOutputTokens: 0,
+
+  selectedModel: "opus",
+  setSelectedModel: (model) => set({ selectedModel: model }),
+
+  effortLevel: "medium",
+  setEffortLevel: (level) => set({ effortLevel: level }),
 
   pendingInitialPrompt: null,
   setPendingInitialPrompt: (prompt) => set({ pendingInitialPrompt: prompt }),
@@ -119,7 +133,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
   },
 
   sendPrompt: async (userPrompt: string, contextOverride?: { label: string; filePath: string; selectedText: string }) => {
-    const { sessionId, isStreaming } = get();
+    const { sessionId, isStreaming, selectedModel, effortLevel } = get();
     if (isStreaming) return;
 
     console.time("[claude] total-send");
@@ -212,12 +226,16 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
           projectPath,
           sessionId,
           prompt,
+          model: selectedModel,
+          effortLevel,
         });
       } else {
         // New session
         await invoke("execute_claude_code", {
           projectPath,
           prompt,
+          model: selectedModel,
+          effortLevel,
         });
       }
       console.timeEnd("[claude] total-send");
@@ -320,13 +338,6 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
 
   _setStreaming: (streaming: boolean) => {
     set({ isStreaming: streaming });
-    // After Claude finishes, snapshot the result
-    if (!streaming) {
-      const projectPath = useDocumentStore.getState().projectRoot;
-      if (projectPath) {
-        useHistoryStore.getState().createSnapshot(projectPath, "[claude] After Claude edit").catch(() => {});
-      }
-    }
   },
 
   _setError: (error: string | null) => {

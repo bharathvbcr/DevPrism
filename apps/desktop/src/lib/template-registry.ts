@@ -2990,3 +2990,26 @@ export function searchTemplates(query: string): TemplateDefinition[] {
     return words.every((w) => haystack.includes(w));
   });
 }
+
+/**
+ * Extract the skeleton (preamble only) from a template's content.
+ * Keeps everything before \begin{document} (packages, styling, custom commands)
+ * and adds an empty document body. The full `content` is preserved for
+ * gallery preview / example rendering.
+ */
+export function getTemplateSkeleton(template: TemplateDefinition): string {
+  const marker = "\\begin{document}";
+  const idx = template.content.indexOf(marker);
+  if (idx === -1) return template.content;
+
+  const preamble = template.content.slice(0, idx).trimEnd();
+
+  return `${preamble}
+
+\\begin{document}
+
+\\mbox{} % Placeholder — content will be generated based on your description.
+
+\\end{document}
+`;
+}

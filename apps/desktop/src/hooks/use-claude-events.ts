@@ -1,10 +1,12 @@
 import { useEffect, useRef } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import {
   useClaudeChatStore,
   type ClaudeStreamMessage,
 } from "@/stores/claude-chat-store";
 import { useDocumentStore } from "@/stores/document-store";
+import { useHistoryStore } from "@/stores/history-store";
 import { useProposedChangesStore } from "@/stores/proposed-changes-store";
 import { readTexFileContent } from "@/lib/tauri/fs";
 import { compileLatex } from "@/lib/latex-compiler";
@@ -23,6 +25,7 @@ export function useClaudeEvents() {
     new Map<string, { name: string; input: any }>(),
   );
   const hasTexChangesRef = useRef(false);
+  const cancelledForAskRef = useRef(false);
   const listenersRef = useRef<UnlistenFn[]>([]);
 
   // Reset per-session state whenever a new stream starts
@@ -31,6 +34,7 @@ export function useClaudeEvents() {
     if (isStreaming) {
       pendingToolUsesRef.current = new Map();
       hasTexChangesRef.current = false;
+      cancelledForAskRef.current = false;
     }
   }, [isStreaming]);
 
@@ -134,7 +138,7 @@ export function useClaudeEvents() {
         chatStore._setSessionId(msg.session_id);
       }
 
-      // Detect rate limit events and surface to user
+      // Detect rate limit events and surface to user — never append to messages
       if ((msg as any).type === "rate_limit_event") {
         const info = (msg as any).rate_limit_info;
         if (info) {
@@ -144,6 +148,7 @@ export function useClaudeEvents() {
             chatStore._setError(`Rate limited (${info.rateLimitType}). Resets at ${resetsAt}`);
           }
         }
+        return; // rate_limit_event is informational — do not append to messages
       }
 
       // Track tool_use blocks for file change detection
@@ -192,12 +197,32 @@ export function useClaudeEvents() {
       }
 
       chatStore._appendMessage(msg);
+
+      // When AskUserQuestion is detected, cancel the process so the user
+      // can interact with the widget before Claude continues.
+      if (msg.type === "assistant" && msg.message?.content) {
+        const hasAskUser = msg.message.content.some(
+          (b: any) => b.type === "tool_use" && b.name === "AskUserQuestion",
+        );
+        if (hasAskUser) {
+          console.log(`[claude-event] ${elapsed()} ⏸️ AskUserQuestion detected — cancelling process for user input`);
+          cancelledForAskRef.current = true;
+          invoke("cancel_claude_execution").catch(() => {});
+        }
+      }
     }
 
     async function handleComplete(success: boolean) {
-      console.log(`[claude-event] ${elapsed()} 🏁 complete success=${success} (${msgCount} messages)`);
+      console.log(`[claude-event] ${elapsed()} 🏁 complete success=${success} (${msgCount} messages) cancelledForAsk=${cancelledForAskRef.current}`);
       const chatStore = useClaudeChatStore.getState();
-      if (!success && msgCount > 0 && !chatStore.error) {
+
+      // Guard against duplicate complete events
+      if (!chatStore.isStreaming) {
+        console.warn(`[claude-event] ⚠️ ignoring duplicate complete event (not streaming)`);
+        return;
+      }
+
+      if (!success && msgCount > 0 && !chatStore.error && !cancelledForAskRef.current) {
         // Process failed but we received some messages — likely rate limit or API error
         chatStore._setError("Claude process exited unexpectedly. This may be due to rate limiting or an API error.");
       }
@@ -206,17 +231,28 @@ export function useClaudeEvents() {
       lastMsgTime = 0;
       chatStore._setStreaming(false);
 
+      // Snapshot after Claude edit — awaited so the history store updates before UI refreshes
+      const projectPath = useDocumentStore.getState().projectRoot;
+      if (projectPath) {
+        try {
+          await useHistoryStore.getState().createSnapshot(projectPath, "[claude] After Claude edit");
+        } catch {
+          // snapshot failure should not break the flow
+        }
+      }
+
       const docStore = useDocumentStore.getState();
       await docStore.refreshFiles();
 
-      // Auto-recompile if any LaTeX-related files were modified
-      if (hasTexChangesRef.current && docStore.projectRoot) {
-        const { projectRoot, files } = useDocumentStore.getState();
-        if (projectRoot) {
-          const mainFile = files.find(
-            (f) => f.name === "document.tex" || f.name === "main.tex",
-          );
-          const mainFileName = mainFile?.relativePath || "document.tex";
+      // Auto-recompile after Claude finishes — always attempt if a tex file exists.
+      // Skip if another compilation is already in progress (e.g. initial compile).
+      const { projectRoot, files, isCompiling: alreadyCompiling } = useDocumentStore.getState();
+      if (projectRoot && !alreadyCompiling) {
+        const mainFile = files.find(
+          (f) => f.name === "document.tex" || f.name === "main.tex",
+        );
+        if (mainFile) {
+          const mainFileName = mainFile.relativePath;
           useDocumentStore.getState().setIsCompiling(true);
           try {
             const pdfData = await compileLatex(projectRoot, mainFileName);
@@ -229,6 +265,8 @@ export function useClaudeEvents() {
             useDocumentStore.getState().setIsCompiling(false);
           }
         }
+      } else if (alreadyCompiling) {
+        console.log(`[claude-event] skipping post-Claude recompile — already compiling`);
       }
     }
 

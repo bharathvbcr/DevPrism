@@ -17,6 +17,8 @@ struct BuildInfo {
 #[derive(Clone)]
 pub struct LatexCompilerState {
     last_builds: Arc<Mutex<HashMap<String, BuildInfo>>>,
+    /// Per-project locks to prevent concurrent compilations on the same build directory.
+    project_locks: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
     semaphore: Arc<Semaphore>,
 }
 
@@ -24,6 +26,7 @@ impl Default for LatexCompilerState {
     fn default() -> Self {
         Self {
             last_builds: Arc::new(Mutex::new(HashMap::new())),
+            project_locks: Arc::new(Mutex::new(HashMap::new())),
             semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT)),
         }
     }
@@ -302,6 +305,8 @@ async fn try_generate_format(
 /// Write a body file with padding comment lines to preserve line numbers.
 /// The body file starts with `newline_count` padding lines, then \begin{document}...
 /// For pdflatex, injects `\pdfcompresslevel=0` to speed up PDF generation.
+/// Always injects `\AtEndDocument{\null}` to guarantee at least one page of output
+/// (prevents "No pages of output" for empty document bodies).
 fn write_body_file(
     content: &str,
     begin_doc_pos: usize,
@@ -310,11 +315,13 @@ fn write_body_file(
     compiler: &str,
 ) -> std::io::Result<()> {
     let body = &content[begin_doc_pos..];
-    // Only inject pdfcompresslevel for pdflatex (undefined in xelatex/lualatex)
+    // Inject before \begin{document}:
+    // - pdfcompresslevel=0 for faster PDF generation (pdflatex only)
+    // - \AtEndDocument{\null} to ensure at least one page of output
     let inject = if compiler == "pdflatex" {
-        "\\pdfcompresslevel=0 \\pdfobjcompresslevel=0\n"
+        "\\pdfcompresslevel=0 \\pdfobjcompresslevel=0 \\AtEndDocument{\\null}\n"
     } else {
-        "%\n"
+        "\\AtEndDocument{\\null}\n"
     };
     let mut result = String::with_capacity(body.len() + newline_count * 2 + 80);
     if newline_count > 1 {
@@ -324,8 +331,10 @@ fn write_body_file(
         result.push_str(inject);
     } else if newline_count == 1 {
         result.push_str(inject);
+    } else {
+        // newline_count == 0: no padding room, inject on its own line
+        result.push_str(inject);
     }
-    // else newline_count == 0: no room for injection, skip
     result.push_str(body);
     std::fs::write(work_dir.join("_prism_body.tex"), &result)
 }
@@ -354,6 +363,18 @@ pub async fn compile_latex(
         .clone()
         .try_acquire_owned()
         .map_err(|_| "Server busy, too many concurrent compilations".to_string())?;
+
+    // Acquire per-project lock to prevent concurrent compilations on the same build dir.
+    // This serializes compilations for the same project while allowing different projects
+    // to compile in parallel.
+    let project_lock = {
+        let mut locks = state.project_locks.lock().await;
+        locks
+            .entry(project_dir.clone())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    };
+    let _project_guard = project_lock.lock().await;
 
     let t0 = std::time::Instant::now();
 
@@ -573,14 +594,20 @@ pub async fn compile_latex(
     // Re-read log file (may have been updated by extra passes)
     let log_content = std::fs::read_to_string(&log_path).unwrap_or_default();
 
-    // Check for PDF; if "No pages of output", retry with \null injection
+    // Check for PDF; if "No pages of output", retry with \null injection.
+    // This handles the non-format path (empty documents compiled directly).
+    // The format path already injects \AtEndDocument{\null} via write_body_file.
     let pdf_path = work_dir.join(format!("{}.pdf", main_file_name));
     if !pdf_path.exists() && log_content.contains("No pages of output") {
+        eprintln!("[latex] no pages of output — retrying with \\null injection");
         let null_input = format!("\\AtEndDocument{{\\null}}\\input{{{}}}", main_file);
         let jobname_arg = format!("-jobname={}", main_file_name);
         let retry_args: Vec<&str> =
-            vec!["-interaction=nonstopmode", &jobname_arg, &null_input];
-        let _ = run_with_timeout(compiler_cmd, &retry_args, &work_dir, COMPILE_TIMEOUT_SECS).await;
+            vec!["-interaction=nonstopmode", "-synctex=1", &jobname_arg, &null_input];
+        match run_with_timeout(compiler_cmd, &retry_args, &work_dir, COMPILE_TIMEOUT_SECS).await {
+            Ok(r) => eprintln!("[latex] empty-body retry: exit={} pdf_exists={}", r.exit_code, pdf_path.exists()),
+            Err(e) => eprintln!("[latex] empty-body retry error: {}", e),
+        }
     }
 
     // Store build info (even on failure, for debugging / synctex)

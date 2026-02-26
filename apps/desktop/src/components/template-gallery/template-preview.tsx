@@ -36,6 +36,7 @@ export function TemplatePreview({ onUseTemplate }: TemplatePreviewProps) {
   const [error, setError] = useState(false);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const docIdRef = useRef(0);
   const pageSizesRef = useRef<PageSize[]>([]);
   const loadGenRef = useRef(0);
@@ -117,9 +118,9 @@ export function TemplatePreview({ onUseTemplate }: TemplatePreviewProps) {
     })();
   }, [previewTemplateId]);
 
-  // Render current page
+  // Render current page — fit canvas within the container
   useEffect(() => {
-    if (docIdRef.current <= 0 || numPages === 0 || !canvasRef.current) return;
+    if (docIdRef.current <= 0 || numPages === 0 || !canvasRef.current || !containerRef.current) return;
 
     const pageIndex = currentPage - 1;
     const size = pageSizesRef.current[pageIndex];
@@ -127,10 +128,21 @@ export function TemplatePreview({ onUseTemplate }: TemplatePreviewProps) {
 
     setIsLandscape(size.width > size.height);
 
-    const targetWidth = isLandscape ? 1100 : 800;
-    const scale = targetWidth / size.width;
+    // Fit within available container space (minus padding)
+    const container = containerRef.current;
+    const maxW = container.clientWidth - 48;
+    const maxH = container.clientHeight - 48;
+    const pageAspect = size.width / size.height;
+
+    let displayW = maxW;
+    let displayH = displayW / pageAspect;
+    if (displayH > maxH) {
+      displayH = maxH;
+      displayW = displayH * pageAspect;
+    }
+
     const dpr = window.devicePixelRatio || 1;
-    const dpi = scale * 72 * dpr;
+    const dpi = (displayW / size.width) * 72 * dpr;
 
     const client = getMupdfClient();
     client.drawPage(docIdRef.current, pageIndex, dpi).then((imageData) => {
@@ -138,8 +150,8 @@ export function TemplatePreview({ onUseTemplate }: TemplatePreviewProps) {
       if (!canvas) return;
       canvas.width = imageData.width;
       canvas.height = imageData.height;
-      canvas.style.width = `${size.width * scale}px`;
-      canvas.style.height = `${size.height * scale}px`;
+      canvas.style.width = `${displayW}px`;
+      canvas.style.height = `${displayH}px`;
       const ctx = canvas.getContext("2d")!;
       ctx.putImageData(imageData, 0, 0);
     }).catch((err) => {
@@ -207,7 +219,7 @@ export function TemplatePreview({ onUseTemplate }: TemplatePreviewProps) {
         {/* Main content area */}
         <div className="flex flex-1 overflow-hidden">
           <div className="relative flex flex-1 flex-col">
-            <div className="flex flex-1 items-center justify-center overflow-hidden bg-muted/30 p-6">
+            <div ref={containerRef} className="flex flex-1 items-center justify-center overflow-hidden bg-muted/30 p-6">
               {loading && (
                 <div className="flex flex-col items-center gap-2 text-muted-foreground">
                   <LoaderIcon className="size-5 animate-spin" />
@@ -225,7 +237,7 @@ export function TemplatePreview({ onUseTemplate }: TemplatePreviewProps) {
               {!loading && !error && numPages > 0 && (
                 <canvas
                   ref={canvasRef}
-                  className="max-h-[calc(70vh-10rem)] w-auto shadow-xl"
+                  className="shadow-xl"
                 />
               )}
             </div>

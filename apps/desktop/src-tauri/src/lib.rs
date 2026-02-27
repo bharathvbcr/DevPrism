@@ -119,8 +119,7 @@ fn create_new_window(app: tauri::AppHandle) -> Result<(), String> {
         .title("ClaudePrism")
         .inner_size(1400.0, 900.0)
         .min_inner_size(800.0, 600.0)
-        .visible(false)
-        .hidden_title(true);
+        .visible(false);
 
     #[cfg(target_os = "macos")]
     {

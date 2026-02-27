@@ -150,6 +150,10 @@ jobs:
 
           - **Windows**: Run the \`.msi\` installer or \`.exe\` setup
           - **macOS**: Open the \`.dmg\` and drag ClaudePrism to Applications
+            > **Note**: macOS may show "ClaudePrism is damaged" because the app is not notarized. Run this in Terminal to fix:
+            > \`\`\`
+            > xattr -cr /Applications/ClaudePrism.app
+            > \`\`\`
           - **Linux**: \`chmod +x\` the \`.AppImage\` and run it, or \`sudo dpkg -i\` the \`.deb\`
 
           ${COMPARE}

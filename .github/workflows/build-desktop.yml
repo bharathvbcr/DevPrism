@@ -152,7 +152,11 @@ jobs:
 
           - **Windows**: Run the \`.msi\` installer or \`.exe\` setup
           - **macOS**: Open the \`.dmg\` and drag ClaudePrism to Applications
-            > **Note**: macOS may show a warning about an unidentified developer. Go to **System Settings > Privacy & Security** and click **"Open Anyway"**.
+            > **macOS Gatekeeper Notice**: On first launch, macOS will show a security warning.
+            > 1. Click **"Done"** (do NOT click "Move to Trash")
+            > 2. Open **System Settings → Privacy & Security**
+            > 3. Scroll down and click **"Open Anyway"** next to ClaudePrism
+            > 4. Click **"Open"** when prompted again
           - **Linux**: \`chmod +x\` the \`.AppImage\` and run it, or \`sudo dpkg -i\` the \`.deb\`
 
           ${COMPARE}

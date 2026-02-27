@@ -69,6 +69,7 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_SIGNING_IDENTITY: ${{ contains(matrix.label, 'macos') && '-' || '' }}
         with:
           projectPath: apps/desktop
           tauriScript: pnpm tauri
@@ -84,6 +85,7 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_SIGNING_IDENTITY: ${{ contains(matrix.label, 'macos') && '-' || '' }}
         with:
           projectPath: apps/desktop
           tauriScript: pnpm tauri
@@ -150,10 +152,7 @@ jobs:
 
           - **Windows**: Run the \`.msi\` installer or \`.exe\` setup
           - **macOS**: Open the \`.dmg\` and drag ClaudePrism to Applications
-            > **Note**: macOS may show "ClaudePrism is damaged" because the app is not notarized. Run this in Terminal to fix:
-            > \`\`\`
-            > xattr -cr /Applications/ClaudePrism.app
-            > \`\`\`
+            > **Note**: macOS may show a warning about an unidentified developer. Go to **System Settings > Privacy & Security** and click **"Open Anyway"**.
           - **Linux**: \`chmod +x\` the \`.AppImage\` and run it, or \`sudo dpkg -i\` the \`.deb\`
 
           ${COMPARE}

@@ -533,4 +533,173 @@ mod tests {
         assert!(names.contains(&"top.md".to_string()));
         assert!(names.contains(&"nested.md".to_string()));
     }
+
+    // --- remove_empty_dirs integration tests ---
+
+    #[test]
+    fn test_remove_empty_dirs_removes_nested_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let deep = dir.path().join("a").join("b").join("c");
+        fs::create_dir_all(&deep).unwrap();
+
+        remove_empty_dirs(&deep);
+
+        assert!(!dir.path().join("a").exists(), "entire empty chain should be removed");
+    }
+
+    #[test]
+    fn test_remove_empty_dirs_stops_at_nonempty() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("a");
+        let child = parent.join("b");
+        fs::create_dir_all(&child).unwrap();
+        fs::write(parent.join("keep.txt"), "x").unwrap();
+
+        remove_empty_dirs(&child);
+
+        assert!(!child.exists(), "empty child should be removed");
+        assert!(parent.exists(), "parent with file should be kept");
+    }
+
+    #[test]
+    fn test_remove_empty_dirs_nonexistent_is_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("nonexistent");
+        // Should not panic
+        remove_empty_dirs(&fake);
+    }
+
+    // --- create_default_commands ---
+
+    #[test]
+    fn test_create_default_commands_structure() {
+        let cmds = create_default_commands();
+        assert_eq!(cmds.len(), 3);
+        let names: Vec<&str> = cmds.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"add-dir"));
+        assert!(names.contains(&"init"));
+        assert!(names.contains(&"review"));
+        for cmd in &cmds {
+            assert_eq!(cmd.scope, "default");
+            assert!(cmd.full_command.starts_with('/'));
+        }
+    }
+
+    // --- slash_command_save integration tests ---
+
+    #[tokio::test]
+    async fn test_slash_command_save_project_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_path = dir.path().to_string_lossy().to_string();
+
+        let result = slash_command_save(
+            "project".into(),
+            "test-cmd".into(),
+            None,
+            "Do something".into(),
+            None,
+            vec![],
+            Some(project_path.clone()),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let cmd = result.unwrap();
+        assert_eq!(cmd.name, "test-cmd");
+        assert_eq!(cmd.full_command, "/test-cmd");
+        assert_eq!(cmd.content, "Do something");
+
+        // Verify file was created
+        let file = dir.path().join(".claude").join("commands").join("test-cmd.md");
+        assert!(file.exists());
+        assert_eq!(fs::read_to_string(&file).unwrap(), "Do something");
+    }
+
+    #[tokio::test]
+    async fn test_slash_command_save_with_frontmatter() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_path = dir.path().to_string_lossy().to_string();
+
+        let cmd = slash_command_save(
+            "project".into(),
+            "lint".into(),
+            None,
+            "Run the linter".into(),
+            Some("Lint all files".into()),
+            vec!["Bash".into(), "Read".into()],
+            Some(project_path),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(cmd.description.unwrap(), "Lint all files");
+        assert_eq!(cmd.allowed_tools, vec!["Bash", "Read"]);
+
+        // Verify frontmatter in file
+        let file = dir.path().join(".claude").join("commands").join("lint.md");
+        let content = fs::read_to_string(&file).unwrap();
+        assert!(content.starts_with("---\n"));
+        assert!(content.contains("description: Lint all files"));
+        assert!(content.contains("- Bash"));
+    }
+
+    #[tokio::test]
+    async fn test_slash_command_save_with_namespace() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_path = dir.path().to_string_lossy().to_string();
+
+        let cmd = slash_command_save(
+            "project".into(),
+            "clippy".into(),
+            Some("tools:rust".into()),
+            "Run clippy".into(),
+            None,
+            vec![],
+            Some(project_path),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(cmd.name, "clippy");
+        assert_eq!(cmd.namespace.unwrap(), "tools:rust");
+        assert_eq!(cmd.full_command, "/tools:rust:clippy");
+
+        // Verify nested directory structure
+        let file = dir.path().join(".claude").join("commands").join("tools").join("rust").join("clippy.md");
+        assert!(file.exists());
+    }
+
+    #[tokio::test]
+    async fn test_slash_command_save_empty_name_errors() {
+        let result = slash_command_save(
+            "project".into(),
+            "".into(),
+            None,
+            "content".into(),
+            None,
+            vec![],
+            Some("/tmp".into()),
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("empty"));
+    }
+
+    #[tokio::test]
+    async fn test_slash_command_save_invalid_scope_errors() {
+        let result = slash_command_save(
+            "global".into(),
+            "test".into(),
+            None,
+            "content".into(),
+            None,
+            vec![],
+            None,
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid scope"));
+    }
 }

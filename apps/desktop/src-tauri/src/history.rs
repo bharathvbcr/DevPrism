@@ -848,4 +848,95 @@ mod tests {
         let content = fs::read_to_string(&excludes_path).unwrap();
         assert!(content.contains(".prism/"), "should migrate to include .prism/");
     }
+
+    // ─── edge cases ───
+
+    #[test]
+    fn test_history_snapshot_deleted_file() {
+        let dir = setup_project(&[("a.tex", "aaa"), ("b.tex", "bbb")]);
+        let r = root(&dir);
+        history_init(r.clone()).unwrap();
+
+        // Delete a file
+        fs::remove_file(dir.path().join("b.tex")).unwrap();
+
+        let snap = history_snapshot(r.clone(), "delete b".into()).unwrap().unwrap();
+        assert!(!snap.changed_files.is_empty());
+    }
+
+    #[test]
+    fn test_history_diff_deleted_file() {
+        let dir = setup_project(&[("a.tex", "keep"), ("b.tex", "remove me")]);
+        let r = root(&dir);
+        history_init(r.clone()).unwrap();
+
+        let list = history_list(r.clone(), 1, 0).unwrap();
+        let init_id = list[0].id.clone();
+
+        fs::remove_file(dir.path().join("b.tex")).unwrap();
+        let snap = history_snapshot(r.clone(), "delete b".into()).unwrap().unwrap();
+
+        let diffs = history_diff(r, init_id, snap.id).unwrap();
+        let d = diffs.iter().find(|d| d.file_path == "b.tex").unwrap();
+        assert_eq!(d.status, "deleted");
+        assert_eq!(d.old_content.as_deref(), Some("remove me"));
+        assert!(d.new_content.is_none());
+    }
+
+    #[test]
+    fn test_history_diff_nonadjacent_snapshots() {
+        let dir = setup_project(&[("a.tex", "v1")]);
+        let r = root(&dir);
+        history_init(r.clone()).unwrap();
+
+        let list0 = history_list(r.clone(), 1, 0).unwrap();
+        let init_id = list0[0].id.clone();
+
+        fs::write(dir.path().join("a.tex"), "v2").unwrap();
+        history_snapshot(r.clone(), "s1".into()).unwrap();
+
+        fs::write(dir.path().join("a.tex"), "v3").unwrap();
+        let snap3 = history_snapshot(r.clone(), "s2".into()).unwrap().unwrap();
+
+        // Diff from init directly to s2 (skipping s1)
+        let diffs = history_diff(r, init_id, snap3.id).unwrap();
+        let d = diffs.iter().find(|d| d.file_path == "a.tex").unwrap();
+        assert_eq!(d.old_content.as_deref(), Some("v1"));
+        assert_eq!(d.new_content.as_deref(), Some("v3"));
+    }
+
+    #[test]
+    fn test_history_add_duplicate_label_errors() {
+        let dir = setup_project(&[("main.tex", "x")]);
+        let r = root(&dir);
+        history_init(r.clone()).unwrap();
+
+        let list = history_list(r.clone(), 1, 0).unwrap();
+        let id = list[0].id.clone();
+
+        history_add_label(r.clone(), id.clone(), "dup".into()).unwrap();
+        // Adding same label again should error
+        let result = history_add_label(r, id, "dup".into());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_history_restore_creates_restore_commit() {
+        let dir = setup_project(&[("main.tex", "original")]);
+        let r = root(&dir);
+        history_init(r.clone()).unwrap();
+
+        let init_list = history_list(r.clone(), 1, 0).unwrap();
+        let init_id = init_list[0].id.clone();
+
+        fs::write(dir.path().join("main.tex"), "changed").unwrap();
+        history_snapshot(r.clone(), "change".into()).unwrap();
+
+        history_restore(r.clone(), init_id).unwrap();
+
+        // Should now have 4 entries: init, change, restore
+        let list = history_list(r, 10, 0).unwrap();
+        assert_eq!(list.len(), 3);
+        assert!(list.iter().any(|s| s.message.contains("[restore]")));
+    }
 }

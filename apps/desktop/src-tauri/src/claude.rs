@@ -1128,4 +1128,81 @@ mod tests {
         // dots and underscores are non-alphanumeric → replaced with '-'
         assert_eq!(dir_name, "-home-user--my-project-v2");
     }
+
+    // --- extract_first_user_message integration tests ---
+
+    #[test]
+    fn test_extract_first_user_message_string_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let line = r#"{"type":"user","timestamp":"2024-01-01T00:00:00Z","message":{"content":"Fix the bibliography"}}"#;
+        std::fs::write(&path, line).unwrap();
+
+        let pb = PathBuf::from(&path);
+        let (title, ts) = extract_first_user_message(&pb);
+        assert_eq!(title.unwrap(), "Fix the bibliography");
+        assert_eq!(ts.unwrap(), "2024-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn test_extract_first_user_message_block_array_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let line = r#"{"type":"user","timestamp":"2024-02-01T00:00:00Z","message":{"content":[{"type":"text","text":"Rewrite the abstract"}]}}"#;
+        std::fs::write(&path, line).unwrap();
+
+        let pb = PathBuf::from(&path);
+        let (title, ts) = extract_first_user_message(&pb);
+        assert_eq!(title.unwrap(), "Rewrite the abstract");
+        assert_eq!(ts.unwrap(), "2024-02-01T00:00:00Z");
+    }
+
+    #[test]
+    fn test_extract_first_user_message_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.jsonl");
+        std::fs::write(&path, "").unwrap();
+
+        let pb = PathBuf::from(&path);
+        let (title, ts) = extract_first_user_message(&pb);
+        assert!(title.is_none());
+        assert!(ts.is_none());
+    }
+
+    #[test]
+    fn test_extract_first_user_message_no_user_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let lines = r#"{"type":"system","subtype":"init","session_id":"abc"}
+{"type":"assistant","message":{"content":"Hello"}}"#;
+        std::fs::write(&path, lines).unwrap();
+
+        let pb = PathBuf::from(&path);
+        let (title, ts) = extract_first_user_message(&pb);
+        assert!(title.is_none());
+        assert!(ts.is_none());
+    }
+
+    #[test]
+    fn test_extract_first_user_message_nonexistent_path() {
+        let pb = PathBuf::from("/tmp/nonexistent_session_file_12345.jsonl");
+        let (title, ts) = extract_first_user_message(&pb);
+        assert!(title.is_none());
+        assert!(ts.is_none());
+    }
+
+    #[test]
+    fn test_extract_first_user_message_skips_ide_tags() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        // First user message is an IDE tag (should skip), second is real
+        let lines = r#"{"type":"user","timestamp":"2024-01-01T00:00:00Z","message":{"content":"<ide_context>data"}}
+{"type":"user","timestamp":"2024-01-02T00:00:00Z","message":{"content":"Add a new section"}}"#;
+        std::fs::write(&path, lines).unwrap();
+
+        let pb = PathBuf::from(&path);
+        let (title, ts) = extract_first_user_message(&pb);
+        assert_eq!(title.unwrap(), "Add a new section");
+        assert_eq!(ts.unwrap(), "2024-01-02T00:00:00Z");
+    }
 }

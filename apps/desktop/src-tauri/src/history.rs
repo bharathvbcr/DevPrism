@@ -524,3 +524,328 @@ pub fn history_remove_label(project_root: String, label: String) -> Result<(), S
         .map_err(|e| format!("Failed to delete label: {}", e))?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    /// Create a temp project dir with the given files.
+    fn setup_project(files: &[(&str, &str)]) -> TempDir {
+        let dir = TempDir::new().unwrap();
+        for (name, content) in files {
+            let path = dir.path().join(name);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(&path, content).unwrap();
+        }
+        dir
+    }
+
+    fn root(dir: &TempDir) -> String {
+        dir.path().to_string_lossy().to_string()
+    }
+
+    // ─── history_init ───
+
+    #[test]
+    fn test_history_init_creates_repo() {
+        let dir = setup_project(&[("main.tex", "\\documentclass{article}")]);
+        history_init(root(&dir)).unwrap();
+
+        let git_dir = dir.path().join(".claudeprism").join("history.git");
+        assert!(git_dir.exists(), "history.git should be created");
+
+        // Should have an initial commit
+        let repo = Repository::open(&git_dir).unwrap();
+        let head = repo.head().unwrap();
+        let commit = head.peel_to_commit().unwrap();
+        assert!(commit.message().unwrap().contains("[init]"));
+    }
+
+    #[test]
+    fn test_history_init_idempotent() {
+        let dir = setup_project(&[("main.tex", "hello")]);
+        let r = root(&dir);
+        history_init(r.clone()).unwrap();
+        // Second call should succeed without error
+        history_init(r).unwrap();
+    }
+
+    #[test]
+    fn test_history_init_creates_excludes() {
+        let dir = setup_project(&[("main.tex", "doc")]);
+        history_init(root(&dir)).unwrap();
+
+        let excludes = dir.path().join(".claudeprism").join("history-exclude");
+        assert!(excludes.exists());
+        let content = fs::read_to_string(&excludes).unwrap();
+        assert!(content.contains("*.aux"));
+        assert!(content.contains(".claudeprism/"));
+        assert!(content.contains(".prism/"));
+    }
+
+    // ─── history_snapshot ───
+
+    #[test]
+    fn test_history_snapshot_after_modification() {
+        let dir = setup_project(&[("main.tex", "v1")]);
+        let r = root(&dir);
+        history_init(r.clone()).unwrap();
+
+        // Modify a file
+        fs::write(dir.path().join("main.tex"), "v2").unwrap();
+
+        let result = history_snapshot(r, "edited main.tex".into()).unwrap();
+        assert!(result.is_some());
+        let snap = result.unwrap();
+        assert_eq!(snap.message, "edited main.tex");
+        assert!(snap.changed_files.contains(&"main.tex".to_string()));
+    }
+
+    #[test]
+    fn test_history_snapshot_no_change_returns_none() {
+        let dir = setup_project(&[("main.tex", "same")]);
+        let r = root(&dir);
+        history_init(r.clone()).unwrap();
+
+        // No modification → None
+        let result = history_snapshot(r, "no-op".into()).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_history_snapshot_detects_new_file() {
+        let dir = setup_project(&[("main.tex", "doc")]);
+        let r = root(&dir);
+        history_init(r.clone()).unwrap();
+
+        // Add a new file
+        fs::write(dir.path().join("chapter1.tex"), "new chapter").unwrap();
+
+        let snap = history_snapshot(r, "add chapter".into()).unwrap().unwrap();
+        assert!(snap.changed_files.contains(&"chapter1.tex".to_string()));
+    }
+
+    // ─── history_list ───
+
+    #[test]
+    fn test_history_list_after_snapshots() {
+        let dir = setup_project(&[("main.tex", "v1")]);
+        let r = root(&dir);
+        history_init(r.clone()).unwrap();
+
+        fs::write(dir.path().join("main.tex"), "v2").unwrap();
+        history_snapshot(r.clone(), "snap 1".into()).unwrap();
+
+        fs::write(dir.path().join("main.tex"), "v3").unwrap();
+        history_snapshot(r.clone(), "snap 2".into()).unwrap();
+
+        let list = history_list(r, 10, 0).unwrap();
+        assert_eq!(list.len(), 3); // init + 2 snapshots
+        let msgs: Vec<&str> = list.iter().map(|s| s.message.as_str()).collect();
+        assert!(msgs.contains(&"snap 1"));
+        assert!(msgs.contains(&"snap 2"));
+        assert!(msgs.iter().any(|m| m.contains("[init]")));
+    }
+
+    #[test]
+    fn test_history_list_pagination() {
+        let dir = setup_project(&[("a.tex", "x")]);
+        let r = root(&dir);
+        history_init(r.clone()).unwrap();
+
+        fs::write(dir.path().join("a.tex"), "y").unwrap();
+        history_snapshot(r.clone(), "s1".into()).unwrap();
+
+        fs::write(dir.path().join("a.tex"), "z").unwrap();
+        history_snapshot(r.clone(), "s2".into()).unwrap();
+
+        // limit=1 → returns exactly 1 entry
+        let page1 = history_list(r.clone(), 1, 0).unwrap();
+        assert_eq!(page1.len(), 1);
+
+        // offset=1 → returns a different entry
+        let page2 = history_list(r.clone(), 1, 1).unwrap();
+        assert_eq!(page2.len(), 1);
+        assert_ne!(page1[0].id, page2[0].id);
+
+        // All 3 entries accessible
+        let all = history_list(r, 10, 0).unwrap();
+        assert_eq!(all.len(), 3);
+    }
+
+    // ─── history_diff ───
+
+    #[test]
+    fn test_history_diff_shows_changes() {
+        let dir = setup_project(&[("main.tex", "old content")]);
+        let r = root(&dir);
+        history_init(r.clone()).unwrap();
+
+        fs::write(dir.path().join("main.tex"), "new content").unwrap();
+        let snap = history_snapshot(r.clone(), "update".into()).unwrap().unwrap();
+
+        let list = history_list(r.clone(), 10, 0).unwrap();
+        let from_id = list[1].id.clone(); // init
+        let to_id = snap.id.clone();
+
+        let diffs = history_diff(r, from_id, to_id).unwrap();
+        assert!(!diffs.is_empty());
+        let d = diffs.iter().find(|d| d.file_path == "main.tex").unwrap();
+        assert_eq!(d.status, "modified");
+        assert_eq!(d.old_content.as_deref(), Some("old content"));
+        assert_eq!(d.new_content.as_deref(), Some("new content"));
+    }
+
+    #[test]
+    fn test_history_diff_added_file() {
+        let dir = setup_project(&[("a.tex", "a")]);
+        let r = root(&dir);
+        history_init(r.clone()).unwrap();
+
+        fs::write(dir.path().join("b.tex"), "new file").unwrap();
+        let snap = history_snapshot(r.clone(), "add b".into()).unwrap().unwrap();
+
+        let list = history_list(r.clone(), 10, 0).unwrap();
+        let from_id = list[1].id.clone(); // init
+        let to_id = snap.id;
+
+        let diffs = history_diff(r, from_id, to_id).unwrap();
+        let d = diffs.iter().find(|d| d.file_path == "b.tex").unwrap();
+        assert_eq!(d.status, "added");
+        assert!(d.old_content.is_none());
+        assert_eq!(d.new_content.as_deref(), Some("new file"));
+    }
+
+    // ─── history_file_at ───
+
+    #[test]
+    fn test_history_file_at_returns_content() {
+        let dir = setup_project(&[("main.tex", "version one")]);
+        let r = root(&dir);
+        history_init(r.clone()).unwrap();
+
+        let list = history_list(r.clone(), 1, 0).unwrap();
+        let init_id = list[0].id.clone();
+
+        let content = history_file_at(r, init_id, "main.tex".into()).unwrap();
+        assert_eq!(content, "version one");
+    }
+
+    #[test]
+    fn test_history_file_at_nonexistent_file_errors() {
+        let dir = setup_project(&[("main.tex", "x")]);
+        let r = root(&dir);
+        history_init(r.clone()).unwrap();
+
+        let list = history_list(r.clone(), 1, 0).unwrap();
+        let id = list[0].id.clone();
+
+        let result = history_file_at(r, id, "nonexistent.tex".into());
+        assert!(result.is_err());
+    }
+
+    // ─── history_restore ───
+
+    #[test]
+    fn test_history_restore_reverts_content() {
+        let dir = setup_project(&[("main.tex", "original")]);
+        let r = root(&dir);
+        history_init(r.clone()).unwrap();
+
+        let list = history_list(r.clone(), 1, 0).unwrap();
+        let init_id = list[0].id.clone();
+
+        // Modify
+        fs::write(dir.path().join("main.tex"), "modified").unwrap();
+        history_snapshot(r.clone(), "modify".into()).unwrap();
+
+        // Restore to init
+        let restore_info = history_restore(r.clone(), init_id).unwrap();
+        assert!(restore_info.message.contains("[restore]"));
+
+        // Working directory should have original content
+        let content = fs::read_to_string(dir.path().join("main.tex")).unwrap();
+        assert_eq!(content, "original");
+    }
+
+    // ─── labels ───
+
+    #[test]
+    fn test_history_add_and_remove_label() {
+        let dir = setup_project(&[("main.tex", "doc")]);
+        let r = root(&dir);
+        history_init(r.clone()).unwrap();
+
+        let list = history_list(r.clone(), 1, 0).unwrap();
+        let id = list[0].id.clone();
+
+        // Add label
+        history_add_label(r.clone(), id.clone(), "v1.0".into()).unwrap();
+
+        // Verify label appears in list
+        let list = history_list(r.clone(), 1, 0).unwrap();
+        assert!(list[0].labels.contains(&"v1.0".to_string()));
+
+        // Remove label
+        history_remove_label(r.clone(), "v1.0".into()).unwrap();
+
+        // Verify label gone
+        let list = history_list(r.clone(), 1, 0).unwrap();
+        assert!(!list[0].labels.contains(&"v1.0".to_string()));
+    }
+
+    #[test]
+    fn test_history_remove_nonexistent_label_errors() {
+        let dir = setup_project(&[("main.tex", "x")]);
+        let r = root(&dir);
+        history_init(r.clone()).unwrap();
+
+        let result = history_remove_label(r, "nope".into());
+        assert!(result.is_err());
+    }
+
+    // ─── tag_map ───
+
+    #[test]
+    fn test_tag_map_groups_by_oid() {
+        let dir = setup_project(&[("main.tex", "x")]);
+        let r = root(&dir);
+        history_init(r.clone()).unwrap();
+
+        let list = history_list(r.clone(), 1, 0).unwrap();
+        let id = list[0].id.clone();
+
+        history_add_label(r.clone(), id.clone(), "alpha".into()).unwrap();
+        history_add_label(r.clone(), id.clone(), "beta".into()).unwrap();
+
+        let repo = open_repo(&r).unwrap();
+        let map = tag_map(&repo);
+        let oid = Oid::from_str(&id).unwrap();
+        let labels = map.get(&oid).unwrap();
+        assert!(labels.contains(&"alpha".to_string()));
+        assert!(labels.contains(&"beta".to_string()));
+    }
+
+    // ─── ensure_excludes ───
+
+    #[test]
+    fn test_ensure_excludes_migrates_missing_prism() {
+        let dir = setup_project(&[("main.tex", "x")]);
+        let r = root(&dir);
+        history_init(r.clone()).unwrap();
+
+        // Write an excludes file WITHOUT .prism/
+        let excludes_path = dir.path().join(".claudeprism").join("history-exclude");
+        fs::write(&excludes_path, "*.aux\n*.log\n.claudeprism/\n").unwrap();
+
+        let repo = open_repo(&r).unwrap();
+        ensure_excludes(&r, &repo);
+
+        let content = fs::read_to_string(&excludes_path).unwrap();
+        assert!(content.contains(".prism/"), "should migrate to include .prism/");
+    }
+}

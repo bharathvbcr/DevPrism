@@ -782,4 +782,115 @@ Postamble:
         let dir = persistent_build_dir("/project/");
         assert_eq!(dir, PathBuf::from("/project/.prism/build"));
     }
+
+    // --- copy_dir_recursive integration tests ---
+
+    #[test]
+    fn test_copy_dir_recursive_nested() {
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+
+        // Create nested structure
+        std::fs::create_dir_all(src.path().join("sub").join("deep")).unwrap();
+        std::fs::write(src.path().join("top.tex"), "top").unwrap();
+        std::fs::write(src.path().join("sub").join("mid.tex"), "mid").unwrap();
+        std::fs::write(src.path().join("sub").join("deep").join("bottom.tex"), "bottom").unwrap();
+
+        copy_dir_recursive(src.path(), dst.path()).unwrap();
+
+        assert_eq!(std::fs::read_to_string(dst.path().join("top.tex")).unwrap(), "top");
+        assert_eq!(std::fs::read_to_string(dst.path().join("sub").join("mid.tex")).unwrap(), "mid");
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("sub").join("deep").join("bottom.tex")).unwrap(),
+            "bottom"
+        );
+    }
+
+    #[test]
+    fn test_copy_dir_recursive_skips_hidden_dirs() {
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+
+        std::fs::create_dir_all(src.path().join(".git")).unwrap();
+        std::fs::write(src.path().join(".git").join("config"), "secret").unwrap();
+        std::fs::write(src.path().join("main.tex"), "doc").unwrap();
+
+        copy_dir_recursive(src.path(), dst.path()).unwrap();
+
+        assert!(dst.path().join("main.tex").exists());
+        assert!(!dst.path().join(".git").exists(), ".git should be skipped");
+    }
+
+    #[test]
+    fn test_copy_dir_recursive_empty_subdir() {
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+
+        std::fs::create_dir_all(src.path().join("empty_sub")).unwrap();
+        std::fs::write(src.path().join("a.tex"), "a").unwrap();
+
+        copy_dir_recursive(src.path(), dst.path()).unwrap();
+
+        assert!(dst.path().join("empty_sub").exists());
+        assert!(dst.path().join("empty_sub").is_dir());
+    }
+
+    // --- sync_source_files integration tests ---
+
+    #[test]
+    fn test_sync_source_files_copies_sources() {
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+
+        std::fs::write(src.path().join("main.tex"), "doc").unwrap();
+        std::fs::write(src.path().join("refs.bib"), "bib").unwrap();
+        std::fs::write(src.path().join("style.sty"), "sty").unwrap();
+
+        sync_source_files(src.path(), dst.path()).unwrap();
+
+        assert_eq!(std::fs::read_to_string(dst.path().join("main.tex")).unwrap(), "doc");
+        assert_eq!(std::fs::read_to_string(dst.path().join("refs.bib")).unwrap(), "bib");
+        assert_eq!(std::fs::read_to_string(dst.path().join("style.sty")).unwrap(), "sty");
+    }
+
+    #[test]
+    fn test_sync_source_files_skips_artifacts() {
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+
+        std::fs::write(src.path().join("main.tex"), "doc").unwrap();
+        std::fs::write(src.path().join("main.aux"), "aux").unwrap();
+        std::fs::write(src.path().join("main.log"), "log").unwrap();
+        std::fs::write(src.path().join("main.pdf"), "pdf").unwrap();
+        std::fs::write(src.path().join("main.synctex.gz"), "sync").unwrap();
+
+        sync_source_files(src.path(), dst.path()).unwrap();
+
+        assert!(dst.path().join("main.tex").exists());
+        assert!(!dst.path().join("main.aux").exists());
+        assert!(!dst.path().join("main.log").exists());
+        assert!(!dst.path().join("main.pdf").exists());
+        assert!(!dst.path().join("main.synctex.gz").exists());
+    }
+
+    #[test]
+    fn test_sync_source_files_recursive_and_skips_hidden() {
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+
+        std::fs::create_dir_all(src.path().join("chapters")).unwrap();
+        std::fs::create_dir_all(src.path().join(".claudeprism")).unwrap();
+        std::fs::write(src.path().join("chapters").join("ch1.tex"), "ch1").unwrap();
+        std::fs::write(src.path().join("chapters").join("ch1.aux"), "aux").unwrap();
+        std::fs::write(src.path().join(".claudeprism").join("data"), "data").unwrap();
+
+        sync_source_files(src.path(), dst.path()).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("chapters").join("ch1.tex")).unwrap(),
+            "ch1"
+        );
+        assert!(!dst.path().join("chapters").join("ch1.aux").exists());
+        assert!(!dst.path().join(".claudeprism").exists());
+    }
 }

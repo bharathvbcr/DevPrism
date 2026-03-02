@@ -434,4 +434,103 @@ mod tests {
         let (name, _) = extract_command_info(file, base).unwrap();
         assert_eq!(name, "my-command");
     }
+
+    // --- load_command_from_file integration tests ---
+
+    #[test]
+    fn test_load_command_from_file_simple() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("greet.md");
+        fs::write(&file, "Hello $ARGUMENTS, run !`echo hi` and check @main.tex").unwrap();
+
+        let cmd = load_command_from_file(&file, dir.path(), "project").unwrap();
+        assert_eq!(cmd.name, "greet");
+        assert!(cmd.namespace.is_none());
+        assert_eq!(cmd.full_command, "/greet");
+        assert_eq!(cmd.scope, "project");
+        assert!(cmd.accepts_arguments);
+        assert!(cmd.has_bash_commands);
+        assert!(cmd.has_file_references);
+        assert!(cmd.description.is_none());
+        assert!(cmd.allowed_tools.is_empty());
+    }
+
+    #[test]
+    fn test_load_command_from_file_with_frontmatter() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("lint.md");
+        let content = "---\ndescription: Run linter\nallowed-tools:\n  - Bash\n  - Read\n---\nLint the project";
+        fs::write(&file, content).unwrap();
+
+        let cmd = load_command_from_file(&file, dir.path(), "user").unwrap();
+        assert_eq!(cmd.name, "lint");
+        assert_eq!(cmd.description.unwrap(), "Run linter");
+        assert_eq!(cmd.allowed_tools, vec!["Bash", "Read"]);
+        assert_eq!(cmd.content, "Lint the project");
+    }
+
+    #[test]
+    fn test_load_command_from_file_nested_namespace() {
+        let dir = tempfile::tempdir().unwrap();
+        let ns_dir = dir.path().join("tools").join("rust");
+        fs::create_dir_all(&ns_dir).unwrap();
+        let file = ns_dir.join("clippy.md");
+        fs::write(&file, "Run clippy").unwrap();
+
+        let cmd = load_command_from_file(&file, dir.path(), "project").unwrap();
+        assert_eq!(cmd.name, "clippy");
+        assert_eq!(cmd.namespace.unwrap(), "tools:rust");
+        assert_eq!(cmd.full_command, "/tools:rust:clippy");
+    }
+
+    // --- find_markdown_files integration tests ---
+
+    #[test]
+    fn test_find_markdown_files_collects_md_only() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("cmd1.md"), "a").unwrap();
+        fs::write(dir.path().join("cmd2.md"), "b").unwrap();
+        fs::write(dir.path().join("notes.txt"), "c").unwrap();
+        fs::write(dir.path().join("data.json"), "d").unwrap();
+
+        let mut files = Vec::new();
+        find_markdown_files(dir.path(), &mut files);
+
+        assert_eq!(files.len(), 2);
+        let names: Vec<String> = files.iter().map(|f| f.file_name().unwrap().to_string_lossy().to_string()).collect();
+        assert!(names.contains(&"cmd1.md".to_string()));
+        assert!(names.contains(&"cmd2.md".to_string()));
+    }
+
+    #[test]
+    fn test_find_markdown_files_skips_hidden_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("visible.md"), "ok").unwrap();
+        let hidden = dir.path().join(".hidden");
+        fs::create_dir_all(&hidden).unwrap();
+        fs::write(hidden.join("secret.md"), "hidden").unwrap();
+
+        let mut files = Vec::new();
+        find_markdown_files(dir.path(), &mut files);
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].file_name().unwrap().to_str().unwrap(), "visible.md");
+    }
+
+    #[test]
+    fn test_find_markdown_files_recursive() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("top.md"), "top").unwrap();
+        let sub = dir.path().join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(sub.join("nested.md"), "nested").unwrap();
+
+        let mut files = Vec::new();
+        find_markdown_files(dir.path(), &mut files);
+
+        assert_eq!(files.len(), 2);
+        let names: Vec<String> = files.iter().map(|f| f.file_name().unwrap().to_string_lossy().to_string()).collect();
+        assert!(names.contains(&"top.md".to_string()));
+        assert!(names.contains(&"nested.md".to_string()));
+    }
 }

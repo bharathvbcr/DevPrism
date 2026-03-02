@@ -278,7 +278,7 @@ export function LatexEditor() {
       const data = await compileLatex(projectRoot, targetFile);
       setPdfData(data);
     } catch (error) {
-      setCompileError(error instanceof Error ? error.message : "Compilation failed");
+      setCompileError(error instanceof Error ? error.message : typeof error === "string" ? error : "Compilation failed");
     } finally {
       setIsCompiling(false);
     }
@@ -782,7 +782,7 @@ export function LatexEditor() {
         )}
         <ClaudeChatDrawer />
         {/* Selection toolbar */}
-        {toolbarPosition && selectionLabel && !isMergeActiveRef.current && (
+        {toolbarPosition && selectionLabel && !isMergeActiveRef.current && !isSearchOpen && (
           <SelectionToolbar
             position={toolbarPosition}
             contextLabel={selectionLabel}

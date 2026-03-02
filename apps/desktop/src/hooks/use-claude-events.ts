@@ -244,22 +244,28 @@ export function useClaudeEvents() {
       const docStore = useDocumentStore.getState();
       await docStore.refreshFiles();
 
-      // Auto-recompile after Claude finishes — always attempt if a tex file exists.
+      // Auto-recompile after Claude finishes.
+      // Prefer the active file if it's a .tex file; fall back to document.tex / main.tex.
       // Skip if another compilation is already in progress (e.g. initial compile).
-      const { projectRoot, files, isCompiling: alreadyCompiling } = useDocumentStore.getState();
+      const { projectRoot, files, activeFileId, isCompiling: alreadyCompiling } = useDocumentStore.getState();
       if (projectRoot && !alreadyCompiling) {
-        const mainFile = files.find(
-          (f) => f.name === "document.tex" || f.name === "main.tex",
-        );
-        if (mainFile) {
-          const mainFileName = mainFile.relativePath;
+        const activeFile = files.find((f) => f.id === activeFileId);
+        const targetFile =
+          activeFile?.type === "tex"
+            ? activeFile
+            : files.find((f) => f.name === "document.tex" || f.name === "main.tex");
+        if (targetFile) {
+          const mainFileName = targetFile.relativePath;
           useDocumentStore.getState().setIsCompiling(true);
           try {
+            // Flush any dirty files to disk before compiling so the
+            // compiler (which reads from disk) sees the latest content.
+            await useDocumentStore.getState().saveAllFiles();
             const pdfData = await compileLatex(projectRoot, mainFileName);
             useDocumentStore.getState().setPdfData(pdfData);
           } catch (err) {
             useDocumentStore.getState().setCompileError(
-              err instanceof Error ? err.message : "Compilation failed",
+              err instanceof Error ? err.message : typeof err === "string" ? err : "Compilation failed",
             );
           } finally {
             useDocumentStore.getState().setIsCompiling(false);

@@ -60,10 +60,10 @@ export function PdfPreview() {
   const files = useDocumentStore((s) => s.files);
   const saveAllFiles = useDocumentStore((s) => s.saveAllFiles);
   const setActiveFile = useDocumentStore((s) => s.setActiveFile);
-  const activeFileType = useDocumentStore((s) => {
-    const active = s.files.find((f) => f.id === s.activeFileId);
-    return active?.type ?? "tex";
+  const activeFile = useDocumentStore((s) => {
+    return s.files.find((f) => f.id === s.activeFileId) ?? null;
   });
+  const activeFileType = activeFile?.type ?? "tex";
   const isTexActive = activeFileType === "tex";
   const requestJumpToPosition = useDocumentStore(
     (s) => s.requestJumpToPosition,
@@ -277,20 +277,21 @@ export function PdfPreview() {
       setIsCompiling(true);
       try {
         await saveAllFiles();
-        const mainFile = files.find((f) => f.name === "document.tex" || f.name === "main.tex");
-        const mainFileName = mainFile?.relativePath || "document.tex";
-        const data = await compileLatex(projectRoot, mainFileName);
+        const targetFile = activeFile?.type === "tex"
+          ? activeFile.relativePath
+          : (files.find((f) => f.name === "document.tex" || f.name === "main.tex")?.relativePath || "document.tex");
+        const data = await compileLatex(projectRoot, targetFile);
         setPdfData(data);
       } catch (error) {
         setCompileError(
-          error instanceof Error ? error.message : "Compilation failed",
+          error instanceof Error ? error.message : typeof error === "string" ? error : "Compilation failed",
         );
       } finally {
         setIsCompiling(false);
       }
     };
     compile();
-  }, [initialized, projectRoot, pdfData, isCompiling, compileError, setIsCompiling, setPdfData, setCompileError, saveAllFiles, files]);
+  }, [initialized, projectRoot, pdfData, isCompiling, compileError, setIsCompiling, setPdfData, setCompileError, saveAllFiles, files, activeFile]);
 
   const zoomIn = () => setScale((s) => Math.min(4, s + 0.1));
   const zoomOut = () => setScale((s) => Math.max(0.25, s - 0.1));
@@ -320,12 +321,13 @@ export function PdfPreview() {
     setPdfError(null);
     try {
       await saveAllFiles();
-      const mainFile = files.find((f) => f.name === "document.tex" || f.name === "main.tex");
-      const mainFileName = mainFile?.relativePath || "document.tex";
-      const data = await compileLatex(projectRoot, mainFileName);
+      const targetFile = activeFile?.type === "tex"
+        ? activeFile.relativePath
+        : (files.find((f) => f.name === "document.tex" || f.name === "main.tex")?.relativePath || "document.tex");
+      const data = await compileLatex(projectRoot, targetFile);
       setPdfData(data);
     } catch (error) {
-      setCompileError(error instanceof Error ? error.message : "Compilation failed");
+      setCompileError(error instanceof Error ? error.message : typeof error === "string" ? error : "Compilation failed");
     } finally {
       setIsCompiling(false);
     }

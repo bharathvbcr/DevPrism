@@ -30,7 +30,7 @@ function getFileIcon(file: ProjectFile) {
   return <FileTextIcon className="size-3.5 shrink-0 text-muted-foreground" />;
 }
 
-export const ChatComposer: FC = () => {
+export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
   const sendPrompt = useClaudeChatStore((s) => s.sendPrompt);
   const cancelExecution = useClaudeChatStore((s) => s.cancelExecution);
   const isStreaming = useClaudeChatStore((s) => s.isStreaming);
@@ -85,6 +85,15 @@ export const ChatComposer: FC = () => {
   // Consume pending attachments from external sources (e.g. PDF capture)
   const pendingAttachments = useClaudeChatStore((s) => s.pendingAttachments);
   const consumePendingAttachments = useClaudeChatStore((s) => s.consumePendingAttachments);
+
+  // Focus textarea when the drawer opens
+  const prevOpenRef = useRef(false);
+  useEffect(() => {
+    if (isOpen && !prevOpenRef.current) {
+      setTimeout(() => textareaRef.current?.focus(), 0);
+    }
+    prevOpenRef.current = !!isOpen;
+  }, [isOpen]);
 
   useEffect(() => {
     if (pendingAttachments.length === 0) return;
@@ -697,7 +706,6 @@ export const ChatComposer: FC = () => {
             onPaste={handlePaste}
             placeholder="Ask me anything (/ for commands, @ to mention)"
             className="max-h-40 min-h-10 w-full resize-none bg-transparent px-4 py-2 text-sm outline-none placeholder:text-muted-foreground"
-            autoFocus
             rows={1}
           />
         )}

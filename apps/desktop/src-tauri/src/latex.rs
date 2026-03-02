@@ -358,6 +358,10 @@ pub async fn compile_latex(
         );
     }
 
+    // Remove stale PDF so a failed compile doesn't return the previous result.
+    let pdf_path = work_dir.join(format!("{}.pdf", main_file_name));
+    let _ = std::fs::remove_file(&pdf_path);
+
     // Run Tectonic in a blocking task (it uses an internal global mutex)
     let work_dir_clone = work_dir.clone();
     let main_file_clone = main_file.clone();
@@ -373,7 +377,6 @@ pub async fn compile_latex(
         compile_result.is_ok()
     );
 
-    let pdf_path = work_dir.join(format!("{}.pdf", main_file_name));
     let log_path = work_dir.join(format!("{}.log", main_file_name));
 
     // Handle "No pages of output" — retry with \AtEndDocument{\null} injection
@@ -892,5 +895,87 @@ Postamble:
         );
         assert!(!dst.path().join("chapters").join("ch1.aux").exists());
         assert!(!dst.path().join(".claudeprism").exists());
+    }
+
+    // --- sync_source_files preserves stale PDF (compile_latex deletes it separately) ---
+
+    #[test]
+    fn test_sync_source_files_does_not_copy_pdf_from_source() {
+        // sync_source_files treats .pdf as an artifact and does not copy it.
+        // This means a stale PDF in the build dir survives a sync — the
+        // compile_latex command must delete it explicitly before compiling.
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+
+        std::fs::write(src.path().join("main.tex"), "new content").unwrap();
+        // Simulate a stale PDF already sitting in the build dir
+        std::fs::write(dst.path().join("main.pdf"), "old pdf bytes").unwrap();
+
+        sync_source_files(src.path(), dst.path()).unwrap();
+
+        // Source .tex was synced
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("main.tex")).unwrap(),
+            "new content"
+        );
+        // Stale PDF in dst was NOT overwritten (sync skips .pdf)
+        // This confirms that compile_latex must delete the PDF itself
+        assert!(dst.path().join("main.pdf").exists());
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("main.pdf")).unwrap(),
+            "old pdf bytes"
+        );
+    }
+
+    #[test]
+    fn test_sync_source_files_overwrites_changed_tex_content() {
+        // Regression: when a user empties a file, sync must overwrite
+        // the old content in the build dir with the empty content.
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+
+        // Old content in build dir
+        std::fs::write(dst.path().join("main.tex"), "old content").unwrap();
+        // User emptied the file
+        std::fs::write(src.path().join("main.tex"), "").unwrap();
+
+        sync_source_files(src.path(), dst.path()).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("main.tex")).unwrap(),
+            ""
+        );
+    }
+
+    // --- persistent_build_dir ---
+
+    #[test]
+    fn test_stale_pdf_removal_pattern() {
+        // Simulates the pattern used in compile_latex: remove stale PDF
+        // before compilation so a failed compile doesn't return old results.
+        let build_dir = tempfile::tempdir().unwrap();
+        let pdf_path = build_dir.path().join("document.pdf");
+
+        // Simulate previous successful build left a PDF
+        std::fs::write(&pdf_path, "old pdf data").unwrap();
+        assert!(pdf_path.exists());
+
+        // This is what compile_latex does before running tectonic
+        let _ = std::fs::remove_file(&pdf_path);
+        assert!(!pdf_path.exists());
+
+        // If compilation fails, pdf_path.exists() is false → error returned
+    }
+
+    #[test]
+    fn test_stale_pdf_removal_no_existing_file() {
+        // remove_file on a non-existent path should not panic (we use let _ =)
+        let build_dir = tempfile::tempdir().unwrap();
+        let pdf_path = build_dir.path().join("document.pdf");
+
+        assert!(!pdf_path.exists());
+        let result = std::fs::remove_file(&pdf_path);
+        // It's an error but we ignore it with let _ =
+        assert!(result.is_err());
     }
 }

@@ -145,7 +145,7 @@ export function ClaudeChatDrawer() {
         </div>
 
         {/* Composer */}
-        <ChatComposer />
+        <ChatComposer isOpen={isOpen} />
       </div>
     </div>
   );

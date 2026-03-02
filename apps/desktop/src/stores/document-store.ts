@@ -95,7 +95,7 @@ function scheduleAutoSave() {
     const store = storeRef;
     if (!store) return;
     const state = store.getState();
-    const dirtyFiles = state.files.filter((f) => f.isDirty && f.content);
+    const dirtyFiles = state.files.filter((f) => f.isDirty && f.content != null);
     if (dirtyFiles.length > 0) {
       await state.saveAllFiles();
     }
@@ -347,7 +347,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
   saveFile: async (id) => {
     const state = get();
     const file = state.files.find((f) => f.id === id);
-    if (!file || !file.isDirty || !file.content) return;
+    if (!file || !file.isDirty || file.content == null) return;
 
     await writeTexFileContent(file.absolutePath, file.content);
     set((s) => ({
@@ -359,7 +359,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
 
   saveAllFiles: async () => {
     const state = get();
-    const dirtyFiles = state.files.filter((f) => f.isDirty && f.content);
+    const dirtyFiles = state.files.filter((f) => f.isDirty && f.content != null);
     const results = await Promise.allSettled(
       dirtyFiles.map((f) => writeTexFileContent(f.absolutePath, f.content!)),
     );

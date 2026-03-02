@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { writeTextFile } from "@tauri-apps/plugin-fs";
 import { useDocumentStore, type ProjectFile } from "@/stores/document-store";
 
 // Mock history store
@@ -250,6 +251,109 @@ describe("useDocumentStore", () => {
       expect(state.activeFileId).toBe("ch1.tex");
       expect(state.cursorPosition).toBe(0);
       expect(state.selectionRange).toBeNull();
+    });
+  });
+
+  describe("saveFile", () => {
+    beforeEach(() => {
+      vi.mocked(writeTextFile).mockClear();
+      vi.mocked(writeTextFile).mockResolvedValue(undefined);
+    });
+
+    it("saves a dirty file with content to disk", async () => {
+      useDocumentStore.setState({
+        files: [makeFile({ isDirty: true, content: "saved content" })],
+      });
+      await useDocumentStore.getState().saveFile("main.tex");
+      expect(writeTextFile).toHaveBeenCalledWith("/project/main.tex", "saved content");
+      expect(useDocumentStore.getState().files[0].isDirty).toBe(false);
+    });
+
+    it("saves a dirty file with empty string content (regression: empty content is not falsy-skipped)", async () => {
+      useDocumentStore.setState({
+        files: [makeFile({ isDirty: true, content: "" })],
+      });
+      await useDocumentStore.getState().saveFile("main.tex");
+      expect(writeTextFile).toHaveBeenCalledWith("/project/main.tex", "");
+      expect(useDocumentStore.getState().files[0].isDirty).toBe(false);
+    });
+
+    it("skips saving when content is null", async () => {
+      useDocumentStore.setState({
+        files: [makeFile({ isDirty: true, content: null as unknown as string })],
+      });
+      await useDocumentStore.getState().saveFile("main.tex");
+      expect(writeTextFile).not.toHaveBeenCalled();
+    });
+
+    it("skips saving when file is not dirty", async () => {
+      useDocumentStore.setState({
+        files: [makeFile({ isDirty: false, content: "clean" })],
+      });
+      await useDocumentStore.getState().saveFile("main.tex");
+      expect(writeTextFile).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("saveAllFiles", () => {
+    beforeEach(() => {
+      vi.mocked(writeTextFile).mockClear();
+      vi.mocked(writeTextFile).mockResolvedValue(undefined);
+    });
+
+    it("saves all dirty files", async () => {
+      useDocumentStore.setState({
+        files: [
+          makeFile({ isDirty: true, content: "dirty content" }),
+          makeFile({ id: "clean.tex", name: "clean.tex", absolutePath: "/project/clean.tex", relativePath: "clean.tex", isDirty: false, content: "clean" }),
+        ],
+      });
+      await useDocumentStore.getState().saveAllFiles();
+      expect(writeTextFile).toHaveBeenCalledTimes(1);
+      expect(writeTextFile).toHaveBeenCalledWith("/project/main.tex", "dirty content");
+    });
+
+    it("saves dirty files with empty string content (regression: empty string is not falsy-skipped)", async () => {
+      useDocumentStore.setState({
+        files: [
+          makeFile({ isDirty: true, content: "" }),
+          makeFile({ id: "slide.tex", name: "slide.tex", absolutePath: "/project/slide.tex", relativePath: "slide.tex", isDirty: true, content: "" }),
+        ],
+      });
+      await useDocumentStore.getState().saveAllFiles();
+      expect(writeTextFile).toHaveBeenCalledTimes(2);
+      expect(writeTextFile).toHaveBeenCalledWith("/project/main.tex", "");
+      expect(writeTextFile).toHaveBeenCalledWith("/project/slide.tex", "");
+      // Both should be marked clean
+      const files = useDocumentStore.getState().files;
+      expect(files.every((f) => !f.isDirty)).toBe(true);
+    });
+
+    it("skips files with null content even if dirty", async () => {
+      useDocumentStore.setState({
+        files: [
+          makeFile({ isDirty: true, content: null as unknown as string }),
+        ],
+      });
+      await useDocumentStore.getState().saveAllFiles();
+      expect(writeTextFile).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("setPdfData / setCompileError", () => {
+    it("setPdfData clears compile error", () => {
+      useDocumentStore.setState({ compileError: "some error" });
+      useDocumentStore.getState().setPdfData(new Uint8Array([1, 2, 3]));
+      const state = useDocumentStore.getState();
+      expect(state.pdfData).toEqual(new Uint8Array([1, 2, 3]));
+      expect(state.compileError).toBeNull();
+    });
+
+    it("setCompileError stores the error string (regression: Tauri string errors must be preserved)", () => {
+      useDocumentStore.getState().setCompileError("Compilation failed\n\n! Undefined control sequence.");
+      expect(useDocumentStore.getState().compileError).toBe(
+        "Compilation failed\n\n! Undefined control sequence."
+      );
     });
   });
 });

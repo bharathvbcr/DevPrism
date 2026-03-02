@@ -1,101 +1,128 @@
-# ClaudePrism
+<p align="center">
+  <img src="./apps/desktop/src-tauri/icons/icon.png" width="120" height="120" alt="ClaudePrism" />
+</p>
 
-Open-source AI-powered LaTeX writing workspace with live preview.
+<h1 align="center">ClaudePrism</h1>
 
 <p align="center">
-  <img src="./apps/desktop/src-tauri/icons/icon.png" width="128" height="128" />
+  Open-source AI-powered LaTeX writing workspace with live preview.
 </p>
+
+<p align="center">
+  <a href="https://github.com/delibae/claude-prism/releases">Releases</a> ·
+  <a href="#installation">Install</a> ·
+  <a href="#development">Development</a>
+</p>
+
+---
 
 ## Features
 
-- **AI-Assisted Writing** - Powered by assistant-ui for intelligent LaTeX assistance
-- **Live PDF Preview** - Real-time compilation and preview of your documents
-- **CodeMirror Editor** - Syntax highlighting and LaTeX language support
-- **Local Storage** - Documents saved in browser IndexedDB
-- **Dark/Light Theme** - Automatic theme switching support
+- **Claude AI Assistant** — Chat with Claude directly in the editor. Supports Sonnet, Opus, Haiku models with adjustable reasoning effort. Slash commands, tool use, and session persistence.
+- **LaTeX Editor** — CodeMirror 6 with LaTeX/BibTeX syntax highlighting, real-time linting, find & replace, and multi-file project support.
+- **Live PDF Preview** — Native MuPDF rendering with SyncTeX (click PDF → jump to source), zoom, text selection, and annotation capture.
+- **Tectonic Compilation** — Self-contained LaTeX compiler built in. No TeX Live installation required.
+- **Zotero Integration** — OAuth-based bibliography management and citation insertion.
+- **Proposed Changes** — AI-suggested edits with visual diff review (accept/reject per chunk).
+- **Template Gallery** — Pre-built LaTeX templates to start projects quickly.
+- **Project Management** — File browser, folder creation, file import, and auto-save.
+- **External Editor Support** — Open projects in Cursor, VS Code, Zed, or Sublime Text.
+- **Dark / Light Theme** — Automatic theme switching.
 
-## Install Desktop App (macOS)
+## Installation
+
+### macOS (Homebrew)
 
 ```bash
 brew tap delibae/claude-prism
 brew install --cask claude-prism
 ```
 
-Or download `.dmg` directly from [GitHub Releases](https://github.com/delibae/claude-prism/releases).
+### macOS / Windows / Linux
 
-## Quick Start
+Download the latest build from [GitHub Releases](https://github.com/delibae/claude-prism/releases):
 
-```bash
-# Clone the repository
-git clone https://github.com/delibae/claude-prism.git
-cd claude-prism
+| Platform | File | Install |
+|:--------:|:----:|:--------|
+| **macOS** (Apple Silicon) | `.dmg` | Open → drag to Applications |
+| **Windows** (x64) | `.msi` / `.exe` | Run the installer |
+| **Linux** (x64) | `.AppImage` | `chmod +x` and run |
+| **Linux** (x64) | `.deb` | `sudo dpkg -i claude-prism_*.deb` |
 
-# Install dependencies
-pnpm install
+> Claude AI features require the [Claude CLI](https://docs.anthropic.com/en/docs/claude-cli) (`claude`) installed locally.
 
-# Copy environment variables
-cp apps/web/.env.example apps/web/.env.local
+## Tech Stack
 
-# Configure your environment variables in apps/web/.env.local
-# - OPENAI_API_KEY: Your OpenAI API key
-# - LATEX_API_URL: URL to the LaTeX compilation service
-# - KV_REST_API_URL: KV REST API URL (for rate limiting)
-# - KV_REST_API_TOKEN: KV REST API token
-
-# Start development server
-pnpm dev:web
-```
+| Layer | Technology |
+|-------|-----------|
+| Desktop | **Tauri 2** + Rust |
+| Frontend | **React 19** + TypeScript + Vite |
+| Editor | **CodeMirror 6** |
+| PDF | **MuPDF** (native) |
+| LaTeX | **Tectonic** (embedded) |
+| State | **Zustand** |
+| UI | **Radix UI** + Tailwind CSS |
+| Monorepo | **pnpm** + Turborepo |
 
 ## Project Structure
 
 ```
 claude-prism/
 ├── apps/
-│   ├── web/          # Next.js frontend application
-│   └── latex-api/    # LaTeX compilation API (Hono + TeX Live)
-├── packages/         # Shared packages (if any)
-├── biome.json        # Biome linter configuration
-└── turbo.json        # Turborepo configuration
+│   ├── desktop/           # Tauri desktop app (main)
+│   │   ├── src/           # React frontend
+│   │   └── src-tauri/     # Rust backend
+│   ├── web/               # Next.js web app (legacy)
+│   └── latex-api/         # LaTeX compilation API (Hono)
+├── homebrew/              # Homebrew Cask formula
+├── .github/workflows/     # CI/CD (build + release)
+├── biome.json             # Linter config
+└── turbo.json             # Turborepo config
 ```
 
-### apps/web
+## Development
 
-Next.js 16 application with:
-- assistant-ui for AI chat interface
-- CodeMirror for LaTeX editing
-- react-pdf for PDF preview
-- Upstash Redis for rate limiting
+### Prerequisites
 
-### apps/latex-api
+- [Node.js](https://nodejs.org/) 22+
+- [pnpm](https://pnpm.io/) 10+
+- [Rust](https://rustup.rs/) (stable)
+- macOS: `brew install icu4c harfbuzz pkg-config`
 
-Hono-based API for LaTeX compilation:
-- Accepts LaTeX source code
-- Compiles using TeX Live (pdflatex)
-- Returns compiled PDF
-
-## Deployment
-
-### Web App (Vercel)
-
-1. Import the repository to Vercel
-2. Set root directory to `apps/web`
-3. Configure environment variables:
-   - `OPENAI_API_KEY`
-   - `LATEX_API_URL`
-   - `KV_REST_API_URL`
-   - `KV_REST_API_TOKEN`
-
-### LaTeX API (Docker)
+### Setup
 
 ```bash
-cd apps/latex-api
-docker build -t claude-prism-latex-api .
-docker run -p 3001:3001 claude-prism-latex-api
+git clone https://github.com/delibae/claude-prism.git
+cd claude-prism
+pnpm install
+```
+
+### Run
+
+```bash
+# Desktop app (Tauri dev mode)
+pnpm dev:desktop
+
+# Web app (legacy)
+pnpm dev:web
+```
+
+### Build
+
+```bash
+pnpm build:desktop
+```
+
+### Lint
+
+```bash
+pnpm lint          # check
+pnpm lint:fix      # auto-fix
 ```
 
 ## Contributing
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for development setup and contribution guidelines.
+Contributions are welcome! Please use [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`, `chore:`).
 
 ## License
 

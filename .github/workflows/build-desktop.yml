@@ -51,17 +51,17 @@ jobs:
           echo "CXXFLAGS=-I$(brew --prefix)/include -std=c++17" >> $GITHUB_ENV
           echo "CFLAGS=-I$(brew --prefix)/include" >> $GITHUB_ENV
 
-      - name: Import Apple signing certificate
+      - name: Setup Apple code signing
         id: signing
         if: contains(matrix.label, 'macos')
-        continue-on-error: true
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
           if [ -z "$APPLE_CERTIFICATE" ]; then
-            echo "::warning::Apple signing certificate not configured. Skipping code signing."
-            exit 1
+            echo "::warning::Apple signing certificate not configured. Building without signing."
+            echo "available=false" >> $GITHUB_OUTPUT
+            exit 0
           fi
 
           CERT_PATH=$RUNNER_TEMP/certificate.p12
@@ -73,17 +73,17 @@ jobs:
           security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
           security unlock-keychain -p "actions" $KEYCHAIN_PATH
 
-          security import $CERT_PATH -P "$APPLE_CERTIFICATE_PASSWORD" \
-            -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
-          security set-key-partition-list -S apple-tool:,apple: \
-            -k "actions" $KEYCHAIN_PATH
-          security list-keychain -d user -s $KEYCHAIN_PATH
-
-      - name: Set signing skip flag
-        if: contains(matrix.label, 'macos') && steps.signing.outcome != 'success'
-        run: |
-          echo "::warning::Apple code signing failed or not configured. Building without signing."
-          echo "APPLE_SIGNING_SKIPPED=true" >> $GITHUB_ENV
+          if security import $CERT_PATH -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k $KEYCHAIN_PATH; then
+            security set-key-partition-list -S apple-tool:,apple: \
+              -k "actions" $KEYCHAIN_PATH
+            security list-keychain -d user -s $KEYCHAIN_PATH
+            echo "available=true" >> $GITHUB_OUTPUT
+          else
+            echo "::warning::Failed to import certificate. Building without signing."
+            security delete-keychain $KEYCHAIN_PATH 2>/dev/null || true
+            echo "available=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -112,14 +112,14 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS code signing (skipped if not configured)
-          APPLE_CERTIFICATE: ${{ env.APPLE_SIGNING_SKIPPED != 'true' && secrets.APPLE_CERTIFICATE || '' }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ env.APPLE_SIGNING_SKIPPED != 'true' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
-          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_SKIPPED != 'true' && secrets.APPLE_SIGNING_IDENTITY || '' }}
-          # macOS notarization (skipped if not configured)
-          APPLE_ID: ${{ env.APPLE_SIGNING_SKIPPED != 'true' && secrets.APPLE_ID || '' }}
-          APPLE_PASSWORD: ${{ env.APPLE_SIGNING_SKIPPED != 'true' && secrets.APPLE_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ env.APPLE_SIGNING_SKIPPED != 'true' && secrets.APPLE_TEAM_ID || '' }}
+          # macOS code signing (only when certificate is available)
+          APPLE_CERTIFICATE: ${{ steps.signing.outputs.available == 'true' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ steps.signing.outputs.available == 'true' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ steps.signing.outputs.available == 'true' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          # macOS notarization (only when certificate is available)
+          APPLE_ID: ${{ steps.signing.outputs.available == 'true' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ steps.signing.outputs.available == 'true' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ steps.signing.outputs.available == 'true' && secrets.APPLE_TEAM_ID || '' }}
         with:
           projectPath: apps/desktop
           tauriScript: pnpm tauri
@@ -135,12 +135,12 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APPLE_CERTIFICATE: ${{ env.APPLE_SIGNING_SKIPPED != 'true' && secrets.APPLE_CERTIFICATE || '' }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ env.APPLE_SIGNING_SKIPPED != 'true' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
-          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_SKIPPED != 'true' && secrets.APPLE_SIGNING_IDENTITY || '' }}
-          APPLE_ID: ${{ env.APPLE_SIGNING_SKIPPED != 'true' && secrets.APPLE_ID || '' }}
-          APPLE_PASSWORD: ${{ env.APPLE_SIGNING_SKIPPED != 'true' && secrets.APPLE_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ env.APPLE_SIGNING_SKIPPED != 'true' && secrets.APPLE_TEAM_ID || '' }}
+          APPLE_CERTIFICATE: ${{ steps.signing.outputs.available == 'true' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ steps.signing.outputs.available == 'true' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ steps.signing.outputs.available == 'true' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_ID: ${{ steps.signing.outputs.available == 'true' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ steps.signing.outputs.available == 'true' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ steps.signing.outputs.available == 'true' && secrets.APPLE_TEAM_ID || '' }}
         with:
           projectPath: apps/desktop
           tauriScript: pnpm tauri

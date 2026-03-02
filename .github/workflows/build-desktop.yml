@@ -55,15 +55,16 @@ jobs:
           echo "CFLAGS=-I$(brew --prefix)/include" >> $GITHUB_ENV
 
       - name: Import Apple signing certificate
+        id: signing
         if: contains(matrix.label, 'macos')
+        continue-on-error: true
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
           if [ -z "$APPLE_CERTIFICATE" ]; then
             echo "::warning::Apple signing certificate not configured. Skipping code signing."
-            echo "APPLE_SIGNING_SKIPPED=true" >> $GITHUB_ENV
-            exit 0
+            exit 1
           fi
 
           CERT_PATH=$RUNNER_TEMP/certificate.p12
@@ -80,6 +81,12 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: \
             -k "actions" $KEYCHAIN_PATH
           security list-keychain -d user -s $KEYCHAIN_PATH
+
+      - name: Set signing skip flag
+        if: contains(matrix.label, 'macos') && steps.signing.outcome != 'success'
+        run: |
+          echo "::warning::Apple code signing failed or not configured. Building without signing."
+          echo "APPLE_SIGNING_SKIPPED=true" >> $GITHUB_ENV
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable

@@ -2,7 +2,9 @@
 
 Open-source AI-powered LaTeX writing workspace with live preview.
 
-![ClaudePrism Screenshot](./apps/desktop/src-tauri/icons/icon.png)
+<p align="center">
+  <img src="./apps/desktop/src-tauri/icons/icon.png" width="128" height="128" />
+</p>
 
 ## Features
 

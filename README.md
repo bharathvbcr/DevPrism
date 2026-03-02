@@ -35,11 +35,11 @@ ClaudePrism takes a different approach: **everything runs locally on your machin
 
 ### Your Research, Your Machine
 
-ClaudePrism invokes the **Claude CLI** as a local subprocess. Your documents stay on disk — only prompts are sent to the Claude API for inference.
+ClaudePrism invokes **Claude Code** as a local subprocess. Your documents stay on disk — only prompts are sent to the Claude API for inference.
 
 **How the two compare on data:**
 
-| | OpenAI Prism | ClaudePrism (via Claude CLI) |
+| | OpenAI Prism | ClaudePrism (via Claude Code) |
 |---|---|---|
 | Where documents live | OpenAI cloud servers | Your local disk |
 | Default training policy | **ON** — ChatGPT personal accounts [train models by default](https://openai.com/policies/how-your-data-is-used-to-improve-model-performance/) | **ON** for Consumer (Free/Pro/Max), **OFF** for [Commercial plans](https://code.claude.com/docs/en/data-usage) (Team/Enterprise/API) |
@@ -105,36 +105,7 @@ Download the latest build from [GitHub Releases](https://github.com/delibae/clau
 | **Linux** (x64) | `.AppImage` | `chmod +x` and run |
 | **Linux** (x64) | `.deb` | `sudo dpkg -i claude-prism_*.deb` |
 
-> Claude AI features require the [Claude CLI](https://docs.anthropic.com/en/docs/claude-cli) installed locally.
-
 ---
-
-## Tech Stack
-
-| Layer | Technology |
-|-------|-----------|
-| Desktop | **Tauri 2** + Rust |
-| Frontend | **React 19** + TypeScript + Vite |
-| Editor | **CodeMirror 6** |
-| PDF | **MuPDF** (native) |
-| LaTeX | **Tectonic** (embedded) |
-| State | **Zustand** |
-| UI | **Radix UI** + Tailwind CSS |
-| Monorepo | **pnpm** + Turborepo |
-
-## Project Structure
-
-```
-claude-prism/
-├── apps/
-│   └── desktop/           # Tauri desktop app
-│       ├── src/           # React frontend
-│       └── src-tauri/     # Rust backend
-├── homebrew/              # Homebrew Cask formula
-├── .github/workflows/     # CI/CD (build + release)
-├── biome.json             # Linter config
-└── turbo.json             # Turborepo config
-```
 
 ## Development
 

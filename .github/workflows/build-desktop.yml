@@ -78,8 +78,8 @@ jobs:
           echo "VCPKGRS_TRIPLET=x64-windows-static-release" >> $GITHUB_ENV
           echo "VCPKG_DEFAULT_HOST_TRIPLET=x64-windows-static-release" >> $GITHUB_ENV
           echo "RUSTFLAGS=-Ctarget-feature=+crt-static" >> $GITHUB_ENV
-          # Override macOS-specific flags from .cargo/config.toml
-          echo "CXXFLAGS=" >> $GITHUB_ENV
+          # Override macOS-specific paths from .cargo/config.toml; ICU 78+ requires C++17
+          echo "CXXFLAGS=/std:c++17" >> $GITHUB_ENV
           echo "CFLAGS=" >> $GITHUB_ENV
 
       - name: Setup Apple code signing

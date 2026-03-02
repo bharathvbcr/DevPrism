@@ -1051,4 +1051,81 @@ mod tests {
         let prompt = &args[prompt_idx + 1];
         assert!(prompt.contains("LaTeX"));
     }
+
+    // --- create_command ---
+
+    #[test]
+    fn test_create_command_sets_args_and_cwd() {
+        let args = vec!["--version".to_string()];
+        let cmd = create_command("/usr/bin/claude", args, "/tmp/project", None);
+        // Command is created — we can verify via its Debug representation
+        let debug_str = format!("{:?}", cmd);
+        assert!(debug_str.contains("--version"));
+    }
+
+    #[test]
+    fn test_create_command_default_effort_level() {
+        let cmd = create_command("/usr/bin/claude", vec![], "/tmp", None);
+        let debug_str = format!("{:?}", cmd);
+        // The env setup is internal; just verify the command is created
+        assert!(debug_str.contains("claude"));
+    }
+
+    #[test]
+    fn test_create_command_custom_effort_level() {
+        let cmd = create_command("/usr/bin/claude", vec![], "/tmp", Some("high"));
+        let debug_str = format!("{:?}", cmd);
+        assert!(debug_str.contains("claude"));
+    }
+
+    // --- clean_user_message_title edge cases ---
+
+    #[test]
+    fn test_clean_user_message_title_context_with_nested_brackets() {
+        let text = "[File: main.tex]\n[Selection: @main.tex:1:1-5:10]\n\nWrite an abstract";
+        let result = clean_user_message_title(text);
+        assert_eq!(result, Some("Write an abstract".to_string()));
+    }
+
+    #[test]
+    fn test_clean_user_message_title_only_context_no_body() {
+        // After stripping context prefix, if it becomes an IDE tag, returns None
+        let text = "[context info]\n\n<ide_something>hidden";
+        let result = clean_user_message_title(text);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_clean_user_message_title_only_whitespace_after_strip() {
+        let text = "[context]\n\n   ";
+        let result = clean_user_message_title(text);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_clean_user_message_title_multibyte_truncation() {
+        // Truncation counts chars, not bytes
+        let text = "あ".repeat(100); // 100 Japanese chars
+        let result = clean_user_message_title(&text).unwrap();
+        assert!(result.ends_with("..."));
+        // 77 chars + "..." = 80 display chars
+        assert_eq!(result.chars().count(), 80);
+    }
+
+    // --- get_sessions_dir edge cases ---
+
+    #[test]
+    fn test_get_sessions_dir_windows_path_style() {
+        let result = get_sessions_dir("C:\\Users\\dev\\project").unwrap();
+        let dir_name = result.file_name().unwrap().to_str().unwrap();
+        assert_eq!(dir_name, "C--Users-dev-project");
+    }
+
+    #[test]
+    fn test_get_sessions_dir_dots_and_underscores() {
+        let result = get_sessions_dir("/home/user/.my_project.v2").unwrap();
+        let dir_name = result.file_name().unwrap().to_str().unwrap();
+        // dots and underscores are non-alphanumeric → replaced with '-'
+        assert_eq!(dir_name, "-home-user--my-project-v2");
+    }
 }

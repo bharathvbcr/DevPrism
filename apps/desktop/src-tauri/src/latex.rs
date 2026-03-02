@@ -681,4 +681,105 @@ Postamble:
         let result = parse_synctex_data("", 1, 0.0, 0.0);
         assert!(result.is_none());
     }
+
+    // --- extract_error_lines additional edge cases ---
+
+    #[test]
+    fn test_extract_error_lines_mixed_error_formats() {
+        let log = "preamble\n! LaTeX Error: File not found.\nl.42 \\input{missing}\nerror: compilation stopped";
+        let result = extract_error_lines(log);
+        assert!(result.contains("LaTeX Error"));
+        assert!(result.contains("error: compilation stopped"));
+    }
+
+    #[test]
+    fn test_extract_error_lines_short_log_no_errors() {
+        let log = "This is a short log without errors";
+        let result = extract_error_lines(log);
+        // Short log (< 500 chars) returned as tail
+        assert_eq!(result, log);
+    }
+
+    // --- parse_synctex_node additional edge cases ---
+
+    #[test]
+    fn test_parse_synctex_node_negative_coordinates() {
+        let node = parse_synctex_node("1,1,0:-500,300", 1.0, 0.0, 0.0);
+        assert!(node.is_some());
+        let n = node.unwrap();
+        assert_eq!(n.h, -500.0);
+        assert_eq!(n.v, 300.0);
+    }
+
+    #[test]
+    fn test_parse_synctex_node_factor_scaling() {
+        // factor=2.0 should double the coordinates
+        let node = parse_synctex_node("1,1,0:100,200", 2.0, 0.0, 0.0);
+        let n = node.unwrap();
+        assert_eq!(n.h, 200.0);
+        assert_eq!(n.v, 400.0);
+    }
+
+    #[test]
+    fn test_parse_synctex_node_zero_tag_and_line() {
+        let node = parse_synctex_node("0,0,0:0,0", 1.0, 0.0, 0.0);
+        let n = node.unwrap();
+        assert_eq!(n.tag, 0);
+        assert_eq!(n.line, 0);
+    }
+
+    // --- parse_synctex_data additional edge cases ---
+
+    #[test]
+    fn test_parse_synctex_data_multiple_inputs() {
+        let data = "\
+Input:1:./main.tex
+Input:2:./chapter1.tex
+Magnification:1000
+Unit:1
+X Offset:0
+Y Offset:0
+Content:
+{1
+h2,15,0:500,500
+}1
+Postamble:
+";
+        let result = parse_synctex_data(data, 1, 0.0, 0.0);
+        assert!(result.is_some());
+        let (file, line, _) = result.unwrap();
+        assert_eq!(file, "./chapter1.tex");
+        assert_eq!(line, 15);
+    }
+
+    #[test]
+    fn test_parse_synctex_data_multiple_pages() {
+        let data = "\
+Input:1:./main.tex
+Magnification:1000
+Unit:1
+X Offset:0
+Y Offset:0
+Content:
+{1
+h1,5,0:100,100
+}1
+{2
+h1,25,0:200,200
+}2
+Postamble:
+";
+        let result = parse_synctex_data(data, 2, 200.0, 200.0);
+        assert!(result.is_some());
+        let (_, line, _) = result.unwrap();
+        assert_eq!(line, 25);
+    }
+
+    // --- persistent_build_dir edge case ---
+
+    #[test]
+    fn test_persistent_build_dir_trailing_slash() {
+        let dir = persistent_build_dir("/project/");
+        assert_eq!(dir, PathBuf::from("/project/.prism/build"));
+    }
 }

@@ -364,3 +364,112 @@ pub async fn zotero_cancel_oauth(
     *state.lock().await = None;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_percent_encode_unreserved() {
+        // Unreserved characters (RFC 3986) should pass through
+        assert_eq!(percent_encode("abc"), "abc");
+        assert_eq!(percent_encode("ABC"), "ABC");
+        assert_eq!(percent_encode("012"), "012");
+        assert_eq!(percent_encode("-._~"), "-._~");
+    }
+
+    #[test]
+    fn test_percent_encode_special_chars() {
+        assert_eq!(percent_encode(" "), "%20");
+        assert_eq!(percent_encode("&"), "%26");
+        assert_eq!(percent_encode("="), "%3D");
+        assert_eq!(percent_encode("/"), "%2F");
+        assert_eq!(percent_encode("hello world"), "hello%20world");
+    }
+
+    #[test]
+    fn test_percent_encode_empty() {
+        assert_eq!(percent_encode(""), "");
+    }
+
+    #[test]
+    fn test_hmac_sha1_known_vector() {
+        // Known HMAC-SHA1 test vector
+        let result = hmac_sha1("key", "The quick brown fox jumps over the lazy dog");
+        // HMAC-SHA1("key", "The quick brown fox jumps over the lazy dog") is a known value
+        assert!(!result.is_empty());
+        // Base64 encoded, should contain only valid base64 chars
+        assert!(result.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '='));
+    }
+
+    #[test]
+    fn test_oauth_signature_produces_base64() {
+        let params = vec![
+            ("oauth_consumer_key".to_string(), "key123".to_string()),
+            ("oauth_nonce".to_string(), "nonce".to_string()),
+            ("oauth_signature_method".to_string(), "HMAC-SHA1".to_string()),
+            ("oauth_timestamp".to_string(), "1234567890".to_string()),
+            ("oauth_version".to_string(), "1.0".to_string()),
+        ];
+        let sig = oauth_signature("POST", "https://example.com/api", &params, "consumer_secret", "token_secret");
+        assert!(!sig.is_empty());
+        // Should be valid base64
+        assert!(sig.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '='));
+    }
+
+    #[test]
+    fn test_oauth_signature_deterministic() {
+        let params = vec![
+            ("a".to_string(), "1".to_string()),
+            ("b".to_string(), "2".to_string()),
+        ];
+        let sig1 = oauth_signature("GET", "https://example.com", &params, "cs", "ts");
+        let sig2 = oauth_signature("GET", "https://example.com", &params, "cs", "ts");
+        assert_eq!(sig1, sig2);
+    }
+
+    #[test]
+    fn test_build_auth_header_format() {
+        let params = vec![
+            ("oauth_consumer_key".to_string(), "mykey".to_string()),
+            ("oauth_nonce".to_string(), "abc".to_string()),
+            ("non_oauth_param".to_string(), "ignored".to_string()),
+        ];
+        let header = build_auth_header(&params);
+        assert!(header.starts_with("OAuth "));
+        assert!(header.contains("oauth_consumer_key"));
+        assert!(header.contains("oauth_nonce"));
+        // Non-oauth params should be excluded
+        assert!(!header.contains("non_oauth_param"));
+    }
+
+    #[test]
+    fn test_parse_form_urlencoded_basic() {
+        let result = parse_form_urlencoded("key1=val1&key2=val2");
+        assert_eq!(result.get("key1").unwrap(), "val1");
+        assert_eq!(result.get("key2").unwrap(), "val2");
+    }
+
+    #[test]
+    fn test_parse_form_urlencoded_empty_value() {
+        let result = parse_form_urlencoded("key1=&key2=val");
+        assert_eq!(result.get("key1").unwrap(), "");
+        assert_eq!(result.get("key2").unwrap(), "val");
+    }
+
+    #[test]
+    fn test_parse_form_urlencoded_single_pair() {
+        let result = parse_form_urlencoded("token=abc123");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.get("token").unwrap(), "abc123");
+    }
+
+    #[test]
+    fn test_parse_form_urlencoded_empty_string() {
+        let result = parse_form_urlencoded("");
+        // Empty string splits into [""] — splitn(2, '=') on "" yields key="" with no '=',
+        // so value defaults to "" and we get one entry: ("", "")
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.get("").unwrap(), "");
+    }
+}

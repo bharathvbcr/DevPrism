@@ -12,6 +12,10 @@
         "KV_REST_API_TOKEN"
       ]
     },
+    "test": {
+      "dependsOn": ["^build"],
+      "inputs": ["src/**", "tests/**", "vitest.config.*"]
+    },
     "dev": {
       "cache": false,
       "persistent": true

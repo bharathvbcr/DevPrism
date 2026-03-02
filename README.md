@@ -165,6 +165,16 @@ pnpm dev:desktop
 pnpm build:desktop
 ```
 
+### Test
+
+```bash
+# Frontend (Vitest)
+cd apps/desktop && pnpm test
+
+# Rust
+cd apps/desktop/src-tauri && cargo test
+```
+
 ### Lint
 
 ```bash

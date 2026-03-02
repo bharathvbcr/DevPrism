@@ -949,3 +949,106 @@ pub async fn set_claude_fast_mode(enabled: bool) -> Result<(), String> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- get_sessions_dir ---
+
+    #[test]
+    fn test_get_sessions_dir_encodes_path() {
+        let result = get_sessions_dir("/Users/dev/my_project");
+        assert!(result.is_ok());
+        let path = result.unwrap();
+        let dir_name = path.file_name().unwrap().to_str().unwrap();
+        // All non-alphanumeric chars should be replaced with '-'
+        assert_eq!(dir_name, "-Users-dev-my-project");
+    }
+
+    #[test]
+    fn test_get_sessions_dir_alphanumeric_only() {
+        let result = get_sessions_dir("abc123");
+        assert!(result.is_ok());
+        let path = result.unwrap();
+        let dir_name = path.file_name().unwrap().to_str().unwrap();
+        assert_eq!(dir_name, "abc123");
+    }
+
+    #[test]
+    fn test_get_sessions_dir_special_chars() {
+        let result = get_sessions_dir("/a/b c/d@e");
+        assert!(result.is_ok());
+        let path = result.unwrap();
+        let dir_name = path.file_name().unwrap().to_str().unwrap();
+        assert_eq!(dir_name, "-a-b-c-d-e");
+    }
+
+    // --- clean_user_message_title ---
+
+    #[test]
+    fn test_clean_user_message_title_simple() {
+        let result = clean_user_message_title("Hello Claude");
+        assert_eq!(result, Some("Hello Claude".to_string()));
+    }
+
+    #[test]
+    fn test_clean_user_message_title_skips_ide_tags() {
+        assert_eq!(clean_user_message_title("<ide_something>data"), None);
+        assert_eq!(clean_user_message_title("<system-reminder>stuff"), None);
+    }
+
+    #[test]
+    fn test_clean_user_message_title_skips_command_tags() {
+        assert_eq!(clean_user_message_title("<command-name>test"), None);
+        assert_eq!(clean_user_message_title("<local-command-stdout>output"), None);
+    }
+
+    #[test]
+    fn test_clean_user_message_title_strips_context_prefix() {
+        let text = "[Currently open file: main.tex]\n\nFix the bibliography";
+        let result = clean_user_message_title(text);
+        assert_eq!(result, Some("Fix the bibliography".to_string()));
+    }
+
+    #[test]
+    fn test_clean_user_message_title_truncates_at_80() {
+        let long_text = "a".repeat(100);
+        let result = clean_user_message_title(&long_text).unwrap();
+        assert_eq!(result.len(), 80); // 77 chars + "..."
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_clean_user_message_title_empty() {
+        assert_eq!(clean_user_message_title(""), None);
+        assert_eq!(clean_user_message_title("   "), None);
+    }
+
+    #[test]
+    fn test_clean_user_message_title_exactly_80_chars() {
+        let text = "a".repeat(80);
+        let result = clean_user_message_title(&text).unwrap();
+        assert_eq!(result, text); // No truncation needed
+    }
+
+    // --- common_claude_args ---
+
+    #[test]
+    fn test_common_claude_args_has_required_flags() {
+        let args = common_claude_args();
+        assert!(args.contains(&"--output-format".to_string()));
+        assert!(args.contains(&"stream-json".to_string()));
+        assert!(args.contains(&"--verbose".to_string()));
+        assert!(args.contains(&"--dangerously-skip-permissions".to_string()));
+        assert!(args.contains(&"--append-system-prompt".to_string()));
+    }
+
+    #[test]
+    fn test_common_claude_args_system_prompt_mentions_latex() {
+        let args = common_claude_args();
+        let prompt_idx = args.iter().position(|a| a == "--append-system-prompt").unwrap();
+        let prompt = &args[prompt_idx + 1];
+        assert!(prompt.contains("LaTeX"));
+    }
+}

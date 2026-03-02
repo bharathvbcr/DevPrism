@@ -354,3 +354,84 @@ fn remove_empty_dirs(dir: &Path) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_markdown_no_frontmatter() {
+        let (fm, body) = parse_markdown_with_frontmatter("Just some content\nwith lines");
+        assert!(fm.is_none());
+        assert_eq!(body, "Just some content\nwith lines");
+    }
+
+    #[test]
+    fn test_parse_markdown_empty() {
+        let (fm, body) = parse_markdown_with_frontmatter("");
+        assert!(fm.is_none());
+        assert_eq!(body, "");
+    }
+
+    #[test]
+    fn test_parse_markdown_with_valid_frontmatter() {
+        let content = "---\ndescription: My command\n---\nBody content here";
+        let (fm, body) = parse_markdown_with_frontmatter(content);
+        assert!(fm.is_some());
+        let fm = fm.unwrap();
+        assert_eq!(fm.description.unwrap(), "My command");
+        assert_eq!(body, "Body content here");
+    }
+
+    #[test]
+    fn test_parse_markdown_with_allowed_tools() {
+        let content = "---\ndescription: Test\nallowed-tools:\n  - Bash\n  - Read\n---\nBody";
+        let (fm, body) = parse_markdown_with_frontmatter(content);
+        let fm = fm.unwrap();
+        assert_eq!(fm.allowed_tools.unwrap(), vec!["Bash", "Read"]);
+        assert_eq!(body, "Body");
+    }
+
+    #[test]
+    fn test_parse_markdown_unclosed_frontmatter() {
+        let content = "---\ndescription: Test\nno closing delimiter";
+        let (fm, body) = parse_markdown_with_frontmatter(content);
+        assert!(fm.is_none());
+        assert_eq!(body, content);
+    }
+
+    #[test]
+    fn test_extract_command_info_simple() {
+        let base = Path::new("/commands");
+        let file = Path::new("/commands/greet.md");
+        let (name, namespace) = extract_command_info(file, base).unwrap();
+        assert_eq!(name, "greet");
+        assert!(namespace.is_none());
+    }
+
+    #[test]
+    fn test_extract_command_info_nested() {
+        let base = Path::new("/commands");
+        let file = Path::new("/commands/tools/lint.md");
+        let (name, namespace) = extract_command_info(file, base).unwrap();
+        assert_eq!(name, "lint");
+        assert_eq!(namespace.unwrap(), "tools");
+    }
+
+    #[test]
+    fn test_extract_command_info_deeply_nested() {
+        let base = Path::new("/commands");
+        let file = Path::new("/commands/tools/rust/clippy.md");
+        let (name, namespace) = extract_command_info(file, base).unwrap();
+        assert_eq!(name, "clippy");
+        assert_eq!(namespace.unwrap(), "tools:rust");
+    }
+
+    #[test]
+    fn test_extract_command_info_strips_extension() {
+        let base = Path::new("/base");
+        let file = Path::new("/base/my-command.md");
+        let (name, _) = extract_command_info(file, base).unwrap();
+        assert_eq!(name, "my-command");
+    }
+}

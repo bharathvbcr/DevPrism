@@ -508,3 +508,177 @@ pub async fn cleanup_all_builds(state: &LatexCompilerState) {
     let mut builds = state.last_builds.lock().await;
     builds.clear();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- extract_error_lines ---
+
+    #[test]
+    fn test_extract_error_lines_empty_log() {
+        assert_eq!(extract_error_lines(""), "");
+    }
+
+    #[test]
+    fn test_extract_error_lines_no_pages() {
+        let log = "Some preamble\nNo pages of output.\nSome trailing";
+        let result = extract_error_lines(log);
+        assert_eq!(result, "No pages of output. Add visible content to the document body.");
+    }
+
+    #[test]
+    fn test_extract_error_lines_with_errors() {
+        let log = "line 1\n! Undefined control sequence.\nline 3\n! Missing $ inserted.\nline 5";
+        let result = extract_error_lines(log);
+        assert!(result.contains("Undefined control sequence"));
+        assert!(result.contains("Missing $ inserted"));
+    }
+
+    #[test]
+    fn test_extract_error_lines_error_colon() {
+        let log = "stuff\nLatex Error: Bad math environment\nmore stuff";
+        let result = extract_error_lines(log);
+        assert!(result.contains("Error:"));
+    }
+
+    #[test]
+    fn test_extract_error_lines_no_errors_returns_tail() {
+        let log = "a".repeat(1000);
+        let result = extract_error_lines(&log);
+        // Should return last 500 chars
+        assert_eq!(result.len(), 500);
+    }
+
+    #[test]
+    fn test_extract_error_lines_limits_to_10() {
+        let mut log = String::new();
+        for i in 0..20 {
+            log.push_str(&format!("! Error number {}\n", i));
+        }
+        let result = extract_error_lines(&log);
+        let count = result.lines().count();
+        assert!(count <= 10);
+    }
+
+    // --- persistent_build_dir ---
+
+    #[test]
+    fn test_persistent_build_dir() {
+        let dir = persistent_build_dir("/Users/dev/my-project");
+        assert_eq!(dir, PathBuf::from("/Users/dev/my-project/.prism/build"));
+    }
+
+    // --- parse_synctex_node ---
+
+    #[test]
+    fn test_parse_synctex_node_basic() {
+        // Format: tag,line,column:h,v
+        let node = parse_synctex_node("1,42,0:1000,2000", 1.0, 0.0, 0.0);
+        assert!(node.is_some());
+        let node = node.unwrap();
+        assert_eq!(node.tag, 1);
+        assert_eq!(node.line, 42);
+        assert_eq!(node.h, 1000.0);
+        assert_eq!(node.v, 2000.0);
+    }
+
+    #[test]
+    fn test_parse_synctex_node_with_dimensions() {
+        // Format: tag,line,column:h,v:W,H,D
+        let node = parse_synctex_node("3,10,0:500,600:100,20,5", 1.0, 0.0, 0.0);
+        assert!(node.is_some());
+        let node = node.unwrap();
+        assert_eq!(node.tag, 3);
+        assert_eq!(node.line, 10);
+    }
+
+    #[test]
+    fn test_parse_synctex_node_with_offset() {
+        let node = parse_synctex_node("1,1,0:0,0", 1.0, 10.0, 20.0);
+        let node = node.unwrap();
+        assert_eq!(node.h, 10.0); // 0 * 1.0 + 10.0
+        assert_eq!(node.v, 20.0); // 0 * 1.0 + 20.0
+    }
+
+    #[test]
+    fn test_parse_synctex_node_invalid_missing_colon() {
+        assert!(parse_synctex_node("1,1,0", 1.0, 0.0, 0.0).is_none());
+    }
+
+    #[test]
+    fn test_parse_synctex_node_invalid_missing_comma() {
+        assert!(parse_synctex_node("1:100,200", 1.0, 0.0, 0.0).is_none());
+    }
+
+    // --- parse_synctex_data ---
+
+    #[test]
+    fn test_parse_synctex_data_basic() {
+        let data = "\
+SyncTeX Version:1
+Input:1:./main.tex
+Magnification:1000
+Unit:1
+X Offset:0
+Y Offset:0
+Content:
+{1
+h1,5,0:1000,2000:500,100,0
+}1
+Postamble:
+";
+        let result = parse_synctex_data(data, 1, 50.0, 50.0);
+        assert!(result.is_some());
+        let (file, line, _col) = result.unwrap();
+        assert_eq!(file, "./main.tex");
+        assert_eq!(line, 5);
+    }
+
+    #[test]
+    fn test_parse_synctex_data_wrong_page() {
+        let data = "\
+Input:1:./main.tex
+Magnification:1000
+Unit:1
+X Offset:0
+Y Offset:0
+Content:
+{1
+h1,5,0:1000,2000
+}1
+Postamble:
+";
+        // Looking for page 2 but data only has page 1
+        let result = parse_synctex_data(data, 2, 50.0, 50.0);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_parse_synctex_data_closest_node() {
+        let data = "\
+Input:1:./main.tex
+Magnification:1000
+Unit:1
+X Offset:0
+Y Offset:0
+Content:
+{1
+h1,10,0:0,0
+h1,20,0:100000000,100000000
+}1
+Postamble:
+";
+        // (0, 0) is closer to the first node
+        let result = parse_synctex_data(data, 1, 0.0, 0.0);
+        assert!(result.is_some());
+        let (_, line, _) = result.unwrap();
+        assert_eq!(line, 10);
+    }
+
+    #[test]
+    fn test_parse_synctex_data_empty() {
+        let result = parse_synctex_data("", 1, 0.0, 0.0);
+        assert!(result.is_none());
+    }
+}

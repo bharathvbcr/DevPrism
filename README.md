@@ -157,6 +157,10 @@ pnpm lint:fix      # auto-fix
 
 Contributions are welcome! Please use [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`, `chore:`).
 
+## Acknowledgments
+
+This project started from [Open Prism](https://github.com/assistant-ui/open-prism) by [assistant-ui](https://github.com/assistant-ui).
+
 ## License
 
 [MIT](./LICENSE)

@@ -1,7 +1,9 @@
 import { useRef, useState, useCallback, useEffect } from "react";
 import {
   ChevronDownIcon,
+  Maximize2Icon,
   MessageCircleIcon,
+  Minimize2Icon,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -22,6 +24,7 @@ export function ClaudeChatDrawer() {
   const error = useClaudeChatStore((s) => s.error);
 
   const [isOpen, setIsOpen] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(false);
   const [height, setHeight] = useState(DEFAULT_HEIGHT);
   const [isDragging, setIsDragging] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -48,6 +51,8 @@ export function ClaudeChatDrawer() {
   }, [isStreaming, isOpen, pendingAttachments]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    if (isExpanded) return;
+
     e.preventDefault();
     setIsDragging(true);
     hasDraggedRef.current = false;
@@ -79,12 +84,35 @@ export function ClaudeChatDrawer() {
 
     document.addEventListener("mousemove", handleMouseMove);
     document.addEventListener("mouseup", handleMouseUp);
+  }, [isExpanded]);
+
+  // Compute expanded dimensions from parent
+  const getExpandedDimensions = useCallback(() => {
+    const parent = containerRef.current?.parentElement;
+    return {
+      height: parent?.clientHeight ?? 600,
+      width: parent?.clientWidth ?? 800,
+    };
   }, []);
+
+  const panelStyle = (): React.CSSProperties => {
+    if (!isOpen && !isExpanded) {
+      return { height: 0, maxWidth: 672, borderRadius: 24 };
+    }
+    if (isExpanded) {
+      const dims = getExpandedDimensions();
+      return { height: dims.height, maxWidth: dims.width, borderRadius: 0 };
+    }
+    return { height, maxWidth: 672, borderRadius: 24 };
+  };
 
   return (
     <div
       ref={containerRef}
-      className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex justify-center p-4 pb-6"
+      className={cn(
+        "pointer-events-none absolute inset-0 z-10 flex items-end justify-center transition-[padding] duration-300 ease-out",
+        isExpanded ? "p-0" : "px-4 pb-6 pt-4"
+      )}
     >
       {/* Floating toggle button */}
       <button
@@ -105,32 +133,55 @@ export function ClaudeChatDrawer() {
       <div
         ref={panelRef}
         className={cn(
-          "pointer-events-auto flex w-full max-w-2xl origin-bottom flex-col overflow-hidden rounded-3xl border border-border bg-background shadow-2xl transition-all duration-300 ease-out",
+          "pointer-events-auto flex w-full flex-col overflow-hidden border bg-background transition-[height,max-width,border-radius,border-color,box-shadow,opacity,transform] duration-300 ease-out",
+          isExpanded ? "border-transparent shadow-none" : "border-border shadow-2xl",
           isOpen
             ? "scale-100 opacity-100"
-            : "pointer-events-none scale-95 opacity-0",
+            : "pointer-events-none origin-bottom scale-95 opacity-0",
           isDragging && "!transition-none"
         )}
-        style={{ height: isOpen ? height : 0 }}
+        style={panelStyle()}
       >
         {/* Header with drag handle and session selector */}
-        <div className="relative">
-          <div
-            className="group flex cursor-row-resize items-center justify-center gap-2 py-2 transition-colors hover:bg-muted/50"
-            onMouseDown={handleMouseDown}
-            onClick={() => {
-              if (!hasDraggedRef.current) {
-                setIsOpen(false);
-              }
-            }}
-          >
-            <div className="h-1 w-10 rounded-full bg-muted-foreground/30 transition-all group-hover:w-8" />
-            <ChevronDownIcon className="size-4 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
-          </div>
-          <div className="absolute top-1/2 right-2 -translate-y-1/2">
+        {isExpanded ? (
+          <div className="flex items-center justify-end border-b border-border px-2 py-1">
+            <button
+              type="button"
+              onClick={() => setIsExpanded(false)}
+              className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              aria-label="Exit fullscreen"
+            >
+              <Minimize2Icon className="size-4" />
+            </button>
             <SessionSelector />
           </div>
-        </div>
+        ) : (
+          <div className="relative">
+            <div
+              className="group flex cursor-row-resize items-center justify-center gap-2 py-2 transition-colors hover:bg-muted/50"
+              onMouseDown={handleMouseDown}
+              onClick={() => {
+                if (!hasDraggedRef.current) {
+                  setIsOpen(false);
+                }
+              }}
+            >
+              <div className="h-1 w-10 rounded-full bg-muted-foreground/30 transition-all group-hover:w-8" />
+              <ChevronDownIcon className="size-4 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
+            </div>
+            <div className="absolute top-1/2 right-2 flex -translate-y-1/2 items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setIsExpanded(true)}
+                className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                aria-label="Fullscreen"
+              >
+                <Maximize2Icon className="size-4" />
+              </button>
+              <SessionSelector />
+            </div>
+          </div>
+        )}
 
         {/* Error banner */}
         {error && (

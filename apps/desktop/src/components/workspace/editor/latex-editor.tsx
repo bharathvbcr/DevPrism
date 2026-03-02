@@ -100,6 +100,9 @@ export function LatexEditor() {
   const [mergeChunkInfo, setMergeChunkInfo] = useState({ total: 0, current: 0 });
   const [diagnostics, setDiagnostics] = useState<DiagnosticItem[]>([]);
   const [selectionCoords, setSelectionCoords] = useState<{ top: number; left: number } | null>(null);
+  // When the selection toolbar is visible, prevent CM selection changes from clearing it.
+  // Only explicit dismiss/send/action should clear the toolbar.
+  const toolbarStickyRef = useRef(false);
   const parentRef = useRef<HTMLDivElement>(null);
 
   const { resolvedTheme } = useTheme();
@@ -335,12 +338,12 @@ export function LatexEditor() {
       if (update.selectionSet) {
         const { from, to, head } = update.state.selection.main;
         setCursorPosition(head);
-        setSelectionRange(from !== to ? { start: from, end: to } : null);
 
         // Compute toolbar position below the selection end
         // Skip toolbar for "select all" (Cmd+A) to avoid overlay issues
         const isSelectAll = from === 0 && to === update.state.doc.length;
         if (from !== to && !isSelectAll) {
+          setSelectionRange({ start: from, end: to });
           const startCoords = update.view.coordsAtPos(from);
           const endCoords = update.view.coordsAtPos(to);
           if (endCoords && startCoords) {
@@ -349,7 +352,12 @@ export function LatexEditor() {
               left: startCoords.left,  // aligned to selection start
             });
           }
-        } else {
+          toolbarStickyRef.current = true;
+        } else if (!toolbarStickyRef.current) {
+          // Only clear selection/coords if the toolbar is not being interacted with.
+          // Clicking the toolbar input causes CM to lose focus and collapse the selection,
+          // but we want to keep the toolbar visible until explicitly dismissed.
+          setSelectionRange(null);
           setSelectionCoords(null);
         }
       }
@@ -647,10 +655,12 @@ export function LatexEditor() {
 
   const handleToolbarSendPrompt = useCallback(
     (prompt: string) => {
+      toolbarStickyRef.current = false;
       setSelectionCoords(null);
+      setSelectionRange(null);
       useClaudeChatStore.getState().sendPrompt(prompt);
     },
-    [],
+    [setSelectionRange],
   );
 
   const editorToolbarActions: ToolbarAction[] = useMemo(() => [
@@ -659,17 +669,21 @@ export function LatexEditor() {
 
   const handleToolbarAction = useCallback(
     (actionId: string) => {
+      toolbarStickyRef.current = false;
       setSelectionCoords(null);
+      setSelectionRange(null);
       if (actionId === "proofread") {
         useClaudeChatStore.getState().sendPrompt("Proofread and fix any errors in this text");
       }
     },
-    [],
+    [setSelectionRange],
   );
 
   const handleToolbarDismiss = useCallback(() => {
+    toolbarStickyRef.current = false;
     setSelectionCoords(null);
-  }, []);
+    setSelectionRange(null);
+  }, [setSelectionRange]);
 
   // History review action handlers
   const handleHistoryRestore = useCallback(async () => {

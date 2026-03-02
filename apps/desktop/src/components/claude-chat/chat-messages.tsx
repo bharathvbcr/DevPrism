@@ -266,7 +266,10 @@ const UserMessage: FC<{ message: ClaudeStreamMessage }> = ({ message }) => {
           </span>
         )}
         {contextLabel && bodyText && <br />}
-        {bodyText}
+        <MarkdownRenderer
+          content={bodyText}
+          className="prose prose-sm dark:prose-invert max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
+        />
       </div>
     </div>
   );

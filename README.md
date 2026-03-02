@@ -19,7 +19,7 @@
 
 ## Why ClaudePrism?
 
-[OpenAI Prism](https://openai.com/prism/) is a cloud-based LaTeX workspace for scientists — free, powerful, but **your unpublished research lives on OpenAI's servers**. Experts have [raised concerns](https://decrypt.co/356259/openai-science-platform-prism-experts-warn-privacy-concerns) about intellectual property exposure and whether OpenAI could claim rights over researcher data. By default, content may be used to train future models unless you opt out.
+[OpenAI Prism](https://openai.com/prism/) is a cloud-based LaTeX workspace for scientists — free, powerful, but **your unpublished research lives on OpenAI's servers**. Experts have raised concerns about intellectual property exposure and whether OpenAI could claim rights over researcher data. By default, content may be used to train future models unless you opt out.
 
 ClaudePrism takes a different approach: **everything runs locally on your machine.**
 
@@ -28,21 +28,26 @@ ClaudePrism takes a different approach: **everything runs locally on your machin
 | AI Model | GPT-5.2 (cloud) | **Claude Opus / Sonnet / Haiku (local CLI)** |
 | Runtime | Browser (cloud) | **Native desktop (Tauri 2 + Rust)** |
 | LaTeX | Cloud compilation | **Tectonic (embedded, offline)** |
-| PDF | Cloud rendering | **MuPDF (native, SyncTeX)** |
 | Getting Started | Account setup required | **Install and go — template gallery + project wizard** |
 | Version Control | — | **Git-based history with labels & diff** |
-| Data Privacy | Cloud storage, may train models | **Zero data collection, fully local** |
-| Offline | Requires internet | **Fully offline after first compile** |
+| Data Privacy | Cloud storage, [trains models by default](https://openai.com/policies/how-your-data-is-used-to-improve-model-performance/) | **Local execution, [opt-out available](https://code.claude.com/docs/en/data-usage)** |
 | Source Code | Proprietary | **Open source (MIT)** |
 
 ### Your Research, Your Machine
 
-ClaudePrism invokes the **Claude CLI** as a local subprocess — your prompts and documents are handled on your machine, not routed through any intermediary server. There is **no telemetry, no analytics, no cloud logging** in the app.
+ClaudePrism invokes the **Claude CLI** as a local subprocess. Your documents stay on disk — only prompts are sent to the Claude API for inference.
 
-- Claude Code (the CLI) [does not train on your data](https://docs.anthropic.com/en/docs/claude-cli)
-- Your unpublished papers, embargoed findings, and IP stay on your local disk
-- No account data, no usage tracking, no "outcome-based pricing" on your discoveries
-- Open source — audit the code yourself
+**How the two compare on data:**
+
+| | OpenAI Prism | ClaudePrism (via Claude CLI) |
+|---|---|---|
+| Where documents live | OpenAI cloud servers | Your local disk |
+| Default training policy | **ON** — ChatGPT personal accounts [train models by default](https://openai.com/policies/how-your-data-is-used-to-improve-model-performance/) | **ON** for Consumer (Free/Pro/Max), **OFF** for [Commercial plans](https://code.claude.com/docs/en/data-usage) (Team/Enterprise/API) |
+| Opt-out | Settings > Data Controls | [Privacy Settings](https://claude.ai/settings/data-privacy-controls) or use Commercial plan |
+| Data retention | Not disclosed | 30 days (opt-out) / 5 years (opt-in) |
+| Zero data retention | Not available | Available on Enterprise |
+| Telemetry | Cannot disable | `DISABLE_TELEMETRY=1` to fully disable |
+| Source code | Proprietary | Open source — [audit it yourself](https://github.com/delibae/claude-prism) |
 
 ---
 
@@ -63,8 +68,11 @@ Every save creates a snapshot in a local Git repository (`.claudeprism/history.g
 ### Offline LaTeX Compilation
 Tectonic is embedded directly in the app. Packages are downloaded once on first use and cached locally. After that, compilation works fully offline with no TeX Live installation required.
 
+### Capture & Ask
+Press `⌘X` to enter capture mode, drag to select any region in the PDF — the captured image is pinned to the chat composer so you can immediately ask Claude about it. Great for asking about equations, figures, tables, or reviewer comments.
+
 ### Live PDF Preview
-Native MuPDF rendering with SyncTeX support — click a position in the PDF to jump to the corresponding source line. Supports zoom, text selection, and annotation capture.
+Native MuPDF rendering with SyncTeX support — click a position in the PDF to jump to the corresponding source line. Supports zoom, text selection, and capture.
 
 ### Editor
 CodeMirror 6 with LaTeX/BibTeX syntax highlighting, real-time error linting, find & replace (regex), and multi-file project support with auto-save.
@@ -119,11 +127,9 @@ Download the latest build from [GitHub Releases](https://github.com/delibae/clau
 ```
 claude-prism/
 ├── apps/
-│   ├── desktop/           # Tauri desktop app (main)
-│   │   ├── src/           # React frontend
-│   │   └── src-tauri/     # Rust backend
-│   ├── web/               # Next.js web app (legacy)
-│   └── latex-api/         # LaTeX compilation API (Hono)
+│   └── desktop/           # Tauri desktop app
+│       ├── src/           # React frontend
+│       └── src-tauri/     # Rust backend
 ├── homebrew/              # Homebrew Cask formula
 ├── .github/workflows/     # CI/CD (build + release)
 ├── biome.json             # Linter config
@@ -150,11 +156,7 @@ pnpm install
 ### Run
 
 ```bash
-# Desktop app (Tauri dev mode)
 pnpm dev:desktop
-
-# Web app (legacy)
-pnpm dev:web
 ```
 
 ### Build

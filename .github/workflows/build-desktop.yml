@@ -56,15 +56,17 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.VCPKG_INSTALLATION_ROOT }}/installed
-          key: vcpkg-windows-tectonic-v1
+          key: vcpkg-win-static-release-${{ hashFiles('.github/workflows/build-desktop.yml') }}
 
       - name: Install Windows dependencies (vcpkg)
         if: matrix.label == 'windows'
         shell: bash
+        env:
+          VCPKG_BINARY_SOURCES: "clear"
         run: |
-          vcpkg install fontconfig:x64-windows-static-release \
+          vcpkg install "harfbuzz[graphite2]:x64-windows-static-release" \
+            fontconfig:x64-windows-static-release \
             freetype:x64-windows-static-release \
-            graphite2:x64-windows-static-release \
             icu:x64-windows-static-release
 
       - name: Set Windows build environment
@@ -76,6 +78,9 @@ jobs:
           echo "VCPKGRS_TRIPLET=x64-windows-static-release" >> $GITHUB_ENV
           echo "VCPKG_DEFAULT_HOST_TRIPLET=x64-windows-static-release" >> $GITHUB_ENV
           echo "RUSTFLAGS=-Ctarget-feature=+crt-static" >> $GITHUB_ENV
+          # Override macOS-specific flags from .cargo/config.toml
+          echo "CXXFLAGS=" >> $GITHUB_ENV
+          echo "CFLAGS=" >> $GITHUB_ENV
 
       - name: Setup Apple code signing
         id: signing

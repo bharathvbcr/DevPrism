@@ -493,6 +493,7 @@ dependencies = [
  "tauri-plugin-process",
  "tauri-plugin-shell",
  "tectonic",
+ "tempfile",
  "tokio",
  "uuid",
  "which 7.0.3",

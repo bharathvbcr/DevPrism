@@ -56,7 +56,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.VCPKG_INSTALLATION_ROOT }}/installed
-          key: vcpkg-win-static-release-${{ hashFiles('.github/workflows/build-desktop.yml') }}
+          key: vcpkg-win-static-release-harfbuzz-fontconfig-freetype-icu-v1
 
       - name: Install Windows dependencies (vcpkg)
         if: matrix.label == 'windows'

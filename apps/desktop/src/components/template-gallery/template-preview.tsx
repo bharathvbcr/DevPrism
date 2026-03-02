@@ -349,10 +349,8 @@ export function TemplatePreview() {
         const prompt = [
           `## New ${template.name} Project`,
           "",
-          `| | |`,
-          `|---|---|`,
-          `| **Template** | \`${template.documentClass}\` |`,
-          `| **File** | \`${template.mainFileName}\` |`,
+          `**Template:** \`${template.documentClass}\`  `,
+          `**File:** \`${template.mainFileName}\``,
           "",
           `> The file currently contains only the LaTeX preamble (packages, styling, custom commands) with an empty document body.`,
           "",

@@ -31,6 +31,11 @@ git2 = { version = "0.20", default-features = false }
 chrono = "0.4"
 uuid = { version = "1", features = ["v4"] }
 which = "7"
+tectonic = { version = "0.15", default-features = true, features = ["external-harfbuzz"] }
+# NOTE: Building tectonic on macOS requires:
+#   brew install icu4c harfbuzz pkg-config
+#   PKG_CONFIG_PATH="/opt/homebrew/opt/icu4c/lib/pkgconfig" CXXFLAGS="-I/opt/homebrew/include -std=c++17" CFLAGS="-I/opt/homebrew/include"
+flate2 = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

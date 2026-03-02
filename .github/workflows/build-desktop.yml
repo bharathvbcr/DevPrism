@@ -40,7 +40,40 @@ jobs:
         if: matrix.label == 'linux-x64'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
+            libfontconfig-dev libfreetype-dev libicu-dev libgraphite2-dev libharfbuzz-dev
+
+      - name: Install macOS dependencies
+        if: contains(matrix.label, 'macos')
+        run: brew install icu4c harfbuzz pkg-config
+
+      - name: Set macOS build environment
+        if: contains(matrix.label, 'macos')
+        run: |
+          echo "PKG_CONFIG_PATH=$(brew --prefix icu4c)/lib/pkgconfig:$PKG_CONFIG_PATH" >> $GITHUB_ENV
+          echo "CXXFLAGS=-I$(brew --prefix)/include -std=c++17" >> $GITHUB_ENV
+          echo "CFLAGS=-I$(brew --prefix)/include" >> $GITHUB_ENV
+
+      - name: Import Apple signing certificate
+        if: contains(matrix.label, 'macos')
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          CERT_PATH=$RUNNER_TEMP/certificate.p12
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+
+          echo -n "$APPLE_CERTIFICATE" | base64 --decode -o $CERT_PATH
+
+          security create-keychain -p "actions" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "actions" $KEYCHAIN_PATH
+
+          security import $CERT_PATH -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          security set-key-partition-list -S apple-tool:,apple: \
+            -k "actions" $KEYCHAIN_PATH
+          security list-keychain -d user -s $KEYCHAIN_PATH
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -69,7 +102,14 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APPLE_SIGNING_IDENTITY: ${{ contains(matrix.label, 'macos') && '-' || '' }}
+          # macOS code signing
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          # macOS notarization
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           projectPath: apps/desktop
           tauriScript: pnpm tauri
@@ -85,7 +125,12 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APPLE_SIGNING_IDENTITY: ${{ contains(matrix.label, 'macos') && '-' || '' }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           projectPath: apps/desktop
           tauriScript: pnpm tauri
@@ -145,18 +190,13 @@ jobs:
           ### Downloads
 
           - **Windows**: \`.msi\` (installer) or \`.exe\` (NSIS setup)
-          - **macOS**: \`.dmg\` (Apple Silicon: \`aarch64\`, Intel: \`x64\`)
+          - **macOS**: \`.dmg\` (Apple Silicon: \`aarch64\`, Intel: \`x64\`) — signed & notarized
           - **Linux**: \`.AppImage\` (universal) or \`.deb\` (Debian/Ubuntu)
 
           ### Installation
 
           - **Windows**: Run the \`.msi\` installer or \`.exe\` setup
           - **macOS**: Open the \`.dmg\` and drag ClaudePrism to Applications
-            > **macOS Gatekeeper Notice**: On first launch, macOS will show a security warning.
-            > 1. Click **"Done"** (do NOT click "Move to Trash")
-            > 2. Open **System Settings → Privacy & Security**
-            > 3. Scroll down and click **"Open Anyway"** next to ClaudePrism
-            > 4. Click **"Open"** when prompted again
           - **Linux**: \`chmod +x\` the \`.AppImage\` and run it, or \`sudo dpkg -i\` the \`.deb\`
 
           ${COMPARE}

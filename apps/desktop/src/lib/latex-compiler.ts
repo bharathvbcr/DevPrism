@@ -3,13 +3,11 @@ import { invoke } from "@tauri-apps/api/core";
 export async function compileLatex(
   projectDir: string,
   mainFile: string = "document.tex",
-  compiler?: string,
 ): Promise<Uint8Array> {
   // compile_latex returns raw PDF bytes via Tauri IPC Response
   const buffer = await invoke<ArrayBuffer>("compile_latex", {
     projectDir,
     mainFile,
-    compiler: compiler ?? null,
   });
 
   return new Uint8Array(buffer);

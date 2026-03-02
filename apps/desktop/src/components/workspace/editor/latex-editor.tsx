@@ -462,7 +462,7 @@ export function LatexEditor() {
         EditorView.lineWrapping,
         scrollPastEnd(),
         EditorView.theme({
-          "&": { height: "100%", fontSize: "14px" },
+          "&": { height: "100%", fontSize: "14px", color: "var(--foreground)", backgroundColor: "var(--background)" },
           ".cm-scroller": { overflow: "auto" },
           ".cm-gutters": { paddingRight: "4px" },
           ".cm-lineNumbers .cm-gutterElement": { paddingLeft: "8px", paddingRight: "4px" },

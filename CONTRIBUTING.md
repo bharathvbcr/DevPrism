@@ -1,65 +1,141 @@
 # Contributing to ClaudePrism
 
+Contributions are welcome! This guide covers the development environment, workflow, and testing.
+
 ## Development Environment
 
-### Requirements
+### Prerequisites
 
-- Node.js 20+
-- pnpm 10+
-- TeX Live (for local latex-api development)
+- [Node.js](https://nodejs.org/) 22+
+- [pnpm](https://pnpm.io/) 10+
+- [Rust](https://rustup.rs/) (stable)
+- Platform-specific native dependencies:
+  - **macOS:** `brew install icu4c harfbuzz pkg-config`
+  - **Linux:** `apt install libicu-dev libgraphite2-dev libharfbuzz-dev libfreetype-dev libfontconfig-dev libwebkit2gtk-4.1-dev libappindicator3-dev`
+  - **Windows:** `vcpkg install harfbuzz[graphite2] freetype icu fontconfig` (with `TECTONIC_DEP_BACKEND=vcpkg`)
 
 ### Setup
 
 ```bash
-# Clone the repository
 git clone https://github.com/delibae/claude-prism.git
 cd claude-prism
-
-# Install dependencies
 pnpm install
-
-# Copy environment variables
-cp apps/web/.env.example apps/web/.env.local
-# Edit apps/web/.env.local with your configuration
-
-# Start development
-pnpm dev:web
 ```
 
-### Running LaTeX API locally
+### Run
 
 ```bash
-# Requires TeX Live installed
-cd apps/latex-api
-pnpm dev
+pnpm dev:desktop
+```
+
+### Build
+
+```bash
+pnpm build:desktop
+```
+
+## Project Structure
+
+```
+claude-prism/
+├── apps/
+│   └── desktop/              # Tauri desktop app
+│       ├── src/              # React frontend (TypeScript)
+│       └── src-tauri/        # Rust backend
+│           ├── src/
+│           │   ├── lib.rs           # Tauri plugin registration
+│           │   ├── history.rs       # Git-based version history
+│           │   ├── latex.rs         # Tectonic compilation & SyncTeX
+│           │   ├── claude.rs        # Claude CLI integration & sessions
+│           │   ├── slash_commands.rs # Slash command discovery & CRUD
+│           │   └── zotero.rs        # Zotero OAuth & citations
+│           └── Cargo.toml
+├── .github/workflows/        # CI/CD (build + release)
+├── biome.json                # Linter config
+└── turbo.json                # Turborepo config
+```
+
+## Testing
+
+### Frontend (Vitest)
+
+```bash
+cd apps/desktop && pnpm test
+
+# Watch mode
+cd apps/desktop && pnpm test:watch
+```
+
+### Rust
+
+```bash
+cd apps/desktop/src-tauri && cargo test
+```
+
+Current test counts:
+- **Frontend:** 89 tests (stores, components)
+- **Rust:** 114 tests (65 unit + 49 integration)
+
+### What to test
+
+- **Unit tests:** Pure functions, parsers, data transformations
+- **Integration tests:** Filesystem/git operations using `tempfile` crate for isolation
+- Tests live in `#[cfg(test)] mod tests` blocks within each source file (modules are private)
+
+### Adding Rust integration tests
+
+Use `tempfile::TempDir` for tests that touch the filesystem or git:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_example() {
+        let dir = TempDir::new().unwrap();
+        // ... test with dir.path() ...
+    }
+
+    #[tokio::test]
+    async fn test_async_example() {
+        // For async Tauri commands that don't need the runtime
+    }
+}
 ```
 
 ## Code Style
 
-This project uses [Biome](https://biomejs.dev/) for linting and formatting.
+This project uses [Biome](https://biomejs.dev/) for TypeScript/React linting and formatting.
 
 ```bash
-# Check code
-pnpm lint
-
-# Auto-fix issues
-pnpm lint:fix
+pnpm lint          # check
+pnpm lint:fix      # auto-fix
 ```
+
+Rust code follows standard `rustfmt` conventions.
 
 ## Pull Request Process
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feat/my-feature`)
 3. Make your changes
-4. Run `pnpm lint` to ensure code quality
-5. Commit with a descriptive message
-6. Push to your fork and open a PR
+4. Run tests: `pnpm test` (frontend) and `cargo test` (Rust)
+5. Run `pnpm lint` to ensure code quality
+6. Commit with a descriptive message
+7. Push to your fork and open a PR
 
 ### Commit Convention
 
-Use conventional commits:
-- `feat:` new feature
-- `fix:` bug fix
-- `docs:` documentation
-- `refactor:` code refactoring
-- `chore:` maintenance tasks
+Use [Conventional Commits](https://www.conventionalcommits.org/):
+
+| Prefix | Usage |
+|--------|-------|
+| `feat:` | New feature |
+| `fix:` | Bug fix |
+| `docs:` | Documentation |
+| `test:` | Adding or updating tests |
+| `refactor:` | Code refactoring |
+| `ci:` | CI/CD changes |
+| `chore:` | Maintenance tasks |

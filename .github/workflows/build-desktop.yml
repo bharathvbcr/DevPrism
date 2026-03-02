@@ -205,3 +205,39 @@ jobs:
           gh release edit "$TAG" \
             --repo "${{ github.repository }}" \
             --notes-file release-body.md
+
+      - name: Update Homebrew Cask SHA256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+
+          # Download DMG files
+          gh release download "$TAG" \
+            --repo "${{ github.repository }}" \
+            --pattern "*.dmg" \
+            --dir /tmp/dmg
+
+          # Calculate SHA256
+          SHA_ARM64=$(sha256sum /tmp/dmg/ClaudePrism_${VERSION}_aarch64.dmg | awk '{print $1}')
+          SHA_X64=$(sha256sum /tmp/dmg/ClaudePrism_${VERSION}_x64.dmg | awk '{print $1}')
+
+          echo "ARM64 SHA256: $SHA_ARM64"
+          echo "X64   SHA256: $SHA_X64"
+
+          # Update Cask file
+          CASK_FILE="homebrew/Casks/claude-prism.rb"
+          sed -i "s/version \".*\"/version \"${VERSION}\"/" "$CASK_FILE"
+          # Update arm64 SHA256 (first sha256 occurrence)
+          sed -i "0,/sha256 \".*\"/{s/sha256 \".*\"/sha256 \"${SHA_ARM64}\"/}" "$CASK_FILE"
+          # Update x64 SHA256 (second sha256 occurrence)
+          sed -i "0,/sha256 \".*\"/! {0,/sha256 \".*\"/s/sha256 \".*\"/sha256 \"${SHA_X64}\"/}" "$CASK_FILE"
+
+          # Commit and push
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "$CASK_FILE"
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
+          git commit -m "chore: update Homebrew Cask to ${TAG}"
+          git push origin HEAD:main

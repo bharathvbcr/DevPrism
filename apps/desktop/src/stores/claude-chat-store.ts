@@ -90,6 +90,7 @@ interface ClaudeChatState {
   _setSessionId: (id: string) => void;
   _setStreaming: (streaming: boolean) => void;
   _setError: (error: string | null) => void;
+  _cancelledByUser: boolean;
 }
 
 // ─── Store ───
@@ -99,6 +100,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
   sessionId: null,
   isStreaming: false,
   error: null,
+  _cancelledByUser: false,
   totalInputTokens: 0,
   totalOutputTokens: 0,
 
@@ -177,6 +179,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       messages: [...state.messages, userMessage],
       isStreaming: true,
       error: null,
+      _cancelledByUser: false,
     }));
 
     // Flush unsaved edits to disk so Claude reads the latest content
@@ -250,6 +253,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
   },
 
   cancelExecution: async () => {
+    set({ _cancelledByUser: true });
     try {
       await invoke("cancel_claude_execution");
     } catch {

@@ -222,7 +222,7 @@ export function useClaudeEvents() {
         return;
       }
 
-      if (!success && msgCount > 0 && !chatStore.error && !cancelledForAskRef.current) {
+      if (!success && msgCount > 0 && !chatStore.error && !cancelledForAskRef.current && !chatStore._cancelledByUser) {
         // Process failed but we received some messages — likely rate limit or API error
         chatStore._setError("Claude process exited unexpectedly. This may be due to rate limiting or an API error.");
       }

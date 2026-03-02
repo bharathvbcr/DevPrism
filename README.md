@@ -12,6 +12,15 @@ Open-source AI-powered LaTeX writing workspace with live preview.
 - **Local Storage** - Documents saved in browser IndexedDB
 - **Dark/Light Theme** - Automatic theme switching support
 
+## Install Desktop App (macOS)
+
+```bash
+brew tap delibae/claude-prism
+brew install --cask claude-prism
+```
+
+Or download `.dmg` directly from [GitHub Releases](https://github.com/delibae/claude-prism/releases).
+
 ## Quick Start
 
 ```bash

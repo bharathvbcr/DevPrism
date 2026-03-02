@@ -12,6 +12,9 @@ import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button
 import { cn } from "@/lib/utils";
 import { SlashCommandPicker, type SlashCommand } from "./slash-command-picker";
 
+// Re-export for other modules
+export type { SlashCommand };
+
 interface PinnedContext {
   label: string;       // @file:line:col-line:col
   filePath: string;
@@ -68,9 +71,8 @@ export const ChatComposer: FC = () => {
 
   // / slash command state
   const [slashQuery, setSlashQuery] = useState<string | null>(null);
-  const [slashIndex, setSlashIndex] = useState(0);
   const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([]);
-  const slashFilteredCountRef = useRef(0);
+  const composerRef = useRef<HTMLDivElement>(null);
 
   // Watch selection changes to auto-pin context
   const selectionRange = useDocumentStore((s) => s.selectionRange);
@@ -152,26 +154,6 @@ export const ChatComposer: FC = () => {
       .catch(() => setSlashCommands([]));
   }, [slashQuery !== null, projectRoot]);
 
-  // Compute filtered slash command count for keyboard navigation bounds
-  useEffect(() => {
-    if (slashQuery === null || slashCommands.length === 0) {
-      slashFilteredCountRef.current = 0;
-      return;
-    }
-    const q = slashQuery.toLowerCase();
-    if (!q) {
-      slashFilteredCountRef.current = slashCommands.length;
-    } else {
-      slashFilteredCountRef.current = slashCommands.filter((cmd) => {
-        if (cmd.name.toLowerCase().includes(q)) return true;
-        if (cmd.full_command.toLowerCase().includes(q)) return true;
-        if (cmd.namespace && cmd.namespace.toLowerCase().includes(q)) return true;
-        if (cmd.description && cmd.description.toLowerCase().includes(q)) return true;
-        return false;
-      }).length;
-    }
-  }, [slashQuery, slashCommands]);
-
   const selectMention = useCallback((file: ProjectFile) => {
     // Replace @query with empty and pin the file as context
     const textarea = textareaRef.current;
@@ -203,14 +185,13 @@ export const ChatComposer: FC = () => {
   }, [input]);
 
   const selectSlashCommand = useCallback((command: SlashCommand) => {
-    // Insert command text into input (opcode-style: insert as template, don't send immediately)
+    // Insert command syntax into input (opcode-style)
     const newInput = command.accepts_arguments
       ? `${command.full_command} `
-      : command.content;
+      : `${command.full_command} `;
 
     setInput(newInput);
     setSlashQuery(null);
-    setSlashIndex(0);
 
     // Refocus and move cursor to end
     setTimeout(() => {
@@ -432,28 +413,11 @@ export const ChatComposer: FC = () => {
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      // / slash command navigation
-      if (slashQuery !== null && slashFilteredCountRef.current > 0) {
-        if (e.key === "ArrowDown") {
+      // Slash command picker is open — let the picker handle keyboard events
+      // (it uses window.addEventListener for ArrowUp/Down, Enter, Tab, Escape)
+      if (slashQuery !== null) {
+        if (e.key === "Enter" || e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Tab" || e.key === "Escape") {
           e.preventDefault();
-          setSlashIndex((i) => Math.min(i + 1, slashFilteredCountRef.current - 1));
-          return;
-        }
-        if (e.key === "ArrowUp") {
-          e.preventDefault();
-          setSlashIndex((i) => Math.max(i - 1, 0));
-          return;
-        }
-        if (e.key === "Tab") {
-          e.preventDefault();
-          // Tab selects the command — trigger via a DOM query for the active item
-          // We'll let the picker handle it via onSelect
-          return;
-        }
-        if (e.key === "Escape") {
-          e.preventDefault();
-          setSlashQuery(null);
-          setSlashIndex(0);
           return;
         }
       }
@@ -505,14 +469,12 @@ export const ChatComposer: FC = () => {
       const slashMatchWithArgs = value.match(/^\/(\S+)\s/);
       if (slashMatch) {
         setSlashQuery(slashMatch[1]);
-        setSlashIndex(0);
         setMentionQuery(null);
       } else if (slashMatchWithArgs) {
         // Keep slash picker open while typing args after command name
         setSlashQuery(slashMatchWithArgs[1]);
       } else if (!value.startsWith("/")) {
         setSlashQuery(null);
-        setSlashIndex(0);
       }
 
       // Detect @ mention trigger (only when not in slash command mode)
@@ -561,17 +523,16 @@ export const ChatComposer: FC = () => {
   }, [modelPickerOpen]);
 
   return (
-    <div className="relative shrink-0 p-3">
-      {/* / slash command picker */}
+    <div ref={composerRef} className="relative shrink-0 p-3">
+      {/* / slash command picker — portal to body to escape all stacking contexts */}
       {slashQuery !== null && (
         <SlashCommandPicker
           projectPath={projectRoot}
           query={slashQuery}
-          selectedIndex={slashIndex}
+          anchorRef={composerRef}
           onSelect={selectSlashCommand}
           onClose={() => {
             setSlashQuery(null);
-            setSlashIndex(0);
           }}
         />
       )}

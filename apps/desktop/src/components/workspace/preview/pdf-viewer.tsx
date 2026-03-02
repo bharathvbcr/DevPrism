@@ -556,7 +556,7 @@ export function PdfViewer({
     >
       <div
         ref={contentRef}
-        className="flex flex-col items-center gap-4 p-4"
+        className="flex min-w-fit flex-col items-center gap-4 p-4"
         onClick={handleTextLayerClick}
       >
         {loading && numPages === 0 && (

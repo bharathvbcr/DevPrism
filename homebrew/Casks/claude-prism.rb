@@ -1,15 +1,10 @@
 cask "claude-prism" do
   version "0.0.1"
 
-  on_arm do
-    sha256 "PLACEHOLDER_ARM64_SHA256"
-    url "https://github.com/delibae/claude-prism/releases/download/v#{version}/ClaudePrism_#{version}_aarch64.dmg"
-  end
+  sha256 "PLACEHOLDER_SHA256"
+  url "https://github.com/delibae/claude-prism/releases/download/v#{version}/ClaudePrism_#{version}_aarch64.dmg"
 
-  on_intel do
-    sha256 "PLACEHOLDER_X64_SHA256"
-    url "https://github.com/delibae/claude-prism/releases/download/v#{version}/ClaudePrism_#{version}_x64.dmg"
-  end
+  depends_on arch: :arm64
 
   name "ClaudePrism"
   desc "Desktop app for Claude-powered academic research workflows"

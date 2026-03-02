@@ -21,9 +21,6 @@ jobs:
           - platform: macos-latest
             target: aarch64-apple-darwin
             label: macos-arm64
-          - platform: macos-13
-            target: x86_64-apple-darwin
-            label: macos-x64
           - platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             label: linux-x64
@@ -258,9 +255,8 @@ jobs:
           | Platform | Architecture | File | Install |
           |:--------:|:------------:|:----:|:--------|
           | **Windows** | x64 | \`.msi\` / \`.exe\` | Run the installer |
-          | **macOS** | Apple Silicon | \`.dmg\` (aarch64) | Open \`.dmg\` → drag to Applications |
-          | **macOS** | Intel | \`.dmg\` (x64) | Open \`.dmg\` → drag to Applications |
-          | **macOS** | Both | **Homebrew** | \`brew install --cask claude-prism\` |
+          | **macOS** | Apple Silicon | \`.dmg\` | Open \`.dmg\` → drag to Applications |
+          | **macOS** | Any | **Homebrew** | \`brew install --cask claude-prism\` |
           | **Linux** | x64 | \`.AppImage\` | \`chmod +x\` and run |
           | **Linux** | x64 | \`.deb\` | \`sudo dpkg -i claude-prism_*.deb\` |
 
@@ -298,18 +294,13 @@ jobs:
 
           # Calculate SHA256
           SHA_ARM64=$(sha256sum /tmp/dmg/ClaudePrism_${VERSION}_aarch64.dmg | awk '{print $1}')
-          SHA_X64=$(sha256sum /tmp/dmg/ClaudePrism_${VERSION}_x64.dmg | awk '{print $1}')
 
           echo "ARM64 SHA256: $SHA_ARM64"
-          echo "X64   SHA256: $SHA_X64"
 
           # Update Cask file
           CASK_FILE="homebrew/Casks/claude-prism.rb"
           sed -i "s/version \".*\"/version \"${VERSION}\"/" "$CASK_FILE"
-          # Update arm64 SHA256 (first sha256 occurrence)
-          sed -i "0,/sha256 \".*\"/{s/sha256 \".*\"/sha256 \"${SHA_ARM64}\"/}" "$CASK_FILE"
-          # Update x64 SHA256 (second sha256 occurrence)
-          sed -i "0,/sha256 \".*\"/! {0,/sha256 \".*\"/s/sha256 \".*\"/sha256 \"${SHA_X64}\"/}" "$CASK_FILE"
+          sed -i "s/sha256 \".*\"/sha256 \"${SHA_ARM64}\"/" "$CASK_FILE"
 
           # Commit and push
           git config user.name "github-actions[bot]"

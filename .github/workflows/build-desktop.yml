@@ -51,6 +51,32 @@ jobs:
           echo "CXXFLAGS=-I$(brew --prefix)/include -std=c++17" >> $GITHUB_ENV
           echo "CFLAGS=-I$(brew --prefix)/include" >> $GITHUB_ENV
 
+      - name: Cache vcpkg packages
+        if: matrix.label == 'windows'
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_INSTALLATION_ROOT }}/installed
+          key: vcpkg-windows-tectonic-v1
+
+      - name: Install Windows dependencies (vcpkg)
+        if: matrix.label == 'windows'
+        shell: bash
+        run: |
+          vcpkg install fontconfig:x64-windows-static-release \
+            freetype:x64-windows-static-release \
+            graphite2:x64-windows-static-release \
+            icu:x64-windows-static-release
+
+      - name: Set Windows build environment
+        if: matrix.label == 'windows'
+        shell: bash
+        run: |
+          echo "TECTONIC_DEP_BACKEND=vcpkg" >> $GITHUB_ENV
+          echo "VCPKG_ROOT=$VCPKG_INSTALLATION_ROOT" >> $GITHUB_ENV
+          echo "VCPKGRS_TRIPLET=x64-windows-static-release" >> $GITHUB_ENV
+          echo "VCPKG_DEFAULT_HOST_TRIPLET=x64-windows-static-release" >> $GITHUB_ENV
+          echo "RUSTFLAGS=-Ctarget-feature=+crt-static" >> $GITHUB_ENV
+
       - name: Setup Apple code signing
         id: signing
         if: contains(matrix.label, 'macos')
@@ -112,18 +138,16 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS code signing (only when certificate is available)
           APPLE_CERTIFICATE: ${{ steps.signing.outputs.available == 'true' && secrets.APPLE_CERTIFICATE || '' }}
           APPLE_CERTIFICATE_PASSWORD: ${{ steps.signing.outputs.available == 'true' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
           APPLE_SIGNING_IDENTITY: ${{ steps.signing.outputs.available == 'true' && secrets.APPLE_SIGNING_IDENTITY || '' }}
-          # macOS notarization (only when certificate is available)
           APPLE_ID: ${{ steps.signing.outputs.available == 'true' && secrets.APPLE_ID || '' }}
           APPLE_PASSWORD: ${{ steps.signing.outputs.available == 'true' && secrets.APPLE_PASSWORD || '' }}
           APPLE_TEAM_ID: ${{ steps.signing.outputs.available == 'true' && secrets.APPLE_TEAM_ID || '' }}
         with:
           projectPath: apps/desktop
           tauriScript: pnpm tauri
-          args: --target ${{ matrix.target }}
+          args: --target ${{ matrix.target }} ${{ contains(matrix.label, 'macos') && steps.signing.outputs.available != 'true' && '--no-sign' || '' }}
           tagName: ${{ github.ref_name }}
           releaseName: "ClaudePrism ${{ github.ref_name }}"
           releaseBody: "Release is being built..."
@@ -144,7 +168,7 @@ jobs:
         with:
           projectPath: apps/desktop
           tauriScript: pnpm tauri
-          args: --target ${{ matrix.target }}
+          args: --target ${{ matrix.target }} ${{ contains(matrix.label, 'macos') && steps.signing.outputs.available != 'true' && '--no-sign' || '' }}
 
       - name: Upload artifacts (manual builds)
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}

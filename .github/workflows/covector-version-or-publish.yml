@@ -1,0 +1,73 @@
+name: Covector Version or Publish
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  version-or-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Covector version or publish
+        uses: jbolda/covector/packages/action@covector-v0
+        id: covector
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          command: version-or-publish
+          createRelease: false
+
+      - name: Sync Cargo.lock
+        if: steps.covector.outputs.commandRan == 'version'
+        run: |
+          cd apps/desktop/src-tauri
+          cargo generate-lockfile
+
+      - name: Create version bump PR
+        if: steps.covector.outputs.commandRan == 'version'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          title: "chore: version bump"
+          commit-message: "chore: version bump"
+          labels: version
+          branch: covector/version-bump
+          body: |
+            ## Version Bump
+
+            이 PR은 `.changes/` 파일들을 기반으로 자동 생성되었습니다.
+            머지하면 새 버전 태그가 생성되고 릴리스 빌드가 시작됩니다.
+
+      - name: Create and push tag
+        if: steps.covector.outputs.commandRan == 'publish'
+        run: |
+          VERSION=$(node -p "require('./apps/desktop/package.json').version")
+          git tag -a "v${VERSION}" -m "Release v${VERSION}"
+          git push origin "v${VERSION}"

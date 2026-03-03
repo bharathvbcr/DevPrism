@@ -11,7 +11,7 @@ import { useClaudeChatStore } from "@/stores/claude-chat-store";
 import { useClaudeEvents } from "@/hooks/use-claude-events";
 import { ChatMessages } from "./chat-messages";
 import { ChatComposer } from "./chat-composer";
-import { SessionSelector } from "./session-selector";
+import { ChatTabBar } from "./chat-tab-bar";
 
 const MIN_HEIGHT = 150;
 const DEFAULT_HEIGHT = 360;
@@ -20,7 +20,7 @@ export function ClaudeChatDrawer() {
   // Initialize event listeners for Claude streaming
   useClaudeEvents();
 
-  const isStreaming = useClaudeChatStore((s) => s.isStreaming);
+  const anyStreaming = useClaudeChatStore((s) => s.tabs.some((t) => t.isStreaming));
   const error = useClaudeChatStore((s) => s.error);
 
   const [isOpen, setIsOpen] = useState(false);
@@ -37,7 +37,7 @@ export function ClaudeChatDrawer() {
 
   // Auto-open when streaming starts or a new attachment is added
   useEffect(() => {
-    const shouldOpen = isStreaming || pendingAttachments.length > 0;
+    const shouldOpen = anyStreaming || pendingAttachments.length > 0;
     if (shouldOpen && !isOpen) {
       setIsOpen(true);
       const parent = containerRef.current?.parentElement;
@@ -48,7 +48,7 @@ export function ClaudeChatDrawer() {
         panelRef.current.style.height = `${maxHeight}px`;
       }
     }
-  }, [isStreaming, isOpen, pendingAttachments]);
+  }, [anyStreaming, isOpen, pendingAttachments]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (isExpanded) return;
@@ -142,45 +142,49 @@ export function ClaudeChatDrawer() {
         )}
         style={panelStyle()}
       >
-        {/* Header with drag handle and session selector */}
+        {/* Header with drag handle, tab bar, and session selector */}
         {isExpanded ? (
-          <div className="flex items-center justify-end border-b border-border px-2 py-1">
-            <button
-              type="button"
-              onClick={() => setIsExpanded(false)}
-              className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              aria-label="Exit fullscreen"
-            >
-              <Minimize2Icon className="size-4" />
-            </button>
-            <SessionSelector />
-          </div>
-        ) : (
-          <div className="relative">
-            <div
-              className="group flex cursor-row-resize items-center justify-center gap-2 py-2 transition-colors hover:bg-muted/50"
-              onMouseDown={handleMouseDown}
-              onClick={() => {
-                if (!hasDraggedRef.current) {
-                  setIsOpen(false);
-                }
-              }}
-            >
-              <div className="h-1 w-10 rounded-full bg-muted-foreground/30 transition-all group-hover:w-8" />
-              <ChevronDownIcon className="size-4 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
-            </div>
-            <div className="absolute top-1/2 right-2 flex -translate-y-1/2 items-center gap-1">
+          <>
+            <div className="flex items-center justify-end border-b border-border px-2 py-1">
               <button
                 type="button"
-                onClick={() => setIsExpanded(true)}
+                onClick={() => setIsExpanded(false)}
                 className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                aria-label="Fullscreen"
+                aria-label="Exit fullscreen"
               >
-                <Maximize2Icon className="size-4" />
+                <Minimize2Icon className="size-4" />
               </button>
-              <SessionSelector />
             </div>
-          </div>
+            <ChatTabBar />
+          </>
+        ) : (
+          <>
+            <div className="relative">
+              <div
+                className="group flex cursor-row-resize items-center justify-center gap-2 py-2 transition-colors hover:bg-muted/50"
+                onMouseDown={handleMouseDown}
+                onClick={() => {
+                  if (!hasDraggedRef.current) {
+                    setIsOpen(false);
+                  }
+                }}
+              >
+                <div className="h-1 w-10 rounded-full bg-muted-foreground/30 transition-all group-hover:w-8" />
+                <ChevronDownIcon className="size-4 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
+              </div>
+              <div className="absolute top-1/2 right-2 flex -translate-y-1/2 items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setIsExpanded(true)}
+                  className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  aria-label="Fullscreen"
+                >
+                  <Maximize2Icon className="size-4" />
+                </button>
+              </div>
+            </div>
+            <ChatTabBar />
+          </>
         )}
 
         {/* Error banner */}

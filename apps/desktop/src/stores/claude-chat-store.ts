@@ -52,13 +52,93 @@ export interface ClaudeStreamMessage {
   num_turns?: number;
 }
 
+// ─── Tab Types ───
+
+export interface TabDraft {
+  input: string;
+  pinnedContexts: { label: string; filePath: string; selectedText: string; imageDataUrl?: string }[];
+}
+
+export interface TabState {
+  id: string;
+  title: string;
+  sessionId: string | null;
+  messages: ClaudeStreamMessage[];
+  isStreaming: boolean;
+  error: string | null;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  draft: TabDraft;
+}
+
+/** Fields that are projected from the active tab to top-level state */
+const TAB_FIELDS = [
+  "sessionId",
+  "messages",
+  "isStreaming",
+  "error",
+  "totalInputTokens",
+  "totalOutputTokens",
+] as const;
+
+function makeDefaultTab(id: string): TabState {
+  return {
+    id,
+    title: "New Chat",
+    sessionId: null,
+    messages: [],
+    isStreaming: false,
+    error: null,
+    totalInputTokens: 0,
+    totalOutputTokens: 0,
+    draft: { input: "", pinnedContexts: [] },
+  };
+}
+
+let tabCounter = 0;
+function nextTabId(): string {
+  return `tab-${++tabCounter}`;
+}
+
+/**
+ * Update a specific tab in `tabs[]` and, if that tab is the active tab,
+ * also project the changed fields to top-level state for consumer compatibility.
+ */
+function applyTabUpdate(
+  state: ClaudeChatState,
+  tabId: string,
+  updates: Partial<TabState>,
+): Partial<ClaudeChatState> {
+  const newTabs = state.tabs.map((t) =>
+    t.id === tabId ? { ...t, ...updates } : t,
+  );
+  const result: Partial<ClaudeChatState> = { tabs: newTabs };
+  if (tabId === state.activeTabId) {
+    for (const key of TAB_FIELDS) {
+      if (key in updates) {
+        (result as any)[key] = (updates as any)[key];
+      }
+    }
+  }
+  return result;
+}
+
+// ─── State Interface ───
+
+const DEFAULT_TAB_ID = nextTabId();
+
 interface ClaudeChatState {
+  // ── Projected fields (from active tab — read by consumers) ──
   messages: ClaudeStreamMessage[];
   sessionId: string | null;
   isStreaming: boolean;
   error: string | null;
   totalInputTokens: number;
   totalOutputTokens: number;
+
+  // ── Tab state ──
+  tabs: TabState[];
+  activeTabId: string;
 
   /** Deferred prompt to send once the workspace is ready (set by project wizard) */
   pendingInitialPrompt: string | null;
@@ -85,17 +165,27 @@ interface ClaudeChatState {
   newSession: () => void;
   resumeSession: (sessionId: string) => Promise<void>;
 
-  // Internal actions (called by event hook)
-  _appendMessage: (msg: ClaudeStreamMessage) => void;
-  _setSessionId: (id: string) => void;
-  _setStreaming: (streaming: boolean) => void;
-  _setError: (error: string | null) => void;
+  // Tab actions
+  createTab: () => string;
+  closeTab: (tabId: string) => void;
+  setActiveTab: (tabId: string) => void;
+  saveDraft: (tabId: string, draft: TabDraft) => void;
+
+  /** True when any tab is streaming */
+  anyStreaming: () => boolean;
+
+  // Internal actions (called by event hook, routed by tabId)
+  _appendMessage: (tabId: string, msg: ClaudeStreamMessage) => void;
+  _setSessionId: (tabId: string, id: string) => void;
+  _setStreaming: (tabId: string, streaming: boolean) => void;
+  _setError: (tabId: string, error: string | null) => void;
   _cancelledByUser: boolean;
 }
 
 // ─── Store ───
 
 export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
+  // Projected fields (initialized from default tab)
   messages: [],
   sessionId: null,
   isStreaming: false,
@@ -103,6 +193,10 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
   _cancelledByUser: false,
   totalInputTokens: 0,
   totalOutputTokens: 0,
+
+  // Tab state
+  tabs: [makeDefaultTab(DEFAULT_TAB_ID)],
+  activeTabId: DEFAULT_TAB_ID,
 
   selectedModel: "opus",
   setSelectedModel: (model) => set({ selectedModel: model }),
@@ -134,17 +228,24 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     return pendingAttachments;
   },
 
+  anyStreaming: () => get().tabs.some((t) => t.isStreaming),
+
   sendPrompt: async (userPrompt: string, contextOverride?: { label: string; filePath: string; selectedText: string }) => {
-    const { sessionId, isStreaming, selectedModel, effortLevel } = get();
-    if (isStreaming) return;
+    const state = get();
+    const { activeTabId } = state;
+    const activeTab = state.tabs.find((t) => t.id === activeTabId);
+    // Guard: prevent sending from a tab that's already streaming
+    if (activeTab?.isStreaming) return;
+
+    const { sessionId, selectedModel, effortLevel } = state;
 
     console.time("[claude] total-send");
-    console.log("[claude] sendPrompt start", { sessionId: !!sessionId, hasContext: !!contextOverride });
+    console.log("[claude] sendPrompt start", { sessionId: !!sessionId, hasContext: !!contextOverride, tab: activeTabId });
 
     const docState = useDocumentStore.getState();
     const projectPath = docState.projectRoot;
     if (!projectPath) {
-      set({ error: "No project open" });
+      set((s) => applyTabUpdate(s, activeTabId, { error: "No project open" }));
       return;
     }
 
@@ -175,12 +276,24 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       },
     };
 
-    set((state) => ({
-      messages: [...state.messages, userMessage],
-      isStreaming: true,
-      error: null,
-      _cancelledByUser: false,
-    }));
+    // Auto-set tab title from first prompt
+    const isFirstMessage = activeTab && activeTab.messages.length === 0;
+    const tabTitle = isFirstMessage
+      ? userPrompt.slice(0, 40) + (userPrompt.length > 40 ? "..." : "")
+      : undefined;
+
+    set((s) => {
+      const tabUpdates: Partial<TabState> = {
+        messages: [...(s.tabs.find((t) => t.id === activeTabId)?.messages ?? []), userMessage],
+        isStreaming: true,
+        error: null,
+      };
+      if (tabTitle) tabUpdates.title = tabTitle;
+      return {
+        ...applyTabUpdate(s, activeTabId, tabUpdates),
+        _cancelledByUser: false,
+      };
+    });
 
     // Flush unsaved edits to disk so Claude reads the latest content
     if (docState.files.some((f) => f.isDirty)) {
@@ -229,6 +342,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
           projectPath,
           sessionId,
           prompt,
+          tabId: activeTabId,
           model: selectedModel,
           effortLevel,
         });
@@ -237,6 +351,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         await invoke("execute_claude_code", {
           projectPath,
           prompt,
+          tabId: activeTabId,
           model: selectedModel,
           effortLevel,
         });
@@ -245,54 +360,60 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     } catch (err: any) {
       console.timeEnd("[claude] total-send");
       console.error("[claude] invoke failed:", err);
-      set({
+      set((s) => applyTabUpdate(s, activeTabId, {
         isStreaming: false,
         error: err?.message || String(err),
-      });
+      }));
     }
   },
 
   cancelExecution: async () => {
+    const { activeTabId } = get();
     set({ _cancelledByUser: true });
     try {
-      await invoke("cancel_claude_execution");
+      await invoke("cancel_claude_execution", { tabId: activeTabId });
     } catch {
       // ignore
     }
-    set({ isStreaming: false });
+    set((s) => applyTabUpdate(s, activeTabId, { isStreaming: false }));
   },
 
   clearMessages: () => {
-    set({
+    const { activeTabId } = get();
+    set((s) => applyTabUpdate(s, activeTabId, {
       messages: [],
       error: null,
       totalInputTokens: 0,
       totalOutputTokens: 0,
-    });
+    }));
   },
 
   newSession: () => {
-    set({
+    const { activeTabId } = get();
+    set((s) => applyTabUpdate(s, activeTabId, {
       messages: [],
       sessionId: null,
       error: null,
       isStreaming: false,
       totalInputTokens: 0,
       totalOutputTokens: 0,
-    });
+      title: "New Chat",
+    }));
   },
 
   resumeSession: async (sessionId: string) => {
+    const { activeTabId } = get();
     const projectPath = useDocumentStore.getState().projectRoot;
+
     // Reset state with new session ID
-    set({
+    set((s) => applyTabUpdate(s, activeTabId, {
       messages: [],
       sessionId,
       error: null,
       isStreaming: false,
       totalInputTokens: 0,
       totalOutputTokens: 0,
-    });
+    }));
 
     // Load session history from JSONL file
     if (projectPath) {
@@ -311,14 +432,92 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
           }
         }
 
-        set({ messages });
+        set((s) => applyTabUpdate(s, activeTabId, { messages }));
       } catch {
         // Failed to load session history
       }
     }
   },
 
-  _appendMessage: (msg: ClaudeStreamMessage) => {
+  // ─── Tab Actions ───
+
+  createTab: () => {
+    const id = nextTabId();
+    const newTab = makeDefaultTab(id);
+    set((s) => ({
+      tabs: [...s.tabs, newTab],
+      activeTabId: id,
+      // Project new tab fields to top-level
+      messages: newTab.messages,
+      sessionId: newTab.sessionId,
+      isStreaming: newTab.isStreaming,
+      error: newTab.error,
+      totalInputTokens: newTab.totalInputTokens,
+      totalOutputTokens: newTab.totalOutputTokens,
+    }));
+    return id;
+  },
+
+  closeTab: (tabId: string) => {
+    const state = get();
+    const tab = state.tabs.find((t) => t.id === tabId);
+    // Prevent closing a streaming tab
+    if (tab?.isStreaming) return;
+    // Prevent closing the last tab
+    if (state.tabs.length <= 1) return;
+
+    const idx = state.tabs.findIndex((t) => t.id === tabId);
+    if (idx === -1) return;
+
+    const newTabs = state.tabs.filter((t) => t.id !== tabId);
+
+    if (tabId === state.activeTabId) {
+      // Switch to adjacent tab
+      const newIdx = Math.min(idx, newTabs.length - 1);
+      const newActive = newTabs[newIdx];
+      set({
+        tabs: newTabs,
+        activeTabId: newActive.id,
+        // Project new active tab
+        messages: newActive.messages,
+        sessionId: newActive.sessionId,
+        isStreaming: newActive.isStreaming,
+        error: newActive.error,
+        totalInputTokens: newActive.totalInputTokens,
+        totalOutputTokens: newActive.totalOutputTokens,
+      });
+    } else {
+      set({ tabs: newTabs });
+    }
+  },
+
+  setActiveTab: (tabId: string) => {
+    const state = get();
+    if (tabId === state.activeTabId) return;
+    const targetTab = state.tabs.find((t) => t.id === tabId);
+    if (!targetTab) return;
+
+    // Project the target tab's fields to top-level
+    set({
+      activeTabId: tabId,
+      messages: targetTab.messages,
+      sessionId: targetTab.sessionId,
+      isStreaming: targetTab.isStreaming,
+      error: targetTab.error,
+      totalInputTokens: targetTab.totalInputTokens,
+      totalOutputTokens: targetTab.totalOutputTokens,
+    });
+  },
+
+  saveDraft: (tabId: string, draft: TabDraft) => {
+    set((s) => ({
+      tabs: s.tabs.map((t) => t.id === tabId ? { ...t, draft } : t),
+    }));
+  },
+
+  // ─── Internal Actions (routed by explicit tabId) ───
+
+  _appendMessage: (tabId: string, msg: ClaudeStreamMessage) => {
     set((state) => {
       let inputDelta = 0;
       let outputDelta = 0;
@@ -328,23 +527,26 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         outputDelta = usage.output_tokens || 0;
       }
 
-      return {
-        messages: [...state.messages, msg],
-        totalInputTokens: state.totalInputTokens + inputDelta,
-        totalOutputTokens: state.totalOutputTokens + outputDelta,
-      };
+      const tab = state.tabs.find((t) => t.id === tabId);
+      if (!tab) return {};
+
+      return applyTabUpdate(state, tabId, {
+        messages: [...tab.messages, msg],
+        totalInputTokens: tab.totalInputTokens + inputDelta,
+        totalOutputTokens: tab.totalOutputTokens + outputDelta,
+      });
     });
   },
 
-  _setSessionId: (id: string) => {
-    set({ sessionId: id });
+  _setSessionId: (tabId: string, id: string) => {
+    set((state) => applyTabUpdate(state, tabId, { sessionId: id }));
   },
 
-  _setStreaming: (streaming: boolean) => {
-    set({ isStreaming: streaming });
+  _setStreaming: (tabId: string, streaming: boolean) => {
+    set((state) => applyTabUpdate(state, tabId, { isStreaming: streaming }));
   },
 
-  _setError: (error: string | null) => {
-    set({ error });
+  _setError: (tabId: string, error: string | null) => {
+    set((state) => applyTabUpdate(state, tabId, { error }));
   },
 }));

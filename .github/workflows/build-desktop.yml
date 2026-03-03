@@ -7,44 +7,44 @@ permissions:
   contents: write
 
 jobs:
-  test-vcpkg-cache:
+  test-cache:
     runs-on: windows-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Cache vcpkg packages
-        id: vcpkg-cache
-        uses: actions/cache@v4
+      - name: Restore cache
+        id: cache-restore
+        uses: actions/cache/restore@v4
         with:
-          path: ${{ env.VCPKG_INSTALLATION_ROOT }}/installed
-          key: vcpkg-win-static-release-harfbuzz-fontconfig-freetype-icu-v1
-          save-always: true
+          path: test-cache-dir
+          key: cache-test-v1
 
       - name: Cache status
         shell: bash
         run: |
-          echo "Cache hit: ${{ steps.vcpkg-cache.outputs.cache-hit }}"
-          ls -la "$VCPKG_INSTALLATION_ROOT/installed/" 2>/dev/null || echo "No installed dir yet"
+          echo "Cache hit: ${{ steps.cache-restore.outputs.cache-hit }}"
+          if [ -d test-cache-dir ]; then
+            echo "Contents:"
+            ls -la test-cache-dir/
+            cat test-cache-dir/hello.txt
+          else
+            echo "No cache dir found"
+          fi
 
-      - name: Install Windows dependencies (vcpkg)
-        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
-        shell: bash
-        env:
-          VCPKG_BINARY_SOURCES: "clear"
-        run: |
-          echo "::group::vcpkg install"
-          vcpkg install "harfbuzz[graphite2]:x64-windows-static-release" \
-            fontconfig:x64-windows-static-release \
-            freetype:x64-windows-static-release \
-            icu:x64-windows-static-release
-          echo "::endgroup::"
-
-      - name: Verify installed packages
+      - name: Create test data (only on cache miss)
+        if: steps.cache-restore.outputs.cache-hit != 'true'
         shell: bash
         run: |
-          echo "Installed directory contents:"
-          ls -la "$VCPKG_INSTALLATION_ROOT/installed/" || echo "Empty"
-          echo "---"
-          du -sh "$VCPKG_INSTALLATION_ROOT/installed/" 2>/dev/null || echo "No size info"
+          mkdir -p test-cache-dir
+          echo "cached at $(date)" > test-cache-dir/hello.txt
+          echo "Created test data"
+          cat test-cache-dir/hello.txt
+
+      - name: Save cache
+        if: steps.cache-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: test-cache-dir
+          key: cache-test-v1

@@ -298,6 +298,39 @@ export function Sidebar() {
     };
   }, [importFiles]);
 
+  // Track selected folder for paste target
+  const [pasteTargetFolder, setPasteTargetFolder] = useState<string | undefined>();
+
+  // ─── Cmd+V paste files from OS clipboard ───
+  useEffect(() => {
+    const handleKeyDown = async (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.key !== "v") return;
+
+      // Don't intercept paste in text inputs / editor (contentEditable)
+      const active = document.activeElement;
+      if (
+        active &&
+        (active.tagName === "INPUT" ||
+          active.tagName === "TEXTAREA" ||
+          (active as HTMLElement).isContentEditable)
+      )
+        return;
+
+      try {
+        const paths = await invoke<string[]>("read_clipboard_file_paths");
+        if (paths.length > 0) {
+          e.preventDefault();
+          await importFiles(paths, pasteTargetFolder);
+        }
+      } catch (err) {
+        console.error("[paste] read clipboard failed:", err);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [importFiles, pasteTargetFolder]);
+
   // dnd-kit drag-and-drop (uses PointerSensor — works in Tauri WKWebView)
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -370,6 +403,7 @@ export function Sidebar() {
   }, [activeFileId]);
 
   const toggleFolder = useCallback((path: string) => {
+    setPasteTargetFolder(path);
     setExpandedFolders((prev) => {
       const next = new Set(prev);
       if (next.has(path)) next.delete(path);
@@ -579,7 +613,11 @@ export function Sidebar() {
                         activeFileId={activeFileId}
                         expandedFolders={expandedFolders}
                         onToggleFolder={toggleFolder}
-                        onSelectFile={setActiveFile}
+                        onSelectFile={(id: string) => {
+                          const parent = id.includes("/") ? id.substring(0, id.lastIndexOf("/")) : undefined;
+                          setPasteTargetFolder(parent);
+                          setActiveFile(id);
+                        }}
                         onNewFile={openNewFileDialog}
                         onNewFolder={openNewFolderDialog}
                         onImport={handleImport}

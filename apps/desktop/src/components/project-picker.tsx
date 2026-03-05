@@ -121,7 +121,7 @@ export function ProjectPicker() {
               <ClockIcon className="size-4" />
               <span>Recent Projects</span>
             </div>
-            <div className="space-y-1">
+            <div className="max-h-64 space-y-1 overflow-y-auto">
               {recentProjects.map((project) => (
                 <div
                   key={project.path}

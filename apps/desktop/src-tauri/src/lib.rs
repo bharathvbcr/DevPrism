@@ -135,6 +135,52 @@ fn create_new_window(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+// --- Clipboard file paths (for Cmd+V paste in file tree) ---
+
+#[tauri::command]
+async fn read_clipboard_file_paths() -> Result<Vec<String>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        tokio::task::spawn_blocking(|| {
+            let script = concat!(
+                "set thePaths to \"\"\n",
+                "try\n",
+                "\tset theFiles to the clipboard as \u{00ab}class furl\u{00bb}\n",
+                "\tset thePaths to POSIX path of theFiles\n",
+                "on error\n",
+                "\ttry\n",
+                "\t\trepeat with f in (the clipboard as list)\n",
+                "\t\t\ttry\n",
+                "\t\t\t\tset thePaths to thePaths & POSIX path of (f as \u{00ab}class furl\u{00bb}) & linefeed\n",
+                "\t\t\tend try\n",
+                "\t\tend repeat\n",
+                "\tend try\n",
+                "end try\n",
+                "return thePaths",
+            );
+
+            let output = std::process::Command::new("osascript")
+                .arg("-e")
+                .arg(script)
+                .output()
+                .map_err(|e| e.to_string())?;
+
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if stdout.is_empty() {
+                Ok(vec![])
+            } else {
+                Ok(stdout.lines().filter(|l| !l.is_empty()).map(|s| s.to_string()).collect())
+            }
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(vec![])
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Load .env file (walks up from cwd to find it)
@@ -158,6 +204,7 @@ pub fn run() {
             create_new_window,
             detect_editors,
             open_in_editor,
+            read_clipboard_file_paths,
             latex::compile_latex,
             latex::synctex_edit,
             claude::check_claude_status,

@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect, useRef } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { mkdir, writeTextFile } from "@tauri-apps/plugin-fs";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { documentDir } from "@tauri-apps/api/path";
+import { homeDir } from "@tauri-apps/api/path";
 import {
   ArrowLeftIcon,
   FolderOpenIcon,
@@ -100,7 +100,10 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
     if (lastProjectFolder) {
       setProjectFolder(lastProjectFolder);
     } else {
-      documentDir().then((dir) => setProjectFolder(dir)).catch(() => {});
+      homeDir().then((home) => join(home, "Documents", "ClaudePrism")).then((dir) => {
+        mkdir(dir, { recursive: true }).catch(() => {});
+        setProjectFolder(dir);
+      }).catch(() => {});
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 

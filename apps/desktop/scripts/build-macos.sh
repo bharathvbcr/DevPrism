@@ -52,6 +52,6 @@ security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychain -d u
 
 echo "==> Certificate imported. Building..."
 cd "$PROJECT_DIR"
-pnpm tauri build --target aarch64-apple-darwin
+pnpm tauri build --target aarch64-apple-darwin --skip-stapling
 
 echo "==> Build complete!"

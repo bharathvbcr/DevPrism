@@ -165,7 +165,7 @@ jobs:
         with:
           projectPath: apps/desktop
           tauriScript: pnpm tauri
-          args: --target ${{ matrix.target }} ${{ contains(matrix.label, 'macos') && steps.signing.outputs.available != 'true' && '--no-sign' || '' }}
+          args: --target ${{ matrix.target }} ${{ contains(matrix.label, 'macos') && steps.signing.outputs.available != 'true' && '--no-sign' || '' }} ${{ contains(matrix.label, 'macos') && '--skip-stapling' || '' }}
           tagName: ${{ github.ref_name }}
           releaseName: "ClaudePrism ${{ github.ref_name }}"
           releaseBody: "Release is being built..."
@@ -186,7 +186,7 @@ jobs:
         with:
           projectPath: apps/desktop
           tauriScript: pnpm tauri
-          args: --target ${{ matrix.target }} ${{ contains(matrix.label, 'macos') && steps.signing.outputs.available != 'true' && '--no-sign' || '' }}
+          args: --target ${{ matrix.target }} ${{ contains(matrix.label, 'macos') && steps.signing.outputs.available != 'true' && '--no-sign' || '' }} ${{ contains(matrix.label, 'macos') && '--skip-stapling' || '' }}
 
       - name: Upload artifacts (manual builds)
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}

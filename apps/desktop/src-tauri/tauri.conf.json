@@ -14,6 +14,8 @@
     "windows": [
       {
         "title": "ClaudePrism",
+        "fullscreen": false,
+        "maximized": true,
         "width": 1400,
         "height": 900,
         "minWidth": 800,

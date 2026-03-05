@@ -1,7 +1,7 @@
 cask "claude-prism" do
-  version "0.4.0"
+  version "0.5.0"
 
-  sha256 "c697b3c8faf0646810dc6e1e2c28252333233a04284b68c6d5b3352b75da0b8b"
+  sha256 ""
   url "https://github.com/delibae/claude-prism/releases/download/v#{version}/ClaudePrism_#{version}_aarch64.dmg"
 
   depends_on arch: :arm64

@@ -31,6 +31,13 @@
       "publish": false,
       "dependencies": ["claude-prism-desktop"],
       "postversion": "node -e \"const fs=require('fs');const p='src-tauri/tauri.conf.json';const c=JSON.parse(fs.readFileSync(p));const pkg=JSON.parse(fs.readFileSync('package.json'));c.version=pkg.version;fs.writeFileSync(p,JSON.stringify(c,null,2)+'\\n')\""
+    },
+    "@claude-prism/root": {
+      "path": ".",
+      "manager": "javascript",
+      "version": true,
+      "publish": false,
+      "dependencies": ["@claude-prism/desktop"]
     }
   }
 }

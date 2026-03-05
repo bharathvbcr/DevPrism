@@ -24,6 +24,7 @@ import { useClaudeChatStore } from "@/stores/claude-chat-store";
 import { exists, join } from "@/lib/tauri/fs";
 import { getTemplateById, getTemplateSkeleton, BIB_TEMPLATE } from "@/lib/template-registry";
 import { TemplateGallery } from "@/components/template-gallery";
+import { DEFAULT_CLAUDE_MD } from "@/lib/default-claude-md";
 
 // ─── Helpers ───
 
@@ -165,6 +166,13 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
     try {
       const projectPath = await join(projectFolder, projectName.trim());
       await mkdir(projectPath, { recursive: true }).catch(() => {});
+
+      // Create CLAUDE.md for Claude Code context
+      const claudeMdPath = await join(projectPath, "CLAUDE.md");
+      const claudeMdExists = await exists(claudeMdPath);
+      if (!claudeMdExists) {
+        await writeTextFile(claudeMdPath, DEFAULT_CLAUDE_MD);
+      }
 
       const mainTexPath = await join(projectPath, template.mainFileName);
       const mainExists = await exists(mainTexPath);

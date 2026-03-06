@@ -296,7 +296,7 @@ const AskUserQuestionWidget: FC<{ input: any; result?: ContentBlock }> = ({ inpu
 
 const TodoWriteWidget: FC<{ input: any; result?: ContentBlock }> = ({ input, result }) => {
   const [expanded, setExpanded] = useState(true);
-  const todos: any[] = input?.todos || [];
+  const todos: any[] = Array.isArray(input?.todos) ? input.todos : [];
 
   const statusIcon = (status: string) => {
     switch (status) {

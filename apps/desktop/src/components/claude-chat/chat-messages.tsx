@@ -39,7 +39,7 @@ const StreamingIndicator: FC = memo(() => {
 // ─── Chat Messages (main component) ───
 
 export const ChatMessages: FC = () => {
-  const messages = useClaudeChatStore((s) => s.messages);
+  const messages = useClaudeChatStore((s) => s.messages) ?? [];
   const isStreaming = useClaudeChatStore((s) => s.isStreaming);
   const viewportRef = useRef<HTMLDivElement>(null);
   const shouldAutoScrollRef = useRef(true);

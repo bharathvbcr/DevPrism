@@ -165,9 +165,10 @@ C:\vcpkg\bootstrap-vcpkg.bat
 $path = [Environment]::GetEnvironmentVariable("PATH", "User")
 [Environment]::SetEnvironmentVariable("PATH", "$path;C:\vcpkg", "User")
 [Environment]::SetEnvironmentVariable("TECTONIC_DEP_BACKEND", "vcpkg", "User")
+[Environment]::SetEnvironmentVariable("CXXFLAGS", "/std:c++17", "User")
 
-# 4. Restart PowerShell, then install native libraries
-vcpkg install harfbuzz[graphite2]:x64-windows freetype:x64-windows icu:x64-windows fontconfig:x64-windows
+# 4. Restart PowerShell, then install native libraries (use x64-windows-static-md triplet)
+vcpkg install harfbuzz[graphite2]:x64-windows-static-md freetype:x64-windows-static-md icu:x64-windows-static-md fontconfig:x64-windows-static-md
 
 # 5. Build and run
 cd claude-prism

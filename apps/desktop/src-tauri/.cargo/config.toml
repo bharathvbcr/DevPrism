@@ -1,8 +1,10 @@
-# Tectonic build configuration for macOS (Homebrew)
-# ICU is keg-only in Homebrew, so pkg-config can't find it without this path.
-# HarfBuzz headers need the parent include directory for #include <harfbuzz/hb.h>.
+# Tectonic build configuration
 # ICU 78+ requires C++17.
-# On Linux, system packages are in standard paths — these extra paths are harmless.
+# These defaults are for macOS (Homebrew). force=false means they are
+# ignored when the env var is already set (e.g. on Windows/Linux).
+#
+# Windows: set CXXFLAGS=/std:c++17 as a user environment variable.
+# Linux:   system packages are in standard paths — no extra flags needed.
 [env]
 PKG_CONFIG_PATH = { value = "/opt/homebrew/opt/icu4c/lib/pkgconfig", force = false }
 CXXFLAGS = { value = "-I/opt/homebrew/include -std=c++17", force = false }

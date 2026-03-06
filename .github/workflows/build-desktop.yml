@@ -40,16 +40,46 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
             libfontconfig-dev libfreetype-dev libicu-dev libgraphite2-dev libharfbuzz-dev
 
-      - name: Install macOS dependencies
+      - name: Restore vcpkg cache (macOS)
         if: contains(matrix.label, 'macos')
-        run: brew install icu4c harfbuzz pkg-config
+        id: vcpkg-cache-mac
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/vcpkg
+          key: vcpkg-macos-arm64-v2
+
+      - name: Setup vcpkg (macOS)
+        if: contains(matrix.label, 'macos') && steps.vcpkg-cache-mac.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          git clone --depth 1 https://github.com/microsoft/vcpkg.git ~/vcpkg
+          ~/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+
+      - name: Install macOS dependencies (vcpkg)
+        if: contains(matrix.label, 'macos') && steps.vcpkg-cache-mac.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          VCPKG_ROOT: ~/vcpkg
+          VCPKG_BINARY_SOURCES: "clear"
+        run: |
+          ~/vcpkg/vcpkg install "harfbuzz[graphite2]:arm64-osx" \
+            freetype:arm64-osx \
+            icu:arm64-osx
+
+      - name: Save vcpkg cache (macOS)
+        if: contains(matrix.label, 'macos') && steps.vcpkg-cache-mac.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/vcpkg
+          key: vcpkg-macos-arm64-v2
 
       - name: Set macOS build environment
         if: contains(matrix.label, 'macos')
         run: |
-          echo "PKG_CONFIG_PATH=$(brew --prefix icu4c)/lib/pkgconfig:$PKG_CONFIG_PATH" >> $GITHUB_ENV
-          echo "CXXFLAGS=-I$(brew --prefix)/include -std=c++17" >> $GITHUB_ENV
-          echo "CFLAGS=-I$(brew --prefix)/include" >> $GITHUB_ENV
+          echo "TECTONIC_DEP_BACKEND=vcpkg" >> $GITHUB_ENV
+          echo "VCPKG_ROOT=$HOME/vcpkg" >> $GITHUB_ENV
+          echo "CXXFLAGS=-std=c++17" >> $GITHUB_ENV
+          echo "CFLAGS=" >> $GITHUB_ENV
 
       - name: Set vcpkg path
         if: matrix.label == 'windows'
@@ -95,38 +125,17 @@ jobs:
           echo "CXXFLAGS=/std:c++17" >> $GITHUB_ENV
           echo "CFLAGS=" >> $GITHUB_ENV
 
-      - name: Setup Apple code signing
+      - name: Check Apple signing secrets
         id: signing
         if: contains(matrix.label, 'macos')
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
           if [ -z "$APPLE_CERTIFICATE" ]; then
             echo "::warning::Apple signing certificate not configured. Building without signing."
             echo "available=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          CERT_PATH=$RUNNER_TEMP/certificate.p12
-          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
-
-          echo -n "$APPLE_CERTIFICATE" | base64 --decode -o $CERT_PATH
-
-          security create-keychain -p "actions" $KEYCHAIN_PATH
-          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
-          security unlock-keychain -p "actions" $KEYCHAIN_PATH
-
-          if security import $CERT_PATH -P "$APPLE_CERTIFICATE_PASSWORD" \
-            -A -t cert -f pkcs12 -k $KEYCHAIN_PATH; then
-            security set-key-partition-list -S apple-tool:,apple: \
-              -k "actions" $KEYCHAIN_PATH
-            security list-keychain -d user -s $KEYCHAIN_PATH
-            echo "available=true" >> $GITHUB_OUTPUT
           else
-            echo "::warning::Failed to import certificate. Building without signing."
-            security delete-keychain $KEYCHAIN_PATH 2>/dev/null || true
-            echo "available=false" >> $GITHUB_OUTPUT
+            echo "available=true" >> $GITHUB_OUTPUT
           fi
 
       - name: Install Rust stable
@@ -167,7 +176,7 @@ jobs:
         with:
           projectPath: apps/desktop
           tauriScript: pnpm tauri
-          args: --target ${{ matrix.target }} ${{ contains(matrix.label, 'macos') && steps.signing.outputs.available != 'true' && '--no-sign' || '' }} ${{ contains(matrix.label, 'macos') && '--skip-stapling' || '' }}
+          args: --target ${{ matrix.target }} ${{ contains(matrix.label, 'macos') && steps.signing.outputs.available != 'true' && '--no-sign' || '' }} ${{ contains(matrix.label, 'macos') && steps.signing.outputs.available == 'true' && '--skip-stapling' || '' }}
           tagName: ${{ github.ref_name }}
           releaseName: "ClaudePrism ${{ github.ref_name }}"
           releaseBody: "Release is being built..."
@@ -190,7 +199,50 @@ jobs:
         with:
           projectPath: apps/desktop
           tauriScript: pnpm tauri
-          args: --target ${{ matrix.target }} ${{ contains(matrix.label, 'macos') && steps.signing.outputs.available != 'true' && '--no-sign' || '' }} ${{ contains(matrix.label, 'macos') && '--skip-stapling' || '' }}
+          args: --target ${{ matrix.target }} ${{ contains(matrix.label, 'macos') && steps.signing.outputs.available != 'true' && '--no-sign' || '' }} ${{ contains(matrix.label, 'macos') && steps.signing.outputs.available == 'true' && '--skip-stapling' || '' }}
+
+      # Tauri only notarizes .app (as zip), not .dmg (known issue: tauri-apps/tauri#7533).
+      # We notarize the DMG ourselves — this covers the .app inside it too.
+      - name: Notarize and staple DMG
+        if: contains(matrix.label, 'macos') && steps.signing.outputs.available == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          DMG_PATH=$(find apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/dmg -name '*.dmg' | head -1)
+          APP_PATH="apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/ClaudePrism.app"
+
+          if [ -z "$DMG_PATH" ]; then
+            echo "::error::DMG not found"
+            exit 1
+          fi
+
+          echo "Notarizing $DMG_PATH ..."
+          xcrun notarytool submit "$DMG_PATH" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_PASSWORD" \
+            --wait --timeout 30m
+
+          echo "Stapling DMG..."
+          xcrun stapler staple "$DMG_PATH"
+
+          echo "Stapling app..."
+          xcrun stapler staple "$APP_PATH"
+
+          echo "Done! DMG is notarized and stapled."
+
+      - name: Verify no Homebrew dependencies (macOS)
+        if: contains(matrix.label, 'macos')
+        run: |
+          BINARY="apps/desktop/src-tauri/target/${{ matrix.target }}/release/claude-prism-desktop"
+          if otool -L "$BINARY" | grep -q '/opt/homebrew\|/usr/local'; then
+            echo "::error::Binary has Homebrew dynamic dependencies!"
+            otool -L "$BINARY" | grep '/opt/homebrew\|/usr/local'
+            exit 1
+          fi
+          echo "No Homebrew dependencies found."
 
       - name: Upload artifacts (manual builds)
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}

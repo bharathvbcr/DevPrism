@@ -1,17 +1,26 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { Progress } from "@/components/ui/progress";
+import { ScrollArea } from "@/components/ui/scroll-area";
 
-interface StepDef {
-  label: string;
-  pct: number;
+const PHASE_MAP: Record<string, number> = {
+  "Checking directory permissions...": 5,
+  "Directory permissions OK": 10,
+  "Git available": 15,
+  "cloning repository": 20,
+  "downloading tarball": 20,
+  "Download complete": 60,
+  "Copying skills": 70,
+  "Copied": 90,
+  "Cleanup complete": 95,
+};
+
+function pctFromLog(log: string): number | null {
+  for (const [key, pct] of Object.entries(PHASE_MAP)) {
+    if (log.toLowerCase().includes(key.toLowerCase())) return pct;
+  }
+  return null;
 }
-
-const STEPS: StepDef[] = [
-  { label: "Downloading repository…", pct: 20 },
-  { label: "Extracting skills…", pct: 50 },
-  { label: "Copying to .claude/skills…", pct: 80 },
-  { label: "Finalizing…", pct: 95 },
-];
 
 interface InstallProgressProps {
   isInstalling: boolean;
@@ -24,36 +33,59 @@ export function InstallProgress({
   isComplete,
   error,
 }: InstallProgressProps) {
-  const [phase, setPhase] = useState(0);
+  const [logs, setLogs] = useState<string[]>([]);
+  const [pct, setPct] = useState(0);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!isInstalling || isComplete || error) return;
-    const interval = setInterval(() => {
-      setPhase((p) => Math.min(p + 1, STEPS.length - 1));
-    }, 1500);
-    return () => clearInterval(interval);
-  }, [isInstalling, isComplete, error]);
+    if (!isInstalling) return;
+    const unlisten = listen<string>("skills-install-log", (event) => {
+      setLogs((prev) => [...prev, event.payload]);
+      const p = pctFromLog(event.payload);
+      if (p !== null) setPct(p);
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, [isInstalling]);
 
   useEffect(() => {
-    if (isComplete) setPhase(STEPS.length);
+    if (isComplete) setPct(100);
   }, [isComplete]);
 
-  const pct = isComplete ? 100 : error ? STEPS[phase]?.pct ?? 0 : STEPS[phase]?.pct ?? 0;
+  // Auto-scroll to bottom
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+  }, [logs]);
+
   const label = isComplete
     ? "Done"
     : error
-      ? STEPS[phase]?.label ?? ""
-      : STEPS[phase]?.label ?? "";
+      ? "Error"
+      : logs.length > 0
+        ? logs[logs.length - 1]
+        : "Starting...";
 
   return (
     <div className="space-y-2 py-1">
       <Progress value={pct} />
       <div className="flex items-center justify-between">
-        <p className="text-muted-foreground text-xs">{label}</p>
+        <p className="text-muted-foreground text-xs truncate max-w-[80%]">
+          {label}
+        </p>
         <p className="font-mono text-muted-foreground text-xs tabular-nums">
           {pct}%
         </p>
       </div>
+      {logs.length > 0 && (
+        <ScrollArea className="h-28 rounded-md border border-border/60 bg-muted/30">
+          <div ref={scrollRef} className="p-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
+            {logs.map((line, i) => (
+              <div key={i}>{line}</div>
+            ))}
+          </div>
+        </ScrollArea>
+      )}
     </div>
   );
 }

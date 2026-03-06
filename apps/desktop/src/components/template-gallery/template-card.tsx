@@ -4,6 +4,7 @@ import type { TemplateDefinition } from "@/lib/template-registry";
 import { useTemplateStore } from "@/stores/template-store";
 import {
   getThumbnail,
+  isThumbnailFailed,
   subscribeThumbnails,
   generateThumbnail,
 } from "@/lib/template-preview-cache";
@@ -108,11 +109,16 @@ export function TemplateCard({ template }: TemplateCardProps) {
     () => getThumbnail(template.id),
   );
 
+  const failed = useSyncExternalStore(
+    subscribeThumbnails,
+    () => isThumbnailFailed(template.id),
+  );
+
   useEffect(() => {
-    if (!thumbnailUrl) {
+    if (!thumbnailUrl && !failed) {
       generateThumbnail(template.id);
     }
-  }, [template.id, thumbnailUrl]);
+  }, [template.id, thumbnailUrl, failed]);
 
   return (
     <div className="group flex flex-col">
@@ -132,9 +138,11 @@ export function TemplateCard({ template }: TemplateCardProps) {
           ) : (
             <div className="relative h-full w-full">
               <FallbackThumbnail color={template.accentColor} />
-              <div className="absolute inset-0 flex items-center justify-center bg-card/60">
-                <LoaderIcon className="size-4 animate-spin text-muted-foreground" />
-              </div>
+              {!failed && (
+                <div className="absolute inset-0 flex items-center justify-center bg-card/60">
+                  <LoaderIcon className="size-4 animate-spin text-muted-foreground" />
+                </div>
+              )}
             </div>
           )}
         </button>

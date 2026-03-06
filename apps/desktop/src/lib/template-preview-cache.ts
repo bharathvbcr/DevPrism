@@ -7,6 +7,7 @@ import { getMupdfClient } from "@/lib/mupdf/mupdf-client";
 type Listener = () => void;
 const listeners = new Set<Listener>();
 const thumbnailCache = new Map<string, string>();
+const failedIds = new Set<string>();
 const pendingRequests = new Map<string, Promise<string | null>>();
 
 function notify() {
@@ -22,6 +23,10 @@ export function getThumbnail(templateId: string): string | undefined {
   return thumbnailCache.get(templateId);
 }
 
+export function isThumbnailFailed(templateId: string): boolean {
+  return failedIds.has(templateId);
+}
+
 /** URL to the pre-rendered static PDF for a template */
 export function getTemplatePdfUrl(templateId: string): string {
   return `/examples/${templateId}/main.pdf`;
@@ -33,6 +38,8 @@ export function getTemplatePdfUrl(templateId: string): string {
 export async function generateThumbnail(templateId: string): Promise<string | null> {
   const cached = thumbnailCache.get(templateId);
   if (cached) return cached;
+
+  if (failedIds.has(templateId)) return null;
 
   const pending = pendingRequests.get(templateId);
   if (pending) return pending;
@@ -59,6 +66,8 @@ export async function generateThumbnail(templateId: string): Promise<string | nu
       return dataUrl;
     } catch (err) {
       console.warn(`[template-preview] Failed to load preview for ${templateId}:`, err);
+      failedIds.add(templateId);
+      notify();
       return null;
     } finally {
       pendingRequests.delete(templateId);

@@ -1,8 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use tokio::process::Command;
+use tauri::{Emitter, WebviewWindow};
 
-const REPO_URL: &str = "https://github.com/K-Dense-AI/claude-scientific-skills.git";
 const TARBALL_URL: &str =
     "https://github.com/K-Dense-AI/claude-scientific-skills/archive/refs/heads/main.tar.gz";
 const SKILLS_SUBFOLDER: &str = "scientific-skills";
@@ -355,33 +354,7 @@ fn skills_dir(project_path: Option<&str>) -> PathBuf {
     }
 }
 
-/// Check if git is available on PATH.
-async fn git_available() -> bool {
-    Command::new("git")
-        .arg("--version")
-        .output()
-        .await
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-/// Clone the repo using git (shallow clone).
-async fn clone_repo(tmp_dir: &Path) -> Result<(), String> {
-    let output = Command::new("git")
-        .args(["clone", "--depth", "1", REPO_URL])
-        .arg(tmp_dir.join("repo"))
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run git clone: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("git clone failed: {}", stderr));
-    }
-    Ok(())
-}
-
-/// Download and extract tarball as fallback when git is not available.
+/// Download and extract tarball.
 async fn download_tarball(tmp_dir: &Path) -> Result<(), String> {
     let response = reqwest::get(TARBALL_URL)
         .await
@@ -537,22 +510,103 @@ fn parse_skill_md(skill_dir: &Path) -> Option<SkillInfo> {
 // ─── Tauri Commands ───
 
 #[tauri::command]
-pub async fn install_scientific_skills(project_path: String) -> Result<InstallResult, String> {
+pub async fn install_scientific_skills(
+    window: WebviewWindow,
+    project_path: String,
+) -> Result<InstallResult, String> {
     let target = skills_dir(Some(&project_path));
-    install_skills_to(&target, Some(&project_path)).await
+    install_skills_to(&window, &target, Some(&project_path)).await
 }
 
 #[tauri::command]
-pub async fn install_scientific_skills_global() -> Result<InstallResult, String> {
+pub async fn install_scientific_skills_global(
+    window: WebviewWindow,
+) -> Result<InstallResult, String> {
     let target = skills_dir(None);
-    install_skills_to(&target, None).await
+    install_skills_to(&window, &target, None).await
+}
+
+/// Ensure the target directory is creatable and writable.
+/// If creation fails (e.g. ~/.claude is owned by root), prompt for admin password via osascript.
+fn ensure_target_writable(target: &Path) -> Result<(), String> {
+    // Try without elevation first
+    if std::fs::create_dir_all(target).is_ok() {
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let home = dirs::home_dir().ok_or("Could not determine home directory")?;
+        let user = std::env::var("USER").unwrap_or_default();
+        let claude_dir = home.join(".claude");
+
+        let script = format!(
+            "mkdir -p '{}' && chown -R {} '{}'",
+            target.display(),
+            user,
+            claude_dir.display()
+        );
+
+        let output = std::process::Command::new("osascript")
+            .args([
+                "-e",
+                &format!(
+                    "do shell script \"{}\" with administrator privileges",
+                    script
+                ),
+            ])
+            .output()
+            .map_err(|e| format!("Failed to run osascript: {}", e))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!(
+                "Failed to fix directory permissions. Error: {}. \
+                 You can fix this manually by running: sudo chown -R $(whoami) ~/.claude",
+                stderr.trim()
+            ));
+        }
+
+        // Verify writable
+        let test_file = target.join(".prism_write_test");
+        std::fs::write(&test_file, "test")
+            .map_err(|e| format!("Directory {} still not writable after elevation: {}", target.display(), e))?;
+        let _ = std::fs::remove_file(&test_file);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return Err(format!(
+            "Failed to create directory {}. Please check permissions.",
+            target.display()
+        ));
+    }
+
+    Ok(())
+}
+
+/// Emit a progress log event to the frontend + stderr for terminal debugging.
+fn emit_log(window: &WebviewWindow, msg: &str) {
+    eprintln!("[skills] {}", msg);
+    let _ = window.emit("skills-install-log", msg);
 }
 
 /// Core installation logic.
 async fn install_skills_to(
+    window: &WebviewWindow,
     target: &Path,
     _project_path: Option<&str>,
 ) -> Result<InstallResult, String> {
+    emit_log(window, &format!("Target directory: {}", target.display()));
+
+    // Ensure target directory is writable before proceeding
+    emit_log(window, "Checking directory permissions...");
+    ensure_target_writable(target).map_err(|e| {
+        emit_log(window, &format!("Permission error: {}", e));
+        e
+    })?;
+    emit_log(window, "Directory permissions OK");
+
     // Create a temporary directory for the clone/download
     let tmp_dir = std::env::temp_dir().join(format!(
         "claude-scientific-skills-{}",
@@ -562,25 +616,33 @@ async fn install_skills_to(
             .as_millis()
     ));
     std::fs::create_dir_all(&tmp_dir)
-        .map_err(|e| format!("Failed to create temp dir: {}", e))?;
+        .map_err(|e| {
+            let msg = format!("Failed to create temp dir: {}", e);
+            emit_log(window, &msg);
+            msg
+        })?;
 
-    // Try git clone first, fall back to tarball download
-    if git_available().await {
-        if let Err(e) = clone_repo(&tmp_dir).await {
-            eprintln!("git clone failed, trying tarball: {}", e);
-            download_tarball(&tmp_dir).await?;
-        }
-    } else {
-        download_tarball(&tmp_dir).await?;
-    }
+    // Download via tarball (faster, no git/git-lfs dependency)
+    emit_log(window, "Downloading skills...");
+    download_tarball(&tmp_dir).await.map_err(|e| {
+        emit_log(window, &format!("Download failed: {}", e));
+        e
+    })?;
+    emit_log(window, "Download complete");
 
     let repo_dir = tmp_dir.join("repo");
 
     // Copy skills to target directory
-    let count = copy_skills(&repo_dir, target)?;
+    emit_log(window, "Copying skills...");
+    let count = copy_skills(&repo_dir, target).map_err(|e| {
+        emit_log(window, &format!("Copy failed: {}", e));
+        e
+    })?;
+    emit_log(window, &format!("Copied {} skills", count));
 
     // Clean up temp directory
     let _ = std::fs::remove_dir_all(&tmp_dir);
+    emit_log(window, "Cleanup complete");
 
     let target_str = target.to_string_lossy().to_string();
 

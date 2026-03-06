@@ -158,6 +158,37 @@ pub async fn check_uv_status() -> Result<UvStatus, String> {
 
 #[tauri::command]
 pub async fn install_uv(window: WebviewWindow) -> Result<(), String> {
+    // Ensure ~/.local/bin exists — uv installs its binary there.
+    // If ~/.local is owned by root (e.g. created by pip), prompt for admin password.
+    #[cfg(not(target_os = "windows"))]
+    if let Some(home) = dirs::home_dir() {
+        let local_bin = home.join(".local").join("bin");
+        if std::fs::create_dir_all(&local_bin).is_err() {
+            let user = std::env::var("USER").unwrap_or_default();
+            let local_dir = home.join(".local");
+            let script = format!(
+                "mkdir -p '{}' && chown -R {} '{}'",
+                local_bin.display(), user, local_dir.display()
+            );
+            let output = std::process::Command::new("osascript")
+                .args([
+                    "-e",
+                    &format!("do shell script \"{}\" with administrator privileges", script),
+                ])
+                .output()
+                .map_err(|e| format!("Failed to fix permissions for ~/.local: {}", e))?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(format!(
+                    "Failed to create ~/.local/bin: {}. \
+                     Please run: sudo chown -R $(whoami) ~/.local",
+                    stderr.trim()
+                ));
+            }
+        }
+    }
+
     #[cfg(not(target_os = "windows"))]
     let mut cmd = {
         let mut c = tokio::process::Command::new("bash");

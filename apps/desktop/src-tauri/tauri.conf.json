@@ -23,7 +23,10 @@
         "visible": false,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
-        "trafficLightPosition": { "x": 12, "y": 12 }
+        "trafficLightPosition": {
+          "x": 12,
+          "y": 12
+        }
       }
     ],
     "security": {
@@ -43,7 +46,8 @@
     ],
     "macOS": {
       "entitlements": "./Entitlements.plist",
-      "minimumSystemVersion": "11.0"
+      "minimumSystemVersion": "11.0",
+      "frameworks": []
     },
     "windows": {
       "nsis": {

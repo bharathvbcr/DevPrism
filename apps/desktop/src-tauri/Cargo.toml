@@ -27,7 +27,7 @@ hmac = "0.12"
 sha1 = "0.10"
 base64 = "0.22"
 dotenvy = "0.15"
-git2 = { version = "0.20", default-features = false }
+git2 = { version = "0.20", default-features = false, features = ["vendored-libgit2"] }
 chrono = "0.4"
 uuid = { version = "1", features = ["v4"] }
 which = "7"

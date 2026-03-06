@@ -20,14 +20,23 @@ impl Default for ClaudeProcessState {
 }
 
 /// Discover the claude binary on the system.
-/// Checks: which/where claude → NVM paths → standard paths → bare fallback.
+/// Checks: ~/.local/bin (native install) → which → NVM paths → standard paths → bare fallback.
 fn find_claude_binary() -> Result<String, String> {
-    // 1. Try to find claude on PATH
+    // 1. Check the native installer's default location first
+    //    (GUI apps often don't have ~/.local/bin in PATH)
+    if let Some(home) = dirs::home_dir() {
+        let native_path = home.join(".local").join("bin").join("claude");
+        if native_path.exists() {
+            return Ok(native_path.to_string_lossy().to_string());
+        }
+    }
+
+    // 2. Try to find claude on PATH
     if let Ok(path) = which::which("claude") {
         return Ok(path.to_string_lossy().to_string());
     }
 
-    // 2. Check NVM directories (Unix) or npm global (Windows)
+    // 3. Check NVM directories (Unix) or npm global (Windows)
     if let Some(home) = dirs::home_dir() {
         #[cfg(not(target_os = "windows"))]
         {
@@ -105,7 +114,6 @@ fn find_claude_binary() -> Result<String, String> {
         #[cfg(not(target_os = "windows"))]
         let user_paths = vec![
             home.join(".claude").join("local").join("claude"),
-            home.join(".local").join("bin").join("claude"),
             home.join(".npm-global").join("bin").join("claude"),
             home.join(".yarn").join("bin").join("claude"),
             home.join(".bun").join("bin").join("claude"),
@@ -406,8 +414,119 @@ pub async fn check_claude_status() -> Result<ClaudeStatus, String> {
     })
 }
 
+/// Return the list of directories the Claude Code installer needs.
+fn claude_required_dirs(home: &std::path::Path) -> Vec<PathBuf> {
+    vec![
+        home.join(".local").join("bin"),
+        home.join(".local").join("share").join("claude"),
+        home.join(".local").join("state").join("claude"),
+        home.join(".claude"),
+    ]
+}
+
+/// Try to create all required directories without elevation.
+/// Returns Ok(true) if all succeeded, Ok(false) if any failed.
+fn try_create_dirs(dirs: &[PathBuf]) -> bool {
+    dirs.iter().all(|dir| std::fs::create_dir_all(dir).is_ok())
+}
+
+/// Verify that all directories exist and are writable.
+fn verify_dirs_writable(dirs: &[PathBuf]) -> Result<(), String> {
+    for dir in dirs {
+        if !dir.exists() {
+            return Err(format!(
+                "Directory {} does not exist. \
+                 Please run: sudo chown -R $(whoami) ~/.local",
+                dir.display()
+            ));
+        }
+        let test_file = dir.join(".prism_write_test");
+        match std::fs::write(&test_file, "test") {
+            Ok(_) => {
+                let _ = std::fs::remove_file(&test_file);
+            }
+            Err(_) => {
+                return Err(format!(
+                    "Directory {} exists but is not writable. \
+                     Please run: sudo chown -R $(whoami) ~/.local",
+                    dir.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Build the shell script for elevated directory creation + chown.
+#[cfg(not(target_os = "windows"))]
+fn build_elevation_script(dirs: &[PathBuf], user: &str, local_dir: &std::path::Path) -> String {
+    let dirs_list = dirs
+        .iter()
+        .map(|d| format!("'{}'", d.display()))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!(
+        "mkdir -p {} && chown -R {} '{}'",
+        dirs_list, user, local_dir.display()
+    )
+}
+
+/// Ensure ~/.local/{bin,share/claude,state/claude} and ~/.claude exist and are writable.
+/// If creation fails (e.g. ~/.local is owned by root), prompt for admin password via osascript.
+#[cfg(not(target_os = "windows"))]
+async fn ensure_local_dirs(window: &WebviewWindow) -> Result<(), String> {
+    let home = dirs::home_dir().ok_or("Could not determine home directory")?;
+    let required_dirs = claude_required_dirs(&home);
+
+    // Try without elevation first
+    if try_create_dirs(&required_dirs) {
+        return Ok(());
+    }
+
+    // Need elevation — use osascript directly for reliability
+    let user = std::env::var("USER").unwrap_or_default();
+    let local_dir = home.join(".local");
+    let script = build_elevation_script(&required_dirs, &user, &local_dir);
+
+    let _ = window.emit(
+        "install-output",
+        "Requesting admin privileges to fix directory permissions...",
+    );
+
+    let output = std::process::Command::new("osascript")
+        .args([
+            "-e",
+            &format!(
+                "do shell script \"{}\" with administrator privileges",
+                script
+            ),
+        ])
+        .output()
+        .map_err(|e| format!("Failed to run osascript: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "Failed to fix directory permissions. Error: {}. \
+             You can fix this manually by running: sudo chown -R $(whoami) ~/.local",
+            stderr.trim()
+        ));
+    }
+
+    // Verify directories are now writable
+    verify_dirs_writable(&required_dirs)
+}
+
 #[tauri::command]
 pub async fn install_claude_cli(window: WebviewWindow) -> Result<(), String> {
+    // Ensure directories that the Claude Code installer expects exist.
+    // The installer fails with EACCES if ~/.local is owned by root
+    // (e.g. created by pip or another tool).
+    #[cfg(not(target_os = "windows"))]
+    {
+        ensure_local_dirs(&window).await?;
+    }
+
     #[cfg(not(target_os = "windows"))]
     let mut cmd = {
         let mut c = tokio::process::Command::new("bash");
@@ -423,10 +542,22 @@ pub async fn install_claude_cli(window: WebviewWindow) -> Result<(), String> {
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 
-    // Inherit essential environment variables
+    // Inherit essential environment variables, ensuring ~/.local/bin is in PATH
     for (key, value) in std::env::vars() {
-        if key == "PATH"
-            || key == "HOME"
+        if key == "PATH" {
+            // Prepend ~/.local/bin so the installer sees it in PATH
+            if let Some(home) = dirs::home_dir() {
+                let local_bin = home.join(".local").join("bin");
+                let local_bin_str = local_bin.to_string_lossy();
+                if !value.contains(local_bin_str.as_ref()) {
+                    cmd.env("PATH", format!("{}:{}", local_bin_str, value));
+                } else {
+                    cmd.env("PATH", &value);
+                }
+            } else {
+                cmd.env("PATH", &value);
+            }
+        } else if key == "HOME"
             || key == "USER"
             || key == "SHELL"
             || key == "LANG"
@@ -1272,5 +1403,91 @@ mod tests {
         let (title, ts) = extract_first_user_message(&pb);
         assert_eq!(title.unwrap(), "Add a new section");
         assert_eq!(ts.unwrap(), "2024-01-02T00:00:00Z");
+    }
+
+    // --- claude_required_dirs ---
+
+    #[test]
+    fn test_claude_required_dirs_has_all_paths() {
+        let home = PathBuf::from("/Users/test");
+        let dirs = claude_required_dirs(&home);
+        assert_eq!(dirs.len(), 4);
+        assert!(dirs.contains(&home.join(".local").join("bin")));
+        assert!(dirs.contains(&home.join(".local").join("share").join("claude")));
+        assert!(dirs.contains(&home.join(".local").join("state").join("claude")));
+        assert!(dirs.contains(&home.join(".claude")));
+    }
+
+    // --- try_create_dirs ---
+
+    #[test]
+    fn test_try_create_dirs_succeeds_in_temp() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = vec![
+            tmp.path().join("a").join("b"),
+            tmp.path().join("c"),
+        ];
+        assert!(try_create_dirs(&dirs));
+        assert!(dirs[0].exists());
+        assert!(dirs[1].exists());
+    }
+
+    #[test]
+    fn test_try_create_dirs_fails_for_invalid_path() {
+        let dirs = vec![PathBuf::from("/nonexistent_root_path/test/dir")];
+        assert!(!try_create_dirs(&dirs));
+    }
+
+    // --- verify_dirs_writable ---
+
+    #[test]
+    fn test_verify_dirs_writable_success() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = vec![tmp.path().to_path_buf()];
+        assert!(verify_dirs_writable(&dirs).is_ok());
+    }
+
+    #[test]
+    fn test_verify_dirs_writable_nonexistent() {
+        let dirs = vec![PathBuf::from("/tmp/nonexistent_dir_prism_test_12345")];
+        let result = verify_dirs_writable(&dirs);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("does not exist"));
+    }
+
+    #[test]
+    fn test_verify_dirs_writable_cleans_up_test_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = vec![tmp.path().to_path_buf()];
+        verify_dirs_writable(&dirs).unwrap();
+        // The .prism_write_test file should be cleaned up
+        assert!(!tmp.path().join(".prism_write_test").exists());
+    }
+
+    // --- build_elevation_script ---
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn test_build_elevation_script_format() {
+        let dirs = vec![
+            PathBuf::from("/Users/test/.local/bin"),
+            PathBuf::from("/Users/test/.claude"),
+        ];
+        let script = build_elevation_script(&dirs, "testuser", std::path::Path::new("/Users/test/.local"));
+        assert!(script.contains("mkdir -p"));
+        assert!(script.contains("'/Users/test/.local/bin'"));
+        assert!(script.contains("'/Users/test/.claude'"));
+        assert!(script.contains("chown -R testuser"));
+        assert!(script.contains("'/Users/test/.local'"));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn test_build_elevation_script_handles_spaces_in_path() {
+        let dirs = vec![PathBuf::from("/Users/my user/.local/bin")];
+        let script = build_elevation_script(&dirs, "myuser", std::path::Path::new("/Users/my user/.local"));
+        // Paths are single-quoted to handle spaces
+        assert!(script.contains("'/Users/my user/.local/bin'"));
+        assert!(script.contains("'/Users/my user/.local'"));
     }
 }

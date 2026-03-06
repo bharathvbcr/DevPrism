@@ -135,7 +135,10 @@ Download the latest build from [GitHub Releases](https://github.com/delibae/clau
 - [Node.js](https://nodejs.org/) 22+
 - [pnpm](https://pnpm.io/) 10+
 - [Rust](https://rustup.rs/) (stable)
-- macOS: `brew install icu4c harfbuzz pkg-config`
+- Platform-specific native dependencies (required by [Tectonic](https://tectonic-typesetting.github.io/)):
+  - **macOS:** `brew install icu4c harfbuzz pkg-config`
+  - **Linux:** `apt install libicu-dev libgraphite2-dev libharfbuzz-dev libfreetype-dev libfontconfig-dev libwebkit2gtk-4.1-dev libappindicator3-dev`
+  - **Windows:** See [Windows Setup](#windows-setup) below
 
 ### Setup
 
@@ -144,6 +147,36 @@ git clone https://github.com/delibae/claude-prism.git
 cd claude-prism
 pnpm install
 ```
+
+### Windows Setup
+
+Windows requires [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) (C++ workload) and [vcpkg](https://github.com/microsoft/vcpkg) for native dependencies. Run the following in **PowerShell**:
+
+```powershell
+# 1. Install Visual Studio Build Tools (if not already installed)
+winget install Microsoft.VisualStudio.2022.BuildTools --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+
+# 2. Install vcpkg
+git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
+C:\vcpkg\bootstrap-vcpkg.bat
+
+# 3. Set environment variables (persistent)
+[Environment]::SetEnvironmentVariable("VCPKG_ROOT", "C:\vcpkg", "User")
+$path = [Environment]::GetEnvironmentVariable("PATH", "User")
+[Environment]::SetEnvironmentVariable("PATH", "$path;C:\vcpkg", "User")
+[Environment]::SetEnvironmentVariable("TECTONIC_DEP_BACKEND", "vcpkg", "User")
+[Environment]::SetEnvironmentVariable("CXXFLAGS", "/std:c++17", "User")
+
+# 4. Restart PowerShell, then install native libraries (use x64-windows-static-md triplet)
+vcpkg install harfbuzz[graphite2]:x64-windows-static-md freetype:x64-windows-static-md icu:x64-windows-static-md fontconfig:x64-windows-static-md
+
+# 5. Build and run
+cd claude-prism
+pnpm install
+pnpm dev:desktop
+```
+
+> **Note:** Step 4 may take 10–20 minutes on first run (building ICU, HarfBuzz, etc.).
 
 ### Run
 

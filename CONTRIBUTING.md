@@ -9,10 +9,30 @@ Contributions are welcome! This guide covers the development environment, workfl
 - [Node.js](https://nodejs.org/) 22+
 - [pnpm](https://pnpm.io/) 10+
 - [Rust](https://rustup.rs/) (stable)
-- Platform-specific native dependencies:
+- Platform-specific native dependencies (required by [Tectonic](https://tectonic-typesetting.github.io/)):
   - **macOS:** `brew install icu4c harfbuzz pkg-config`
   - **Linux:** `apt install libicu-dev libgraphite2-dev libharfbuzz-dev libfreetype-dev libfontconfig-dev libwebkit2gtk-4.1-dev libappindicator3-dev`
-  - **Windows:** `vcpkg install harfbuzz[graphite2] freetype icu fontconfig` (with `TECTONIC_DEP_BACKEND=vcpkg`)
+  - **Windows:** Visual Studio Build Tools (C++ workload) + vcpkg — see detailed steps below
+
+#### Windows Setup (PowerShell)
+
+```powershell
+# 1. Install Visual Studio Build Tools (if not already installed)
+winget install Microsoft.VisualStudio.2022.BuildTools --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+
+# 2. Install vcpkg
+git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
+C:\vcpkg\bootstrap-vcpkg.bat
+
+# 3. Set environment variables (persistent)
+[Environment]::SetEnvironmentVariable("VCPKG_ROOT", "C:\vcpkg", "User")
+$path = [Environment]::GetEnvironmentVariable("PATH", "User")
+[Environment]::SetEnvironmentVariable("PATH", "$path;C:\vcpkg", "User")
+[Environment]::SetEnvironmentVariable("TECTONIC_DEP_BACKEND", "vcpkg", "User")
+
+# 4. Restart PowerShell, then install native libraries (~10-20 min)
+vcpkg install harfbuzz[graphite2]:x64-windows freetype:x64-windows icu:x64-windows fontconfig:x64-windows
+```
 
 ### Setup
 

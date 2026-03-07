@@ -19,10 +19,41 @@ pub struct SlashCommand {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+struct CommandFrontmatterRaw {
+    allowed_tools: Option<serde_yaml::Value>,
+    description: Option<String>,
+    name: Option<String>,
+}
+
 struct CommandFrontmatter {
-    #[serde(rename = "allowed-tools")]
     allowed_tools: Option<Vec<String>>,
     description: Option<String>,
+    name: Option<String>,
+}
+
+impl CommandFrontmatterRaw {
+    fn into_parsed(self) -> CommandFrontmatter {
+        let allowed_tools = self.allowed_tools.and_then(|v| match v {
+            serde_yaml::Value::String(s) => {
+                let tools: Vec<String> = s.split_whitespace().map(|t| t.to_string()).collect();
+                if tools.is_empty() { None } else { Some(tools) }
+            }
+            serde_yaml::Value::Sequence(seq) => {
+                let tools: Vec<String> = seq
+                    .into_iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect();
+                if tools.is_empty() { None } else { Some(tools) }
+            }
+            _ => None,
+        });
+        CommandFrontmatter {
+            allowed_tools,
+            description: self.description,
+            name: self.name,
+        }
+    }
 }
 
 fn parse_markdown_with_frontmatter(content: &str) -> (Option<CommandFrontmatter>, String) {
@@ -44,8 +75,8 @@ fn parse_markdown_with_frontmatter(content: &str) -> (Option<CommandFrontmatter>
         let frontmatter_content = lines[1..end].join("\n");
         let body_content = lines[(end + 1)..].join("\n");
 
-        match serde_yaml::from_str::<CommandFrontmatter>(&frontmatter_content) {
-            Ok(frontmatter) => (Some(frontmatter), body_content),
+        match serde_yaml::from_str::<CommandFrontmatterRaw>(&frontmatter_content) {
+            Ok(raw) => (Some(raw.into_parsed()), body_content),
             Err(_) => (None, content.to_string()),
         }
     } else {
@@ -152,6 +183,82 @@ fn find_markdown_files(dir: &Path, files: &mut Vec<PathBuf>) {
     }
 }
 
+/// Load skills from a `.claude/skills/` directory.
+/// Each skill is a subdirectory containing a `SKILL.md` file.
+fn load_skills_from_dir(dir: &Path, scope: &str) -> Vec<SlashCommand> {
+    if !dir.exists() {
+        return Vec::new();
+    }
+
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut skills = Vec::new();
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        let skill_md = path.join("SKILL.md");
+        if !skill_md.exists() {
+            continue;
+        }
+
+        let content = match fs::read_to_string(&skill_md) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        let folder_name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+
+        let (frontmatter, body) = parse_markdown_with_frontmatter(&content);
+
+        // Name: frontmatter name > first # heading > folder name
+        let name = frontmatter
+            .as_ref()
+            .and_then(|fm| fm.name.clone())
+            .or_else(|| {
+                body.lines()
+                    .find(|l| l.starts_with("# "))
+                    .map(|l| l.trim_start_matches("# ").trim().to_string())
+            })
+            .unwrap_or_else(|| folder_name.clone());
+
+        // Description: frontmatter description (truncated to 200 chars)
+        let description = frontmatter
+            .as_ref()
+            .and_then(|fm| fm.description.clone())
+            .map(|d| d.chars().take(200).collect());
+
+        let id = format!("skill-{}", folder_name);
+
+        skills.push(SlashCommand {
+            id,
+            name: name.clone(),
+            full_command: format!("/{}", folder_name),
+            scope: scope.to_string(),
+            namespace: None,
+            file_path: skill_md.to_string_lossy().to_string(),
+            content,
+            description,
+            allowed_tools: vec![],
+            has_bash_commands: false,
+            has_file_references: false,
+            accepts_arguments: true,
+        });
+    }
+
+    skills.sort_by(|a, b| a.name.cmp(&b.name));
+    skills
+}
+
 fn create_default_commands() -> Vec<SlashCommand> {
     vec![
         SlashCommand {
@@ -208,8 +315,8 @@ pub async fn slash_commands_list(
     commands.extend(create_default_commands());
 
     // Load project commands
-    if let Some(proj_path) = project_path {
-        let project_commands_dir = PathBuf::from(&proj_path).join(".claude").join("commands");
+    if let Some(ref proj_path) = project_path {
+        let project_commands_dir = PathBuf::from(proj_path).join(".claude").join("commands");
         if project_commands_dir.exists() {
             let mut md_files = Vec::new();
             find_markdown_files(&project_commands_dir, &mut md_files);
@@ -235,6 +342,24 @@ pub async fn slash_commands_list(
                 {
                     commands.push(cmd);
                 }
+            }
+        }
+    }
+
+    // Load installed skills (project-level first, then global)
+    if let Some(proj_path) = &project_path {
+        let project_skills_dir = PathBuf::from(proj_path).join(".claude").join("skills");
+        commands.extend(load_skills_from_dir(&project_skills_dir, "skill"));
+    }
+    if let Some(home_dir) = dirs::home_dir() {
+        let global_skills_dir = home_dir.join(".claude").join("skills");
+        // Avoid duplicates if project and global have same skill
+        let existing_ids: std::collections::HashSet<String> =
+            commands.iter().map(|c| c.id.clone()).collect();
+        let global_skills = load_skills_from_dir(&global_skills_dir, "skill");
+        for skill in global_skills {
+            if !existing_ids.contains(&skill.id) {
+                commands.push(skill);
             }
         }
     }
@@ -433,6 +558,157 @@ mod tests {
         let file = Path::new("/base/my-command.md");
         let (name, _) = extract_command_info(file, base).unwrap();
         assert_eq!(name, "my-command");
+    }
+
+    // --- SKILL.md frontmatter parsing tests ---
+
+    #[test]
+    fn test_parse_skill_frontmatter_with_extra_fields() {
+        // Real SKILL.md format: has name, description, license, metadata — extra fields
+        let content = "---\nname: biopython\ndescription: Comprehensive molecular biology toolkit.\nlicense: Unknown\nmetadata:\n    skill-author: K-Dense Inc.\n---\n\n# Biopython\n\nBody here.";
+        let (fm, body) = parse_markdown_with_frontmatter(content);
+        assert!(
+            fm.is_some(),
+            "Frontmatter with unknown fields (license, metadata) should parse successfully"
+        );
+        let fm = fm.unwrap();
+        assert_eq!(fm.description.unwrap(), "Comprehensive molecular biology toolkit.");
+        assert_eq!(fm.name.unwrap(), "biopython");
+        assert!(body.contains("# Biopython"));
+    }
+
+    #[test]
+    fn test_parse_skill_frontmatter_minimal() {
+        let content = "---\nname: scanpy\ndescription: scRNA-seq analysis\n---\n\n# Scanpy";
+        let (fm, _body) = parse_markdown_with_frontmatter(content);
+        assert!(fm.is_some());
+        let fm = fm.unwrap();
+        assert_eq!(fm.name.unwrap(), "scanpy");
+        assert_eq!(fm.description.unwrap(), "scRNA-seq analysis");
+    }
+
+    #[test]
+    fn test_parse_skill_frontmatter_with_string_allowed_tools() {
+        // Some SKILL.md files have allowed-tools as a bare string, not a list
+        let content = "---\nname: bgpt\ndescription: Search papers.\nallowed-tools: Bash\nlicense: MIT\n---\n\n# BGPT";
+        let (fm, _body) = parse_markdown_with_frontmatter(content);
+        assert!(
+            fm.is_some(),
+            "Frontmatter with allowed-tools as string should still parse"
+        );
+        let fm = fm.unwrap();
+        assert_eq!(fm.description.unwrap(), "Search papers.");
+    }
+
+    #[test]
+    fn test_parse_skill_frontmatter_with_space_separated_allowed_tools() {
+        // e.g. "allowed-tools: Read Write Edit Bash"
+        let content = "---\nname: writer\ndescription: Write stuff.\nallowed-tools: Read Write Edit Bash\n---\n\nBody";
+        let (fm, _body) = parse_markdown_with_frontmatter(content);
+        assert!(
+            fm.is_some(),
+            "Frontmatter with space-separated allowed-tools should parse"
+        );
+        let fm = fm.unwrap();
+        assert_eq!(fm.description.unwrap(), "Write stuff.");
+    }
+
+    #[test]
+    fn test_load_skills_from_dir() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create a skill with full SKILL.md frontmatter (including extra fields)
+        let skill_dir = dir.path().join("biopython");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: biopython\ndescription: Molecular biology toolkit.\nlicense: Unknown\nmetadata:\n    skill-author: Test\n---\n\n# Biopython\n\nBody.",
+        )
+        .unwrap();
+
+        // Create a skill without frontmatter
+        let skill_dir2 = dir.path().join("custom-tool");
+        fs::create_dir_all(&skill_dir2).unwrap();
+        fs::write(
+            skill_dir2.join("SKILL.md"),
+            "# Custom Tool\n\nA custom tool description.",
+        )
+        .unwrap();
+
+        // Non-skill directory (no SKILL.md)
+        let non_skill = dir.path().join("not-a-skill");
+        fs::create_dir_all(&non_skill).unwrap();
+        fs::write(non_skill.join("README.md"), "nothing").unwrap();
+
+        let skills = load_skills_from_dir(dir.path(), "skill");
+
+        assert_eq!(skills.len(), 2, "Should find 2 skills, skip dir without SKILL.md");
+
+        let bio = skills.iter().find(|s| s.full_command == "/biopython").unwrap();
+        assert_eq!(bio.name, "biopython");
+        assert_eq!(bio.description.as_deref(), Some("Molecular biology toolkit."));
+        assert_eq!(bio.scope, "skill");
+        assert!(bio.accepts_arguments);
+
+        let custom = skills.iter().find(|s| s.full_command == "/custom-tool").unwrap();
+        assert_eq!(custom.name, "Custom Tool");
+        assert!(custom.description.is_none(), "No frontmatter = no description");
+    }
+
+    #[test]
+    fn test_real_skills_dir() {
+        // Test against actual installed skills if available
+        let skills_dir = dirs::home_dir().unwrap().join(".claude").join("skills");
+        if !skills_dir.exists() {
+            eprintln!("SKIP: no skills installed at {:?}", skills_dir);
+            return;
+        }
+
+        let skills = load_skills_from_dir(&skills_dir, "skill");
+        eprintln!("Found {} skills", skills.len());
+
+        let mut missing_desc = Vec::new();
+        let mut missing_name = Vec::new();
+
+        for skill in &skills {
+            if skill.description.is_none() {
+                missing_desc.push(skill.full_command.as_str());
+            }
+            if skill.name == skill.full_command.trim_start_matches('/') {
+                // name fell back to folder name
+                missing_name.push(skill.full_command.as_str());
+            }
+        }
+
+        if !missing_desc.is_empty() {
+            eprintln!("Skills WITHOUT description ({}):", missing_desc.len());
+            for cmd in &missing_desc {
+                eprintln!("  {}", cmd);
+            }
+        }
+        if !missing_name.is_empty() {
+            eprintln!("Skills where name == folder ({}):", missing_name.len());
+            for cmd in &missing_name {
+                eprintln!("  {}", cmd);
+            }
+        }
+
+        // Print a few samples with descriptions
+        for skill in skills.iter().take(5) {
+            eprintln!(
+                "  {} | name={:?} | desc={:?}",
+                skill.full_command,
+                skill.name,
+                skill.description.as_deref().map(|d| &d[..d.len().min(60)])
+            );
+        }
+
+        assert!(
+            missing_desc.is_empty(),
+            "{} skills missing description: {:?}",
+            missing_desc.len(),
+            missing_desc
+        );
     }
 
     // --- load_command_from_file integration tests ---

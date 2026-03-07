@@ -72,6 +72,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
 
   // / slash command state
   const [slashQuery, setSlashQuery] = useState<string | null>(null);
+  const slashSelectedRef = useRef(false); // true after user picks a command — suppresses re-open
 
   // Keep refs to latest input/pinnedContexts so the tab-switch effect can
   // save the draft without depending on these values (which would cause loops).
@@ -183,12 +184,9 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
     setMentionIndex(0);
   }, [mentionQuery, files]);
 
-  // Load slash commands when picker is activated
+  // Load slash commands when picker is activated (keep loaded after close for send resolution)
   useEffect(() => {
-    if (slashQuery === null) {
-      setSlashCommands([]);
-      return;
-    }
+    if (slashQuery === null) return;
     invoke<SlashCommand[]>("slash_commands_list", {
       projectPath: projectRoot ?? undefined,
     })
@@ -234,6 +232,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
 
     setInput(newInput);
     setSlashQuery(null);
+    slashSelectedRef.current = true;
 
     // Refocus and move cursor to end
     setTimeout(() => {
@@ -414,6 +413,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
     if (!trimmed || isStreaming) return;
 
     // Resolve slash commands: if input starts with /command, find the command and substitute $ARGUMENTS
+    // Skills (scope === "skill") are passed through as-is — Claude handles them via the Skill tool.
     let finalPrompt = trimmed;
     const slashMatch = trimmed.match(/^\/(\S+)\s*([\s\S]*)/);
     if (slashMatch && slashCommands.length > 0) {
@@ -422,7 +422,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
       const matched = slashCommands.find(
         (cmd) => cmd.full_command === `/${cmdName}` || cmd.name === cmdName,
       );
-      if (matched) {
+      if (matched && matched.scope !== "skill") {
         finalPrompt = matched.content;
         if (matched.accepts_arguments && args) {
           finalPrompt = finalPrompt.replace(/\$ARGUMENTS/g, args);
@@ -433,6 +433,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
     setInput("");
     setMentionQuery(null);
     setSlashQuery(null);
+    slashSelectedRef.current = false;
     // Send with pinned context override
     if (pinnedContexts.length > 0) {
       const combinedLabel = pinnedContexts.map((c) => c.label).join(", ");
@@ -508,13 +509,13 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
 
       // Detect / slash command trigger — only at the very start of input
       const slashMatch = value.match(/^\/(\S*)$/);
-      const slashMatchWithArgs = value.match(/^\/(\S+)\s/);
       if (slashMatch) {
+        // Typing /query with no space yet — open picker
+        slashSelectedRef.current = false;
         setSlashQuery(slashMatch[1]);
         setMentionQuery(null);
-      } else if (slashMatchWithArgs) {
-        // Keep slash picker open while typing args after command name
-        setSlashQuery(slashMatchWithArgs[1]);
+      } else if (slashSelectedRef.current) {
+        // User already selected a command — don't re-open picker
       } else if (!value.startsWith("/")) {
         setSlashQuery(null);
       }

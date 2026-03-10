@@ -1,5 +1,9 @@
 # Changelog
 
+## \[0.5.2]
+
+- [`fe1e5d8`](https://github.com/delibae/claude-prism/commit/fe1e5d86852d6f6c1e57454f5621bf32d1d41761) Fix CI release pipeline to auto-create GitHub releases and tags via covector
+
 ## \[0.5.1]
 
 - [`2731936`](https://github.com/delibae/claude-prism/commit/27319367a6c0198f20ab9b88cb953334acb039ee) Add ErrorBoundary with fallback UI, improve error handling, fix security vulnerabilities, and add aria-labels for accessibility

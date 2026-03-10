@@ -17,6 +17,11 @@ export function resolveCompileTarget(
   if (fallback) {
     return { rootId: fallback.id, targetPath: fallback.relativePath };
   }
+  // Final fallback: use the first available .tex file in the project
+  const anyTex = files.find((f) => f.type === "tex");
+  if (anyTex) {
+    return { rootId: anyTex.id, targetPath: anyTex.relativePath };
+  }
   // No .tex file exists — cannot compile
   return null;
 }

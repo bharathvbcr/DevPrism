@@ -13,11 +13,13 @@ type HmacSha1 = Hmac<Sha1>;
 // Set these via ZOTERO_CONSUMER_KEY / ZOTERO_CONSUMER_SECRET env vars,
 // or replace these defaults with your registered credentials.
 fn consumer_key() -> String {
-    std::env::var("ZOTERO_CONSUMER_KEY").unwrap_or_else(|_| String::new())
+    std::env::var("ZOTERO_CONSUMER_KEY")
+        .unwrap_or_else(|_| option_env!("ZOTERO_CONSUMER_KEY").unwrap_or("").to_string())
 }
 
 fn consumer_secret() -> String {
-    std::env::var("ZOTERO_CONSUMER_SECRET").unwrap_or_else(|_| String::new())
+    std::env::var("ZOTERO_CONSUMER_SECRET")
+        .unwrap_or_else(|_| option_env!("ZOTERO_CONSUMER_SECRET").unwrap_or("").to_string())
 }
 
 const REQUEST_TOKEN_URL: &str = "https://www.zotero.org/oauth/request";

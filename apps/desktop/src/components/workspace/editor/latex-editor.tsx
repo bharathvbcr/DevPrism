@@ -283,7 +283,12 @@ export function LatexEditor() {
   compileRef.current = async () => {
     const { contentGeneration, lastCompiledGenerations, pdfData: existingPdf, files: allFiles, isCompiling: currentlyCompiling } = useDocumentStore.getState();
     if (currentlyCompiling || !projectRoot || activeFile?.type !== "tex") return;
-    const { rootId, targetPath } = resolveCompileTarget(activeFile.id, allFiles);
+    const resolved = resolveCompileTarget(activeFile.id, allFiles);
+    if (!resolved) {
+      setCompileError("No .tex file found in this project. Create a document.tex or main.tex file to compile.", activeFile.id);
+      return;
+    }
+    const { rootId, targetPath } = resolved;
     // Skip recompile if no edits since last successful compile of this root
     const lastGen = lastCompiledGenerations.get(rootId);
     if (existingPdf && lastGen !== undefined && contentGeneration === lastGen) return;

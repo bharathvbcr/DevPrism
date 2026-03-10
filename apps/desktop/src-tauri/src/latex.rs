@@ -446,8 +446,16 @@ pub async fn compile_latex(
     let pdf_path = work_dir.join(format!("{}.pdf", main_file_name));
     let _ = std::fs::remove_file(&pdf_path);
 
-    // Detect TeX engine from magic comment
+    // Verify the main TeX file exists before attempting compilation
     let main_tex_path = work_dir.join(&main_file);
+    if !main_tex_path.exists() {
+        return Err(format!(
+            "Compilation failed\n\nNo .tex file found: \"{}\". Create a document.tex or main.tex file to compile.",
+            main_file
+        ));
+    }
+
+    // Detect TeX engine from magic comment
     if let Ok(content) = std::fs::read_to_string(&main_tex_path) {
         if let Some(engine) = detect_tex_engine(&content) {
             if engine == TexEngine::LuaLaTeX {

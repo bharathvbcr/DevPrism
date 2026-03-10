@@ -1,17 +1,24 @@
 import { invoke } from "@tauri-apps/api/core";
 import { resolveTexRoot, type ProjectFile } from "@/stores/document-store";
 
-/** Resolve which file to compile and the root ID for caching. */
+/** Resolve which file to compile and the root ID for caching.
+ *  Returns `null` when the project has no compilable .tex file. */
 export function resolveCompileTarget(
   activeFileId: string,
   files: ProjectFile[],
-): { rootId: string; targetPath: string } {
+): { rootId: string; targetPath: string } | null {
   const rootId = resolveTexRoot(activeFileId, files);
   const rootEntry = files.find((f) => f.id === rootId);
-  const targetPath = rootEntry?.type === "tex"
-    ? rootEntry.relativePath
-    : (files.find((f) => f.name === "document.tex" || f.name === "main.tex")?.relativePath || "document.tex");
-  return { rootId, targetPath };
+  if (rootEntry?.type === "tex") {
+    return { rootId, targetPath: rootEntry.relativePath };
+  }
+  // Fallback: look for any well-known root tex file
+  const fallback = files.find((f) => f.name === "document.tex" || f.name === "main.tex");
+  if (fallback) {
+    return { rootId: fallback.id, targetPath: fallback.relativePath };
+  }
+  // No .tex file exists — cannot compile
+  return null;
 }
 
 /** Extract a human-readable error message from an unknown catch value. */

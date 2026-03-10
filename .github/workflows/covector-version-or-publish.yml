@@ -43,7 +43,7 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           command: version-or-publish
-          createRelease: false
+          createRelease: true
 
       - name: Sync Cargo.lock
         if: steps.covector.outputs.commandRan == 'version'
@@ -64,10 +64,3 @@ jobs:
 
             This PR was auto-generated based on `.changes/` files.
             Merging will create a new version tag and trigger a release build.
-
-      - name: Create and push tag
-        if: steps.covector.outputs.commandRan == 'publish'
-        run: |
-          VERSION=$(node -p "require('./apps/desktop/package.json').version")
-          git tag -a "v${VERSION}" -m "Release v${VERSION}"
-          git push origin "v${VERSION}"

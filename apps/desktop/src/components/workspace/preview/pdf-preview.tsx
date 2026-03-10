@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { writeFile, mkdir, exists } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
-import { useDocumentStore } from "@/stores/document-store";
+import { useDocumentStore, resolveTexRoot } from "@/stores/document-store";
 import { useHistoryStore } from "@/stores/history-store";
 import { useClaudeChatStore } from "@/stores/claude-chat-store";
 import { Button } from "@/components/ui/button";
@@ -277,11 +277,14 @@ export function PdfPreview() {
       setIsCompiling(true);
       try {
         await saveAllFiles();
-        const targetFile = activeFile?.type === "tex"
-          ? activeFile.relativePath
-          : (files.find((f) => f.name === "document.tex" || f.name === "main.tex")?.relativePath || "document.tex");
+        const { files: allFiles, activeFileId } = useDocumentStore.getState();
+        const rootId = resolveTexRoot(activeFileId, allFiles);
+        const rootFileEntry = allFiles.find((f) => f.id === rootId);
+        const targetFile = rootFileEntry?.type === "tex"
+          ? rootFileEntry.relativePath
+          : (allFiles.find((f) => f.name === "document.tex" || f.name === "main.tex")?.relativePath || "document.tex");
         const data = await compileLatex(projectRoot, targetFile);
-        setPdfData(data);
+        setPdfData(data, rootId);
       } catch (error) {
         setCompileError(
           error instanceof Error ? error.message : typeof error === "string" ? error : "Compilation failed",
@@ -315,22 +318,30 @@ export function PdfPreview() {
   const handleScaleChange = (newScale: number) => setScale(newScale);
 
   const handleCompile = async () => {
-    if (isCompiling || !projectRoot || !isTexActive) return;
-    // Skip recompile if no edits since last successful compile
-    const { contentGeneration, lastCompiledGeneration, pdfData: existingPdf } = useDocumentStore.getState();
-    if (existingPdf && contentGeneration === lastCompiledGeneration) return;
+    // Read all guard values from the store to avoid stale closures
+    const state = useDocumentStore.getState();
+    if (state.isCompiling || !state.projectRoot) return;
+    const allFiles = state.files;
+    const activeFileId = state.activeFileId;
+    const activeEntry = allFiles.find((f) => f.id === activeFileId);
+    if (!activeEntry || activeEntry.type !== "tex") return;
+    const rootId = resolveTexRoot(activeFileId, allFiles);
+    const rootEntry = allFiles.find((f) => f.id === rootId);
+    const targetFile = rootEntry?.type === "tex"
+      ? rootEntry.relativePath
+      : (allFiles.find((f) => f.name === "document.tex" || f.name === "main.tex")?.relativePath || "document.tex");
+    // Skip recompile if no edits since last successful compile of this root
+    const lastGen = state.lastCompiledGenerations.get(rootId);
+    if (state.pdfData && lastGen !== undefined && state.contentGeneration === lastGen) return;
     useHistoryStore.getState().stopReview();
     setIsCompiling(true);
     setPdfError(null);
     try {
       await saveAllFiles();
-      const targetFile = activeFile?.type === "tex"
-        ? activeFile.relativePath
-        : (files.find((f) => f.name === "document.tex" || f.name === "main.tex")?.relativePath || "document.tex");
-      const data = await compileLatex(projectRoot, targetFile);
-      setPdfData(data);
+      const data = await compileLatex(state.projectRoot, targetFile);
+      setPdfData(data, rootId);
     } catch (error) {
-      setCompileError(error instanceof Error ? error.message : typeof error === "string" ? error : "Compilation failed");
+      setCompileError(error instanceof Error ? error.message : typeof error === "string" ? error : "Compilation failed", rootId);
     } finally {
       setIsCompiling(false);
     }
@@ -439,7 +450,13 @@ export function PdfPreview() {
         <div className="flex flex-1 flex-col items-center justify-center bg-muted/30 p-8">
           <FileTextIcon className="mb-4 size-16 text-muted-foreground/50" />
           <h2 className="mb-2 font-medium text-lg text-muted-foreground">PDF Preview</h2>
-          <p className="text-center text-muted-foreground text-sm">Press Enter to compile your document</p>
+          <p className="mb-4 text-center text-muted-foreground text-sm">Press ⌘+Enter to compile your document</p>
+          {isTexActive && (
+            <Button variant="outline" size="sm" className="gap-1.5" onClick={handleCompile}>
+              <RefreshCwIcon className="size-3.5" />
+              Compile
+            </Button>
+          )}
         </div>
       );
     }
@@ -493,10 +510,10 @@ export function PdfPreview() {
               <span className="text-muted-foreground text-xs font-medium">Compiling...</span>
             </div>
           )}
-          {!isSaving && !isCompiling && pdfData && (
-            <Button variant="ghost" size="sm" className="h-7 gap-1.5 px-2.5 text-xs" onClick={handleCompile} disabled={!isTexActive}>
+          {!isSaving && !isCompiling && !compileError && isTexActive && (
+            <Button variant="ghost" size="sm" className="h-7 gap-1.5 px-2.5 text-xs" onClick={handleCompile}>
               <RefreshCwIcon className="size-3.5" />
-              Recompile
+              {pdfData ? "Recompile" : "Compile"}
             </Button>
           )}
           {!isSaving && !isCompiling && compileError && (

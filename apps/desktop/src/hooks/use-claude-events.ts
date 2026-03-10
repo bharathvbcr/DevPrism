@@ -5,7 +5,7 @@ import {
   useClaudeChatStore,
   type ClaudeStreamMessage,
 } from "@/stores/claude-chat-store";
-import { useDocumentStore } from "@/stores/document-store";
+import { useDocumentStore, resolveTexRoot } from "@/stores/document-store";
 import { useHistoryStore } from "@/stores/history-store";
 import { useProposedChangesStore } from "@/stores/proposed-changes-store";
 import { readTexFileContent } from "@/lib/tauri/fs";
@@ -285,21 +285,21 @@ export function useClaudeEvents() {
       // Auto-recompile after Claude finishes
       const { projectRoot, files, activeFileId, isCompiling: alreadyCompiling } = useDocumentStore.getState();
       if (projectRoot && !alreadyCompiling) {
-        const activeFile = files.find((f) => f.id === activeFileId);
-        const targetFile =
-          activeFile?.type === "tex"
-            ? activeFile
-            : files.find((f) => f.name === "document.tex" || f.name === "main.tex");
+        const rootId = resolveTexRoot(activeFileId, files);
+        const rootEntry = files.find((f) => f.id === rootId);
+        const targetFile = rootEntry?.type === "tex"
+          ? rootEntry
+          : files.find((f) => f.name === "document.tex" || f.name === "main.tex");
         if (targetFile) {
           const mainFileName = targetFile.relativePath;
           useDocumentStore.getState().setIsCompiling(true);
           try {
             await useDocumentStore.getState().saveAllFiles();
             const pdfData = await compileLatex(projectRoot, mainFileName);
-            useDocumentStore.getState().setPdfData(pdfData);
+            useDocumentStore.getState().setPdfData(pdfData, rootId);
           } catch (err) {
             useDocumentStore.getState().setCompileError(
-              err instanceof Error ? err.message : typeof err === "string" ? err : "Compilation failed",
+              err instanceof Error ? err.message : typeof err === "string" ? err : "Compilation failed", rootId,
             );
           } finally {
             useDocumentStore.getState().setIsCompiling(false);

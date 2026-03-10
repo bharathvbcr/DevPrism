@@ -29,7 +29,7 @@ import { unifiedMergeView, getChunks, acceptChunk, rejectChunk } from "@codemirr
 import { latex, latexLinter } from "codemirror-lang-latex";
 import { bibtex } from "./lang-bibtex";
 import { linter, lintGutter, forEachDiagnostic, type Diagnostic } from "@codemirror/lint";
-import { useDocumentStore, type ProjectFile } from "@/stores/document-store";
+import { useDocumentStore, resolveTexRoot, type ProjectFile } from "@/stores/document-store";
 import { useProposedChangesStore, type ProposedChange } from "@/stores/proposed-changes-store";
 import { useClaudeChatStore } from "@/stores/claude-chat-store";
 import { useHistoryStore, type FileDiff } from "@/stores/history-store";
@@ -78,7 +78,7 @@ export function LatexEditor() {
   const setSelectionRange = useDocumentStore((s) => s.setSelectionRange);
   const jumpToPosition = useDocumentStore((s) => s.jumpToPosition);
   const clearJumpRequest = useDocumentStore((s) => s.clearJumpRequest);
-  const isCompiling = useDocumentStore((s) => s.isCompiling);
+
   const setIsCompiling = useDocumentStore((s) => s.setIsCompiling);
   const setPdfData = useDocumentStore((s) => s.setPdfData);
   const setCompileError = useDocumentStore((s) => s.setCompileError);
@@ -273,21 +273,25 @@ export function LatexEditor() {
 
   // Compile: save all files first, then compile via Tauri command
   compileRef.current = async () => {
-    if (isCompiling || !projectRoot || activeFile?.type !== "tex") return;
-    // Skip recompile if no edits since last successful compile
-    const { contentGeneration, lastCompiledGeneration, pdfData: existingPdf } = useDocumentStore.getState();
-    if (existingPdf && contentGeneration === lastCompiledGeneration) return;
+    const { contentGeneration, lastCompiledGenerations, pdfData: existingPdf, files: allFiles, isCompiling: currentlyCompiling } = useDocumentStore.getState();
+    if (currentlyCompiling || !projectRoot || activeFile?.type !== "tex") return;
+    const rootFile = resolveTexRoot(activeFile.id, allFiles);
+    const targetFile = rootFile !== activeFile.id
+      ? (allFiles.find((f) => f.id === rootFile)?.relativePath || activeFile.relativePath)
+      : activeFile.relativePath;
+    // Skip recompile if no edits since last successful compile of this root
+    const lastGen = lastCompiledGenerations.get(rootFile);
+    if (existingPdf && lastGen !== undefined && contentGeneration === lastGen) return;
     useHistoryStore.getState().stopReview();
     setIsCompiling(true);
     try {
       await saveAllFiles();
       // Pre-compile snapshot (fire-and-forget to avoid blocking compilation start)
       useHistoryStore.getState().createSnapshot(projectRoot, "[compile] Pre-compile").catch(() => {});
-      const targetFile = activeFile?.relativePath || "document.tex";
       const data = await compileLatex(projectRoot, targetFile);
-      setPdfData(data);
+      setPdfData(data, rootFile);
     } catch (error) {
-      setCompileError(error instanceof Error ? error.message : typeof error === "string" ? error : "Compilation failed");
+      setCompileError(error instanceof Error ? error.message : typeof error === "string" ? error : "Compilation failed", rootFile);
     } finally {
       setIsCompiling(false);
     }

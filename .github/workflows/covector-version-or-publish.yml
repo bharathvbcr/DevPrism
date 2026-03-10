@@ -62,8 +62,8 @@ jobs:
           body: |
             ## Version Bump
 
-            이 PR은 `.changes/` 파일들을 기반으로 자동 생성되었습니다.
-            머지하면 새 버전 태그가 생성되고 릴리스 빌드가 시작됩니다.
+            This PR was auto-generated based on `.changes/` files.
+            Merging will create a new version tag and trigger a release build.
 
       - name: Create and push tag
         if: steps.covector.outputs.commandRan == 'publish'

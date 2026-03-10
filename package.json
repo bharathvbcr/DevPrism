@@ -29,6 +29,10 @@
   "pnpm": {
     "onlyBuiltDependencies": [
       "esbuild"
-    ]
+    ],
+    "overrides": {
+      "rollup": ">=4.58.0",
+      "serialize-javascript": ">=6.0.3"
+    }
   }
 }

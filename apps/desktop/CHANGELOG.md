@@ -1,5 +1,13 @@
 # Changelog
 
+## \[0.5.3]
+
+- [`da6214c`](https://github.com/delibae/claude-prism/commit/da6214cc7da52ea9144843f7a670a1e307dc4b8f) Enable covector publish flow for automatic GitHub release and tag creation
+
+### Dependencies
+
+- Upgraded to `claude-prism-desktop@0.5.3`
+
 ## \[0.5.2]
 
 - [`fe1e5d8`](https://github.com/delibae/claude-prism/commit/fe1e5d86852d6f6c1e57454f5621bf32d1d41761) Fix CI release pipeline to auto-create GitHub releases and tags via covector

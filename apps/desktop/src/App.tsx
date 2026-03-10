@@ -43,12 +43,17 @@ function WorkspaceWithClaude() {
   useEffect(() => {
     if (!initialized || !projectRoot) return;
     const uvStore = useUvSetupStore.getState();
-    uvStore.checkStatus().then(() => {
-      const { status } = useUvSetupStore.getState();
-      if (status === "ready") {
-        uvStore.setupVenv(projectRoot);
-      }
-    });
+    uvStore
+      .checkStatus()
+      .then(() => {
+        const { status } = useUvSetupStore.getState();
+        if (status === "ready") {
+          return uvStore.setupVenv(projectRoot);
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to setup Python venv:", err);
+      });
   }, [initialized, projectRoot]);
 
   // Consume pending initial prompt from project wizard

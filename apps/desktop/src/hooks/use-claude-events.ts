@@ -303,7 +303,9 @@ export function useClaudeEvents() {
       }
     }
 
-    // Set up listeners once and keep them alive for the component lifetime
+    // Set up listeners once and keep them alive for the component lifetime.
+    // Each listener is added to listenersRef immediately after registration
+    // to avoid a race condition where unmount happens mid-setup.
     let cancelled = false;
     (async () => {
       const unlistenOutput = await listen<ClaudeOutputPayload>(
@@ -312,12 +314,18 @@ export function useClaudeEvents() {
           if (!cancelled) handleStreamMessage(event.payload);
         },
       );
+      if (cancelled) { unlistenOutput(); return; }
+      listenersRef.current.push(unlistenOutput);
+
       const unlistenComplete = await listen<ClaudeCompletePayload>(
         "claude-complete",
         (event) => {
           if (!cancelled) handleComplete(event.payload);
         },
       );
+      if (cancelled) { unlistenComplete(); return; }
+      listenersRef.current.push(unlistenComplete);
+
       const unlistenError = await listen<ClaudeErrorPayload>(
         "claude-error",
         (event) => {
@@ -330,15 +338,8 @@ export function useClaudeEvents() {
           }
         },
       );
-
-      if (cancelled) {
-        unlistenOutput();
-        unlistenComplete();
-        unlistenError();
-        return;
-      }
-
-      listenersRef.current = [unlistenOutput, unlistenComplete, unlistenError];
+      if (cancelled) { unlistenError(); return; }
+      listenersRef.current.push(unlistenError);
     })();
 
     return () => {

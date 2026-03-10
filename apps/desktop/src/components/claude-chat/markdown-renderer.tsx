@@ -138,7 +138,9 @@ const CodeBlock: FC<{ language: string; code: string }> = ({
         stderr: result.stderr,
       });
       // Refresh file tree to pick up any new/deleted files
-      useDocumentStore.getState().refreshFiles();
+      useDocumentStore.getState().refreshFiles().catch((err) => {
+        console.error("Failed to refresh files:", err);
+      });
     } catch (err: any) {
       setRunState({ status: "error", message: err?.message || String(err) });
     }

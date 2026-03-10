@@ -220,10 +220,19 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
 
     // Initialize history system early so snapshots work before the panel is opened
     const historyStore = useHistoryStore.getState();
-    historyStore.init(rootPath).then(() => historyStore.loadSnapshots(rootPath)).catch(() => {});
+    historyStore
+      .init(rootPath)
+      .then(() => historyStore.loadSnapshots(rootPath))
+      .catch((err) => {
+        console.error("Failed to initialize history:", err);
+      });
   },
 
   closeProject: () => {
+    if (autoSaveTimer) {
+      clearTimeout(autoSaveTimer);
+      autoSaveTimer = null;
+    }
     set({
       projectRoot: null,
       files: [],

@@ -43,8 +43,12 @@ interface DocumentState {
   initialized: boolean;
   /** Incremented on every file content change; used to skip no-op recompiles. */
   contentGeneration: number;
-  /** The contentGeneration at the time of the last successful compile. */
-  lastCompiledGeneration: number;
+  /** Per-root-file cache: rootFileId → compiled PDF bytes. */
+  pdfCache: Map<string, Uint8Array>;
+  /** Per-root-file cache: rootFileId → compile error message. */
+  compileErrorCache: Map<string, string>;
+  /** Per-root-file: rootFileId → contentGeneration at last successful compile. */
+  lastCompiledGenerations: Map<string, number>;
 
   openProject: (rootPath: string) => Promise<void>;
   closeProject: () => void;
@@ -59,8 +63,8 @@ interface DocumentState {
   requestJumpToPosition: (position: number) => void;
   clearJumpRequest: () => void;
   setThreadOpen: (open: boolean) => void;
-  setPdfData: (data: Uint8Array | null) => void;
-  setCompileError: (error: string | null) => void;
+  setPdfData: (data: Uint8Array | null, rootFileId?: string) => void;
+  setCompileError: (error: string | null, rootFileId?: string) => void;
   setIsCompiling: (isCompiling: boolean) => void;
   setIsSaving: (isSaving: boolean) => void;
   insertAtCursor: (text: string) => void;
@@ -86,6 +90,38 @@ interface DocumentState {
 
 function getActiveFile(state: { files: ProjectFile[]; activeFileId: string }) {
   return state.files.find((f) => f.id === state.activeFileId);
+}
+
+/**
+ * Resolve the root .tex file for compilation.
+ * Parses `% !TEX root = <file>` magic comment from the first 20 lines.
+ * Returns the root file's ID (relativePath), or the input fileId if no root is specified.
+ */
+export function resolveTexRoot(fileId: string, files: ProjectFile[]): string {
+  const file = files.find((f) => f.id === fileId);
+  if (!file || file.type !== "tex" || !file.content) return fileId;
+
+  const lines = file.content.split("\n").slice(0, 20);
+  for (const line of lines) {
+    const match = line.match(/^%\s*!TEX\s+root\s*=\s*(.+)/i);
+    if (match) {
+      const rootPath = match[1].trim();
+      // Try matching by relative path first, then by filename
+      const target = files.find((f) => f.relativePath === rootPath) ?? files.find((f) => f.name === rootPath);
+      if (target) return target.id;
+    }
+  }
+  return fileId;
+}
+
+/** Re-key a Map entry when a file is renamed/moved. */
+function migrateCacheKey<V>(map: Map<string, V>, oldKey: string, newKey: string): Map<string, V> {
+  if (!map.has(oldKey)) return map;
+  const copy = new Map(map);
+  const val = copy.get(oldKey)!;
+  copy.delete(oldKey);
+  copy.set(newKey, val);
+  return copy;
 }
 
 // Auto-save: debounced save 2 seconds after last content change
@@ -121,7 +157,9 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
   isSaving: false,
   initialized: false,
   contentGeneration: 0,
-  lastCompiledGeneration: -1,
+  pdfCache: new Map(),
+  compileErrorCache: new Map(),
+  lastCompiledGenerations: new Map(),
 
   openProject: async (rootPath: string) => {
     const { files: fsFiles, folders: fsFolders } = await scanProjectFolder(rootPath);
@@ -172,6 +210,9 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
       activeFileId: mainTex?.id || projectFiles[0]?.id || "",
       pdfData: null,
       compileError: null,
+      pdfCache: new Map(),
+      compileErrorCache: new Map(),
+      lastCompiledGenerations: new Map(),
       initialized: true,
       cursorPosition: 0,
       selectionRange: null,
@@ -190,14 +231,28 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
       activeFileId: "",
       pdfData: null,
       compileError: null,
+      pdfCache: new Map(),
+      compileErrorCache: new Map(),
+      lastCompiledGenerations: new Map(),
       initialized: false,
     });
     // Reset chat session so stale messages don't leak into the next project
     useClaudeChatStore.getState().newSession();
   },
 
-  setActiveFile: (id) =>
-    set({ activeFileId: id, cursorPosition: 0, selectionRange: null }),
+  setActiveFile: (id) => {
+    const state = get();
+    const rootId = resolveTexRoot(id, state.files);
+    const cachedPdf = state.pdfCache.get(rootId) ?? null;
+    const cachedError = state.compileErrorCache.get(rootId) ?? null;
+    set({
+      activeFileId: id,
+      cursorPosition: 0,
+      selectionRange: null,
+      pdfData: cachedPdf,
+      compileError: cachedError,
+    });
+  },
 
   setSelectionRange: (range) => set({ selectionRange: range }),
 
@@ -228,7 +283,26 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
     const newFiles = state.files.filter((f) => f.id !== id);
     const newActiveId =
       state.activeFileId === id ? newFiles[0].id : state.activeFileId;
-    set({ files: newFiles, activeFileId: newActiveId });
+    const pdfCache = new Map(state.pdfCache);
+    const compileErrorCache = new Map(state.compileErrorCache);
+    const lastCompiledGenerations = new Map(state.lastCompiledGenerations);
+    pdfCache.delete(id);
+    compileErrorCache.delete(id);
+    lastCompiledGenerations.delete(id);
+    // If the deleted file was active, show the new active file's cached PDF
+    const switchingActive = state.activeFileId === id;
+    const newRootId = switchingActive ? resolveTexRoot(newActiveId, newFiles) : undefined;
+    set({
+      files: newFiles,
+      activeFileId: newActiveId,
+      pdfCache,
+      compileErrorCache,
+      lastCompiledGenerations,
+      ...(switchingActive && newRootId ? {
+        pdfData: pdfCache.get(newRootId) ?? null,
+        compileError: compileErrorCache.get(newRootId) ?? null,
+      } : {}),
+    });
   },
 
   renameFile: async (id, name) => {
@@ -248,20 +322,29 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
       console.error("Failed to rename file on disk:", e);
       return;
     }
-    set((s) => ({
-      files: s.files.map((f) =>
-        f.id === id
-          ? {
-              ...f,
-              name,
-              relativePath: newRelativePath,
-              absolutePath: newAbsPath,
-              id: newRelativePath,
-            }
-          : f,
-      ),
-      activeFileId: s.activeFileId === id ? newRelativePath : s.activeFileId,
-    }));
+    set((s) => {
+      const pdfCache = migrateCacheKey(s.pdfCache, id, newRelativePath);
+      const compileErrorCache = migrateCacheKey(s.compileErrorCache, id, newRelativePath);
+      const lastCompiledGenerations = migrateCacheKey(s.lastCompiledGenerations, id, newRelativePath);
+      const isActive = s.activeFileId === id;
+      return {
+        files: s.files.map((f) =>
+          f.id === id
+            ? {
+                ...f,
+                name,
+                relativePath: newRelativePath,
+                absolutePath: newAbsPath,
+                id: newRelativePath,
+              }
+            : f,
+        ),
+        activeFileId: isActive ? newRelativePath : s.activeFileId,
+        pdfCache,
+        compileErrorCache,
+        lastCompiledGenerations,
+      };
+    });
   },
 
   updateFileContent: (id, content) => {
@@ -284,13 +367,44 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
 
   setThreadOpen: (open) => set({ isThreadOpen: open }),
 
-  setPdfData: (data) => set((s) => ({
-    pdfData: data,
-    compileError: null,
-    lastCompiledGeneration: data ? s.contentGeneration : s.lastCompiledGeneration,
-  })),
+  setPdfData: (data, rootFileId?) => {
+    if (!rootFileId) {
+      set({ pdfData: data, compileError: null });
+      return;
+    }
+    const s = get();
+    const pdfCache = new Map(s.pdfCache);
+    const compileErrorCache = new Map(s.compileErrorCache);
+    const lastCompiledGenerations = new Map(s.lastCompiledGenerations);
+    if (data) {
+      pdfCache.set(rootFileId, data);
+      compileErrorCache.delete(rootFileId);
+      lastCompiledGenerations.set(rootFileId, s.contentGeneration);
+    } else {
+      pdfCache.delete(rootFileId);
+    }
+    set({
+      pdfData: data,
+      compileError: null,
+      pdfCache,
+      compileErrorCache,
+      lastCompiledGenerations,
+    });
+  },
 
-  setCompileError: (error) => set({ compileError: error }),
+  setCompileError: (error, rootFileId?) => {
+    if (rootFileId) {
+      const compileErrorCache = new Map(get().compileErrorCache);
+      if (error) {
+        compileErrorCache.set(rootFileId, error);
+      } else {
+        compileErrorCache.delete(rootFileId);
+      }
+      set({ compileError: error, compileErrorCache });
+    } else {
+      set({ compileError: error });
+    }
+  },
 
   setIsCompiling: (isCompiling) => set({ isCompiling }),
 
@@ -477,14 +591,22 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
     await renameFileOnDisk(file.absolutePath, newAbsPath);
 
     const newName = newRelativePath.split("/").pop() || file.name;
-    set((s) => ({
-      files: s.files.map((f) =>
-        f.id === fileId
-          ? { ...f, name: newName, relativePath: newRelativePath, absolutePath: newAbsPath, id: newRelativePath }
-          : f,
-      ),
-      activeFileId: s.activeFileId === fileId ? newRelativePath : s.activeFileId,
-    }));
+    set((s) => {
+      const pdfCache = migrateCacheKey(s.pdfCache, fileId, newRelativePath);
+      const compileErrorCache = migrateCacheKey(s.compileErrorCache, fileId, newRelativePath);
+      const lastCompiledGenerations = migrateCacheKey(s.lastCompiledGenerations, fileId, newRelativePath);
+      return {
+        files: s.files.map((f) =>
+          f.id === fileId
+            ? { ...f, name: newName, relativePath: newRelativePath, absolutePath: newAbsPath, id: newRelativePath }
+            : f,
+        ),
+        activeFileId: s.activeFileId === fileId ? newRelativePath : s.activeFileId,
+        pdfCache,
+        compileErrorCache,
+        lastCompiledGenerations,
+      };
+    });
   },
 
   moveFolder: async (folderPath, targetFolder) => {

@@ -33,7 +33,7 @@ import { useDocumentStore, type ProjectFile } from "@/stores/document-store";
 import { useProposedChangesStore, type ProposedChange } from "@/stores/proposed-changes-store";
 import { useClaudeChatStore } from "@/stores/claude-chat-store";
 import { useHistoryStore, type FileDiff } from "@/stores/history-store";
-import { compileLatex } from "@/lib/latex-compiler";
+import { compileLatex, resolveCompileTarget, formatCompileError } from "@/lib/latex-compiler";
 import { EditorToolbar } from "./editor-toolbar";
 import { SelectionToolbar, type ToolbarAction } from "./selection-toolbar";
 import { Button } from "@/components/ui/button";
@@ -78,7 +78,7 @@ export function LatexEditor() {
   const setSelectionRange = useDocumentStore((s) => s.setSelectionRange);
   const jumpToPosition = useDocumentStore((s) => s.jumpToPosition);
   const clearJumpRequest = useDocumentStore((s) => s.clearJumpRequest);
-  const isCompiling = useDocumentStore((s) => s.isCompiling);
+
   const setIsCompiling = useDocumentStore((s) => s.setIsCompiling);
   const setPdfData = useDocumentStore((s) => s.setPdfData);
   const setCompileError = useDocumentStore((s) => s.setCompileError);
@@ -273,21 +273,22 @@ export function LatexEditor() {
 
   // Compile: save all files first, then compile via Tauri command
   compileRef.current = async () => {
-    if (isCompiling || !projectRoot || activeFile?.type !== "tex") return;
-    // Skip recompile if no edits since last successful compile
-    const { contentGeneration, lastCompiledGeneration, pdfData: existingPdf } = useDocumentStore.getState();
-    if (existingPdf && contentGeneration === lastCompiledGeneration) return;
+    const { contentGeneration, lastCompiledGenerations, pdfData: existingPdf, files: allFiles, isCompiling: currentlyCompiling } = useDocumentStore.getState();
+    if (currentlyCompiling || !projectRoot || activeFile?.type !== "tex") return;
+    const { rootId, targetPath } = resolveCompileTarget(activeFile.id, allFiles);
+    // Skip recompile if no edits since last successful compile of this root
+    const lastGen = lastCompiledGenerations.get(rootId);
+    if (existingPdf && lastGen !== undefined && contentGeneration === lastGen) return;
     useHistoryStore.getState().stopReview();
     setIsCompiling(true);
     try {
       await saveAllFiles();
       // Pre-compile snapshot (fire-and-forget to avoid blocking compilation start)
       useHistoryStore.getState().createSnapshot(projectRoot, "[compile] Pre-compile").catch(() => {});
-      const targetFile = activeFile?.relativePath || "document.tex";
-      const data = await compileLatex(projectRoot, targetFile);
-      setPdfData(data);
+      const data = await compileLatex(projectRoot, targetPath);
+      setPdfData(data, rootId);
     } catch (error) {
-      setCompileError(error instanceof Error ? error.message : typeof error === "string" ? error : "Compilation failed");
+      setCompileError(formatCompileError(error), rootId);
     } finally {
       setIsCompiling(false);
     }

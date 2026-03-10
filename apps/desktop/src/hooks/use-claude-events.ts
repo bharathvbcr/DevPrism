@@ -285,8 +285,9 @@ export function useClaudeEvents() {
       // Auto-recompile after Claude finishes
       const { projectRoot, files, activeFileId, isCompiling: alreadyCompiling } = useDocumentStore.getState();
       if (projectRoot && !alreadyCompiling) {
-        const { rootId, targetPath } = resolveCompileTarget(activeFileId, files);
-        if (targetPath) {
+        const resolved = resolveCompileTarget(activeFileId, files);
+        if (resolved) {
+          const { rootId, targetPath } = resolved;
           useDocumentStore.getState().setIsCompiling(true);
           try {
             await useDocumentStore.getState().saveAllFiles();

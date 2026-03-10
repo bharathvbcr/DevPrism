@@ -136,10 +136,72 @@ fn find_claude_binary() -> Result<String, String> {
     Ok("claude".to_string())
 }
 
+/// On Windows, resolve a `.cmd` wrapper to its underlying Node.js script
+/// so we can run `node <script.js>` directly, avoiding cmd.exe escaping issues.
+/// Returns (program, extra_prefix_args).
+#[cfg(target_os = "windows")]
+fn resolve_cmd_to_node(program: &str) -> (String, Vec<String>) {
+    let lower = program.to_lowercase();
+    if !lower.ends_with(".cmd") && !lower.ends_with(".bat") {
+        return (program.to_string(), vec![]);
+    }
+    // Try to find the JS entry point next to the .cmd file
+    // npm .cmd wrappers invoke: node "<dir>\node_modules\<pkg>\cli.js" %*
+    let cmd_dir = std::path::Path::new(program).parent().unwrap_or(std::path::Path::new("."));
+    let cli_js = cmd_dir
+        .join("node_modules")
+        .join("@anthropic-ai")
+        .join("claude-code")
+        .join("cli.js");
+    if cli_js.exists() {
+        // Find node.exe — prefer one next to the .cmd, then fall back to PATH
+        let node = {
+            let local_node = cmd_dir.join("node.exe");
+            if local_node.exists() {
+                local_node.to_string_lossy().to_string()
+            } else {
+                "node".to_string()
+            }
+        };
+        return (node, vec![cli_js.to_string_lossy().to_string()]);
+    }
+    // Fallback: use cmd.exe /C (may have issues with special chars in args)
+    ("cmd.exe".to_string(), vec!["/C".to_string(), program.to_string()])
+}
+
+/// Create a std::process::Command that handles .cmd/.bat files on Windows.
+fn new_sync_command(program: &str) -> std::process::Command {
+    #[cfg(target_os = "windows")]
+    {
+        let (resolved, prefix) = resolve_cmd_to_node(program);
+        let mut c = std::process::Command::new(&resolved);
+        if !prefix.is_empty() {
+            c.args(&prefix);
+        }
+        return c;
+    }
+    #[cfg(not(target_os = "windows"))]
+    std::process::Command::new(program)
+}
+
 /// Create a tokio Command with appropriate environment variables.
 fn create_command(program: &str, args: Vec<String>, cwd: &str, effort_level: Option<&str>) -> Command {
-    let mut cmd = Command::new(program);
-    cmd.args(&args);
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let (resolved, prefix) = resolve_cmd_to_node(program);
+        let mut c = Command::new(&resolved);
+        if !prefix.is_empty() {
+            c.args(&prefix);
+        }
+        c.args(&args);
+        c
+    };
+    #[cfg(not(target_os = "windows"))]
+    let mut cmd = {
+        let mut c = Command::new(program);
+        c.args(&args);
+        c
+    };
     cmd.current_dir(cwd);
 
     // Pipe stdout and stderr for streaming
@@ -364,7 +426,7 @@ pub async fn check_claude_status() -> Result<ClaudeStatus, String> {
     };
 
     // Verify binary actually works by running --version
-    let version_output = std::process::Command::new(&binary_path)
+    let version_output = new_sync_command(&binary_path)
         .arg("--version")
         .output();
 
@@ -385,7 +447,7 @@ pub async fn check_claude_status() -> Result<ClaudeStatus, String> {
     };
 
     // Check auth status
-    let auth_output = std::process::Command::new(&binary_path)
+    let auth_output = new_sync_command(&binary_path)
         .args(["auth", "status"])
         .output();
 
@@ -627,7 +689,7 @@ pub async fn login_claude(window: WebviewWindow) -> Result<(), String> {
         .map_err(|e| format!("Claude CLI not found: {}", e))?;
 
     // Verify it actually exists
-    let version_check = std::process::Command::new(&binary_path)
+    let version_check = new_sync_command(&binary_path)
         .arg("--version")
         .output();
 
@@ -635,8 +697,22 @@ pub async fn login_claude(window: WebviewWindow) -> Result<(), String> {
         return Err("Claude CLI is not properly installed".to_string());
     }
 
-    let mut cmd = tokio::process::Command::new(&binary_path);
-    cmd.args(["auth", "login"]);
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let (resolved, prefix) = resolve_cmd_to_node(&binary_path);
+        let mut c = tokio::process::Command::new(&resolved);
+        if !prefix.is_empty() {
+            c.args(&prefix);
+        }
+        c.args(["auth", "login"]);
+        c
+    };
+    #[cfg(not(target_os = "windows"))]
+    let mut cmd = {
+        let mut c = tokio::process::Command::new(&binary_path);
+        c.args(["auth", "login"]);
+        c
+    };
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 

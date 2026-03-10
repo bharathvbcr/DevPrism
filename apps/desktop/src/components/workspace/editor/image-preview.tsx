@@ -3,6 +3,7 @@ import { ImageIcon, CheckIcon, XIcon } from "lucide-react";
 import { writeFile } from "@tauri-apps/plugin-fs";
 import { toast } from "sonner";
 import { useDocumentStore, type ProjectFile } from "@/stores/document-store";
+import { getAssetUrl } from "@/lib/tauri/fs";
 import { Button } from "@/components/ui/button";
 
 const MIN_SCALE = 0.25;
@@ -324,14 +325,10 @@ export function ImagePreview({
     }
   }, [cropRect, file, isSaving, onCropModeChange]);
 
-  if (!file.dataUrl) {
-    return (
-      <div className="flex h-full flex-col items-center justify-center bg-muted/30 p-8">
-        <ImageIcon className="mb-4 size-16 text-muted-foreground/50" />
-        <p className="text-muted-foreground text-sm">No image data available</p>
-      </div>
-    );
-  }
+  // Use dataUrl if available (in-memory), otherwise fall back to asset URL (large images)
+  const imageSrc = file.dataUrl || getAssetUrl(file.absolutePath);
+  // Crop requires dataUrl (canvas manipulation needs same-origin data)
+  const canCrop = !!file.dataUrl;
 
   return (
     <div
@@ -354,7 +351,7 @@ export function ImagePreview({
       <div className="relative" style={{ width: `${scale * 100}%`, margin: "0 auto" }}>
         <img
           ref={imgRef}
-          src={file.dataUrl}
+          src={imageSrc}
           alt={file.name}
           style={{ width: "100%", height: "auto" }}
           draggable={false}

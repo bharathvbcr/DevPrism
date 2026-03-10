@@ -331,7 +331,12 @@ export function PdfPreview() {
       try {
         await saveAllFiles();
         const { files: allFiles, activeFileId } = useDocumentStore.getState();
-        const { rootId, targetPath } = resolveCompileTarget(activeFileId, allFiles);
+        const resolved = resolveCompileTarget(activeFileId, allFiles);
+        if (!resolved) {
+          setCompileError("No .tex file found in this project. Create a document.tex or main.tex file to compile.");
+          return;
+        }
+        const { rootId, targetPath } = resolved;
         const data = await compileLatex(projectRoot, targetPath);
         setPdfData(data, rootId);
       } catch (error) {
@@ -408,7 +413,12 @@ export function PdfPreview() {
     const activeFileId = state.activeFileId;
     const activeEntry = allFiles.find((f) => f.id === activeFileId);
     if (!activeEntry || activeEntry.type !== "tex") return;
-    const { rootId, targetPath: targetFile } = resolveCompileTarget(activeFileId, allFiles);
+    const resolved = resolveCompileTarget(activeFileId, allFiles);
+    if (!resolved) {
+      setCompileError("No .tex file found in this project. Create a document.tex or main.tex file to compile.");
+      return;
+    }
+    const { rootId, targetPath: targetFile } = resolved;
     // Skip recompile if no edits since last successful compile of this root
     const lastGen = state.lastCompiledGenerations.get(rootId);
     if (state.pdfData && lastGen !== undefined && state.contentGeneration === lastGen) return;

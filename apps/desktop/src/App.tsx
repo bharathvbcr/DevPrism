@@ -1,4 +1,5 @@
 import { ThemeProvider } from "next-themes";
+import { ErrorBoundary } from "react-error-boundary";
 import { Toaster } from "@/components/ui/sonner";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { useDocumentStore } from "@/stores/document-store";
@@ -13,6 +14,7 @@ import {
   shouldShowOnboarding,
 } from "@/components/scientific-skills/scientific-skills-onboarding";
 import { useUvSetupStore } from "@/stores/uv-setup-store";
+import { ErrorFallback } from "@/components/error-fallback";
 
 function WorkspaceWithClaude() {
   const projectRoot = useDocumentStore((s) => s.projectRoot);
@@ -86,15 +88,17 @@ export function App({ onReady }: { onReady?: () => void }) {
   }, [onReady]);
 
   return (
-    <ThemeProvider attribute="class" defaultTheme="light" enableSystem>
-      <TooltipProvider>
-        {/* Global macOS titlebar drag region — sits above all content */}
-        <div
-          data-tauri-drag-region
-          className="fixed inset-x-0 top-0 z-[9999] h-[var(--titlebar-height)]"
-        />
-        {projectRoot ? <WorkspaceWithClaude /> : <ProjectPicker />}
-      </TooltipProvider>
-    </ThemeProvider>
+    <ErrorBoundary FallbackComponent={ErrorFallback}>
+      <ThemeProvider attribute="class" defaultTheme="light" enableSystem>
+        <TooltipProvider>
+          {/* Global macOS titlebar drag region — sits above all content */}
+          <div
+            data-tauri-drag-region
+            className="fixed inset-x-0 top-0 z-[9999] h-[var(--titlebar-height)]"
+          />
+          {projectRoot ? <WorkspaceWithClaude /> : <ProjectPicker />}
+        </TooltipProvider>
+      </ThemeProvider>
+    </ErrorBoundary>
   );
 }

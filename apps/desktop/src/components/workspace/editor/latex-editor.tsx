@@ -832,7 +832,7 @@ export function LatexEditor() {
                 {activeFile.name}
               </p>
               <p className="text-xs text-muted-foreground mb-4">
-                This file is large ({activeFile.fileSize ? `${(activeFile.fileSize / (1024 * 1024)).toFixed(1)} MB` : "unknown size"}). Opening it may slow down the editor.
+                This file is large ({activeFile.fileSize != null ? `${(activeFile.fileSize / (1024 * 1024)).toFixed(1)} MB` : "unknown size"}). Opening it may slow down the editor.
               </p>
               <Button
                 variant="outline"

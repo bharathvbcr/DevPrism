@@ -67,7 +67,7 @@ fn percent_encode(input: &str) -> String {
 fn generate_nonce() -> String {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_nanos();
     format!("{:x}", ts)
 }
@@ -75,15 +75,16 @@ fn generate_nonce() -> String {
 fn get_timestamp() -> String {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_secs()
         .to_string()
 }
 
-fn hmac_sha1(key: &str, message: &str) -> String {
-    let mut mac = HmacSha1::new_from_slice(key.as_bytes()).unwrap();
+fn hmac_sha1(key: &str, message: &str) -> Result<String, String> {
+    let mut mac = HmacSha1::new_from_slice(key.as_bytes())
+        .map_err(|e| format!("Invalid HMAC key: {}", e))?;
     mac.update(message.as_bytes());
-    BASE64.encode(mac.finalize().into_bytes())
+    Ok(BASE64.encode(mac.finalize().into_bytes()))
 }
 
 fn oauth_signature(
@@ -115,7 +116,7 @@ fn oauth_signature(
         percent_encode(token_secret)
     );
 
-    hmac_sha1(&signing_key, &base_string)
+    hmac_sha1(&signing_key, &base_string).unwrap_or_default()
 }
 
 fn build_auth_header(params: &[(String, String)]) -> String {
@@ -220,7 +221,7 @@ async fn accept_callback(listener: TcpListener) -> Result<(String, String), Stri
         .read(&mut buf)
         .await
         .map_err(|e| format!("Read failed: {}", e))?;
-    let request = String::from_utf8_lossy(&buf[..n]);
+    let request = String::from_utf8_lossy(buf.get(..n).unwrap_or(&buf));
 
     // Parse: GET /callback?oauth_token=xxx&oauth_verifier=yyy HTTP/1.1
     let first_line = request.lines().next().unwrap_or("");
@@ -321,7 +322,9 @@ pub async fn zotero_start_oauth(
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .map_err(|e| format!("Failed to bind local server: {}", e))?;
-    let port = listener.local_addr().unwrap().port();
+    let port = listener.local_addr()
+        .map_err(|e| format!("Failed to get local address: {}", e))?
+        .port();
     let callback_url = format!("http://127.0.0.1:{}/callback", port);
 
     // Get request token from Zotero
@@ -397,7 +400,7 @@ mod tests {
     #[test]
     fn test_hmac_sha1_known_vector() {
         // Known HMAC-SHA1 test vector
-        let result = hmac_sha1("key", "The quick brown fox jumps over the lazy dog");
+        let result = hmac_sha1("key", "The quick brown fox jumps over the lazy dog").unwrap();
         // HMAC-SHA1("key", "The quick brown fox jumps over the lazy dog") is a known value
         assert!(!result.is_empty());
         // Base64 encoded, should contain only valid base64 chars

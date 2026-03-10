@@ -362,8 +362,11 @@ pub async fn uv_run_command(
         return Err("Empty command".to_string());
     }
 
-    let output = tokio::process::Command::new(parts[0])
-        .args(&parts[1..])
+    let program = parts.first().ok_or("Empty command")?;
+    let args = parts.get(1..).unwrap_or_default();
+
+    let output = tokio::process::Command::new(program)
+        .args(args)
         .current_dir(&project_path)
         .env("VIRTUAL_ENV", &venv_dir)
         .env("PATH", path_with_venv(&venv_dir))

@@ -38,8 +38,9 @@ fn open_repo(project_root: &str) -> Result<Repository, String> {
     Repository::open(&git_dir).map_err(|e| format!("Failed to open history repo: {}", e))
 }
 
-fn default_signature() -> Signature<'static> {
-    Signature::now("ClaudePrism", "history@claudeprism.local").unwrap()
+fn default_signature() -> Result<Signature<'static>, String> {
+    Signature::now("ClaudePrism", "history@claudeprism.local")
+        .map_err(|e| format!("Failed to create signature: {}", e))
 }
 
 /// Build a map of tag name → commit OID for quick label lookup
@@ -164,7 +165,7 @@ pub fn history_init(project_root: String) -> Result<(), String> {
         .find_tree(tree_oid)
         .map_err(|e| format!("Failed to find tree: {}", e))?;
 
-    let sig = default_signature();
+    let sig = default_signature()?;
     repo.commit(Some("HEAD"), &sig, &sig, "[init] Project opened", &tree, &[])
         .map_err(|e| format!("Failed to create initial commit: {}", e))?;
 
@@ -217,7 +218,7 @@ pub fn history_snapshot(project_root: String, message: String) -> Result<Option<
         .find_tree(tree_oid)
         .map_err(|e| format!("Failed to find tree: {}", e))?;
 
-    let sig = default_signature();
+    let sig = default_signature()?;
     let parent = repo
         .head()
         .ok()
@@ -474,7 +475,7 @@ pub fn history_restore(
         .find_tree(new_tree_oid)
         .map_err(|e| format!("Find tree error: {}", e))?;
 
-    let sig = default_signature();
+    let sig = default_signature()?;
     let head_commit = repo
         .head()
         .ok()

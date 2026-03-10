@@ -144,6 +144,7 @@ function TabButton({
         <span
           role="button"
           tabIndex={-1}
+          aria-label="Close tab"
           onClick={onClose}
           className="ml-auto shrink-0 rounded-sm p-0.5 opacity-0 transition-opacity hover:bg-muted-foreground/20 group-hover:opacity-100"
         >

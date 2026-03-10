@@ -311,6 +311,7 @@ function SnapshotRow({
                     <TagIcon className="size-2" />
                     {label}
                     <button
+                      aria-label={`Remove label ${label}`}
                       className="ml-0.5 rounded-sm opacity-0 hover:text-destructive group-hover:opacity-100"
                       onClick={(e) => { e.stopPropagation(); onRemoveLabel(label); }}
                     >

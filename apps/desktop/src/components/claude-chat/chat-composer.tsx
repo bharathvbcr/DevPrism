@@ -702,6 +702,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                     className="block h-16 w-auto object-contain"
                   />
                   <button
+                    aria-label="Remove attachment"
                     onClick={() => setPinnedContexts((prev) => prev.filter((_, idx) => idx !== i))}
                     className="absolute top-0.5 right-0.5 rounded-full bg-background/80 p-0.5 opacity-0 transition-opacity group-hover:opacity-100"
                   >
@@ -715,6 +716,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                 >
                   {ctx.label}
                   <button
+                    aria-label="Remove context"
                     onClick={() => setPinnedContexts((prev) => prev.filter((_, idx) => idx !== i))}
                     className="ml-0.5 rounded-sm p-0.5 transition-colors hover:bg-muted-foreground/20"
                   >

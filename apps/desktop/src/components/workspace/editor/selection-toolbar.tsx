@@ -97,6 +97,7 @@ export function SelectionToolbar({
           autoFocus
         />
         <button
+          aria-label="Send prompt"
           onClick={handleSend}
           disabled={!input.trim()}
           className="flex size-6 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-opacity disabled:opacity-30"

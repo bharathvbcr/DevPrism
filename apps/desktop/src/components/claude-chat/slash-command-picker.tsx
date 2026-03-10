@@ -573,6 +573,7 @@ export const SlashCommandPicker: FC<SlashCommandPickerProps> = ({
               </span>
             </div>
             <button
+              aria-label="Close command picker"
               onMouseDown={(e) => {
                 e.preventDefault();
                 onClose();
@@ -632,6 +633,7 @@ export const SlashCommandPicker: FC<SlashCommandPickerProps> = ({
           {/* Preview header */}
           <div className="flex items-center gap-2 border-b border-border px-3 py-2 shrink-0">
             <button
+              aria-label="Close preview"
               onMouseDown={(e) => {
                 e.preventDefault();
                 setShowPreview(false);

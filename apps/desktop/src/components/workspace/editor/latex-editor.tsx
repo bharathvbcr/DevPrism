@@ -95,6 +95,8 @@ export function LatexEditor() {
   const activeFile = files.find((f) => f.id === activeFileId);
   const isTextFile = activeFile?.type === "tex" || activeFile?.type === "bib" || activeFile?.type === "style" || activeFile?.type === "other";
   const activeFileContent = activeFile?.content;
+  const isLargeFileNotLoaded = isTextFile && activeFileContent === undefined && !!activeFile;
+  const loadFileContent = useDocumentStore((s) => s.loadFileContent);
 
   // History review state
   const reviewingSnapshot = useHistoryStore((s) => s.reviewingSnapshot);
@@ -772,7 +774,7 @@ export function LatexEditor() {
         onCropToggle={isImage ? () => setCropMode((v) => !v) : undefined}
       />
       {/* Text-editor-only panels */}
-      {!isPdf && !isImage && isSearchOpen && (
+      {!isPdf && !isImage && !isLargeFileNotLoaded && isSearchOpen && (
         <SearchPanel
           searchQuery={searchQuery}
           onSearchQueryChange={setSearchQuery}
@@ -783,7 +785,7 @@ export function LatexEditor() {
           currentMatch={currentMatch}
         />
       )}
-      {!isPdf && !isImage && reviewingSnapshot && (
+      {!isPdf && !isImage && !isLargeFileNotLoaded && reviewingSnapshot && (
         <div className="flex h-9 shrink-0 items-center justify-between border-b border-border bg-amber-500/10 px-3">
           <div className="flex items-center gap-2 text-xs">
             <RotateCcwIcon className="size-3.5 text-amber-600 dark:text-amber-400" />
@@ -822,8 +824,28 @@ export function LatexEditor() {
         {isImage && activeFile && (
           <ImagePreview file={activeFile} scale={imageScale} onScaleChange={setImageScale} cropMode={cropMode} onCropModeChange={setCropMode} />
         )}
+        {/* Large file warning */}
+        {isLargeFileNotLoaded && activeFile && (
+          <div className="flex flex-1 flex-col items-center justify-center gap-4 p-8 text-center">
+            <div className="rounded-lg border border-border bg-card/50 p-6 shadow-sm max-w-md">
+              <p className="text-sm font-medium text-foreground mb-1">
+                {activeFile.name}
+              </p>
+              <p className="text-xs text-muted-foreground mb-4">
+                This file is large ({activeFile.fileSize ? `${(activeFile.fileSize / (1024 * 1024)).toFixed(1)} MB` : "unknown size"}). Opening it may slow down the editor.
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => loadFileContent(activeFile.id)}
+              >
+                Open Anyway
+              </Button>
+            </div>
+          </div>
+        )}
         {/* Text editor content */}
-        {!isPdf && !isImage && (
+        {!isPdf && !isImage && !isLargeFileNotLoaded && (
           <>
             <div ref={containerRef} className={reviewingSnapshot ? "hidden" : "absolute inset-0"} />
             {reviewingSnapshot && historyDiffResult && (
@@ -886,7 +908,7 @@ export function LatexEditor() {
         <ClaudeChatDrawer />
       </div>
       {/* Text-editor-only bottom panels */}
-      {!isPdf && !isImage && diagnostics.length > 0 && (
+      {!isPdf && !isImage && !isLargeFileNotLoaded && diagnostics.length > 0 && (
         <ProblemsPanel
           diagnostics={diagnostics}
           fileName={activeFile?.relativePath ?? "document.tex"}
@@ -915,7 +937,7 @@ export function LatexEditor() {
           }}
         />
       )}
-      {!isPdf && !isImage && activeFileChange && (
+      {!isPdf && !isImage && !isLargeFileNotLoaded && activeFileChange && (
         <ProposedChangesPanel
           change={activeFileChange}
           changeIndex={proposedChanges.findIndex((c) => c.filePath === activeFile?.relativePath)}

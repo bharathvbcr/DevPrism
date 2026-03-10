@@ -8,6 +8,7 @@ import {
   copyFile,
   remove,
   rename,
+  stat,
 } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -18,7 +19,11 @@ export interface FsProjectFile {
   relativePath: string;
   absolutePath: string;
   type: ProjectFileType;
+  fileSize: number;
 }
+
+/** Files larger than this (1 MB) are not auto-loaded into memory during project open. */
+export const LARGE_FILE_THRESHOLD = 1 * 1024 * 1024;
 
 const IMAGE_EXTENSIONS = new Set([
   ".png",
@@ -107,10 +112,16 @@ export async function scanProjectFolder(
       } else {
         const type = getFileType(entry.name);
         if (type) {
+          let fileSize = 0;
+          try {
+            const info = await stat(entryPath);
+            fileSize = info.size;
+          } catch { /* stat failed — treat as 0 */ }
           files.push({
             relativePath,
             absolutePath: entryPath,
             type,
+            fileSize,
           });
         }
       }

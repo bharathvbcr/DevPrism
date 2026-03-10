@@ -12,6 +12,7 @@ import {
   getUniqueTargetName,
   createDirectory,
   join,
+  LARGE_FILE_THRESHOLD,
   type ProjectFileType,
 } from "@/lib/tauri/fs";
 import { useHistoryStore } from "@/stores/history-store";
@@ -30,6 +31,8 @@ export interface ProjectFile {
   content?: string;
   dataUrl?: string;
   isDirty: boolean;
+  /** File size in bytes (from stat). Used to skip auto-loading large files. */
+  fileSize?: number;
 }
 
 interface DocumentState {
@@ -87,6 +90,8 @@ interface DocumentState {
   moveFolder: (folderPath: string, targetFolder: string | null) => Promise<void>;
   reloadFile: (relativePath: string) => Promise<void>;
   refreshFiles: () => Promise<void>;
+  /** Load content for a file that was skipped during project open (large file). */
+  loadFileContent: (id: string) => Promise<void>;
 
   get fileName(): string;
   get content(): string;
@@ -179,23 +184,30 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
         absolutePath: f.absolutePath,
         type: f.type,
         isDirty: false,
+        fileSize: f.fileSize,
       };
 
-      // Load content for text-based files
+      // Load content for text-based files (skip large non-essential files)
       if (f.type === "tex" || f.type === "bib" || f.type === "style" || f.type === "other") {
-        try {
-          pf.content = await readTexFileContent(f.absolutePath);
-        } catch {
-          pf.content = "";
+        const isLargeNonEssential = f.type === "other" && f.fileSize > LARGE_FILE_THRESHOLD;
+        if (!isLargeNonEssential) {
+          try {
+            pf.content = await readTexFileContent(f.absolutePath);
+          } catch {
+            pf.content = "";
+          }
         }
+        // Large "other" files: content stays undefined, loaded on-demand via loadFileContent
       }
 
-      // Load dataUrl for image files
+      // Load dataUrl for image files (skip very large images)
       if (f.type === "image") {
-        try {
-          pf.dataUrl = await readImageAsDataUrl(f.absolutePath);
-        } catch {
-          // Image loading failed, that's ok
+        if (f.fileSize <= LARGE_FILE_THRESHOLD) {
+          try {
+            pf.dataUrl = await readImageAsDataUrl(f.absolutePath);
+          } catch {
+            // Image loading failed, that's ok
+          }
         }
       }
 
@@ -737,11 +749,15 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
         if (existing.isDirty) {
           merged.push(existing);
         } else {
-          const updated = { ...existing };
+          const updated = { ...existing, fileSize: fsFile.fileSize };
           if (updated.type === "tex" || updated.type === "bib" || updated.type === "style" || updated.type === "other") {
-            try {
-              updated.content = await readTexFileContent(updated.absolutePath);
-            } catch { /* keep previous content */ }
+            const isLargeNonEssential = updated.type === "other" && fsFile.fileSize > LARGE_FILE_THRESHOLD;
+            // Only reload if it was previously loaded (not a skipped large file)
+            if (!isLargeNonEssential || updated.content !== undefined) {
+              try {
+                updated.content = await readTexFileContent(updated.absolutePath);
+              } catch { /* keep previous content */ }
+            }
           }
           merged.push(updated);
         }
@@ -754,17 +770,19 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
           absolutePath: fsFile.absolutePath,
           type: fsFile.type,
           isDirty: false,
+          fileSize: fsFile.fileSize,
         };
-        if (pf.type === "tex" || pf.type === "bib" || pf.type === "style" || pf.type === "other") {
+        const isLargeNonEssential = pf.type === "other" && fsFile.fileSize > LARGE_FILE_THRESHOLD;
+        if (pf.type === "tex" || pf.type === "bib" || pf.type === "style" || (pf.type === "other" && !isLargeNonEssential)) {
           try {
             pf.content = await readTexFileContent(pf.absolutePath);
           } catch { /* skip unreadable */ }
-        } else if (pf.type === "image") {
+        } else if (pf.type === "image" && fsFile.fileSize <= LARGE_FILE_THRESHOLD) {
           try {
             pf.dataUrl = await readImageAsDataUrl(pf.absolutePath);
           } catch { /* skip unreadable */ }
         }
-        // PDF files are loaded on-demand via readFile in InlinePdfContent
+        // PDF files and large files are loaded on-demand
         merged.push(pf);
       }
     }
@@ -786,6 +804,22 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
       activeFileId: newActiveId,
       contentGeneration: s.contentGeneration + 1,
     }));
+  },
+
+  loadFileContent: async (id) => {
+    const state = get();
+    const file = state.files.find((f) => f.id === id);
+    if (!file || file.content !== undefined) return; // already loaded
+    try {
+      const content = await readTexFileContent(file.absolutePath);
+      set((s) => ({
+        files: s.files.map((f) => (f.id === id ? { ...f, content } : f)),
+      }));
+    } catch {
+      set((s) => ({
+        files: s.files.map((f) => (f.id === id ? { ...f, content: "" } : f)),
+      }));
+    }
   },
 
   get fileName() {

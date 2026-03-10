@@ -16,6 +16,7 @@ import {
 import { useHistoryStore } from "@/stores/history-store";
 import { useClaudeChatStore } from "@/stores/claude-chat-store";
 import { clearDocCache } from "@/lib/mupdf/pdf-doc-cache";
+import { clearScrollPositionCache } from "@/components/workspace/preview/pdf-viewer";
 
 export interface ProjectFile {
   id: string; // relativePath is the id
@@ -235,6 +236,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
       autoSaveTimer = null;
     }
     clearDocCache();
+    clearScrollPositionCache();
     set({
       projectRoot: null,
       files: [],

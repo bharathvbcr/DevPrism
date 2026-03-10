@@ -22,6 +22,7 @@ import {
   Select,
   SelectContent,
   SelectItem,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -31,6 +32,8 @@ import { compileLatex, synctexEdit } from "@/lib/latex-compiler";
 import { SelectionToolbar, type ToolbarAction } from "@/components/workspace/editor/selection-toolbar";
 import { save } from "@tauri-apps/plugin-dialog";
 import type { PdfTextSelection, CaptureResult } from "./pdf-viewer";
+
+type FitMode = "fit-width" | "fit-height" | null;
 
 const ZOOM_OPTIONS = [
   { value: "0.5", label: "50%" },
@@ -73,6 +76,9 @@ export function PdfPreview() {
   const [numPages, setNumPages] = useState<number>(0);
   const [scale, setScale] = useState<number>(1.0);
   const [captureMode, setCaptureMode] = useState(false);
+  const [fitMode, setFitMode] = useState<FitMode>(null);
+  const [containerSize, setContainerSize] = useState<{ width: number; height: number } | null>(null);
+  const [firstPageSize, setFirstPageSize] = useState<{ width: number; height: number } | null>(null);
   const hasInitialCompile = useRef(false);
   const initialized = useDocumentStore((s) => s.initialized);
 
@@ -293,8 +299,21 @@ export function PdfPreview() {
     compile();
   }, [initialized, projectRoot, pdfData, isCompiling, compileError, setIsCompiling, setPdfData, setCompileError, saveAllFiles, files, activeFile]);
 
-  const zoomIn = () => setScale((s) => Math.min(4, s + 0.1));
-  const zoomOut = () => setScale((s) => Math.max(0.25, s - 0.1));
+  // Recompute scale when fit mode is active and container/page size changes
+  useEffect(() => {
+    if (!fitMode || !containerSize || !firstPageSize) return;
+    const PADDING = 32; // p-4 on each side
+    if (fitMode === "fit-width") {
+      const newScale = (containerSize.width - PADDING) / firstPageSize.width;
+      setScale(Math.max(0.25, Math.min(4, newScale)));
+    } else if (fitMode === "fit-height") {
+      const newScale = (containerSize.height - PADDING) / firstPageSize.height;
+      setScale(Math.max(0.25, Math.min(4, newScale)));
+    }
+  }, [fitMode, containerSize, firstPageSize]);
+
+  const zoomIn = () => { setFitMode(null); setScale((s) => Math.min(4, s + 0.1)); };
+  const zoomOut = () => { setFitMode(null); setScale((s) => Math.max(0.25, s - 0.1)); };
 
   const handleExport = async () => {
     if (!pdfData) return;
@@ -312,7 +331,7 @@ export function PdfPreview() {
   };
 
   const handleLoadSuccess = (pages: number) => setNumPages(pages);
-  const handleScaleChange = (newScale: number) => setScale(newScale);
+  const handleScaleChange = (newScale: number) => { setFitMode(null); setScale(newScale); };
 
   const handleCompile = async () => {
     if (isCompiling || !projectRoot || !isTexActive) return;
@@ -469,6 +488,8 @@ export function PdfPreview() {
           onTextClick={handleTextClick}
           onSynctexClick={handleSynctexClick}
           onTextSelect={handleTextSelect}
+          onFirstPageSize={(w, h) => setFirstPageSize({ width: w, height: h })}
+          onContainerResize={(w, h) => setContainerSize({ width: w, height: h })}
           captureMode={captureMode}
           onCapture={handleCapture}
           onCancelCapture={() => setCaptureMode(false)}
@@ -513,9 +534,28 @@ export function PdfPreview() {
               <span className="mr-1.5 text-muted-foreground text-xs">{numPages} {numPages === 1 ? "page" : "pages"}</span>
               <Button variant="ghost" size="icon" className="size-7" onClick={zoomOut} disabled={scale <= 0.25}><MinusIcon className="size-3.5" /></Button>
               <Button variant="ghost" size="icon" className="size-7" onClick={zoomIn} disabled={scale >= 4}><PlusIcon className="size-3.5" /></Button>
-              <Select value={scale.toString()} onValueChange={(v) => setScale(Number(v))}>
-                <SelectTrigger size="sm" className="h-7! w-auto text-xs"><SelectValue>{Math.round(scale * 100)}%</SelectValue></SelectTrigger>
-                <SelectContent>{ZOOM_OPTIONS.map((opt) => (<SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>))}</SelectContent>
+              <Select
+                value={fitMode ?? scale.toString()}
+                onValueChange={(v) => {
+                  if (v === "fit-width" || v === "fit-height") {
+                    setFitMode(v);
+                  } else {
+                    setFitMode(null);
+                    setScale(Number(v));
+                  }
+                }}
+              >
+                <SelectTrigger size="sm" className="h-7! w-auto text-xs">
+                  <SelectValue>
+                    {fitMode === "fit-width" ? "Fit width" : fitMode === "fit-height" ? "Fit height" : `${Math.round(scale * 100)}%`}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent position="popper" align="end">
+                  <SelectItem value="fit-width">Fit to width</SelectItem>
+                  <SelectItem value="fit-height">Fit to height</SelectItem>
+                  <SelectSeparator />
+                  {ZOOM_OPTIONS.map((opt) => (<SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>))}
+                </SelectContent>
               </Select>
               <div className="mx-1 h-4 w-px bg-border" />
               {/* Capture mode */}

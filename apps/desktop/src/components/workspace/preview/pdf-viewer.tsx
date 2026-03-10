@@ -31,6 +31,7 @@ interface PdfViewerProps {
   onSynctexClick?: (page: number, x: number, y: number) => void;
   onTextSelect?: (selection: PdfTextSelection | null) => void;
   onFirstPageSize?: (width: number, height: number) => void;
+  onContainerResize?: (width: number, height: number) => void;
   captureMode?: boolean;
   onCapture?: (result: CaptureResult) => void;
   onCancelCapture?: () => void;
@@ -46,6 +47,7 @@ export function PdfViewer({
   onSynctexClick,
   onTextSelect,
   onFirstPageSize,
+  onContainerResize,
   captureMode = false,
   onCapture,
   onCancelCapture,
@@ -219,6 +221,18 @@ export function PdfViewer({
 
     return () => observer.disconnect();
   }, [pageSizes, scale]);
+
+  // Report container dimensions to parent for fit-to-width/height
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || !onContainerResize) return;
+    const ro = new ResizeObserver((entries) => {
+      const { width, height } = entries[0].contentRect;
+      onContainerResize(width, height);
+    });
+    ro.observe(container);
+    return () => ro.disconnect();
+  }, [onContainerResize]);
 
   // Native dblclick listener for synctex
   useEffect(() => {

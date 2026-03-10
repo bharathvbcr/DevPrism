@@ -112,11 +112,15 @@ export async function scanProjectFolder(
       } else {
         const type = getFileType(entry.name);
         if (type) {
+          // Only stat files that may be skipped by the large-file threshold
+          // (image and other). tex/bib/style are always loaded, pdf is always lazy.
           let fileSize = 0;
-          try {
-            const info = await stat(entryPath);
-            fileSize = info.size;
-          } catch { /* stat failed — treat as 0 */ }
+          if (type === "image" || type === "other") {
+            try {
+              const info = await stat(entryPath);
+              fileSize = info.size;
+            } catch { /* stat failed — treat as 0 */ }
+          }
           files.push({
             relativePath,
             absolutePath: entryPath,

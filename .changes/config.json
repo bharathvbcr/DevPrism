@@ -10,25 +10,25 @@
   "pkgManagers": {
     "rust": {
       "version": true,
-      "publish": false
+      "publish": true,
+      "publishCommand": "echo 'skip rust publish'"
     },
     "javascript": {
       "version": true,
-      "publish": false
+      "publish": true,
+      "publishCommand": "echo 'skip js publish'"
     }
   },
   "packages": {
     "claude-prism-desktop": {
       "path": "./apps/desktop/src-tauri",
       "manager": "rust",
-      "version": true,
-      "publish": false
+      "version": true
     },
     "@claude-prism/desktop": {
       "path": "./apps/desktop",
       "manager": "javascript",
       "version": true,
-      "publish": false,
       "dependencies": ["claude-prism-desktop"],
       "postversion": "node -e \"const fs=require('fs');const p='src-tauri/tauri.conf.json';const c=JSON.parse(fs.readFileSync(p));const pkg=JSON.parse(fs.readFileSync('package.json'));c.version=pkg.version;fs.writeFileSync(p,JSON.stringify(c,null,2)+String.fromCharCode(10))\""
     },
@@ -36,7 +36,6 @@
       "path": ".",
       "manager": "javascript",
       "version": true,
-      "publish": false,
       "dependencies": ["@claude-prism/desktop"]
     }
   }

@@ -393,9 +393,13 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
   },
 
   setCompileError: (error, rootFileId?) => {
-    if (rootFileId && error) {
+    if (rootFileId) {
       const compileErrorCache = new Map(get().compileErrorCache);
-      compileErrorCache.set(rootFileId, error);
+      if (error) {
+        compileErrorCache.set(rootFileId, error);
+      } else {
+        compileErrorCache.delete(rootFileId);
+      }
       set({ compileError: error, compileErrorCache });
     } else {
       set({ compileError: error });

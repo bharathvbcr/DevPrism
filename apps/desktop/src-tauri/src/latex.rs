@@ -301,10 +301,13 @@ fn parse_synctex_data(
             break;
         }
 
-        let first_byte = line.as_bytes()[0];
+        let first_byte = match line.as_bytes().first() {
+            Some(b) => *b,
+            None => continue,
+        };
         match first_byte {
             b'{' => {
-                let page: u32 = line[1..].parse().unwrap_or(0);
+                let page: u32 = line.get(1..).and_then(|s| s.parse().ok()).unwrap_or(0);
                 on_target_page = page == target_page;
             }
             b'}' => {
@@ -315,7 +318,7 @@ fn parse_synctex_data(
                 // Convert synctex internal units to PDF points (bp)
                 // 1 TeX pt = 65536 sp; 1 inch = 72.27 TeX pt = 72 PDF bp
                 let factor = unit * magnification / (1000.0 * 65536.0) * 72.0 / 72.27;
-                if let Some(node) = parse_synctex_node(&line[1..], factor, x_offset, y_offset) {
+                if let Some(node) = line.get(1..).and_then(|s| parse_synctex_node(s, factor, x_offset, y_offset)) {
                     nodes.push(node);
                 }
             }
@@ -340,7 +343,7 @@ fn parse_synctex_data(
         }
     }
 
-    let best = &nodes[best_idx];
+    let best = nodes.get(best_idx)?;
     let filename = inputs.get(&best.tag)?.clone();
     Some((filename, best.line, 0))
 }
@@ -359,20 +362,22 @@ fn parse_synctex_node(
     }
 
     // Parse tag and line (ignore column)
-    let tlc: Vec<&str> = colon_parts[0].splitn(3, ',').collect();
+    let first_part = colon_parts.first()?;
+    let tlc: Vec<&str> = first_part.splitn(3, ',').collect();
     if tlc.len() < 2 {
         return None;
     }
-    let tag: u32 = tlc[0].parse().ok()?;
-    let line: u32 = tlc[1].parse().ok()?;
+    let tag: u32 = tlc.first()?.parse().ok()?;
+    let line: u32 = tlc.get(1)?.parse().ok()?;
 
     // Parse h, v coordinates
-    let hv: Vec<&str> = colon_parts[1].splitn(2, ',').collect();
+    let second_part = colon_parts.get(1)?;
+    let hv: Vec<&str> = second_part.splitn(2, ',').collect();
     if hv.len() < 2 {
         return None;
     }
-    let h_raw: i64 = hv[0].parse().ok()?;
-    let v_raw: i64 = hv[1].parse().ok()?;
+    let h_raw: i64 = hv.first()?.parse().ok()?;
+    let v_raw: i64 = hv.get(1)?.parse().ok()?;
 
     let h = h_raw as f64 * factor + x_offset;
     let v = v_raw as f64 * factor + y_offset;

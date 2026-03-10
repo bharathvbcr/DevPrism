@@ -259,14 +259,17 @@ async fn spawn_claude_process(
 
             // Parse for system:init to extract session_id
             if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
-                let msg_type = msg["type"].as_str().unwrap_or("?");
-                let msg_sub = msg["subtype"].as_str().unwrap_or("");
+                let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("?");
+                let msg_sub = msg.get("subtype").and_then(|v| v.as_str()).unwrap_or("");
                 eprintln!("[claude-stdout] [{}] +{:.1}s #{} type={} sub={} len={}", tab_id_stdout, elapsed, line_count, msg_type, msg_sub, line.len());
 
-                if msg["type"] == "system" && msg["subtype"] == "init" {
-                    if let Some(sid) = msg["session_id"].as_str() {
-                        let mut guard = session_id_stdout.lock().unwrap();
-                        *guard = Some(sid.to_string());
+                if msg.get("type").and_then(|v| v.as_str()) == Some("system")
+                    && msg.get("subtype").and_then(|v| v.as_str()) == Some("init")
+                {
+                    if let Some(sid) = msg.get("session_id").and_then(|v| v.as_str()) {
+                        if let Ok(mut guard) = session_id_stdout.lock() {
+                            *guard = Some(sid.to_string());
+                        }
                     }
                 }
             }
@@ -628,7 +631,7 @@ pub async fn login_claude(window: WebviewWindow) -> Result<(), String> {
         .arg("--version")
         .output();
 
-    if version_check.is_err() || !version_check.unwrap().status.success() {
+    if !version_check.as_ref().is_ok_and(|o| o.status.success()) {
         return Err("Claude CLI is not properly installed".to_string());
     }
 
@@ -931,12 +934,16 @@ fn extract_first_user_message(path: &PathBuf) -> (Option<String>, Option<String>
             Err(_) => continue,
         };
 
-        if msg["type"] != "user" {
+        if msg.get("type").and_then(|v| v.as_str()) != Some("user") {
             continue;
         }
 
-        let content_val = &msg["message"]["content"];
-        let timestamp = msg["timestamp"].as_str().map(|s| s.to_string());
+        let content_val = msg.get("message").and_then(|m| m.get("content"));
+        let content_val = match content_val {
+            Some(v) => v,
+            None => continue,
+        };
+        let timestamp = msg.get("timestamp").and_then(|v| v.as_str()).map(|s| s.to_string());
 
         // Case 1: content is a plain string (Claude Code stored JSONL format)
         if let Some(text) = content_val.as_str() {
@@ -1043,11 +1050,9 @@ pub async fn load_session_history(
     use std::io::BufRead;
     let mut messages = Vec::new();
 
-    for line in reader.lines() {
-        if let Ok(line) = line {
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
-                messages.push(json);
-            }
+    for line in reader.lines().map_while(Result::ok) {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
+            messages.push(json);
         }
     }
 
@@ -1109,7 +1114,7 @@ pub async fn get_claude_fast_mode() -> Result<bool, String> {
         .map_err(|e| format!("Failed to read settings: {}", e))?;
     let settings: serde_json::Value = serde_json::from_str(&content)
         .unwrap_or(serde_json::json!({}));
-    Ok(settings["fastMode"].as_bool().unwrap_or(false))
+    Ok(settings.get("fastMode").and_then(|v| v.as_bool()).unwrap_or(false))
 }
 
 #[tauri::command]

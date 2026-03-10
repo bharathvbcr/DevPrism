@@ -186,6 +186,7 @@ pub fn run() {
     // Load .env file (walks up from cwd to find it)
     let _ = dotenvy::dotenv();
 
+    #[allow(clippy::expect_used)]
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())

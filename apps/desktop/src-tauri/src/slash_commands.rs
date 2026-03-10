@@ -59,7 +59,7 @@ impl CommandFrontmatterRaw {
 fn parse_markdown_with_frontmatter(content: &str) -> (Option<CommandFrontmatter>, String) {
     let lines: Vec<&str> = content.lines().collect();
 
-    if lines.is_empty() || lines[0] != "---" {
+    if lines.first() != Some(&"---") {
         return (None, content.to_string());
     }
 
@@ -72,8 +72,8 @@ fn parse_markdown_with_frontmatter(content: &str) -> (Option<CommandFrontmatter>
     }
 
     if let Some(end) = frontmatter_end {
-        let frontmatter_content = lines[1..end].join("\n");
-        let body_content = lines[(end + 1)..].join("\n");
+        let frontmatter_content = lines.get(1..end).map(|s| s.join("\n")).unwrap_or_default();
+        let body_content = lines.get((end + 1)..).map(|s| s.join("\n")).unwrap_or_default();
 
         match serde_yaml::from_str::<CommandFrontmatterRaw>(&frontmatter_content) {
             Ok(raw) => (Some(raw.into_parsed()), body_content),
@@ -98,10 +98,12 @@ fn extract_command_info(file_path: &Path, base_path: &Path) -> Option<(String, O
     }
 
     if components.len() == 1 {
-        Some((components[0].to_string(), None))
+        Some((components.first()?.to_string(), None))
     } else {
-        let command_name = components.last().unwrap().to_string();
-        let namespace = components[..components.len() - 1].join(":");
+        let command_name = components.last()?.to_string();
+        let namespace = components.get(..components.len() - 1)
+            .map(|s| s.join(":"))
+            .unwrap_or_default();
         Some((command_name, Some(namespace)))
     }
 }
@@ -460,7 +462,7 @@ pub async fn slash_command_delete(
 
     // Clean up empty parent directories
     if let Some(parent) = Path::new(&command.file_path).parent() {
-        let _ = remove_empty_dirs(parent);
+        remove_empty_dirs(parent);
     }
 
     Ok(format!("Deleted command: {}", command.full_command))

@@ -135,6 +135,13 @@ fn create_new_window(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+// --- Debug logging from JS (survives white-screen crashes) ---
+
+#[tauri::command]
+fn js_log(msg: String) {
+    eprintln!("[js] {}", msg);
+}
+
 // --- Clipboard file paths (for Cmd+V paste in file tree) ---
 
 #[tauri::command]
@@ -205,6 +212,7 @@ pub fn run() {
             create_new_window,
             detect_editors,
             open_in_editor,
+            js_log,
             read_clipboard_file_paths,
             latex::compile_latex,
             latex::synctex_edit,

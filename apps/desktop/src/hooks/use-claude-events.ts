@@ -289,6 +289,7 @@ export function useClaudeEvents() {
         if (resolved) {
           const { rootId, targetPath } = resolved;
           useDocumentStore.getState().setIsCompiling(true);
+          useDocumentStore.getState().setPendingRecompile(false);
           try {
             await useDocumentStore.getState().saveAllFiles();
             const pdfData = await compileLatex(projectRoot, targetPath);
@@ -300,7 +301,9 @@ export function useClaudeEvents() {
           }
         }
       } else if (alreadyCompiling) {
-        console.log(`[claude-event] skipping post-Claude recompile — already compiling`);
+        // Queue recompile — it will run when the current compile finishes
+        useDocumentStore.getState().setPendingRecompile(true);
+        console.log(`[claude-event] queued post-Claude recompile — already compiling`);
       }
     }
 

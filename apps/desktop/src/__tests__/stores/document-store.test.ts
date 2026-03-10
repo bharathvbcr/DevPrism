@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
-import { useDocumentStore, type ProjectFile } from "@/stores/document-store";
+import { useDocumentStore, getCurrentPdfBytes, type ProjectFile } from "@/stores/document-store";
 
 // Mock history store
 vi.mock("@/stores/history-store", () => ({
@@ -46,9 +46,10 @@ describe("useDocumentStore", () => {
       selectionRange: null,
       jumpToPosition: null,
       isThreadOpen: false,
-      pdfData: null,
+      pdfRevision: 0,
       compileError: null,
       isCompiling: false,
+      pendingRecompile: false,
       isSaving: false,
       initialized: true,
     });
@@ -237,7 +238,7 @@ describe("useDocumentStore", () => {
   });
 
   describe("setActiveFile", () => {
-    it("changes active file and resets cursor", () => {
+    it("changes active file and resets selection", () => {
       useDocumentStore.setState({
         files: [
           makeFile(),
@@ -249,7 +250,8 @@ describe("useDocumentStore", () => {
       useDocumentStore.getState().setActiveFile("ch1.tex");
       const state = useDocumentStore.getState();
       expect(state.activeFileId).toBe("ch1.tex");
-      expect(state.cursorPosition).toBe(0);
+      // cursorPosition is preserved — the editor restores it from per-file cache
+      expect(state.cursorPosition).toBe(100);
       expect(state.selectionRange).toBeNull();
     });
   });
@@ -345,7 +347,7 @@ describe("useDocumentStore", () => {
       useDocumentStore.setState({ compileError: "some error" });
       useDocumentStore.getState().setPdfData(new Uint8Array([1, 2, 3]));
       const state = useDocumentStore.getState();
-      expect(state.pdfData).toEqual(new Uint8Array([1, 2, 3]));
+      expect(getCurrentPdfBytes()).toEqual(new Uint8Array([1, 2, 3]));
       expect(state.compileError).toBeNull();
     });
 

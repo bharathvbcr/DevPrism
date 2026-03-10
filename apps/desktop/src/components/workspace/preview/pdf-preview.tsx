@@ -29,7 +29,7 @@ import {
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { HistoryPanel } from "@/components/workspace/history-panel";
 import { compileLatex, synctexEdit, resolveCompileTarget, formatCompileError } from "@/lib/latex-compiler";
-import { ErrorBoundary } from "@/components/error-boundary";
+import { ErrorBoundary } from "react-error-boundary";
 import { SelectionToolbar, type ToolbarAction } from "@/components/workspace/editor/selection-toolbar";
 import { save } from "@tauri-apps/plugin-dialog";
 import { PdfViewer, type PdfTextSelection, type CaptureResult } from "./pdf-viewer";

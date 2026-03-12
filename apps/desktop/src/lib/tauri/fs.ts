@@ -47,6 +47,7 @@ const STYLE_EXTENSIONS = new Set([
 ]);
 
 const IGNORED_EXTENSIONS = new Set([
+  // Ignored file extensions: LaTeX build artifacts and other non-editable/binary files
   ".aux",
   ".log",
   ".out",
@@ -64,11 +65,52 @@ const IGNORED_EXTENSIONS = new Set([
   ".vrb",
   ".run.xml",
   ".bcf",
+  // Binary / non-text files (cannot be meaningfully edited)
+  ".hwp",
+  ".hwpx",
+  ".doc",
+  ".docx",
+  ".xls",
+  ".xlsx",
+  ".xlsm",
+  ".ppt",
+  ".pptx",
+  ".accdb",
+  ".mdb",
+  ".zip",
+  ".rar",
+  ".7z",
+  ".tar",
+  ".gz",
+  ".exe",
+  ".dll",
+  ".so",
+  ".dylib",
+  ".o",
+  ".obj",
+  ".bin",
+  ".dat",
+  ".iso",
+  ".dmg",
+  ".msi",
+  ".mp3",
+  ".mp4",
+  ".avi",
+  ".mov",
+  ".mkv",
+  ".wav",
+  ".flac",
+  ".psd",
+  ".ai",
+  ".sketch",
+  ".fig",
+  ".sqlite",
+  ".db",
 ]);
 
 function getFileType(name: string): ProjectFileType | null {
   const lower = name.toLowerCase();
-  // Skip LaTeX build artifacts
+  // Skip ignored file extensions (build artifacts, binary/non-text files)
   for (const ext of IGNORED_EXTENSIONS) {
     if (lower.endsWith(ext)) return null;
   }

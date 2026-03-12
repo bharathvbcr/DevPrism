@@ -29,7 +29,7 @@ import { unifiedMergeView, getChunks, acceptChunk, rejectChunk } from "@codemirr
 import { latex, latexLinter } from "codemirror-lang-latex";
 import { bibtex } from "./lang-bibtex";
 import { linter, lintGutter, forEachDiagnostic, type Diagnostic } from "@codemirror/lint";
-import { useDocumentStore, type ProjectFile } from "@/stores/document-store";
+import { useDocumentStore, hasPdfData, type ProjectFile } from "@/stores/document-store";
 import { useProposedChangesStore, type ProposedChange } from "@/stores/proposed-changes-store";
 import { useClaudeChatStore } from "@/stores/claude-chat-store";
 import { useHistoryStore, type FileDiff } from "@/stores/history-store";
@@ -283,8 +283,14 @@ export function LatexEditor() {
 
   // Compile: save all files first, then compile via Tauri command
   compileRef.current = async () => {
-    const { contentGeneration, lastCompiledGenerations, pdfData: existingPdf, files: allFiles, isCompiling: currentlyCompiling } = useDocumentStore.getState();
-    if (currentlyCompiling || !projectRoot || activeFile?.type !== "tex") return;
+    const state = useDocumentStore.getState();
+    if (!projectRoot || activeFile?.type !== "tex") return;
+    if (state.isCompiling) {
+      // Queue a recompile after the current one finishes
+      state.setPendingRecompile(true);
+      return;
+    }
+    const { contentGeneration, lastCompiledGenerations, files: allFiles } = state;
     const resolved = resolveCompileTarget(activeFile.id, allFiles);
     if (!resolved) {
       setCompileError("No .tex file found in this project. Create a document.tex or main.tex file to compile.", activeFile.id);
@@ -293,9 +299,10 @@ export function LatexEditor() {
     const { rootId, targetPath } = resolved;
     // Skip recompile if no edits since last successful compile of this root
     const lastGen = lastCompiledGenerations.get(rootId);
-    if (existingPdf && lastGen !== undefined && contentGeneration === lastGen) return;
+    if (hasPdfData() && lastGen !== undefined && contentGeneration === lastGen) return;
     useHistoryStore.getState().stopReview();
     setIsCompiling(true);
+    state.setPendingRecompile(false);
     try {
       await saveAllFiles();
       // Pre-compile snapshot (fire-and-forget to avoid blocking compilation start)
@@ -306,6 +313,11 @@ export function LatexEditor() {
       setCompileError(formatCompileError(error), rootId);
     } finally {
       setIsCompiling(false);
+      // If a recompile was requested while we were compiling, trigger it now
+      // Use setTimeout to avoid unbounded recursion on the call stack
+      if (useDocumentStore.getState().pendingRecompile) {
+        setTimeout(() => compileRef.current?.(), 0);
+      }
     }
   };
 

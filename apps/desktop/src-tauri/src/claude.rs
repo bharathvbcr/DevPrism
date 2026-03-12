@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -136,6 +137,18 @@ fn find_claude_binary() -> Result<String, String> {
     Ok("claude".to_string())
 }
 
+/// Strip interior nul bytes that would cause Command::spawn() to fail.
+/// This can happen when prompts contain clipboard artifacts or encoding issues.
+/// Returns a borrowed reference when no nul bytes are present (zero-alloc fast path).
+fn strip_nul(s: &str) -> Cow<'_, str> {
+    if s.contains('\0') {
+        eprintln!("[claude-spawn] stripped {} nul byte(s) from input", s.matches('\0').count());
+        Cow::Owned(s.replace('\0', ""))
+    } else {
+        Cow::Borrowed(s)
+    }
+}
+
 /// On Windows, resolve a `.cmd` wrapper to its underlying Node.js script
 /// so we can run `node <script.js>` directly, avoiding cmd.exe escaping issues.
 /// Returns (program, extra_prefix_args).
@@ -186,23 +199,27 @@ fn new_sync_command(program: &str) -> std::process::Command {
 
 /// Create a tokio Command with appropriate environment variables.
 fn create_command(program: &str, args: Vec<String>, cwd: &str, effort_level: Option<&str>) -> Command {
+    let clean_program = strip_nul(program);
+    let clean_args: Vec<Cow<str>> = args.iter().map(|a| strip_nul(a)).collect();
+    let clean_cwd = strip_nul(cwd);
+
     #[cfg(target_os = "windows")]
     let mut cmd = {
-        let (resolved, prefix) = resolve_cmd_to_node(program);
+        let (resolved, prefix) = resolve_cmd_to_node(clean_program.as_ref());
         let mut c = Command::new(&resolved);
         if !prefix.is_empty() {
             c.args(&prefix);
         }
-        c.args(&args);
+        c.args(clean_args.iter().map(|a| a.as_ref()));
         c
     };
     #[cfg(not(target_os = "windows"))]
     let mut cmd = {
-        let mut c = Command::new(program);
-        c.args(&args);
+        let mut c = Command::new(clean_program.as_ref());
+        c.args(clean_args.iter().map(|a| a.as_ref()));
         c
     };
-    cmd.current_dir(cwd);
+    cmd.current_dir(clean_cwd.as_ref());
 
     // Pipe stdout and stderr for streaming
     cmd.stdout(std::process::Stdio::piped());
@@ -221,7 +238,8 @@ fn create_command(program: &str, args: Vec<String>, cwd: &str, effort_level: Opt
     cmd.env("CLAUDE_CODE_EFFORT_LEVEL", effort_level.unwrap_or("low"));
 
     // Build PATH: start with current PATH, prepend program dir and venv bin
-    let mut current_path = std::env::var("PATH").unwrap_or_default();
+    // Strip nul bytes from inherited PATH to prevent spawn failures
+    let mut current_path = strip_nul(&std::env::var("PATH").unwrap_or_default()).into_owned();
     #[cfg(target_os = "windows")]
     let sep = ";";
     #[cfg(not(target_os = "windows"))]
@@ -284,7 +302,10 @@ async fn spawn_claude_process(
     // Spawn the process
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("Failed to spawn Claude process: {}. Is Claude Code CLI installed?", e))?;
+        .map_err(|e| {
+            eprintln!("[claude-spawn] Failed to spawn process for tab {}: {}", tab_id, e);
+            format!("Failed to spawn Claude process: {}. Is Claude Code CLI installed?", e)
+        })?;
 
     let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
     let stderr = child.stderr.take().ok_or("Failed to capture stderr")?;

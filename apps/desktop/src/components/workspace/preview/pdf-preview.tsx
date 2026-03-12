@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 import { writeFile, mkdir, exists } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
-import { useDocumentStore } from "@/stores/document-store";
+import { useDocumentStore, getPdfBytes, getCurrentPdfBytes, hasPdfData } from "@/stores/document-store";
 import { useHistoryStore } from "@/stores/history-store";
 import { useClaudeChatStore } from "@/stores/claude-chat-store";
 import { Button } from "@/components/ui/button";
@@ -62,7 +62,7 @@ const ZOOM_OPTIONS = [
 ];
 
 export function PdfPreview() {
-  const pdfData = useDocumentStore((s) => s.pdfData);
+  const pdfRevision = useDocumentStore((s) => s.pdfRevision);
   const compileError = useDocumentStore((s) => s.compileError);
   const isCompiling = useDocumentStore((s) => s.isCompiling);
   const isSaving = useDocumentStore((s) => s.isSaving);
@@ -97,8 +97,10 @@ export function PdfPreview() {
   const hasInitialCompile = useRef(false);
   const initialized = useDocumentStore((s) => s.initialized);
 
+  // Derive pdfData from external cache, re-read whenever pdfRevision bumps
+  const pdfData = useMemo(() => getCurrentPdfBytes(), [pdfRevision]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Keep-alive: track which root files have PdfViewer instances alive (LRU order)
-  const pdfCache = useDocumentStore((s) => s.pdfCache);
   const currentRootFileId = resolveTexRoot(activeFile?.id ?? "", files);
   const [aliveOrder, setAliveOrder] = useState<string[]>([]);
   const prevRootRef = useRef(currentRootFileId);
@@ -365,7 +367,8 @@ export function PdfPreview() {
   const zoomOut = () => { setFitMode(null); setScale((s) => Math.max(0.25, s - 0.1)); };
 
   const handleExport = async () => {
-    if (!pdfData) return;
+    const currentPdf = getCurrentPdfBytes();
+    if (!currentPdf) return;
     const mainFile = files.find((f) => f.name === "document.tex" || f.name === "main.tex");
     const defaultName = mainFile
       ? mainFile.name.replace(/\.tex$/, ".pdf")
@@ -376,7 +379,7 @@ export function PdfPreview() {
       filters: [{ name: "PDF", extensions: ["pdf"] }],
     });
     if (!filePath) return;
-    await writeFile(filePath, new Uint8Array(pdfData));
+    await writeFile(filePath, new Uint8Array(currentPdf));
   };
 
   const handleCurrentPageChange = useCallback((page: number) => {
@@ -408,7 +411,12 @@ export function PdfPreview() {
   const handleCompile = async () => {
     // Read all guard values from the store to avoid stale closures
     const state = useDocumentStore.getState();
-    if (state.isCompiling || !state.projectRoot) return;
+    if (!state.projectRoot) return;
+    if (state.isCompiling) {
+      // Queue a recompile after the current one finishes
+      state.setPendingRecompile(true);
+      return;
+    }
     const allFiles = state.files;
     const activeFileId = state.activeFileId;
     const activeEntry = allFiles.find((f) => f.id === activeFileId);
@@ -421,9 +429,10 @@ export function PdfPreview() {
     const { rootId, targetPath: targetFile } = resolved;
     // Skip recompile if no edits since last successful compile of this root
     const lastGen = state.lastCompiledGenerations.get(rootId);
-    if (state.pdfData && lastGen !== undefined && state.contentGeneration === lastGen) return;
+    if (hasPdfData() && lastGen !== undefined && state.contentGeneration === lastGen) return;
     useHistoryStore.getState().stopReview();
     setIsCompiling(true);
+    state.setPendingRecompile(false);
     setPdfError(null);
     try {
       await saveAllFiles();
@@ -433,6 +442,11 @@ export function PdfPreview() {
       setCompileError(formatCompileError(error), rootId);
     } finally {
       setIsCompiling(false);
+      // If a recompile was requested while we were compiling, trigger it now
+      // Use setTimeout to avoid unbounded recursion on the call stack
+      if (useDocumentStore.getState().pendingRecompile) {
+        setTimeout(() => handleCompile(), 0);
+      }
     }
   };
 
@@ -565,7 +579,7 @@ export function PdfPreview() {
     return (
       <div className="relative flex min-h-0 flex-1">
         {aliveOrder.map((rootId) => {
-          const data = pdfCache.get(rootId);
+          const data = getPdfBytes(rootId);
           if (!data) return null;
           const isActive = rootId === currentRootFileId;
           return (

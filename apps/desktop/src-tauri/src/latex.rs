@@ -557,9 +557,10 @@ pub async fn compile_latex(
             .map_err(|e| format!("PDF read task panicked: {}", e))?
             .map_err(|e| format!("Failed to read PDF: {}", e))?;
         eprintln!(
-            "[latex] +{:.0}ms total (reuse={})",
+            "[latex] +{:.0}ms total (reuse={}) pdf_size={}KB",
             t0.elapsed().as_millis(),
-            is_reuse
+            is_reuse,
+            pdf_bytes.len() / 1024
         );
         Ok(tauri::ipc::Response::new(pdf_bytes))
     } else {

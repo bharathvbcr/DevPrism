@@ -22,6 +22,15 @@ describe("getFileType logic", () => {
     ".aux", ".log", ".out", ".toc", ".lof", ".lot", ".fls",
     ".fdb_latexmk", ".synctex.gz", ".synctex", ".blg", ".bbl",
     ".nav", ".snm", ".vrb", ".run.xml", ".bcf",
+    // Binary / non-text files
+    ".hwp", ".hwpx", ".doc", ".docx", ".xls", ".xlsx", ".xlsm",
+    ".ppt", ".pptx", ".accdb", ".mdb",
+    ".zip", ".rar", ".7z", ".tar", ".gz",
+    ".exe", ".dll", ".so", ".dylib", ".o", ".obj",
+    ".bin", ".dat", ".iso", ".dmg", ".msi",
+    ".mp3", ".mp4", ".avi", ".mov", ".mkv", ".wav", ".flac",
+    ".psd", ".ai", ".sketch", ".fig",
+    ".sqlite", ".db",
   ]);
 
   function getFileType(name: string): string | null {
@@ -76,6 +85,21 @@ describe("getFileType logic", () => {
     expect(getFileType("main.synctex.gz")).toBeNull();
     expect(getFileType("main.fdb_latexmk")).toBeNull();
     expect(getFileType("main.bbl")).toBeNull();
+  });
+
+  it("ignores binary and non-text files", () => {
+    expect(getFileType("document.docx")).toBeNull();
+    expect(getFileType("spreadsheet.xlsx")).toBeNull();
+    expect(getFileType("report.hwp")).toBeNull();
+    expect(getFileType("data.accdb")).toBeNull();
+    expect(getFileType("archive.zip")).toBeNull();
+    expect(getFileType("app.exe")).toBeNull();
+    expect(getFileType("song.mp3")).toBeNull();
+    expect(getFileType("video.mp4")).toBeNull();
+    expect(getFileType("image.psd")).toBeNull();
+    expect(getFileType("database.sqlite")).toBeNull();
+    expect(getFileType("library.dll")).toBeNull();
+    expect(getFileType("presentation.pptx")).toBeNull();
   });
 
   it("classifies unknown extensions as other", () => {

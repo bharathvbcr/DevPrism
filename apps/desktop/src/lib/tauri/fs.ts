@@ -47,7 +47,7 @@ const STYLE_EXTENSIONS = new Set([
 ]);
 
 const IGNORED_EXTENSIONS = new Set([
-  // LaTeX build artifacts
+  // Ignored file extensions: LaTeX build artifacts and other non-editable/binary files
   ".aux",
   ".log",
   ".out",
@@ -110,7 +110,7 @@ const IGNORED_EXTENSIONS = new Set([
 
 function getFileType(name: string): ProjectFileType | null {
   const lower = name.toLowerCase();
-  // Skip LaTeX build artifacts
+  // Skip ignored file extensions (build artifacts, binary/non-text files)
   for (const ext of IGNORED_EXTENSIONS) {
     if (lower.endsWith(ext)) return null;
   }

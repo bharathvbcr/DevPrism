@@ -283,32 +283,26 @@ export function LatexEditor() {
 
   // Compile: save all files first, then compile via Tauri command
   compileRef.current = async () => {
-<<<<<<< HEAD
-    const { contentGeneration, lastCompiledGenerations, pdfData: existingPdf, files: allFiles, isCompiling: currentlyCompiling } = useDocumentStore.getState();
-    if (currentlyCompiling || !projectRoot || activeFile?.type !== "tex") return;
+    const state = useDocumentStore.getState();
+    if (!projectRoot || activeFile?.type !== "tex") return;
+    if (state.isCompiling) {
+      // Queue a recompile after the current one finishes
+      state.setPendingRecompile(true);
+      return;
+    }
+    const { contentGeneration, lastCompiledGenerations, files: allFiles } = state;
     const resolved = resolveCompileTarget(activeFile.id, allFiles);
     if (!resolved) {
       setCompileError("No .tex file found in this project. Create a document.tex or main.tex file to compile.", activeFile.id);
       return;
     }
     const { rootId, targetPath } = resolved;
-=======
-    const state = useDocumentStore.getState();
-    if (!projectRoot || activeFile?.type !== "tex") return;
-    if (state.isCompiling) {
-      // Queue a recompile after the current one finishes
-      useDocumentStore.getState().setPendingRecompile(true);
-      return;
-    }
-    const { contentGeneration, lastCompiledGenerations, files: allFiles } = state;
-    const { rootId, targetPath } = resolveCompileTarget(activeFile.id, allFiles);
->>>>>>> debfae9 (fix: resolve PDF white-screen crash, nul-byte spawn error, and dropped recompiles)
     // Skip recompile if no edits since last successful compile of this root
     const lastGen = lastCompiledGenerations.get(rootId);
     if (hasPdfData() && lastGen !== undefined && contentGeneration === lastGen) return;
     useHistoryStore.getState().stopReview();
     setIsCompiling(true);
-    useDocumentStore.getState().setPendingRecompile(false);
+    state.setPendingRecompile(false);
     try {
       await saveAllFiles();
       // Pre-compile snapshot (fire-and-forget to avoid blocking compilation start)
@@ -320,8 +314,9 @@ export function LatexEditor() {
     } finally {
       setIsCompiling(false);
       // If a recompile was requested while we were compiling, trigger it now
+      // Use setTimeout to avoid unbounded recursion on the call stack
       if (useDocumentStore.getState().pendingRecompile) {
-        compileRef.current?.();
+        setTimeout(() => compileRef.current?.(), 0);
       }
     }
   };

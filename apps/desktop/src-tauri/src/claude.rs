@@ -142,6 +142,7 @@ fn find_claude_binary() -> Result<String, String> {
 /// Returns a borrowed reference when no nul bytes are present (zero-alloc fast path).
 fn strip_nul(s: &str) -> Cow<'_, str> {
     if s.contains('\0') {
+        eprintln!("[claude-spawn] stripped {} nul byte(s) from input", s.matches('\0').count());
         Cow::Owned(s.replace('\0', ""))
     } else {
         Cow::Borrowed(s)

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
-import { useDocumentStore, getCurrentPdfBytes, type ProjectFile } from "@/stores/document-store";
+import { useDocumentStore, getCurrentPdfBytes, clearPdfBytesCache, type ProjectFile } from "@/stores/document-store";
 
 // Mock history store
 vi.mock("@/stores/history-store", () => ({
@@ -37,6 +37,7 @@ function makeFile(overrides: Partial<ProjectFile> = {}): ProjectFile {
 
 describe("useDocumentStore", () => {
   beforeEach(() => {
+    clearPdfBytesCache();
     useDocumentStore.setState({
       projectRoot: "/project",
       files: [makeFile()],

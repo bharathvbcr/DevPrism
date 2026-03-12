@@ -414,7 +414,7 @@ export function PdfPreview() {
     if (!state.projectRoot) return;
     if (state.isCompiling) {
       // Queue a recompile after the current one finishes
-      useDocumentStore.getState().setPendingRecompile(true);
+      state.setPendingRecompile(true);
       return;
     }
     const allFiles = state.files;
@@ -432,7 +432,7 @@ export function PdfPreview() {
     if (hasPdfData() && lastGen !== undefined && state.contentGeneration === lastGen) return;
     useHistoryStore.getState().stopReview();
     setIsCompiling(true);
-    useDocumentStore.getState().setPendingRecompile(false);
+    state.setPendingRecompile(false);
     setPdfError(null);
     try {
       await saveAllFiles();
@@ -443,8 +443,9 @@ export function PdfPreview() {
     } finally {
       setIsCompiling(false);
       // If a recompile was requested while we were compiling, trigger it now
+      // Use setTimeout to avoid unbounded recursion on the call stack
       if (useDocumentStore.getState().pendingRecompile) {
-        handleCompile();
+        setTimeout(() => handleCompile(), 0);
       }
     }
   };

@@ -273,9 +273,17 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # gh release edit doesn't support --generate-notes, so use the API
+          PREV_TAG=$(git tag --sort=-v:refname | grep '^v' | sed -n '2p' || true)
+          API_BODY='{"tag_name":"'"$GITHUB_REF_NAME"'"}'
+          if [ -n "$PREV_TAG" ]; then
+            API_BODY='{"tag_name":"'"$GITHUB_REF_NAME"'","previous_tag_name":"'"$PREV_TAG"'"}'
+          fi
+          NOTES=$(echo "$API_BODY" | gh api repos/${{ github.repository }}/releases/generate-notes \
+            --method POST --input - --jq '.body')
           gh release edit "$GITHUB_REF_NAME" \
             --repo "${{ github.repository }}" \
-            --generate-notes
+            --notes "$NOTES"
 
       - name: Update Homebrew Cask
         env:

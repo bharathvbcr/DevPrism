@@ -702,7 +702,8 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
 
     const importedPaths: string[] = [];
     for (const sourcePath of sourcePaths) {
-      const fileName = sourcePath.split("/").pop() || sourcePath;
+      // Handle both Unix (/) and Windows (\) path separators
+      const fileName = sourcePath.split(/[/\\]/).pop() || sourcePath;
       const targetName = targetFolder ? `${targetFolder}/${fileName}` : fileName;
       // copyFileToProject returns the actual (possibly deduplicated) relative path
       const actualName = await copyFileToProject(state.projectRoot, sourcePath, targetName);

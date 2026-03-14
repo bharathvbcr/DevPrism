@@ -70,7 +70,11 @@ fn open_in_editor(
         .find(|e| e.id == editor_id)
         .ok_or_else(|| format!("Unknown editor: {}", editor_id))?;
 
-    let mut cmd = std::process::Command::new(editor.cli);
+    // On macOS, GUI apps don't inherit the shell's PATH, so CLI tools like
+    // "code", "cursor", etc. won't be found. Use the login shell to resolve them.
+    let cli_path = resolve_editor_cli(editor.cli)?;
+
+    let mut cmd = std::process::Command::new(&cli_path);
 
     // Open the project folder
     cmd.arg(&project_path);
@@ -88,6 +92,33 @@ fn open_in_editor(
 
     cmd.spawn().map_err(|e| format!("Failed to open {}: {}", editor.name, e))?;
     Ok(())
+}
+
+/// Resolve an editor CLI command to its full path.
+/// On macOS, GUI apps lack the user's shell PATH, so we ask the login shell.
+fn resolve_editor_cli(cli: &str) -> Result<String, String> {
+    // First try the inherited PATH (works when launched from terminal)
+    if let Ok(path) = which::which(cli) {
+        return Ok(path.to_string_lossy().into_owned());
+    }
+
+    // On macOS, ask the login shell for the full PATH
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("/bin/zsh")
+            .args(["-l", "-c", &format!("which {}", cli)])
+            .output()
+            .map_err(|e| format!("Failed to resolve {}: {}", cli, e))?;
+        if output.status.success() {
+            let resolved = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !resolved.is_empty() && Path::new(&resolved).exists() {
+                return Ok(resolved);
+            }
+        }
+    }
+
+    // Fallback: return bare name and hope for the best
+    Ok(cli.to_string())
 }
 
 #[cfg(target_os = "macos")]

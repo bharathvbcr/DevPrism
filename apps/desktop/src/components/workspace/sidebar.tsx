@@ -452,8 +452,12 @@ export function Sidebar() {
       setNameError("A file or folder with this name already exists");
       return;
     }
-    const type = name.endsWith(".tex") || name.endsWith(".ltx") || name.endsWith(".bib") || name.endsWith(".sty") || name.endsWith(".cls") ? "tex" : "image";
-    createNewFile(name, type, addDialogFolder);
+    // Auto-append .tex if no extension provided
+    const finalName = /\.\w+$/.test(name) ? name : `${name}.tex`;
+    const lower = finalName.toLowerCase();
+    const type: "tex" | "image" =
+      /\.(png|jpg|jpeg|gif|svg|bmp|webp)$/.test(lower) ? "image" : "tex";
+    createNewFile(finalName, type, addDialogFolder);
     setNewFileName("");
     setNameError("");
     setAddDialogOpen(false);

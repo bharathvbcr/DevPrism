@@ -632,7 +632,7 @@ export function PdfPreview() {
 
   return (
     <div ref={previewContainerRef} className="relative flex h-full flex-col bg-muted/50">
-      <div className="flex items-center border-border border-b bg-background px-2 pt-[var(--titlebar-height)] h-[calc(40px+var(--titlebar-height))]">
+      <div className="flex items-center overflow-hidden border-border border-b bg-background px-2 pt-[var(--titlebar-height)] h-[calc(40px+var(--titlebar-height))]">
         <div className="flex items-center gap-1">
           {isSaving && (
             <div className="flex items-center gap-1.5 rounded-md bg-muted/50 px-2 py-1">
@@ -660,10 +660,10 @@ export function PdfPreview() {
           )}
         </div>
         <div data-tauri-drag-region className="flex-1 self-stretch" />
-        <div className="flex items-center gap-1">
+        <div className="flex shrink-0 items-center gap-1">
           {pdfData && (
             <>
-              <Button variant="ghost" size="icon" className="size-7" onClick={() => goToPage(currentPage - 1)} disabled={currentPage <= 1} title="Page Up">
+              <Button variant="ghost" size="icon" className="size-7 shrink-0" onClick={() => goToPage(currentPage - 1)} disabled={currentPage <= 1} title="Page Up">
                 <ChevronUpIcon className="size-3.5" />
               </Button>
               {isEditingPage ? (
@@ -671,7 +671,7 @@ export function PdfPreview() {
                   autoFocus
                   type="text"
                   inputMode="numeric"
-                  className="h-6 w-8 rounded border border-border bg-background text-center text-xs text-foreground outline-none focus:ring-1 focus:ring-ring"
+                  className="h-6 w-8 shrink-0 rounded border border-border bg-background text-center text-xs text-foreground outline-none focus:ring-1 focus:ring-ring"
                   value={pageInputValue}
                   onChange={(e) => setPageInputValue(e.target.value)}
                   onBlur={handlePageInputCommit}
@@ -685,14 +685,14 @@ export function PdfPreview() {
                 />
               ) : (
                 <button
-                  className="flex h-6 min-w-[2rem] items-center justify-center rounded px-1 text-xs text-muted-foreground tabular-nums hover:bg-muted"
+                  className="flex h-6 min-w-[2rem] shrink-0 items-center justify-center rounded px-1 text-xs text-muted-foreground tabular-nums hover:bg-muted"
                   onClick={() => { setIsEditingPage(true); setPageInputValue(String(currentPage)); }}
                   title="Click to jump to page"
                 >
                   {currentPage}
                 </button>
               )}
-              <span className="text-muted-foreground text-xs">/ {numPages}</span>
+              <span className="shrink-0 whitespace-nowrap text-muted-foreground text-xs">/ {numPages}</span>
               <Button variant="ghost" size="icon" className="size-7" onClick={() => goToPage(currentPage + 1)} disabled={currentPage >= numPages} title="Page Down">
                 <ChevronDownIcon className="size-3.5" />
               </Button>

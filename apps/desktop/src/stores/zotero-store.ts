@@ -385,6 +385,11 @@ export const useZoteroStore = create<ZoteroState>()(
         username: state.username,
         syncedCollections: state.syncedCollections,
       }),
+      onRehydrateStorage: () => (state) => {
+        if (state?.apiKey) {
+          state.isAuthenticated = true;
+        }
+      },
     },
   ),
 );

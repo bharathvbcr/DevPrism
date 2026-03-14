@@ -145,7 +145,7 @@ export function ClaudeChatDrawer() {
         {/* Header with drag handle, tab bar, and session selector */}
         {isExpanded ? (
           <>
-            <div className="flex items-center justify-end border-b border-border px-2 py-1">
+            <div className="flex items-center justify-start border-b border-border px-2 py-1">
               <button
                 type="button"
                 onClick={() => setIsExpanded(false)}
@@ -172,7 +172,7 @@ export function ClaudeChatDrawer() {
                 <div className="h-1 w-10 rounded-full bg-muted-foreground/30 transition-all group-hover:w-8" />
                 <ChevronDownIcon className="size-4 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
               </div>
-              <div className="absolute top-1/2 right-2 flex -translate-y-1/2 items-center gap-1">
+              <div className="absolute top-1/2 left-2 flex -translate-y-1/2 items-center gap-1">
                 <button
                   type="button"
                   onClick={() => setIsExpanded(true)}

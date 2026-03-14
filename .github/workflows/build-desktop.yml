@@ -1,4 +1,4 @@
-name: Build Desktop
+name: Build Windows
 
 on:
   workflow_dispatch:
@@ -10,22 +10,8 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: windows-latest
-            target: x86_64-pc-windows-msvc
-            label: windows
-          - platform: macos-latest
-            target: aarch64-apple-darwin
-            label: macos-arm64
-          - platform: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            label: linux-x64
-
-    runs-on: ${{ matrix.platform }}
+  build-windows:
+    runs-on: windows-latest
 
     steps:
       - name: Checkout
@@ -33,61 +19,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install Linux dependencies
-        if: matrix.label == 'linux-x64'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
-            libfontconfig-dev libfreetype-dev libicu-dev libgraphite2-dev libharfbuzz-dev
-
-      - name: Restore vcpkg cache (macOS)
-        if: contains(matrix.label, 'macos')
-        id: vcpkg-cache-mac
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/vcpkg
-          key: vcpkg-macos-arm64-v2
-
-      - name: Setup vcpkg (macOS)
-        if: contains(matrix.label, 'macos') && steps.vcpkg-cache-mac.outputs.cache-hit != 'true'
-        shell: bash
-        run: |
-          git clone --depth 1 https://github.com/microsoft/vcpkg.git ~/vcpkg
-          ~/vcpkg/bootstrap-vcpkg.sh -disableMetrics
-
-      - name: Install macOS dependencies (vcpkg)
-        if: contains(matrix.label, 'macos') && steps.vcpkg-cache-mac.outputs.cache-hit != 'true'
-        shell: bash
-        env:
-          VCPKG_ROOT: ~/vcpkg
-          VCPKG_BINARY_SOURCES: "clear"
-        run: |
-          ~/vcpkg/vcpkg install "harfbuzz[graphite2]:arm64-osx" \
-            freetype:arm64-osx \
-            icu:arm64-osx
-
-      - name: Save vcpkg cache (macOS)
-        if: contains(matrix.label, 'macos') && steps.vcpkg-cache-mac.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: ~/vcpkg
-          key: vcpkg-macos-arm64-v2
-
-      - name: Set macOS build environment
-        if: contains(matrix.label, 'macos')
-        run: |
-          echo "TECTONIC_DEP_BACKEND=vcpkg" >> $GITHUB_ENV
-          echo "VCPKG_ROOT=$HOME/vcpkg" >> $GITHUB_ENV
-          echo "CXXFLAGS=-std=c++17" >> $GITHUB_ENV
-          echo "CFLAGS=" >> $GITHUB_ENV
-
       - name: Set vcpkg path
-        if: matrix.label == 'windows'
         shell: bash
         run: echo "VCPKG_INSTALLED=$VCPKG_INSTALLATION_ROOT/installed" >> $GITHUB_ENV
 
       - name: Restore vcpkg cache
-        if: matrix.label == 'windows'
         id: vcpkg-cache
         uses: actions/cache/restore@v4
         with:
@@ -95,7 +31,7 @@ jobs:
           key: vcpkg-win-v2
 
       - name: Install Windows dependencies (vcpkg)
-        if: matrix.label == 'windows' && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
         shell: bash
         env:
           VCPKG_BINARY_SOURCES: "clear"
@@ -106,14 +42,13 @@ jobs:
             icu:x64-windows-static-release
 
       - name: Save vcpkg cache
-        if: matrix.label == 'windows' && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: ${{ env.VCPKG_INSTALLED }}
           key: vcpkg-win-v2
 
       - name: Set Windows build environment
-        if: matrix.label == 'windows'
         shell: bash
         run: |
           echo "TECTONIC_DEP_BACKEND=vcpkg" >> $GITHUB_ENV
@@ -121,27 +56,13 @@ jobs:
           echo "VCPKGRS_TRIPLET=x64-windows-static-release" >> $GITHUB_ENV
           echo "VCPKG_DEFAULT_HOST_TRIPLET=x64-windows-static-release" >> $GITHUB_ENV
           echo "RUSTFLAGS=-Ctarget-feature=+crt-static" >> $GITHUB_ENV
-          # Override macOS-specific paths from .cargo/config.toml; ICU 78+ requires C++17
           echo "CXXFLAGS=/std:c++17" >> $GITHUB_ENV
           echo "CFLAGS=" >> $GITHUB_ENV
-
-      - name: Check Apple signing secrets
-        id: signing
-        if: contains(matrix.label, 'macos')
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-        run: |
-          if [ -z "$APPLE_CERTIFICATE" ]; then
-            echo "::warning::Apple signing certificate not configured. Building without signing."
-            echo "available=false" >> $GITHUB_OUTPUT
-          else
-            echo "available=true" >> $GITHUB_OUTPUT
-          fi
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: x86_64-pc-windows-msvc
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
@@ -165,18 +86,12 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APPLE_CERTIFICATE: ${{ steps.signing.outputs.available == 'true' && secrets.APPLE_CERTIFICATE || '' }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ steps.signing.outputs.available == 'true' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
-          APPLE_SIGNING_IDENTITY: ${{ steps.signing.outputs.available == 'true' && secrets.APPLE_SIGNING_IDENTITY || '' }}
-          APPLE_ID: ${{ steps.signing.outputs.available == 'true' && secrets.APPLE_ID || '' }}
-          APPLE_PASSWORD: ${{ steps.signing.outputs.available == 'true' && secrets.APPLE_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ steps.signing.outputs.available == 'true' && secrets.APPLE_TEAM_ID || '' }}
           ZOTERO_CONSUMER_KEY: ${{ secrets.ZOTERO_CONSUMER_KEY }}
           ZOTERO_CONSUMER_SECRET: ${{ secrets.ZOTERO_CONSUMER_SECRET }}
         with:
           projectPath: apps/desktop
           tauriScript: pnpm tauri
-          args: --target ${{ matrix.target }} ${{ contains(matrix.label, 'macos') && steps.signing.outputs.available != 'true' && '--no-sign' || '' }} ${{ contains(matrix.label, 'macos') && steps.signing.outputs.available == 'true' && '--skip-stapling' || '' }}
+          args: --target x86_64-pc-windows-msvc
           tagName: ${{ github.ref_name }}
           releaseName: "ClaudePrism ${{ github.ref_name }}"
           releaseDraft: false
@@ -187,129 +102,19 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APPLE_CERTIFICATE: ${{ steps.signing.outputs.available == 'true' && secrets.APPLE_CERTIFICATE || '' }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ steps.signing.outputs.available == 'true' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
-          APPLE_SIGNING_IDENTITY: ${{ steps.signing.outputs.available == 'true' && secrets.APPLE_SIGNING_IDENTITY || '' }}
-          APPLE_ID: ${{ steps.signing.outputs.available == 'true' && secrets.APPLE_ID || '' }}
-          APPLE_PASSWORD: ${{ steps.signing.outputs.available == 'true' && secrets.APPLE_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ steps.signing.outputs.available == 'true' && secrets.APPLE_TEAM_ID || '' }}
           ZOTERO_CONSUMER_KEY: ${{ secrets.ZOTERO_CONSUMER_KEY }}
           ZOTERO_CONSUMER_SECRET: ${{ secrets.ZOTERO_CONSUMER_SECRET }}
         with:
           projectPath: apps/desktop
           tauriScript: pnpm tauri
-          args: --target ${{ matrix.target }} ${{ contains(matrix.label, 'macos') && steps.signing.outputs.available != 'true' && '--no-sign' || '' }} ${{ contains(matrix.label, 'macos') && steps.signing.outputs.available == 'true' && '--skip-stapling' || '' }}
-
-      # Tauri only notarizes .app (as zip), not .dmg (known issue: tauri-apps/tauri#7533).
-      # We notarize the DMG ourselves — this covers the .app inside it too.
-      - name: Notarize and staple DMG
-        if: contains(matrix.label, 'macos') && steps.signing.outputs.available == 'true'
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          DMG_PATH=$(find apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/dmg -name '*.dmg' | head -1)
-          APP_PATH="apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/ClaudePrism.app"
-
-          if [ -z "$DMG_PATH" ]; then
-            echo "::error::DMG not found"
-            exit 1
-          fi
-
-          echo "Notarizing $DMG_PATH ..."
-          xcrun notarytool submit "$DMG_PATH" \
-            --apple-id "$APPLE_ID" \
-            --team-id "$APPLE_TEAM_ID" \
-            --password "$APPLE_PASSWORD" \
-            --wait --timeout 30m
-
-          echo "Stapling DMG..."
-          xcrun stapler staple "$DMG_PATH"
-
-          echo "Stapling app..."
-          xcrun stapler staple "$APP_PATH"
-
-          echo "Done! DMG is notarized and stapled."
-
-      - name: Verify no Homebrew dependencies (macOS)
-        if: contains(matrix.label, 'macos')
-        run: |
-          BINARY="apps/desktop/src-tauri/target/${{ matrix.target }}/release/claude-prism-desktop"
-          if otool -L "$BINARY" | grep -q '/opt/homebrew\|/usr/local'; then
-            echo "::error::Binary has Homebrew dynamic dependencies!"
-            otool -L "$BINARY" | grep '/opt/homebrew\|/usr/local'
-            exit 1
-          fi
-          echo "No Homebrew dependencies found."
+          args: --target x86_64-pc-windows-msvc
 
       - name: Upload artifacts (manual builds)
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         uses: actions/upload-artifact@v4
         with:
-          name: desktop-${{ matrix.label }}
+          name: desktop-windows
           path: |
-            apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.exe
-            apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.msi
-            apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.dmg
-            apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.app.tar.gz*
-            apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.deb
-            apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.AppImage*
+            apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/**/*.exe
+            apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/**/*.msi
           if-no-files-found: warn
-
-  update-release:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Update release notes with auto-generated changelog
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # gh release edit doesn't support --generate-notes, so use the API
-          PREV_TAG=$(git tag --sort=-v:refname | grep '^v' | sed -n '2p' || true)
-          API_BODY='{"tag_name":"'"$GITHUB_REF_NAME"'"}'
-          if [ -n "$PREV_TAG" ]; then
-            API_BODY='{"tag_name":"'"$GITHUB_REF_NAME"'","previous_tag_name":"'"$PREV_TAG"'"}'
-          fi
-          NOTES=$(echo "$API_BODY" | gh api repos/${{ github.repository }}/releases/generate-notes \
-            --method POST --input - --jq '.body')
-          gh release edit "$GITHUB_REF_NAME" \
-            --repo "${{ github.repository }}" \
-            --notes "$NOTES"
-
-      - name: Update Homebrew Cask
-        env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        run: |
-          TAG="${GITHUB_REF_NAME}"
-          VERSION="${TAG#v}"
-          TAP_REPO="delibae/homebrew-claude-prism"
-          CASK_PATH="Casks/claude-prism.rb"
-
-          gh release download "$TAG" \
-            --repo "${{ github.repository }}" \
-            --pattern "*.dmg" \
-            --dir /tmp/dmg
-
-          SHA_ARM64=$(sha256sum /tmp/dmg/ClaudePrism_${VERSION}_aarch64.dmg | awk '{print $1}')
-          echo "ARM64 SHA256: $SHA_ARM64"
-
-          # Fetch current cask file, update version and sha256, push back
-          gh api "repos/${TAP_REPO}/contents/${CASK_PATH}" --jq '.content' | base64 -d > /tmp/cask.rb
-          FILE_SHA=$(gh api "repos/${TAP_REPO}/contents/${CASK_PATH}" --jq '.sha')
-
-          sed -i "s/version \".*\"/version \"${VERSION}\"/" /tmp/cask.rb
-          sed -i "s/sha256 \".*\"/sha256 \"${SHA_ARM64}\"/" /tmp/cask.rb
-
-          gh api -X PUT "repos/${TAP_REPO}/contents/${CASK_PATH}" \
-            -f message="chore: update cask to v${VERSION}" \
-            -f content="$(base64 -w0 /tmp/cask.rb)" \
-            -f sha="$FILE_SHA"

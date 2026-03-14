@@ -155,10 +155,14 @@ export function LatexEditor() {
     setContent(change.newContent);
     useProposedChangesStore.getState().keepChange(change.id);
     pendingChangeRef.current = null;
-    // Auto-navigate to next file with pending changes
+    // Auto-navigate to next file with pending changes (only if file exists)
     const remaining = useProposedChangesStore.getState().changes;
     if (remaining.length > 0) {
-      useDocumentStore.getState().setActiveFile(remaining[0].filePath);
+      const docStore = useDocumentStore.getState();
+      const nextFile = remaining.find((c) => docStore.files.some((f) => f.relativePath === c.filePath));
+      if (nextFile) {
+        docStore.setActiveFile(nextFile.filePath);
+      }
     }
   };
 
@@ -177,10 +181,14 @@ export function LatexEditor() {
     setContent(change.oldContent);
     useProposedChangesStore.getState().undoChange(change.id);
     pendingChangeRef.current = null;
-    // Auto-navigate to next file with pending changes
+    // Auto-navigate to next file with pending changes (only if file exists)
     const remaining = useProposedChangesStore.getState().changes;
     if (remaining.length > 0) {
-      useDocumentStore.getState().setActiveFile(remaining[0].filePath);
+      const docStore = useDocumentStore.getState();
+      const nextFile = remaining.find((c) => docStore.files.some((f) => f.relativePath === c.filePath));
+      if (nextFile) {
+        docStore.setActiveFile(nextFile.filePath);
+      }
     }
   };
 
@@ -293,7 +301,7 @@ export function LatexEditor() {
     const { contentGeneration, lastCompiledGenerations, files: allFiles } = state;
     const resolved = resolveCompileTarget(activeFile.id, allFiles);
     if (!resolved) {
-      setCompileError("No .tex file found in this project. Create a document.tex or main.tex file to compile.", activeFile.id);
+      setCompileError("No .tex file found in this project. Create a main.tex file to compile.", activeFile.id);
       return;
     }
     const { rootId, targetPath } = resolved;
@@ -477,7 +485,7 @@ export function LatexEditor() {
                     const line = v.state.doc.lineAt(from);
                     const docState = useDocumentStore.getState();
                     const file = docState.files.find((f) => f.id === docState.activeFileId);
-                    const fileName = file?.relativePath ?? "document.tex";
+                    const fileName = file?.relativePath ?? "main.tex";
                     const ctx = `[Lint error in ${fileName}:${line.number}]\n[Error: ${d.message}]`;
                     useClaudeChatStore.getState().sendPrompt(`${ctx}\n\nFix this lint error.`);
                   },
@@ -923,7 +931,7 @@ export function LatexEditor() {
       {!isPdf && !isImage && !isLargeFileNotLoaded && diagnostics.length > 0 && (
         <ProblemsPanel
           diagnostics={diagnostics}
-          fileName={activeFile?.relativePath ?? "document.tex"}
+          fileName={activeFile?.relativePath ?? "main.tex"}
           onNavigate={(from) => {
             const view = viewRef.current;
             if (!view) return;
@@ -934,12 +942,12 @@ export function LatexEditor() {
             view.focus();
           }}
           onFixWithChat={(message, line) => {
-            const fileName = activeFile?.relativePath ?? "document.tex";
+            const fileName = activeFile?.relativePath ?? "main.tex";
             const ctx = `[Lint error in ${fileName}:${line}]\n[Error: ${message}]`;
             useClaudeChatStore.getState().sendPrompt(`${ctx}\n\nFix this lint error.`);
           }}
           onFixAllWithChat={() => {
-            const fileName = activeFile?.relativePath ?? "document.tex";
+            const fileName = activeFile?.relativePath ?? "main.tex";
             const errorList = diagnostics
               .map((d) => `- ${fileName}:${d.line} — ${d.message}`)
               .join("\n");

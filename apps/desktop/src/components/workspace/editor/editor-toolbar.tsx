@@ -69,7 +69,7 @@ export function EditorToolbar({
 }: EditorToolbarProps) {
   const fileName = useDocumentStore((s) => {
     const activeFile = s.files.find((f) => f.id === s.activeFileId);
-    return activeFile?.name ?? "document.tex";
+    return activeFile?.name ?? "main.tex";
   });
   const activeFilePath = useDocumentStore((s) => {
     const activeFile = s.files.find((f) => f.id === s.activeFileId);

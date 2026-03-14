@@ -871,7 +871,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
 
   get fileName() {
     const activeFile = getActiveFile(get());
-    return activeFile?.name ?? "document.tex";
+    return activeFile?.name ?? "main.tex";
   },
 
   get content() {

@@ -13,7 +13,7 @@ export function resolveCompileTarget(
     return { rootId, targetPath: rootEntry.relativePath };
   }
   // Fallback: look for any well-known root tex file
-  const fallback = files.find((f) => f.name === "document.tex" || f.name === "main.tex");
+  const fallback = files.find((f) => f.name === "main.tex" || f.name === "document.tex");
   if (fallback) {
     return { rootId: fallback.id, targetPath: fallback.relativePath };
   }
@@ -37,7 +37,7 @@ export function formatCompileError(error: unknown): string {
 
 export async function compileLatex(
   projectDir: string,
-  mainFile: string = "document.tex",
+  mainFile: string = "main.tex",
 ): Promise<Uint8Array> {
   // compile_latex returns raw PDF bytes via Tauri IPC Response
   const buffer = await invoke<ArrayBuffer>("compile_latex", {

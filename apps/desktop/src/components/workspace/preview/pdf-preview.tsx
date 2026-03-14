@@ -335,7 +335,7 @@ export function PdfPreview() {
         const { files: allFiles, activeFileId } = useDocumentStore.getState();
         const resolved = resolveCompileTarget(activeFileId, allFiles);
         if (!resolved) {
-          setCompileError("No .tex file found in this project. Create a document.tex or main.tex file to compile.");
+          setCompileError("No .tex file found in this project. Create a main.tex file to compile.");
           return;
         }
         const { rootId, targetPath } = resolved;
@@ -369,7 +369,7 @@ export function PdfPreview() {
   const handleExport = async () => {
     const currentPdf = getCurrentPdfBytes();
     if (!currentPdf) return;
-    const mainFile = files.find((f) => f.name === "document.tex" || f.name === "main.tex");
+    const mainFile = files.find((f) => f.name === "main.tex" || f.name === "document.tex");
     const defaultName = mainFile
       ? mainFile.name.replace(/\.tex$/, ".pdf")
       : "document.pdf";
@@ -423,7 +423,7 @@ export function PdfPreview() {
     if (!activeEntry || activeEntry.type !== "tex") return;
     const resolved = resolveCompileTarget(activeFileId, allFiles);
     if (!resolved) {
-      setCompileError("No .tex file found in this project. Create a document.tex or main.tex file to compile.");
+      setCompileError("No .tex file found in this project. Create a main.tex file to compile.");
       return;
     }
     const { rootId, targetPath: targetFile } = resolved;

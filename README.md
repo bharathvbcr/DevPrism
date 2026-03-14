@@ -19,10 +19,10 @@
 </p>
 
 <p align="center">
-  <a href="https://claude-prism-landing.delibae.workers.dev">Website</a> ·
-  <a href="https://github.com/delibae/claude-prism/releases/latest/download/ClaudePrism_aarch64.dmg">macOS</a> ·
-  <a href="https://github.com/delibae/claude-prism/releases/latest/download/ClaudePrism_x64-setup.msi">Windows</a> ·
-  <a href="https://github.com/delibae/claude-prism/releases/latest/download/ClaudePrism_amd64.deb">Linux</a> ·
+  <a href="https://claudeprism.delibae.dev?utm_source=github&utm_medium=readme&utm_campaign=launch_v054">Website</a> ·
+  <a href="https://github.com/delibae/claude-prism/releases/latest/download/ClaudePrism_1.0.0_aarch64.dmg">macOS</a> ·
+  <a href="https://github.com/delibae/claude-prism/releases/latest/download/ClaudePrism_1.0.0_x64-setup.exe">Windows</a> ·
+  <a href="https://github.com/delibae/claude-prism/releases/latest/download/ClaudePrism_1.0.0_amd64.deb">Linux</a> ·
   <a href="https://github.com/delibae/claude-prism/releases">All Releases</a>
 </p>
 

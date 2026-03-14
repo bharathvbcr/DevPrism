@@ -27,6 +27,11 @@ coverage
 out/
 build
 dist
+tsconfig.tsbuildinfo
+*.tsbuildinfo
+
+# Rust
+Cargo.lock
 
 # Debug
 npm-debug.log*

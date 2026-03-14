@@ -8,8 +8,7 @@ TAG="v${VERSION}"
 echo "==> Building ClaudePrism $TAG for Linux ($TARGET)"
 
 # Build
-export TECTONIC_DEP_BACKEND=vcpkg
-export VCPKG_ROOT="${VCPKG_ROOT:-$HOME/vcpkg}"
+export TECTONIC_DEP_BACKEND=pkg-config
 export CXXFLAGS="-std=c++17"
 export CFLAGS=""
 

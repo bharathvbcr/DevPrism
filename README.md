@@ -10,10 +10,16 @@
 </p>
 
 <p align="center">
+  <a href="./README.md">English</a> ·
+  <a href="./README.zh-CN.md">简体中文</a>
+</p>
+
+<p align="center">
   <img src="./assets/demo.png" alt="ClaudePrism Demo" width="800" />
 </p>
 
 <p align="center">
+  <a href="https://claude-prism-landing.delibae.workers.dev">Website</a> ·
   <a href="https://github.com/delibae/claude-prism/releases/latest/download/ClaudePrism_aarch64.dmg">macOS</a> ·
   <a href="https://github.com/delibae/claude-prism/releases/latest/download/ClaudePrism_x64-setup.msi">Windows</a> ·
   <a href="https://github.com/delibae/claude-prism/releases/latest/download/ClaudePrism_amd64.deb">Linux</a> ·
@@ -117,101 +123,11 @@ CodeMirror 6 with LaTeX/BibTeX syntax highlighting, real-time error linting, fin
 
 ## Installation
 
-### macOS (Homebrew)
-
-```bash
-brew tap delibae/claude-prism
-brew install --cask claude-prism
-```
-
-### macOS / Windows / Linux
-
 Download the latest build from [GitHub Releases](https://github.com/delibae/claude-prism/releases).
-
----
-
-## Development
-
-### Prerequisites
-
-- [Node.js](https://nodejs.org/) 22+
-- [pnpm](https://pnpm.io/) 10+
-- [Rust](https://rustup.rs/) (stable)
-- Platform-specific native dependencies (required by [Tectonic](https://tectonic-typesetting.github.io/)):
-  - **macOS:** `brew install icu4c harfbuzz pkg-config`
-  - **Linux:** `apt install libicu-dev libgraphite2-dev libharfbuzz-dev libfreetype-dev libfontconfig-dev libwebkit2gtk-4.1-dev libappindicator3-dev`
-  - **Windows:** See [Windows Setup](#windows-setup) below
-
-### Setup
-
-```bash
-git clone https://github.com/delibae/claude-prism.git
-cd claude-prism
-pnpm install
-```
-
-### Windows Setup
-
-Windows requires [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) (C++ workload) and [vcpkg](https://github.com/microsoft/vcpkg) for native dependencies. Run the following in **PowerShell**:
-
-```powershell
-# 1. Install Visual Studio Build Tools (if not already installed)
-winget install Microsoft.VisualStudio.2022.BuildTools --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
-
-# 2. Install vcpkg
-git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
-C:\vcpkg\bootstrap-vcpkg.bat
-
-# 3. Set environment variables (persistent)
-[Environment]::SetEnvironmentVariable("VCPKG_ROOT", "C:\vcpkg", "User")
-$path = [Environment]::GetEnvironmentVariable("PATH", "User")
-[Environment]::SetEnvironmentVariable("PATH", "$path;C:\vcpkg", "User")
-[Environment]::SetEnvironmentVariable("TECTONIC_DEP_BACKEND", "vcpkg", "User")
-[Environment]::SetEnvironmentVariable("CXXFLAGS", "/std:c++17", "User")
-
-# 4. Restart PowerShell, then install native libraries (use x64-windows-static-md triplet)
-vcpkg install harfbuzz[graphite2]:x64-windows-static-md freetype:x64-windows-static-md icu:x64-windows-static-md fontconfig:x64-windows-static-md
-
-# 5. Build and run
-cd claude-prism
-pnpm install
-pnpm dev:desktop
-```
-
-> **Note:** Step 4 may take 10–20 minutes on first run (building ICU, HarfBuzz, etc.).
-
-### Run
-
-```bash
-pnpm dev:desktop
-```
-
-### Build
-
-```bash
-pnpm build:desktop
-```
-
-### Test
-
-```bash
-# Frontend (Vitest)
-cd apps/desktop && pnpm test
-
-# Rust
-cd apps/desktop/src-tauri && cargo test
-```
-
-### Lint
-
-```bash
-pnpm lint          # check
-pnpm lint:fix      # auto-fix
-```
 
 ## Contributing
 
-Contributions are welcome! Please use [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`, `chore:`).
+Contributions are welcome! See [CONTRIBUTING.md](./CONTRIBUTING.md) for development setup, testing, and guidelines.
 
 ## Acknowledgments
 

@@ -10,9 +10,14 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/delibae/claude-prism/releases">Releases</a> ·
-  <a href="#installation">Install</a> ·
-  <a href="#development">Development</a>
+  <img src="./assets/demo.png" alt="ClaudePrism Demo" width="800" />
+</p>
+
+<p align="center">
+  <a href="https://github.com/delibae/claude-prism/releases/latest/download/ClaudePrism_aarch64.dmg">macOS</a> ·
+  <a href="https://github.com/delibae/claude-prism/releases/latest/download/ClaudePrism_x64-setup.msi">Windows</a> ·
+  <a href="https://github.com/delibae/claude-prism/releases/latest/download/ClaudePrism_amd64.deb">Linux</a> ·
+  <a href="https://github.com/delibae/claude-prism/releases">All Releases</a>
 </p>
 
 ---
@@ -121,14 +126,7 @@ brew install --cask claude-prism
 
 ### macOS / Windows / Linux
 
-Download the latest build from [GitHub Releases](https://github.com/delibae/claude-prism/releases):
-
-| Platform | File | Install |
-|:--------:|:----:|:--------|
-| **macOS** (Apple Silicon) | `.dmg` | Open → drag to Applications |
-| **Windows** (x64) | `.msi` / `.exe` | Run the installer |
-| **Linux** (x64) | `.AppImage` | `chmod +x` and run |
-| **Linux** (x64) | `.deb` | `sudo dpkg -i claude-prism_*.deb` |
+Download the latest build from [GitHub Releases](https://github.com/delibae/claude-prism/releases).
 
 ---
 

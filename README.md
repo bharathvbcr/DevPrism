@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <img src="./assets/demo.png" alt="ClaudePrism Demo" width="800" />
+  <img src="./assets/demo/main.webp" alt="ClaudePrism Demo" width="800" />
 </p>
 
 <p align="center">
@@ -85,6 +85,10 @@ ClaudePrism invokes **Claude Code** as a local subprocess. Your documents stay o
 ### Python Environment (uv)
 ClaudePrism integrates [uv](https://docs.astral.sh/uv/) — the fast Python package manager — directly into the app. One click to install uv, one click to create a project-level virtual environment. Claude Code automatically uses the `.venv` when running Python code, so you can generate plots, run analysis scripts, and process data without leaving the editor.
 
+<p align="center">
+  <img src="./assets/demo/python.webp" alt="Python Environment" width="600" />
+</p>
+
 ### 100+ Scientific Skills
 Browse and install domain-specific skills from [K-Dense Scientific Skills](https://github.com/K-Dense-AI/claude-scientific-skills) — curated prompts and tool configurations that give Claude deep knowledge in specialized fields:
 
@@ -101,23 +105,40 @@ Browse and install domain-specific skills from [K-Dense Scientific Skills](https
 
 Skills are installed globally (`~/.claude/skills/`) or per-project, and Claude automatically loads them when relevant.
 
+<p align="center">
+  <img src="./assets/demo/scientific.webp" alt="Scientific Skills" width="700" />
+</p>
+
 ### Quick Start with Templates & Project Wizard
 Pick a template (paper, thesis, presentation, poster, letter, etc.), give it a name, optionally describe what you're writing — ClaudePrism sets up the project and generates initial content with AI. Drag & drop reference files (PDF, BIB, images) and start writing immediately.
+
+<p align="center">
+  <img src="./assets/demo/starter.webp" alt="Template Gallery & Project Wizard" width="700" />
+</p>
 
 ### Claude AI Assistant
 Chat with Claude directly in the editor. Select between Sonnet, Opus, Haiku models with adjustable reasoning effort levels. Persistent sessions, tool use (file edit, bash, search), and extensible slash commands.
 
-### Proposed Changes Review
-When Claude suggests edits, changes appear in a dedicated panel with visual diffs. Accept or reject per chunk, or apply/undo all at once (`⌘Y` / `⌘N`). Your original content is always preserved until you decide.
+<p align="center">
+  <img src="./assets/demo/claudecommand.webp" alt="Claude AI Assistant & Slash Commands" width="600" />
+</p>
 
-### Git-Based History
-Every save creates a snapshot in a local Git repository (`.claudeprism/history.git/`). Label important checkpoints, browse diffs between any two snapshots, and restore previous versions — all without leaving the app.
+### History & Proposed Changes
+Every save creates a snapshot in a local Git repository (`.claudeprism/history.git/`). Label important checkpoints, browse diffs between any two snapshots, and restore previous versions. When Claude suggests edits, changes appear in a dedicated panel with visual diffs — accept or reject per chunk, or apply/undo all at once (`⌘Y` / `⌘N`).
+
+<p align="center">
+  <img src="./assets/demo/history.webp" alt="History & Proposed Changes" width="700" />
+</p>
 
 ### Offline LaTeX Compilation
 Tectonic is embedded directly in the app. Packages are downloaded once on first use and cached locally. After that, compilation works fully offline with no TeX Live installation required.
 
 ### Capture & Ask
 Press `⌘X` to enter capture mode, drag to select any region in the PDF — the captured image is pinned to the chat composer so you can immediately ask Claude about it. Great for asking about equations, figures, tables, or reviewer comments.
+
+<p align="center">
+  <img src="./assets/demo/capture_ask.webp" alt="Capture & Ask" width="700" />
+</p>
 
 ### Live PDF Preview
 Native MuPDF rendering with SyncTeX support — click a position in the PDF to jump to the corresponding source line. Supports zoom, text selection, and capture.
@@ -127,6 +148,11 @@ CodeMirror 6 with LaTeX/BibTeX syntax highlighting, real-time error linting, fin
 
 ### More
 - **Zotero Integration** — OAuth-based bibliography management and citation insertion.
+
+<p align="center">
+  <img src="./assets/demo/zotero.webp" alt="Zotero Integration" width="300" />
+</p>
+
 - **Slash Commands** — Built-in (`/review`, `/init`) + custom commands from `.claude/commands/`.
 - **External Editors** — Open projects in Cursor, VS Code, Zed, or Sublime Text.
 - **Dark / Light Theme** — Automatic switching.

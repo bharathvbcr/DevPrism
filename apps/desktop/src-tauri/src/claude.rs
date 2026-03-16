@@ -131,7 +131,11 @@ fn find_claude_binary() -> Result<String, String> {
         #[cfg(target_os = "windows")]
         let user_paths = vec![
             home.join(".claude").join("local").join("claude.exe"),
-            home.join("AppData").join("Local").join("Programs").join("claude").join("claude.exe"),
+            home.join("AppData")
+                .join("Local")
+                .join("Programs")
+                .join("claude")
+                .join("claude.exe"),
         ];
 
         for path in &user_paths {
@@ -202,7 +206,10 @@ fn strip_ansi(s: &str) -> Cow<'_, str> {
 /// Returns a borrowed reference when no nul bytes are present (zero-alloc fast path).
 fn strip_nul(s: &str) -> Cow<'_, str> {
     if s.contains('\0') {
-        eprintln!("[claude-spawn] stripped {} nul byte(s) from input", s.matches('\0').count());
+        eprintln!(
+            "[claude-spawn] stripped {} nul byte(s) from input",
+            s.matches('\0').count()
+        );
         Cow::Owned(s.replace('\0', ""))
     } else {
         Cow::Borrowed(s)
@@ -220,7 +227,9 @@ fn resolve_cmd_to_node(program: &str) -> (String, Vec<String>) {
     }
     // Try to find the JS entry point next to the .cmd file
     // npm .cmd wrappers invoke: node "<dir>\node_modules\<pkg>\cli.js" %*
-    let cmd_dir = std::path::Path::new(program).parent().unwrap_or(std::path::Path::new("."));
+    let cmd_dir = std::path::Path::new(program)
+        .parent()
+        .unwrap_or(std::path::Path::new("."));
     let cli_js = cmd_dir
         .join("node_modules")
         .join("@anthropic-ai")
@@ -239,7 +248,10 @@ fn resolve_cmd_to_node(program: &str) -> (String, Vec<String>) {
         return (node, vec![cli_js.to_string_lossy().to_string()]);
     }
     // Fallback: use cmd.exe /C (may have issues with special chars in args)
-    ("cmd.exe".to_string(), vec!["/C".to_string(), program.to_string()])
+    (
+        "cmd.exe".to_string(),
+        vec!["/C".to_string(), program.to_string()],
+    )
 }
 
 /// Create a std::process::Command that handles .cmd/.bat files on Windows.
@@ -260,7 +272,12 @@ fn new_sync_command(program: &str) -> std::process::Command {
 }
 
 /// Create a tokio Command with appropriate environment variables.
-fn create_command(program: &str, args: Vec<String>, cwd: &str, effort_level: Option<&str>) -> Command {
+fn create_command(
+    program: &str,
+    args: Vec<String>,
+    cwd: &str,
+    effort_level: Option<&str>,
+) -> Command {
     let clean_program = strip_nul(program);
     let clean_args: Vec<Cow<str>> = args.iter().map(|a| strip_nul(a)).collect();
     let clean_cwd = strip_nul(cwd);
@@ -364,18 +381,26 @@ async fn spawn_claude_process(
     let process_key = format!("{}:{}", window_label, tab_id);
 
     // Spawn the process
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| {
-            eprintln!("[claude-spawn] Failed to spawn process for tab {}: {}", tab_id, e);
-            format!("Failed to spawn Claude process: {}. Is Claude Code CLI installed?", e)
-        })?;
+    let mut child = cmd.spawn().map_err(|e| {
+        eprintln!(
+            "[claude-spawn] Failed to spawn process for tab {}: {}",
+            tab_id, e
+        );
+        format!(
+            "Failed to spawn Claude process: {}. Is Claude Code CLI installed?",
+            e
+        )
+    })?;
 
     let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
     let stderr = child.stderr.take().ok_or("Failed to capture stderr")?;
 
     // Get a clone of the process state Arc before any moves
-    let process_arc = window.state::<ClaudeProcessState>().inner().processes.clone();
+    let process_arc = window
+        .state::<ClaudeProcessState>()
+        .inner()
+        .processes
+        .clone();
 
     // Store the child process in state (kill any existing process for this tab)
     {
@@ -408,7 +433,15 @@ async fn spawn_claude_process(
             if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
                 let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("?");
                 let msg_sub = msg.get("subtype").and_then(|v| v.as_str()).unwrap_or("");
-                eprintln!("[claude-stdout] [{}] +{:.1}s #{} type={} sub={} len={}", tab_id_stdout, elapsed, line_count, msg_type, msg_sub, line.len());
+                eprintln!(
+                    "[claude-stdout] [{}] +{:.1}s #{} type={} sub={} len={}",
+                    tab_id_stdout,
+                    elapsed,
+                    line_count,
+                    msg_type,
+                    msg_sub,
+                    line.len()
+                );
 
                 if msg.get("type").and_then(|v| v.as_str()) == Some("system")
                     && msg.get("subtype").and_then(|v| v.as_str()) == Some("init")
@@ -422,12 +455,20 @@ async fn spawn_claude_process(
             }
 
             // Emit output event to this window with tab_id
-            let _ = win_stdout.emit("claude-output", ClaudeOutputEvent {
-                tab_id: tab_id_stdout.clone(),
-                data: line,
-            });
+            let _ = win_stdout.emit(
+                "claude-output",
+                ClaudeOutputEvent {
+                    tab_id: tab_id_stdout.clone(),
+                    data: line,
+                },
+            );
         }
-        eprintln!("[claude-stdout] [{}] stream ended after {} lines ({:.1}s)", tab_id_stdout, line_count, start_time.elapsed().as_secs_f64());
+        eprintln!(
+            "[claude-stdout] [{}] stream ended after {} lines ({:.1}s)",
+            tab_id_stdout,
+            line_count,
+            start_time.elapsed().as_secs_f64()
+        );
     });
 
     // Spawn stderr streaming task — emit only to the originating window
@@ -436,11 +477,19 @@ async fn spawn_claude_process(
     let stderr_task = tokio::spawn(async move {
         let mut lines = stderr_reader.lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            eprintln!("[claude-stderr] [{}] +{:.1}s {}", tab_id_stderr, start_time.elapsed().as_secs_f64(), &line[..line.len().min(200)]);
-            let _ = win_stderr.emit("claude-error", ClaudeErrorEvent {
-                tab_id: tab_id_stderr.clone(),
-                data: line,
-            });
+            eprintln!(
+                "[claude-stderr] [{}] +{:.1}s {}",
+                tab_id_stderr,
+                start_time.elapsed().as_secs_f64(),
+                &line[..line.len().min(200)]
+            );
+            let _ = win_stderr.emit(
+                "claude-error",
+                ClaudeErrorEvent {
+                    tab_id: tab_id_stderr.clone(),
+                    data: line,
+                },
+            );
         }
     });
 
@@ -459,25 +508,42 @@ async fn spawn_claude_process(
         let success = if let Some(mut child) = processes.remove(&process_key_wait) {
             match child.wait().await {
                 Ok(status) => {
-                    eprintln!("[claude-process] [{}] exited with status={} ({:.1}s)", tab_id_wait, status, start_time.elapsed().as_secs_f64());
+                    eprintln!(
+                        "[claude-process] [{}] exited with status={} ({:.1}s)",
+                        tab_id_wait,
+                        status,
+                        start_time.elapsed().as_secs_f64()
+                    );
                     status.success()
                 }
                 Err(e) => {
-                    eprintln!("[claude-process] [{}] wait error: {} ({:.1}s)", tab_id_wait, e, start_time.elapsed().as_secs_f64());
+                    eprintln!(
+                        "[claude-process] [{}] wait error: {} ({:.1}s)",
+                        tab_id_wait,
+                        e,
+                        start_time.elapsed().as_secs_f64()
+                    );
                     false
                 }
             }
         } else {
-            eprintln!("[claude-process] [{}] no child found in map ({:.1}s)", tab_id_wait, start_time.elapsed().as_secs_f64());
+            eprintln!(
+                "[claude-process] [{}] no child found in map ({:.1}s)",
+                tab_id_wait,
+                start_time.elapsed().as_secs_f64()
+            );
             false
         };
         drop(processes);
 
         // Emit completion event to this window with tab_id
-        let _ = win_wait.emit("claude-complete", ClaudeCompleteEvent {
-            tab_id: tab_id_wait,
-            success,
-        });
+        let _ = win_wait.emit(
+            "claude-complete",
+            ClaudeCompleteEvent {
+                tab_id: tab_id_wait,
+                success,
+            },
+        );
     });
 
     Ok(())
@@ -558,9 +624,7 @@ pub async fn check_claude_status() -> Result<ClaudeStatus, String> {
     };
 
     // Verify binary actually works by running --version
-    let version_output = new_sync_command(&binary_path)
-        .arg("--version")
-        .output();
+    let version_output = new_sync_command(&binary_path).arg("--version").output();
 
     let version = match version_output {
         Ok(output) if output.status.success() => {
@@ -589,16 +653,13 @@ pub async fn check_claude_status() -> Result<ClaudeStatus, String> {
         Ok(output) if output.status.success() => {
             let stdout = String::from_utf8_lossy(&output.stdout).to_string();
             // Parse for email — claude auth status outputs account info
-            let email = stdout
-                .lines()
-                .find(|line| line.contains('@'))
-                .map(|line| {
-                    // Extract email-like substring
-                    line.split_whitespace()
-                        .find(|word| word.contains('@'))
-                        .unwrap_or(line.trim())
-                        .to_string()
-                });
+            let email = stdout.lines().find(|line| line.contains('@')).map(|line| {
+                // Extract email-like substring
+                line.split_whitespace()
+                    .find(|word| word.contains('@'))
+                    .unwrap_or(line.trim())
+                    .to_string()
+            });
             (true, email)
         }
         _ => (false, None),
@@ -667,7 +728,9 @@ fn build_elevation_script(dirs: &[PathBuf], user: &str, local_dir: &std::path::P
         .join(" ");
     format!(
         "mkdir -p {} && chown -R {} '{}'",
-        dirs_list, user, local_dir.display()
+        dirs_list,
+        user,
+        local_dir.display()
     )
 }
 
@@ -738,7 +801,13 @@ pub async fn install_claude_cli(window: WebviewWindow) -> Result<(), String> {
         use std::os::windows::process::CommandExt;
         let mut c = tokio::process::Command::new("powershell");
         c.creation_flags(CREATE_NO_WINDOW);
-        c.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "irm https://claude.ai/install.ps1 | iex"]);
+        c.args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            "irm https://claude.ai/install.ps1 | iex",
+        ]);
         c
     };
     cmd.stdout(std::process::Stdio::piped());
@@ -828,13 +897,10 @@ pub async fn install_claude_cli(window: WebviewWindow) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn login_claude(window: WebviewWindow) -> Result<(), String> {
-    let binary_path = find_claude_binary()
-        .map_err(|e| format!("Claude CLI not found: {}", e))?;
+    let binary_path = find_claude_binary().map_err(|e| format!("Claude CLI not found: {}", e))?;
 
     // Verify it actually exists
-    let version_check = new_sync_command(&binary_path)
-        .arg("--version")
-        .output();
+    let version_check = new_sync_command(&binary_path).arg("--version").output();
 
     if !version_check.as_ref().is_ok_and(|o| o.status.success()) {
         return Err("Claude CLI is not properly installed".to_string());
@@ -969,10 +1035,7 @@ pub async fn execute_claude_code(
 ) -> Result<(), String> {
     let claude_path = find_claude_binary()?;
 
-    let mut args = vec![
-        "-p".to_string(),
-        prompt,
-    ];
+    let mut args = vec!["-p".to_string(), prompt];
     if let Some(m) = model {
         args.push("--model".to_string());
         args.push(m);
@@ -994,11 +1057,7 @@ pub async fn continue_claude_code(
 ) -> Result<(), String> {
     let claude_path = find_claude_binary()?;
 
-    let mut args = vec![
-        "-c".to_string(),
-        "-p".to_string(),
-        prompt,
-    ];
+    let mut args = vec!["-c".to_string(), "-p".to_string(), prompt];
     if let Some(m) = model {
         args.push("--model".to_string());
         args.push(m);
@@ -1021,12 +1080,7 @@ pub async fn resume_claude_code(
 ) -> Result<(), String> {
     let claude_path = find_claude_binary()?;
 
-    let mut args = vec![
-        "--resume".to_string(),
-        session_id,
-        "-p".to_string(),
-        prompt,
-    ];
+    let mut args = vec!["--resume".to_string(), session_id, "-p".to_string(), prompt];
     if let Some(m) = model {
         args.push("--model".to_string());
         args.push(m);
@@ -1038,20 +1092,20 @@ pub async fn resume_claude_code(
 }
 
 #[tauri::command]
-pub async fn cancel_claude_execution(
-    window: WebviewWindow,
-    tab_id: String,
-) -> Result<(), String> {
+pub async fn cancel_claude_execution(window: WebviewWindow, tab_id: String) -> Result<(), String> {
     let window_label = window.label().to_string();
     let process_key = format!("{}:{}", window_label, tab_id);
     let claude_state = window.state::<ClaudeProcessState>();
     let mut processes = claude_state.processes.lock().await;
     if let Some(mut child) = processes.remove(&process_key) {
         let _ = child.kill().await;
-        let _ = window.emit("claude-complete", ClaudeCompleteEvent {
-            tab_id,
-            success: false,
-        });
+        let _ = window.emit(
+            "claude-complete",
+            ClaudeCompleteEvent {
+                tab_id,
+                success: false,
+            },
+        );
     }
     Ok(())
 }
@@ -1086,15 +1140,17 @@ pub struct ClaudeSessionInfo {
 /// Claude Code encodes paths by replacing all non-alphanumeric characters with '-'.
 /// e.g. "/Users/dev/my_project" → "-Users-dev-my-project"
 fn get_sessions_dir(project_path: &str) -> Result<PathBuf, String> {
-    let home = dirs::home_dir()
-        .ok_or("Could not determine home directory")?;
+    let home = dirs::home_dir().ok_or("Could not determine home directory")?;
 
     let encoded: String = project_path
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect();
 
-    eprintln!("[session] project_path={} encoded={}", project_path, encoded);
+    eprintln!(
+        "[session] project_path={} encoded={}",
+        project_path, encoded
+    );
 
     Ok(home.join(".claude").join("projects").join(&encoded))
 }
@@ -1166,7 +1222,10 @@ fn extract_first_user_message(path: &PathBuf) -> (Option<String>, Option<String>
             Some(v) => v,
             None => continue,
         };
-        let timestamp = msg.get("timestamp").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let timestamp = msg
+            .get("timestamp")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
         // Case 1: content is a plain string (Claude Code stored JSONL format)
         if let Some(text) = content_val.as_str() {
@@ -1193,12 +1252,17 @@ fn extract_first_user_message(path: &PathBuf) -> (Option<String>, Option<String>
 }
 
 #[tauri::command]
-pub async fn list_claude_sessions(
-    project_path: String,
-) -> Result<Vec<ClaudeSessionInfo>, String> {
-    eprintln!("[session] list_claude_sessions called with project_path={}", project_path);
+pub async fn list_claude_sessions(project_path: String) -> Result<Vec<ClaudeSessionInfo>, String> {
+    eprintln!(
+        "[session] list_claude_sessions called with project_path={}",
+        project_path
+    );
     let sessions_dir = get_sessions_dir(&project_path)?;
-    eprintln!("[session] sessions_dir={:?} exists={}", sessions_dir, sessions_dir.exists());
+    eprintln!(
+        "[session] sessions_dir={:?} exists={}",
+        sessions_dir,
+        sessions_dir.exists()
+    );
 
     if !sessions_dir.exists() {
         eprintln!("[session] sessions_dir does not exist, returning empty");
@@ -1228,7 +1292,11 @@ pub async fn list_claude_sessions(
         let metadata = std::fs::metadata(&path).ok();
         let modified = metadata
             .and_then(|m| m.modified().ok())
-            .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64)
+            .map(|t| {
+                t.duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64
+            })
             .unwrap_or(0);
 
         let (first_message, _timestamp) = extract_first_user_message(&path);
@@ -1245,7 +1313,10 @@ pub async fn list_claude_sessions(
 
     eprintln!("[session] found {} sessions", sessions.len());
     for s in &sessions {
-        eprintln!("[session]   id={} title={} modified={}", s.session_id, s.title, s.last_modified);
+        eprintln!(
+            "[session]   id={} title={} modified={}",
+            s.session_id, s.title, s.last_modified
+        );
     }
 
     Ok(sessions)
@@ -1257,10 +1328,17 @@ pub async fn load_session_history(
     project_path: String,
     session_id: String,
 ) -> Result<Vec<serde_json::Value>, String> {
-    eprintln!("[session] load_session_history called: session_id={} project_path={}", session_id, project_path);
+    eprintln!(
+        "[session] load_session_history called: session_id={} project_path={}",
+        session_id, project_path
+    );
     let sessions_dir = get_sessions_dir(&project_path)?;
     let session_path = sessions_dir.join(format!("{}.jsonl", session_id));
-    eprintln!("[session] session_path={:?} exists={}", session_path, session_path.exists());
+    eprintln!(
+        "[session] session_path={:?} exists={}",
+        session_path,
+        session_path.exists()
+    );
 
     if !session_path.exists() {
         return Err(format!("Session file not found: {}", session_id));
@@ -1279,7 +1357,11 @@ pub async fn load_session_history(
         }
     }
 
-    eprintln!("[session] loaded {} messages from session {}", messages.len(), session_id);
+    eprintln!(
+        "[session] loaded {} messages from session {}",
+        messages.len(),
+        session_id
+    );
 
     Ok(messages)
 }
@@ -1294,10 +1376,7 @@ pub struct ShellCommandResult {
 }
 
 #[tauri::command]
-pub async fn run_shell_command(
-    command: String,
-    cwd: String,
-) -> Result<ShellCommandResult, String> {
+pub async fn run_shell_command(command: String, cwd: String) -> Result<ShellCommandResult, String> {
     #[cfg(not(target_os = "windows"))]
     let (shell, args) = ("sh", vec!["-c".to_string(), command]);
     #[cfg(target_os = "windows")]
@@ -1333,11 +1412,14 @@ pub async fn get_claude_fast_mode() -> Result<bool, String> {
     if !path.exists() {
         return Ok(false);
     }
-    let content = std::fs::read_to_string(&path)
-        .map_err(|e| format!("Failed to read settings: {}", e))?;
-    let settings: serde_json::Value = serde_json::from_str(&content)
-        .unwrap_or(serde_json::json!({}));
-    Ok(settings.get("fastMode").and_then(|v| v.as_bool()).unwrap_or(false))
+    let content =
+        std::fs::read_to_string(&path).map_err(|e| format!("Failed to read settings: {}", e))?;
+    let settings: serde_json::Value =
+        serde_json::from_str(&content).unwrap_or(serde_json::json!({}));
+    Ok(settings
+        .get("fastMode")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false))
 }
 
 #[tauri::command]
@@ -1371,8 +1453,7 @@ pub async fn set_claude_fast_mode(enabled: bool) -> Result<(), String> {
     // Write back
     let content = serde_json::to_string_pretty(&settings)
         .map_err(|e| format!("Failed to serialize settings: {}", e))?;
-    std::fs::write(&path, content)
-        .map_err(|e| format!("Failed to write settings: {}", e))?;
+    std::fs::write(&path, content).map_err(|e| format!("Failed to write settings: {}", e))?;
 
     Ok(())
 }
@@ -1428,7 +1509,10 @@ mod tests {
     #[test]
     fn test_clean_user_message_title_skips_command_tags() {
         assert_eq!(clean_user_message_title("<command-name>test"), None);
-        assert_eq!(clean_user_message_title("<local-command-stdout>output"), None);
+        assert_eq!(
+            clean_user_message_title("<local-command-stdout>output"),
+            None
+        );
     }
 
     #[test]
@@ -1474,7 +1558,10 @@ mod tests {
     #[test]
     fn test_common_claude_args_system_prompt_mentions_latex() {
         let args = common_claude_args();
-        let prompt_idx = args.iter().position(|a| a == "--append-system-prompt").unwrap();
+        let prompt_idx = args
+            .iter()
+            .position(|a| a == "--append-system-prompt")
+            .unwrap();
         let prompt = &args[prompt_idx + 1];
         assert!(prompt.contains("LaTeX"));
     }
@@ -1651,10 +1738,7 @@ mod tests {
     #[test]
     fn test_try_create_dirs_succeeds_in_temp() {
         let tmp = tempfile::tempdir().unwrap();
-        let dirs = vec![
-            tmp.path().join("a").join("b"),
-            tmp.path().join("c"),
-        ];
+        let dirs = vec![tmp.path().join("a").join("b"), tmp.path().join("c")];
         assert!(try_create_dirs(&dirs));
         assert!(dirs[0].exists());
         assert!(dirs[1].exists());
@@ -1701,7 +1785,11 @@ mod tests {
             PathBuf::from("/Users/test/.local/bin"),
             PathBuf::from("/Users/test/.claude"),
         ];
-        let script = build_elevation_script(&dirs, "testuser", std::path::Path::new("/Users/test/.local"));
+        let script = build_elevation_script(
+            &dirs,
+            "testuser",
+            std::path::Path::new("/Users/test/.local"),
+        );
         assert!(script.contains("mkdir -p"));
         assert!(script.contains("'/Users/test/.local/bin'"));
         assert!(script.contains("'/Users/test/.claude'"));
@@ -1713,7 +1801,11 @@ mod tests {
     #[test]
     fn test_build_elevation_script_handles_spaces_in_path() {
         let dirs = vec![PathBuf::from("/Users/my user/.local/bin")];
-        let script = build_elevation_script(&dirs, "myuser", std::path::Path::new("/Users/my user/.local"));
+        let script = build_elevation_script(
+            &dirs,
+            "myuser",
+            std::path::Path::new("/Users/my user/.local"),
+        );
         // Paths are single-quoted to handle spaces
         assert!(script.contains("'/Users/my user/.local/bin'"));
         assert!(script.contains("'/Users/my user/.local'"));

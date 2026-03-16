@@ -12,6 +12,14 @@ else
   exit 1
 fi
 
+# Require signing key for updater
+if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+  echo "Error: TAURI_SIGNING_PRIVATE_KEY is not set"
+  echo "  Local: set it in apps/desktop/src-tauri/.env"
+  echo "  CI:    set it as a GitHub Actions secret"
+  exit 1
+fi
+
 TARGET="aarch64-apple-darwin"
 VERSION=$(node -p "require('./package.json').version")
 TAG="v${VERSION}"
@@ -46,14 +54,62 @@ echo "==> Stapling..."
 xcrun stapler staple "$DMG_PATH"
 xcrun stapler staple "$APP_PATH"
 
+# --- Auto-updater artifacts ---
+BUNDLE_DIR="apps/desktop/src-tauri/target/$TARGET/release/bundle"
+UPDATE_TAR=$(find "$BUNDLE_DIR/macos" -name '*.app.tar.gz' | head -1)
+UPDATE_SIG=$(find "$BUNDLE_DIR/macos" -name '*.app.tar.gz.sig' | head -1)
+
+if [ -z "$UPDATE_TAR" ] || [ -z "$UPDATE_SIG" ]; then
+  echo "Warning: Updater artifacts not found, skipping latest.json"
+else
+  SIGNATURE=$(cat "$UPDATE_SIG")
+  PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  UPDATE_FILENAME=$(basename "$UPDATE_TAR")
+
+  # Generate latest.json (merge with existing if present)
+  LATEST_JSON="apps/desktop/src-tauri/target/latest.json"
+
+  if [ -f "$LATEST_JSON" ]; then
+    # Merge: add this platform to existing latest.json
+    node -e "
+      const fs = require('fs');
+      const data = JSON.parse(fs.readFileSync('$LATEST_JSON', 'utf8'));
+      data.platforms['darwin-aarch64'] = {
+        signature: \`$SIGNATURE\`,
+        url: 'https://github.com/delibae/claude-prism/releases/download/$TAG/$UPDATE_FILENAME'
+      };
+      fs.writeFileSync('$LATEST_JSON', JSON.stringify(data, null, 2));
+    "
+  else
+    cat > "$LATEST_JSON" <<EOF
+{
+  "version": "$VERSION",
+  "notes": "ClaudePrism $TAG",
+  "pub_date": "$PUB_DATE",
+  "platforms": {
+    "darwin-aarch64": {
+      "signature": "$SIGNATURE",
+      "url": "https://github.com/delibae/claude-prism/releases/download/$TAG/$UPDATE_FILENAME"
+    }
+  }
+}
+EOF
+  fi
+  echo "==> Generated latest.json with darwin-aarch64"
+fi
+
 # Upload to GitHub Release
 echo "==> Uploading to GitHub Release $TAG"
 gh release view "$TAG" --repo delibae/claude-prism >/dev/null 2>&1 || \
   gh release create "$TAG" --repo delibae/claude-prism --title "ClaudePrism $TAG" --generate-notes
 
+UPLOAD_ASSETS=("$DMG_PATH")
+[ -n "${UPDATE_TAR:-}" ] && UPLOAD_ASSETS+=("$UPDATE_TAR")
+[ -f "${LATEST_JSON:-}" ] && UPLOAD_ASSETS+=("$LATEST_JSON")
+
 gh release upload "$TAG" \
   --repo delibae/claude-prism \
   --clobber \
-  "$DMG_PATH"
+  "${UPLOAD_ASSETS[@]}"
 
 echo "==> Done! macOS build uploaded to $TAG"

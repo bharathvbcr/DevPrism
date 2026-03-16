@@ -1,4 +1,4 @@
-name: Build Windows
+name: Build Desktop
 
 on:
   workflow_dispatch:
@@ -14,13 +14,17 @@ on:
 permissions:
   contents: write
 
+env:
+  TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+
 jobs:
+  # ──────────────────────────────────────────────
+  # Windows
+  # ──────────────────────────────────────────────
   build-windows:
     runs-on: windows-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -64,76 +68,333 @@ jobs:
           echo "CXXFLAGS=/std:c++17" >> $GITHUB_ENV
           echo "CFLAGS=" >> $GITHUB_ENV
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
 
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@v2
         with:
           workspaces: apps/desktop/src-tauri -> target
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
 
-      - name: Install dependencies
-        run: pnpm install
+      - run: pnpm install
 
       - name: Build Tauri app
-        uses: tauri-apps/tauri-action@v0
+        shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ZOTERO_CONSUMER_KEY: ${{ secrets.ZOTERO_CONSUMER_KEY }}
           ZOTERO_CONSUMER_SECRET: ${{ secrets.ZOTERO_CONSUMER_SECRET }}
-        with:
-          projectPath: apps/desktop
-          tauriScript: pnpm tauri
-          args: --target x86_64-pc-windows-msvc
+        run: pnpm --filter @claude-prism/desktop tauri build --target x86_64-pc-windows-msvc
 
-      - name: Determine release tag
-        id: tag
+      - name: Collect updater artifacts
+        id: collect
         shell: bash
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-          elif [[ -n "${{ inputs.release_tag }}" ]]; then
-            echo "tag=${{ inputs.release_tag }}" >> $GITHUB_OUTPUT
-          else
-            echo "tag=" >> $GITHUB_OUTPUT
+          BUNDLE="apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle"
+          NSIS_SIG=$(find "$BUNDLE/nsis" -name '*.nsis.zip.sig' 2>/dev/null | head -1)
+          NSIS_ZIP=$(find "$BUNDLE/nsis" -name '*.nsis.zip' ! -name '*.sig' 2>/dev/null | head -1)
+
+          if [ -n "$NSIS_SIG" ] && [ -n "$NSIS_ZIP" ]; then
+            echo "sig=$(cat "$NSIS_SIG")" >> $GITHUB_OUTPUT
+            echo "url=$(basename "$NSIS_ZIP")" >> $GITHUB_OUTPUT
           fi
 
-      - name: Upload to release
-        if: steps.tag.outputs.tag != ''
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG="${{ steps.tag.outputs.tag }}"
-          BUNDLE_DIR="apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle"
-
-          # Create release if it doesn't exist yet, otherwise leave it alone
-          gh release view "$TAG" > /dev/null 2>&1 || \
-            gh release create "$TAG" --title "ClaudePrism $TAG" --generate-notes
-
-          # Upload assets — overwrites if same filename already exists
-          find "$BUNDLE_DIR" -type f \( -name "*.exe" -o -name "*.msi" \) | while read -r file; do
-            echo "Uploading: $file"
-            gh release upload "$TAG" "$file" --clobber
-          done
-
-      - name: Upload artifacts
-        if: steps.tag.outputs.tag == ''
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: desktop-windows
           path: |
             apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/**/*.exe
             apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/**/*.msi
+            apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/**/*.nsis.zip
+            apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/**/*.sig
           if-no-files-found: warn
+
+    outputs:
+      sig: ${{ steps.collect.outputs.sig }}
+      url: ${{ steps.collect.outputs.url }}
+
+  # ──────────────────────────────────────────────
+  # macOS (Apple Silicon)
+  # ──────────────────────────────────────────────
+  build-macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install macOS dependencies
+        run: brew install icu4c harfbuzz pkg-config
+
+      - name: Import Apple certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+
+          # Create temporary keychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Import certificate
+          echo "$APPLE_CERTIFICATE" | base64 --decode > $RUNNER_TEMP/certificate.p12
+          security import $RUNNER_TEMP/certificate.p12 \
+            -k "$KEYCHAIN_PATH" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri -> target
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install
+
+      - name: Build Tauri app
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ZOTERO_CONSUMER_KEY: ${{ secrets.ZOTERO_CONSUMER_KEY }}
+          ZOTERO_CONSUMER_SECRET: ${{ secrets.ZOTERO_CONSUMER_SECRET }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          TECTONIC_DEP_BACKEND: vcpkg
+          VCPKG_ROOT: /usr/local/share/vcpkg
+          CXXFLAGS: "-std=c++17"
+          CFLAGS: ""
+        run: pnpm --filter @claude-prism/desktop tauri build --target aarch64-apple-darwin
+
+      - name: Notarize DMG
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+        run: |
+          TARGET="aarch64-apple-darwin"
+          BUNDLE="apps/desktop/src-tauri/target/$TARGET/release/bundle"
+          DMG_PATH=$(find "$BUNDLE/dmg" -name '*.dmg' | head -1)
+          APP_PATH="$BUNDLE/macos/ClaudePrism.app"
+
+          if [ -z "$DMG_PATH" ]; then
+            echo "Error: DMG not found"
+            exit 1
+          fi
+
+          echo "==> Notarizing $DMG_PATH ..."
+          xcrun notarytool submit "$DMG_PATH" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_PASSWORD" \
+            --wait --timeout 30m
+
+          echo "==> Stapling..."
+          xcrun stapler staple "$DMG_PATH"
+          xcrun stapler staple "$APP_PATH"
+
+      - name: Collect updater artifacts
+        id: collect
+        run: |
+          BUNDLE="apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle"
+          TAR_SIG=$(find "$BUNDLE/macos" -name '*.app.tar.gz.sig' 2>/dev/null | head -1)
+          TAR_GZ=$(find "$BUNDLE/macos" -name '*.app.tar.gz' ! -name '*.sig' 2>/dev/null | head -1)
+
+          if [ -n "$TAR_SIG" ] && [ -n "$TAR_GZ" ]; then
+            echo "sig=$(cat "$TAR_SIG")" >> $GITHUB_OUTPUT
+            echo "url=$(basename "$TAR_GZ")" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-macos
+          path: |
+            apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/**/*.dmg
+            apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/**/*.app.tar.gz
+            apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/**/*.sig
+          if-no-files-found: warn
+
+    outputs:
+      sig: ${{ steps.collect.outputs.sig }}
+      url: ${{ steps.collect.outputs.url }}
+
+  # ──────────────────────────────────────────────
+  # Linux
+  # ──────────────────────────────────────────────
+  build-linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
+            libicu-dev libgraphite2-dev libharfbuzz-dev libfreetype-dev libfontconfig-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri -> target
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install
+
+      - name: Build Tauri app
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ZOTERO_CONSUMER_KEY: ${{ secrets.ZOTERO_CONSUMER_KEY }}
+          ZOTERO_CONSUMER_SECRET: ${{ secrets.ZOTERO_CONSUMER_SECRET }}
+          TECTONIC_DEP_BACKEND: pkg-config
+          CXXFLAGS: "-std=c++17"
+          CFLAGS: ""
+        run: pnpm --filter @claude-prism/desktop tauri build --target x86_64-unknown-linux-gnu
+
+      - name: Collect updater artifacts
+        id: collect
+        run: |
+          BUNDLE="apps/desktop/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle"
+          APPIMAGE_SIG=$(find "$BUNDLE/appimage" -name '*.AppImage.sig' 2>/dev/null | head -1)
+          APPIMAGE=$(find "$BUNDLE/appimage" -name '*.AppImage' ! -name '*.sig' 2>/dev/null | head -1)
+
+          if [ -n "$APPIMAGE_SIG" ] && [ -n "$APPIMAGE" ]; then
+            echo "sig=$(cat "$APPIMAGE_SIG")" >> $GITHUB_OUTPUT
+            echo "url=$(basename "$APPIMAGE")" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-linux
+          path: |
+            apps/desktop/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/**/*.deb
+            apps/desktop/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/**/*.rpm
+            apps/desktop/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/**/*.AppImage
+            apps/desktop/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/**/*.sig
+          if-no-files-found: warn
+
+    outputs:
+      sig: ${{ steps.collect.outputs.sig }}
+      url: ${{ steps.collect.outputs.url }}
+
+  # ──────────────────────────────────────────────
+  # Publish: generate latest.json & upload to release
+  # ──────────────────────────────────────────────
+  publish:
+    needs: [build-windows, build-macos, build-linux]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine tag
+        id: tag
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${{ inputs.release_tag }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Generate latest.json
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          WIN_SIG: ${{ needs.build-windows.outputs.sig }}
+          WIN_URL: ${{ needs.build-windows.outputs.url }}
+          MAC_SIG: ${{ needs.build-macos.outputs.sig }}
+          MAC_URL: ${{ needs.build-macos.outputs.url }}
+          LIN_SIG: ${{ needs.build-linux.outputs.sig }}
+          LIN_URL: ${{ needs.build-linux.outputs.url }}
+        run: |
+          VERSION="${TAG#v}"
+          PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          BASE_URL="https://github.com/delibae/claude-prism/releases/download/$TAG"
+
+          node -e "
+            const platforms = {};
+            if (process.env.MAC_SIG && process.env.MAC_URL)
+              platforms['darwin-aarch64'] = { signature: process.env.MAC_SIG, url: process.env.BASE_URL + '/' + process.env.MAC_URL };
+            if (process.env.LIN_SIG && process.env.LIN_URL)
+              platforms['linux-x86_64'] = { signature: process.env.LIN_SIG, url: process.env.BASE_URL + '/' + process.env.LIN_URL };
+            if (process.env.WIN_SIG && process.env.WIN_URL)
+              platforms['windows-x86_64'] = { signature: process.env.WIN_SIG, url: process.env.BASE_URL + '/' + process.env.WIN_URL };
+
+            const data = {
+              version: '$VERSION',
+              notes: 'ClaudePrism $TAG',
+              pub_date: '$PUB_DATE',
+              platforms
+            };
+            require('fs').writeFileSync('latest.json', JSON.stringify(data, null, 2));
+            console.log(JSON.stringify(data, null, 2));
+          "
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          gh release view "$TAG" > /dev/null 2>&1 || \
+            gh release create "$TAG" --title "ClaudePrism $TAG" --generate-notes --draft
+
+      - name: Upload all assets to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+
+          # Upload latest.json
+          gh release upload "$TAG" latest.json --clobber
+
+          # Upload all platform artifacts
+          find artifacts -type f \( \
+            -name "*.dmg" -o -name "*.app.tar.gz" -o \
+            -name "*.exe" -o -name "*.msi" -o -name "*.nsis.zip" -o \
+            -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" \
+          \) | while read -r file; do
+            echo "Uploading: $file"
+            gh release upload "$TAG" "$file" --clobber
+          done
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          gh release edit "$TAG" --draft=false

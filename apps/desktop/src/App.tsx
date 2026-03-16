@@ -2,6 +2,7 @@ import { ThemeProvider } from "next-themes";
 import { ErrorBoundary } from "react-error-boundary";
 import { Toaster } from "@/components/ui/sonner";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
+import { useUpdater } from "@/hooks/use-updater";
 import { useDocumentStore } from "@/stores/document-store";
 import { useClaudeChatStore } from "@/stores/claude-chat-store";
 import { ProjectPicker } from "@/components/project-picker";
@@ -87,6 +88,9 @@ export function App({ onReady }: { onReady?: () => void }) {
 
   // Register global keyboard shortcuts (Cmd+S, Cmd+N) at the app level
   useKeyboardShortcuts();
+
+  // Check for app updates
+  useUpdater();
 
   useEffect(() => {
     onReady?.();

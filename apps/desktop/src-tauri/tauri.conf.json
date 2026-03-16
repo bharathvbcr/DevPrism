@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/nicegui-unofficial/nicegui-tauri-template/main/src-tauri/tauri.conf-v2-schema.json",
   "identifier": "com.claude-prism.desktop",
   "productName": "ClaudePrism",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "beforeBuildCommand": "pnpm build",
@@ -26,7 +26,8 @@
         "trafficLightPosition": {
           "x": 12,
           "y": 12
-        }
+        },
+        "backgroundThrottling": "disabled"
       }
     ],
     "security": {
@@ -36,6 +37,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -55,5 +57,12 @@
       }
     }
   },
-  "plugins": {}
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDFBMjhBQjdENzM3QjY2QTYKUldTbVpudHpmYXNvR2pVK3M1Rmc2cjRORit3dVBaYkZhWnUxWThha1IxVW9rZ0ZFSnhLZ2tSOHMK",
+      "endpoints": [
+        "https://github.com/delibae/claude-prism/releases/latest/download/latest.json"
+      ]
+    }
+  }
 }

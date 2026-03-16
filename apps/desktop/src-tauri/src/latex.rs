@@ -143,10 +143,31 @@ fn sync_source_files(src: &Path, dst: &Path) -> std::io::Result<()> {
             sync_source_files(&src_path, &dst_path)?;
         } else {
             let ext = src_path.extension().and_then(|e| e.to_str()).unwrap_or("");
-            let is_artifact = matches!(ext, "aux" | "log" | "toc" | "lof" | "lot" | "out"
-                | "nav" | "snm" | "vrb" | "bbl" | "blg" | "fls" | "fdb_latexmk"
-                | "synctex" | "idx" | "ind" | "ilg" | "glo" | "gls" | "glg"
-                | "fmt" | "xdv");
+            let is_artifact = matches!(
+                ext,
+                "aux"
+                    | "log"
+                    | "toc"
+                    | "lof"
+                    | "lot"
+                    | "out"
+                    | "nav"
+                    | "snm"
+                    | "vrb"
+                    | "bbl"
+                    | "blg"
+                    | "fls"
+                    | "fdb_latexmk"
+                    | "synctex"
+                    | "idx"
+                    | "ind"
+                    | "ilg"
+                    | "glo"
+                    | "gls"
+                    | "glg"
+                    | "fmt"
+                    | "xdv"
+            );
             let is_synctex = src_path.to_string_lossy().ends_with(".synctex.gz");
             if !is_artifact && !is_synctex {
                 // Cloud storage (Dropbox/iCloud) may keep files as online-only
@@ -209,9 +230,12 @@ fn compile_with_tectonic(work_dir: &Path, main_file: &str) -> Result<(), String>
     let config = PersistentConfig::open(false)
         .map_err(|e| format!("Failed to open tectonic config: {}", e))?;
 
-    let bundle = config
-        .default_bundle(false, &mut status)
-        .map_err(|e| format!("Failed to load tectonic bundle (check network connection): {}", e))?;
+    let bundle = config.default_bundle(false, &mut status).map_err(|e| {
+        format!(
+            "Failed to load tectonic bundle (check network connection): {}",
+            e
+        )
+    })?;
 
     let format_cache = config
         .format_cache_path()
@@ -236,9 +260,7 @@ fn compile_with_tectonic(work_dir: &Path, main_file: &str) -> Result<(), String>
         .create(&mut status)
         .map_err(|e| format!("Failed to create tectonic session: {}", e))?;
 
-    session
-        .run(&mut status)
-        .map_err(|e| format!("{}", e))?;
+    session.run(&mut status).map_err(|e| format!("{}", e))?;
 
     Ok(())
 }
@@ -318,7 +340,10 @@ fn parse_synctex_data(
                 // Convert synctex internal units to PDF points (bp)
                 // 1 TeX pt = 65536 sp; 1 inch = 72.27 TeX pt = 72 PDF bp
                 let factor = unit * magnification / (1000.0 * 65536.0) * 72.0 / 72.27;
-                if let Some(node) = line.get(1..).and_then(|s| parse_synctex_node(s, factor, x_offset, y_offset)) {
+                if let Some(node) = line
+                    .get(1..)
+                    .and_then(|s| parse_synctex_node(s, factor, x_offset, y_offset))
+                {
                     nodes.push(node);
                 }
             }
@@ -350,12 +375,7 @@ fn parse_synctex_data(
 
 /// Parse a synctex node record (after stripping the type character).
 /// Format: `<tag>,<line>,<column>:<h>,<v>[:<W>,<H>,<D>]`
-fn parse_synctex_node(
-    s: &str,
-    factor: f64,
-    x_offset: f64,
-    y_offset: f64,
-) -> Option<SynctexNode> {
+fn parse_synctex_node(s: &str, factor: f64, x_offset: f64, y_offset: f64) -> Option<SynctexNode> {
     let colon_parts: Vec<&str> = s.splitn(4, ':').collect();
     if colon_parts.len() < 2 {
         return None;
@@ -443,7 +463,11 @@ pub async fn compile_latex(
     eprintln!(
         "[latex] +{:.0}ms {} ({})",
         t0.elapsed().as_millis(),
-        if is_reuse { "sync source files" } else { "full copy" },
+        if is_reuse {
+            "sync source files"
+        } else {
+            "full copy"
+        },
         if is_reuse { "reuse" } else { "first build" }
     );
 
@@ -663,7 +687,10 @@ mod tests {
     fn test_extract_error_lines_no_pages() {
         let log = "Some preamble\nNo pages of output.\nSome trailing";
         let result = extract_error_lines(log);
-        assert_eq!(result, "No pages of output. Add visible content to the document body.");
+        assert_eq!(
+            result,
+            "No pages of output. Add visible content to the document body."
+        );
     }
 
     #[test]
@@ -920,8 +947,15 @@ Postamble:
     fn test_extract_error_lines_real_errors_over_no_pages() {
         let log = "Some preamble\n! LaTeX Error: File `missing.sty' not found.\nNo pages of output.\nMore stuff";
         let result = extract_error_lines(log);
-        assert!(result.contains("LaTeX Error"), "real error should be shown, got: {}", result);
-        assert!(!result.contains("Add visible content"), "No pages fallback should NOT appear");
+        assert!(
+            result.contains("LaTeX Error"),
+            "real error should be shown, got: {}",
+            result
+        );
+        assert!(
+            !result.contains("Add visible content"),
+            "No pages fallback should NOT appear"
+        );
     }
 
     // --- has_real_errors ---
@@ -998,14 +1032,25 @@ Postamble:
         std::fs::create_dir_all(src.path().join("sub").join("deep")).unwrap();
         std::fs::write(src.path().join("top.tex"), "top").unwrap();
         std::fs::write(src.path().join("sub").join("mid.tex"), "mid").unwrap();
-        std::fs::write(src.path().join("sub").join("deep").join("bottom.tex"), "bottom").unwrap();
+        std::fs::write(
+            src.path().join("sub").join("deep").join("bottom.tex"),
+            "bottom",
+        )
+        .unwrap();
 
         copy_dir_recursive(src.path(), dst.path()).unwrap();
 
-        assert_eq!(std::fs::read_to_string(dst.path().join("top.tex")).unwrap(), "top");
-        assert_eq!(std::fs::read_to_string(dst.path().join("sub").join("mid.tex")).unwrap(), "mid");
         assert_eq!(
-            std::fs::read_to_string(dst.path().join("sub").join("deep").join("bottom.tex")).unwrap(),
+            std::fs::read_to_string(dst.path().join("top.tex")).unwrap(),
+            "top"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("sub").join("mid.tex")).unwrap(),
+            "mid"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("sub").join("deep").join("bottom.tex"))
+                .unwrap(),
             "bottom"
         );
     }
@@ -1052,9 +1097,18 @@ Postamble:
 
         sync_source_files(src.path(), dst.path()).unwrap();
 
-        assert_eq!(std::fs::read_to_string(dst.path().join("main.tex")).unwrap(), "doc");
-        assert_eq!(std::fs::read_to_string(dst.path().join("refs.bib")).unwrap(), "bib");
-        assert_eq!(std::fs::read_to_string(dst.path().join("style.sty")).unwrap(), "sty");
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("main.tex")).unwrap(),
+            "doc"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("refs.bib")).unwrap(),
+            "bib"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dst.path().join("style.sty")).unwrap(),
+            "sty"
+        );
     }
 
     #[test]

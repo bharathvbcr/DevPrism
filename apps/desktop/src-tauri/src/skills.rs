@@ -52,7 +52,10 @@ pub struct SkillCategory {
 /// Returns the known scientific skill categories with metadata.
 fn skill_categories() -> Vec<SkillCategory> {
     fn s(name: &str, folder: &str) -> SkillEntry {
-        SkillEntry { name: name.into(), folder: folder.into() }
+        SkillEntry {
+            name: name.into(),
+            folder: folder.into(),
+        }
     }
 
     let mut cats = vec![
@@ -413,8 +416,8 @@ fn copy_skills(repo_dir: &Path, target_dir: &Path) -> Result<usize, String> {
     let mut count = 0;
 
     // Iterate through skill subdirectories
-    let entries = std::fs::read_dir(&src)
-        .map_err(|e| format!("Failed to read skills dir: {}", e))?;
+    let entries =
+        std::fs::read_dir(&src).map_err(|e| format!("Failed to read skills dir: {}", e))?;
 
     for entry in entries.flatten() {
         let entry_path = entry.path();
@@ -422,10 +425,7 @@ fn copy_skills(repo_dir: &Path, target_dir: &Path) -> Result<usize, String> {
             continue;
         }
 
-        let skill_name = entry
-            .file_name()
-            .to_string_lossy()
-            .to_string();
+        let skill_name = entry.file_name().to_string_lossy().to_string();
 
         let target_skill = target_dir.join(&skill_name);
         copy_dir_recursive(&entry_path, &target_skill)?;
@@ -466,10 +466,7 @@ fn parse_skill_md(skill_dir: &Path) -> Option<SkillInfo> {
     }
 
     let content = std::fs::read_to_string(&skill_md).ok()?;
-    let folder = skill_dir
-        .file_name()?
-        .to_string_lossy()
-        .to_string();
+    let folder = skill_dir.file_name()?.to_string_lossy().to_string();
 
     // Extract title from first # heading
     let name = content
@@ -492,11 +489,7 @@ fn parse_skill_md(skill_dir: &Path) -> Option<SkillInfo> {
         .collect::<String>();
 
     // Infer domain from folder name prefix (e.g., "bioinformatics-rna-seq" → "bioinformatics")
-    let domain = folder
-        .split('-')
-        .next()
-        .unwrap_or("general")
-        .to_string();
+    let domain = folder.split('-').next().unwrap_or("general").to_string();
 
     Some(SkillInfo {
         id: folder.clone(),
@@ -569,8 +562,13 @@ fn ensure_target_writable(target: &Path) -> Result<(), String> {
 
         // Verify writable
         let test_file = target.join(".prism_write_test");
-        std::fs::write(&test_file, "test")
-            .map_err(|e| format!("Directory {} still not writable after elevation: {}", target.display(), e))?;
+        std::fs::write(&test_file, "test").map_err(|e| {
+            format!(
+                "Directory {} still not writable after elevation: {}",
+                target.display(),
+                e
+            )
+        })?;
         let _ = std::fs::remove_file(&test_file);
     }
 
@@ -615,12 +613,11 @@ async fn install_skills_to(
             .unwrap_or_default()
             .as_millis()
     ));
-    std::fs::create_dir_all(&tmp_dir)
-        .map_err(|e| {
-            let msg = format!("Failed to create temp dir: {}", e);
-            emit_log(window, &msg);
-            msg
-        })?;
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| {
+        let msg = format!("Failed to create temp dir: {}", e);
+        emit_log(window, &msg);
+        msg
+    })?;
 
     // Download via tarball (faster, no git/git-lfs dependency)
     emit_log(window, "Downloading skills...");
@@ -650,17 +647,12 @@ async fn install_skills_to(
         success: true,
         skills_installed: count,
         target_dir: target_str.clone(),
-        message: format!(
-            "Successfully installed {} skills to {}",
-            count, target_str
-        ),
+        message: format!("Successfully installed {} skills to {}", count, target_str),
     })
 }
 
 #[tauri::command]
-pub async fn check_skills_installed(
-    project_path: Option<String>,
-) -> Result<SkillsStatus, String> {
+pub async fn check_skills_installed(project_path: Option<String>) -> Result<SkillsStatus, String> {
     let target = skills_dir(project_path.as_deref());
 
     if !target.exists() {
@@ -686,9 +678,7 @@ pub async fn check_skills_installed(
 }
 
 #[tauri::command]
-pub async fn list_installed_skills(
-    project_path: Option<String>,
-) -> Result<Vec<SkillInfo>, String> {
+pub async fn list_installed_skills(project_path: Option<String>) -> Result<Vec<SkillInfo>, String> {
     let target = skills_dir(project_path.as_deref());
 
     if !target.exists() {
@@ -696,8 +686,8 @@ pub async fn list_installed_skills(
     }
 
     let mut skills = Vec::new();
-    let entries = std::fs::read_dir(&target)
-        .map_err(|e| format!("Failed to read skills dir: {}", e))?;
+    let entries =
+        std::fs::read_dir(&target).map_err(|e| format!("Failed to read skills dir: {}", e))?;
 
     for entry in entries.flatten() {
         if entry.path().is_dir() {
@@ -712,14 +702,11 @@ pub async fn list_installed_skills(
 }
 
 #[tauri::command]
-pub async fn uninstall_scientific_skills(
-    project_path: Option<String>,
-) -> Result<(), String> {
+pub async fn uninstall_scientific_skills(project_path: Option<String>) -> Result<(), String> {
     let target = skills_dir(project_path.as_deref());
 
     if target.exists() {
-        std::fs::remove_dir_all(&target)
-            .map_err(|e| format!("Failed to remove skills: {}", e))?;
+        std::fs::remove_dir_all(&target).map_err(|e| format!("Failed to remove skills: {}", e))?;
     }
 
     Ok(())
@@ -762,7 +749,11 @@ pub async fn get_skill_content(
         .map_err(|e| format!("Failed to fetch from GitHub: {}", e))?;
 
     if !response.status().is_success() {
-        return Err(format!("Skill '{}' not found (HTTP {})", skill_folder, response.status()));
+        return Err(format!(
+            "Skill '{}' not found (HTTP {})",
+            skill_folder,
+            response.status()
+        ));
     }
 
     response
@@ -787,10 +778,7 @@ mod tests {
     #[test]
     fn test_skills_dir_project() {
         let dir = skills_dir(Some("/tmp/my-project"));
-        assert_eq!(
-            dir,
-            PathBuf::from("/tmp/my-project/.claude/skills")
-        );
+        assert_eq!(dir, PathBuf::from("/tmp/my-project/.claude/skills"));
     }
 
     #[test]

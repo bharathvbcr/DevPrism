@@ -220,6 +220,71 @@ fn strip_nul(s: &str) -> Cow<'_, str> {
     }
 }
 
+/// Environment variables needed by child processes on Linux desktops.
+/// These are required for xdg-open, D-Bus, and display server communication.
+#[cfg(target_os = "linux")]
+const LINUX_DESKTOP_ENV_VARS: &[&str] = &[
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "XDG_RUNTIME_DIR",
+    "XDG_DATA_DIRS",
+    "XDG_CONFIG_DIRS",
+    "XDG_CURRENT_DESKTOP",
+    "XDG_SESSION_TYPE",
+    "DESKTOP_SESSION",
+];
+
+/// Sanitize environment for a child process spawned from an AppImage.
+///
+/// AppImages modify LD_LIBRARY_PATH, PATH, and other variables to point to
+/// bundled libraries. Child processes that need to use host system binaries
+/// (e.g. xdg-open for browser launch, curl for downloads) will break if they
+/// inherit these modified variables. AppImage stores the originals with an
+/// `_ORIG` suffix (e.g. `LD_LIBRARY_PATH_ORIG`).
+///
+/// This function:
+/// 1. Closes stdin to prevent interactive prompts from blocking
+/// 2. Restores original environment variables when running inside an AppImage
+/// 3. Passes through Linux desktop environment variables (DISPLAY, XDG_*, etc.)
+#[cfg(target_os = "linux")]
+fn sanitize_appimage_env(cmd: &mut tokio::process::Command) {
+    cmd.stdin(std::process::Stdio::null());
+
+    if std::env::var("APPIMAGE").is_ok() {
+        // Restore original environment variables that AppImage overrides
+        for key in &[
+            "LD_LIBRARY_PATH",
+            "PATH",
+            "GDK_PIXBUF_MODULE_FILE",
+            "PYTHONPATH",
+            "PERLLIB",
+            "GSETTINGS_SCHEMA_DIR",
+        ] {
+            let orig_key = format!("{}_ORIG", key);
+            match std::env::var(&orig_key) {
+                Ok(orig) => {
+                    cmd.env(key, orig);
+                }
+                Err(_) => {
+                    cmd.env_remove(key);
+                }
+            }
+        }
+        // Remove AppImage-specific variables that poison child processes
+        cmd.env_remove("GDK_BACKEND");
+        cmd.env_remove("GIO_MODULE_DIR");
+        cmd.env_remove("GIO_EXTRA_MODULES");
+    }
+
+    // Pass through Linux desktop environment variables
+    for key in LINUX_DESKTOP_ENV_VARS {
+        if let Ok(value) = std::env::var(key) {
+            cmd.env(key, value);
+        }
+    }
+}
+
 /// On Windows, resolve a `.cmd` wrapper to its underlying Node.js script
 /// so we can run `node <script.js>` directly, avoiding cmd.exe escaping issues.
 /// Returns (program, extra_prefix_args).
@@ -309,6 +374,10 @@ fn create_command(
     // Pipe stdout and stderr for streaming
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
+
+    // On Linux AppImage, restore original environment so child processes work correctly
+    #[cfg(target_os = "linux")]
+    sanitize_appimage_env(&mut cmd);
 
     // Remove all Claude Code internal env vars to prevent nested session detection
     // and other interference. Tauri inherits these when launched from a Claude Code session.
@@ -819,6 +888,11 @@ pub async fn install_claude_cli(window: WebviewWindow) -> Result<(), String> {
     };
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
+    cmd.stdin(std::process::Stdio::null());
+
+    // On Linux AppImage, restore original environment so curl/bash work correctly
+    #[cfg(target_os = "linux")]
+    sanitize_appimage_env(&mut cmd);
 
     // Inherit essential environment variables, ensuring ~/.local/bin is in PATH
     #[cfg(target_os = "windows")]
@@ -933,6 +1007,11 @@ pub async fn login_claude(window: WebviewWindow) -> Result<(), String> {
     };
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
+    cmd.stdin(std::process::Stdio::null());
+
+    // On Linux AppImage, restore original environment so xdg-open works
+    #[cfg(target_os = "linux")]
+    sanitize_appimage_env(&mut cmd);
 
     // Inherit essential environment variables
     for (key, value) in std::env::vars() {
@@ -983,15 +1062,29 @@ pub async fn login_claude(window: WebviewWindow) -> Result<(), String> {
         }
     });
 
-    // Wait for completion and emit result
+    // Wait for completion with a timeout.
+    // If the browser fails to open (e.g. no default browser, AppImage env issues),
+    // the CLI can hang indefinitely waiting for auth callback.
     let win_complete = window;
+    let child = Arc::new(Mutex::new(child));
+    let child_for_timeout = child.clone();
     tokio::spawn(async move {
-        let _ = stdout_task.await;
-        let _ = stderr_task.await;
+        let timeout_duration = tokio::time::Duration::from_secs(120);
+        let wait_result = tokio::time::timeout(timeout_duration, async {
+            let _ = stdout_task.await;
+            let _ = stderr_task.await;
+            child.lock().await.wait().await
+        })
+        .await;
 
-        let success = match child.wait().await {
-            Ok(status) => status.success(),
-            Err(_) => false,
+        let success = match wait_result {
+            Ok(Ok(status)) => status.success(),
+            Ok(Err(_)) => false,
+            Err(_) => {
+                // Timeout — kill the stuck process
+                let _ = child_for_timeout.lock().await.kill().await;
+                false
+            }
         };
 
         let _ = win_complete.emit("login-complete", success);

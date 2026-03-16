@@ -294,7 +294,9 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
       }, 500);
     } else {
       const store = get();
-      store._failCurrentLoginStep("Authentication failed.");
+      store._failCurrentLoginStep(
+        "Authentication failed. If the browser didn't open, please run 'claude auth login' in your terminal instead.",
+      );
       set({ isLoggingIn: false, status: "error" });
     }
   },

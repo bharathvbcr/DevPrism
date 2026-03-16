@@ -73,7 +73,6 @@ function WorkspaceWithClaude() {
   return (
     <>
       <WorkspaceLayout />
-      <Toaster />
       {showSkillsOnboarding && (
         <ScientificSkillsOnboarding
           onClose={() => setShowSkillsOnboarding(false)}
@@ -106,6 +105,7 @@ export function App({ onReady }: { onReady?: () => void }) {
             className="fixed inset-x-0 top-0 z-[9999] h-[var(--titlebar-height)]"
           />
           {projectRoot ? <WorkspaceWithClaude /> : <ProjectPicker />}
+          <Toaster />
         </TooltipProvider>
       </ThemeProvider>
     </ErrorBoundary>

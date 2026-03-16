@@ -134,9 +134,11 @@ jobs:
       - name: Install macOS dependencies
         run: |
           brew install icu4c harfbuzz pkg-config graphite2 freetype fontconfig
+          INCLUDES="-I$(brew --prefix harfbuzz)/include -I$(brew --prefix freetype)/include -I$(brew --prefix graphite2)/include -I$(brew --prefix icu4c)/include"
           {
             echo "PKG_CONFIG_PATH=$(brew --prefix icu4c)/lib/pkgconfig:$(brew --prefix harfbuzz)/lib/pkgconfig:$(brew --prefix graphite2)/lib/pkgconfig:$(brew --prefix freetype)/lib/pkgconfig:$(brew --prefix libpng)/lib/pkgconfig:$(brew --prefix fontconfig)/lib/pkgconfig"
-            echo "CPPFLAGS=-I$(brew --prefix harfbuzz)/include -I$(brew --prefix freetype)/include -I$(brew --prefix graphite2)/include -I$(brew --prefix icu4c)/include"
+            echo "CXXFLAGS=-std=c++17 $INCLUDES"
+            echo "CFLAGS=$INCLUDES"
             echo "LDFLAGS=-L$(brew --prefix harfbuzz)/lib -L$(brew --prefix freetype)/lib -L$(brew --prefix graphite2)/lib -L$(brew --prefix icu4c)/lib"
           } >> $GITHUB_ENV
 
@@ -186,8 +188,6 @@ jobs:
           ZOTERO_CONSUMER_SECRET: ${{ secrets.ZOTERO_CONSUMER_SECRET }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           TECTONIC_DEP_BACKEND: pkg-config
-          CXXFLAGS: "-std=c++17"
-          CFLAGS: ""
         run: pnpm --filter @claude-prism/desktop tauri build --target aarch64-apple-darwin
 
       - name: Notarize DMG

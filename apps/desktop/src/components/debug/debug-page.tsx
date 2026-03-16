@@ -29,6 +29,7 @@ export function DebugPage() {
   const [visibilityCount, setVisibilityCount] = useState(0);
   const [copied, setCopied] = useState(false);
   const logEndRef = useRef<HTMLDivElement>(null);
+  const logContainerRef = useRef<HTMLDivElement>(null);
 
   const version = useLogStore((s) => s.version);
   const store = useLogStore.getState();
@@ -43,16 +44,26 @@ export function DebugPage() {
 
   // Fetch system info once
   useEffect(() => {
-    if (!systemInfo) {
-      invoke<SystemInfo>("get_system_info").then(setSystemInfo).catch(() => {});
-    }
-  }, [systemInfo]);
+    invoke<SystemInfo>("get_system_info").then(setSystemInfo).catch(() => {});
+  }, []);
 
-  // Auto-scroll logs
+  // Auto-scroll logs only if already scrolled to bottom.
+  // Use rAF to wait for the DOM to update after React re-render.
+  const wasAtBottomRef = useRef(true);
   useEffect(() => {
-    if (tab === "logs") {
-      logEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    }
+    if (tab !== "logs") return;
+    const container = logContainerRef.current;
+    if (!container) return;
+    // Check before new content is painted
+    const gap = container.scrollHeight - container.scrollTop - container.clientHeight;
+    wasAtBottomRef.current = gap < 40;
+  }); // runs every render, before paint
+
+  useEffect(() => {
+    if (tab !== "logs" || !wasAtBottomRef.current) return;
+    requestAnimationFrame(() => {
+      logEndRef.current?.scrollIntoView({ behavior: "instant" });
+    });
   }, [version, tab]);
 
   const filteredEntries = store.getFilteredLogs(
@@ -158,7 +169,7 @@ export function DebugPage() {
               </button>
             </div>
 
-            <div className="flex-1 overflow-auto rounded border bg-muted/30 p-2 font-mono text-[11px]">
+            <div ref={logContainerRef} className="flex-1 overflow-auto rounded border bg-muted/30 p-2 font-mono text-[11px]">
               {filteredEntries.length === 0 && (
                 <p className="text-muted-foreground text-center py-4">No log entries</p>
               )}

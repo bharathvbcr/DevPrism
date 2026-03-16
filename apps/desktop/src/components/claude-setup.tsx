@@ -366,7 +366,7 @@ export function ClaudeSetup() {
               size="sm"
               className="gap-2 text-muted-foreground"
               onClick={() => {
-                shellOpen("https://code.claude.com/docs/quickstart");
+                shellOpen("https://code.claude.com/docs/en/quickstart");
               }}
             >
               <ExternalLinkIcon className="size-3.5" />

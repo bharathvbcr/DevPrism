@@ -12,6 +12,9 @@ import {
 } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { createLogger } from "@/lib/debug/logger";
+
+const log = createLogger("fs");
 
 export type ProjectFileType = "tex" | "image" | "pdf" | "bib" | "style" | "other";
 
@@ -175,6 +178,7 @@ export async function scanProjectFolder(
   }
 
   await walk(rootPath, "");
+  log.info(`Scanned project: ${files.length} files, ${folders.length} folders`);
   return { files, folders };
 }
 
@@ -283,10 +287,12 @@ export async function copyFileToProject(
 }
 
 export async function deleteFileFromDisk(absolutePath: string): Promise<void> {
+  log.debug(`Deleting file: ${absolutePath}`);
   await remove(absolutePath);
 }
 
 export async function deleteFolderFromDisk(absolutePath: string): Promise<void> {
+  log.debug(`Deleting folder: ${absolutePath}`);
   await remove(absolutePath, { recursive: true });
 }
 
@@ -294,6 +300,7 @@ export async function renameFileOnDisk(
   oldPath: string,
   newPath: string,
 ): Promise<void> {
+  log.debug(`Renaming: ${oldPath} → ${newPath}`);
   await rename(oldPath, newPath);
 }
 

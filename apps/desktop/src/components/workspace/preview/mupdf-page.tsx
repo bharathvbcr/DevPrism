@@ -1,6 +1,10 @@
-import { useEffect, useRef, useState, memo } from "react";
+import { useEffect, useRef, useState, useCallback, memo } from "react";
 import { getMupdfClient } from "@/lib/mupdf/mupdf-client";
+import { createLogger } from "@/lib/debug/logger";
+import { APP_VISIBILITY_RESTORED } from "@/lib/debug/log-store";
 import type { StructuredTextData, LinkData } from "@/lib/mupdf/types";
+
+const log = createLogger("mupdf-page");
 
 interface MupdfPageProps {
   docId: number;
@@ -9,6 +13,23 @@ interface MupdfPageProps {
   pageWidth: number;
   pageHeight: number;
   isVisible: boolean;
+}
+
+/** Check if a canvas appears blank (GPU context was silently invalidated).
+ *  Uses a single getImageData call covering a small center region. */
+function isCanvasBlank(canvas: HTMLCanvasElement): boolean {
+  if (canvas.width === 0 || canvas.height === 0) return false;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return true; // context fully lost
+  // Sample a 2x2 region from the center in one GPU readback
+  const cx = Math.max(0, Math.floor(canvas.width / 2) - 1);
+  const cy = Math.max(0, Math.floor(canvas.height / 2) - 1);
+  const data = ctx.getImageData(cx, cy, 2, 2).data;
+  // If all sampled pixels have zero alpha, canvas is blank
+  for (let i = 3; i < data.length; i += 4) {
+    if (data[i] !== 0) return false;
+  }
+  return true;
 }
 
 export const MupdfPage = memo(function MupdfPage({
@@ -27,7 +48,8 @@ export const MupdfPage = memo(function MupdfPage({
   const cssW = pageWidth * scale;
   const cssH = pageHeight * scale;
 
-  useEffect(() => {
+  /** Re-render the page onto the canvas via MuPDF worker. */
+  const renderPage = useCallback(() => {
     if (!isVisible || docId <= 0) return;
 
     const gen = ++renderGenRef.current;
@@ -41,7 +63,6 @@ export const MupdfPage = memo(function MupdfPage({
       if (!canvas) return;
       canvas.width = imageData.width;
       canvas.height = imageData.height;
-      // Use createImageBitmap to avoid blocking the main thread with putImageData
       const bitmap = await createImageBitmap(imageData);
       if (gen !== renderGenRef.current) { bitmap.close(); return; }
       const ctx = canvas.getContext("2d")!;
@@ -49,8 +70,18 @@ export const MupdfPage = memo(function MupdfPage({
       bitmap.close();
     }).catch((err) => {
       if (gen !== renderGenRef.current) return;
-      console.error(`[mupdf-page] render error page ${pageIndex}:`, err);
+      log.error(`Render error page ${pageIndex}`, { error: String(err) });
     });
+  }, [docId, pageIndex, scale, isVisible]);
+
+  // Initial render and re-render on dependency changes
+  useEffect(() => {
+    if (!isVisible || docId <= 0) return;
+
+    renderPage();
+
+    const client = getMupdfClient();
+    const gen = renderGenRef.current;
 
     client.getPageText(docId, pageIndex).then((data) => {
       if (gen !== renderGenRef.current) return;
@@ -61,7 +92,22 @@ export const MupdfPage = memo(function MupdfPage({
       if (gen !== renderGenRef.current) return;
       setLinks(data);
     }).catch(() => {});
-  }, [docId, pageIndex, scale, isVisible]);
+  }, [docId, pageIndex, scale, isVisible, renderPage]);
+
+  // Re-render canvas when returning from background if content was lost
+  useEffect(() => {
+    const handleVisibilityRestored = () => {
+      const canvas = canvasRef.current;
+      if (!canvas || !isVisible || docId <= 0) return;
+      if (isCanvasBlank(canvas)) {
+        log.warn(`Canvas blank after visibility restore, re-rendering page ${pageIndex}`);
+        renderPage();
+      }
+    };
+
+    window.addEventListener(APP_VISIBILITY_RESTORED, handleVisibilityRestored);
+    return () => window.removeEventListener(APP_VISIBILITY_RESTORED, handleVisibilityRestored);
+  }, [docId, pageIndex, scale, isVisible, renderPage]);
 
   return (
     <div

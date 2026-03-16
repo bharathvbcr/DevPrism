@@ -72,6 +72,9 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useUvSetupStore } from "@/stores/uv-setup-store";
 import { UvSetupDialog } from "@/components/uv-setup";
+import { createLogger } from "@/lib/debug/logger";
+
+const log = createLogger("sidebar");
 
 // ─── Table of Contents ───
 
@@ -285,7 +288,7 @@ export function Sidebar() {
           try {
             await importFiles(paths, targetFolder);
           } catch (err) {
-            console.error("[native-drop] import failed:", err);
+            log.error("Native drop import failed", { error: String(err) });
           }
 
           setNativeDragOver(null);
@@ -334,7 +337,7 @@ export function Sidebar() {
           await importFiles(paths, pasteTargetFolder);
         }
       } catch (err) {
-        console.error("[paste] read clipboard failed:", err);
+        log.error("Read clipboard failed", { error: String(err) });
       }
     };
 
@@ -378,7 +381,7 @@ export function Sidebar() {
       if (draggedType === "file") await moveFile(draggedPath, targetFolder);
       else await moveFolder(draggedPath, targetFolder);
     } catch (err) {
-      console.error("[dnd] move failed:", err);
+      log.error("DnD move failed", { error: String(err) });
     }
   }, [moveFile, moveFolder]);
 

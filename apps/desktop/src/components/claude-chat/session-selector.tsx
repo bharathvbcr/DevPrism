@@ -11,6 +11,9 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useClaudeChatStore } from "@/stores/claude-chat-store";
 import { useDocumentStore } from "@/stores/document-store";
+import { createLogger } from "@/lib/debug/logger";
+
+const log = createLogger("session-selector");
 
 interface ClaudeSessionInfo {
   session_id: string;
@@ -43,16 +46,16 @@ export function SessionSelector() {
   const loadSessions = useCallback(async () => {
     if (!projectRoot) return;
     setIsLoading(true);
-    console.log("[session-selector] loading sessions for projectRoot:", projectRoot);
+    log.debug("loading sessions for projectRoot: " + projectRoot);
     try {
       const result = await invoke<ClaudeSessionInfo[]>(
         "list_claude_sessions",
         { projectPath: projectRoot },
       );
-      console.log("[session-selector] loaded sessions:", result);
+      log.debug("loaded sessions", { count: result.length });
       setSessions(result);
     } catch (err) {
-      console.error("[session-selector] Failed to load sessions:", err);
+      log.error("Failed to load sessions", { error: String(err) });
       setSessions([]);
     } finally {
       setIsLoading(false);
@@ -72,7 +75,7 @@ export function SessionSelector() {
     (sid: string) => {
       if (isStreaming) return;
       if (sid === sessionId) return;
-      console.log("[session-selector] selecting session:", sid);
+      log.debug("selecting session: " + sid);
       resumeSession(sid);
     },
     [isStreaming, sessionId, resumeSession],

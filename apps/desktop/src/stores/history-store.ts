@@ -1,5 +1,8 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
+import { createLogger } from "@/lib/debug/logger";
+
+const log = createLogger("history");
 
 // ─── Types ───
 
@@ -62,15 +65,18 @@ export const useHistoryStore = create<HistoryState>()((set, get) => ({
   },
 
   init: async (projectRoot) => {
+    log.debug("Initializing history for " + projectRoot);
     await invoke("history_init", { projectRoot });
   },
 
   createSnapshot: async (projectRoot, message) => {
+    log.debug(`Creating snapshot: ${message}`);
     const result = await invoke<SnapshotInfo | null>("history_snapshot", {
       projectRoot,
       message,
     });
     if (result) {
+      log.info(`Snapshot created: ${result.id.slice(0, 8)}`);
       set((s) => ({ snapshots: [result, ...s.snapshots] }));
     }
     return result;
@@ -135,12 +141,14 @@ export const useHistoryStore = create<HistoryState>()((set, get) => ({
   },
 
   restoreSnapshot: async (projectRoot, snapshotId) => {
+    log.info(`Restoring snapshot: ${snapshotId.slice(0, 8)}`);
     set({ isRestoring: true });
     try {
       const result = await invoke<SnapshotInfo>("history_restore", {
         projectRoot,
         snapshotId,
       });
+      log.info(`Restored snapshot, new snapshot: ${result.id.slice(0, 8)}`);
       set((s) => ({ snapshots: [result, ...s.snapshots] }));
       return result;
     } finally {

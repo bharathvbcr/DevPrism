@@ -16,6 +16,9 @@ import {
 } from "@/components/scientific-skills/scientific-skills-onboarding";
 import { useUvSetupStore } from "@/stores/uv-setup-store";
 import { ErrorFallback } from "@/components/error-fallback";
+import { createLogger } from "@/lib/debug/logger";
+
+const log = createLogger("app");
 
 function WorkspaceWithClaude() {
   const projectRoot = useDocumentStore((s) => s.projectRoot);
@@ -53,7 +56,7 @@ function WorkspaceWithClaude() {
         }
       })
       .catch((err) => {
-        console.error("Failed to setup Python venv:", err);
+        log.error("Failed to setup Python venv", { error: String(err) });
       });
   }, [initialized, projectRoot]);
 

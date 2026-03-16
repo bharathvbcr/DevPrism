@@ -1,5 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { resolveTexRoot, type ProjectFile } from "@/stores/document-store";
+import { createLogger } from "@/lib/debug/logger";
+
+const log = createLogger("latex");
 
 /** Resolve which file to compile and the root ID for caching.
  *  Returns `null` when the project has no compilable .tex file. */
@@ -39,13 +42,17 @@ export async function compileLatex(
   projectDir: string,
   mainFile: string = "main.tex",
 ): Promise<Uint8Array> {
+  log.info(`Compiling ${mainFile}`);
+  const start = performance.now();
   // compile_latex returns raw PDF bytes via Tauri IPC Response
   const buffer = await invoke<ArrayBuffer>("compile_latex", {
     projectDir,
     mainFile,
   });
 
-  return new Uint8Array(buffer);
+  const result = new Uint8Array(buffer);
+  log.info(`Compiled ${mainFile} in ${(performance.now() - start).toFixed(0)}ms (${(result.byteLength / 1024).toFixed(0)} KB)`);
+  return result;
 }
 
 export interface SynctexResult {
@@ -61,13 +68,16 @@ export async function synctexEdit(
   y: number,
 ): Promise<SynctexResult | null> {
   try {
-    return await invoke<SynctexResult>("synctex_edit", {
+    const result = await invoke<SynctexResult>("synctex_edit", {
       projectDir,
       page,
       x,
       y,
     });
-  } catch {
+    if (result) log.debug(`SyncTeX: page ${page} → ${result.file}:${result.line}`);
+    return result;
+  } catch (err) {
+    log.debug("SyncTeX lookup failed", { page, error: String(err) });
     return null;
   }
 }

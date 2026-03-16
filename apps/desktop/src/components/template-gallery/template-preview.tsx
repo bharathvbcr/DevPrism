@@ -37,6 +37,9 @@ import { getTemplatePdfUrl } from "@/lib/template-preview-cache";
 import { getMupdfClient } from "@/lib/mupdf/mupdf-client";
 import { exists, join } from "@/lib/tauri/fs";
 import type { PageSize } from "@/lib/mupdf/types";
+import { createLogger } from "@/lib/debug/logger";
+
+const log = createLogger("template-preview");
 
 // ─── Helpers ───
 
@@ -187,7 +190,7 @@ export function TemplatePreview() {
         setLoading(false);
       } catch (err) {
         if (gen !== loadGenRef.current) return;
-        console.warn("[template-preview] load error:", err);
+        log.warn("load error", { error: String(err) });
         setLoading(false);
         setError(true);
       }
@@ -230,7 +233,7 @@ export function TemplatePreview() {
       const ctx = canvas.getContext("2d")!;
       ctx.putImageData(imageData, 0, 0);
     }).catch((err) => {
-      console.warn("[template-preview] render error:", err);
+      log.warn("render error", { error: String(err) });
     });
   }, [currentPage, numPages, isLandscape]);
 

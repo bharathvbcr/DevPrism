@@ -3,6 +3,9 @@
 // No runtime LaTeX compilation needed.
 
 import { getMupdfClient } from "@/lib/mupdf/mupdf-client";
+import { createLogger } from "@/lib/debug/logger";
+
+const log = createLogger("template-preview");
 
 type Listener = () => void;
 const listeners = new Set<Listener>();
@@ -65,7 +68,7 @@ export async function generateThumbnail(templateId: string): Promise<string | nu
       notify();
       return dataUrl;
     } catch (err) {
-      console.warn(`[template-preview] Failed to load preview for ${templateId}:`, err);
+      log.warn(`Failed to load preview for ${templateId}`, { error: String(err) });
       failedIds.add(templateId);
       notify();
       return null;

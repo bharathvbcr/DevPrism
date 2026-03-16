@@ -10,6 +10,9 @@ import { useHistoryStore } from "@/stores/history-store";
 import { useProposedChangesStore } from "@/stores/proposed-changes-store";
 import { readTexFileContent } from "@/lib/tauri/fs";
 import { compileLatex, resolveCompileTarget, formatCompileError } from "@/lib/latex-compiler";
+import { createLogger } from "@/lib/debug/logger";
+
+const log = createLogger("claude-event");
 
 /** Backend event payload shapes (include tab_id for routing) */
 interface ClaudeOutputPayload {
@@ -137,32 +140,32 @@ export function useClaudeEvents() {
       // Log ALL message types with gap detection
       const contentTypes = msg.message?.content?.map((b: any) => b.type).join(",") ?? "";
       const gapWarning = Number(gap) > 10 ? ` GAP ${gap}s` : "";
-      console.log(`[claude-event] [${tabId}] ${elapsed(tabId)} #${count} type=${msg.type} sub=${msg.subtype ?? ""} content=[${contentTypes}] gap=${gap}s${gapWarning}`);
+      log.debug(`[${tabId}] ${elapsed(tabId)} #${count} type=${msg.type} sub=${msg.subtype ?? ""} content=[${contentTypes}] gap=${gap}s${gapWarning}`);
 
       if (msg.type === "assistant") {
         const thinkingBlock = msg.message?.content?.find((b: any) => b.type === "thinking");
         if (thinkingBlock) {
-          console.log(`[claude-event] [${tabId}] ${elapsed(tabId)} thinking: ${(thinkingBlock.thinking || "").slice(0, 100)}`);
+          log.debug(`[${tabId}] ${elapsed(tabId)} thinking: ${(thinkingBlock.thinking || "").slice(0, 100)}`);
         }
         const textBlock = msg.message?.content?.find((b: any) => b.type === "text");
         if (textBlock?.text) {
-          console.log(`[claude-event] [${tabId}] ${elapsed(tabId)} text: ${textBlock.text.slice(0, 100)}`);
+          log.debug(`[${tabId}] ${elapsed(tabId)} text: ${textBlock.text.slice(0, 100)}`);
         }
         const toolBlock = msg.message?.content?.find((b: any) => b.type === "tool_use");
         if (toolBlock) {
-          console.log(`[claude-event] [${tabId}] ${elapsed(tabId)} tool_use: ${toolBlock.name} ${toolBlock.input?.file_path ?? ""}`);
+          log.debug(`[${tabId}] ${elapsed(tabId)} tool_use: ${toolBlock.name} ${toolBlock.input?.file_path ?? ""}`);
         }
       }
       if (msg.type === "user" && msg.message?.content) {
         for (const block of msg.message.content) {
           if (block.type === "tool_result") {
             const preview = typeof block.content === "string" ? block.content.slice(0, 80) : JSON.stringify(block.content)?.slice(0, 80);
-            console.log(`[claude-event] [${tabId}] ${elapsed(tabId)} tool_result: id=${block.tool_use_id} err=${block.is_error ?? false} len=${preview?.length ?? 0}`);
+            log.debug(`[${tabId}] ${elapsed(tabId)} tool_result: id=${block.tool_use_id} err=${block.is_error ?? false} len=${preview?.length ?? 0}`);
           }
         }
       }
       if (msg.type === "result") {
-        console.log(`[claude-event] [${tabId}] ${elapsed(tabId)} result cost=$${msg.cost_usd} api=${msg.duration_api_ms}ms total=${msg.duration_ms}ms`);
+        log.info(`[${tabId}] ${elapsed(tabId)} result cost=$${msg.cost_usd} api=${msg.duration_api_ms}ms total=${msg.duration_ms}ms`);
       }
 
       // Extract session_id from system:init
@@ -175,7 +178,7 @@ export function useClaudeEvents() {
         const info = (msg as any).rate_limit_info;
         if (info) {
           const resetsAt = info.resetsAt ? new Date(info.resetsAt * 1000).toLocaleTimeString() : "unknown";
-          console.warn(`[claude-event] [${tabId}] rate_limit: status=${info.status} type=${info.rateLimitType} resets=${resetsAt} overage=${info.overageStatus}`);
+          log.warn(`[${tabId}] rate_limit: status=${info.status} type=${info.rateLimitType} resets=${resetsAt} overage=${info.overageStatus}`);
           if (info.status !== "allowed") {
             chatStore._setError(tabId, `Rate limited (${info.rateLimitType}). Resets at ${resetsAt}`);
           }
@@ -237,7 +240,7 @@ export function useClaudeEvents() {
           (b: any) => b.type === "tool_use" && b.name === "AskUserQuestion",
         );
         if (hasAskUser) {
-          console.log(`[claude-event] [${tabId}] ${elapsed(tabId)} AskUserQuestion detected — cancelling process for user input`);
+          log.info(`[${tabId}] ${elapsed(tabId)} AskUserQuestion detected — cancelling process for user input`);
           cancelledForAskRef.current.set(tabId, true);
           invoke("cancel_claude_execution", { tabId }).catch(() => {});
         }
@@ -248,13 +251,13 @@ export function useClaudeEvents() {
       const { tab_id: tabId, success } = payload;
       const count = msgCountRef.current.get(tabId) ?? 0;
 
-      console.log(`[claude-event] [${tabId}] complete success=${success} (${count} messages) cancelledForAsk=${cancelledForAskRef.current.get(tabId) ?? false}`);
+      log.info(`[${tabId}] complete success=${success} (${count} messages) cancelledForAsk=${cancelledForAskRef.current.get(tabId) ?? false}`);
       const chatStore = useClaudeChatStore.getState();
 
       // Guard against duplicate complete events
       const tab = chatStore.tabs.find((t) => t.id === tabId);
       if (!tab?.isStreaming) {
-        console.warn(`[claude-event] [${tabId}] ignoring duplicate complete event (not streaming)`);
+        log.warn(`[${tabId}] ignoring duplicate complete event (not streaming)`);
         return;
       }
 
@@ -303,7 +306,7 @@ export function useClaudeEvents() {
       } else if (alreadyCompiling) {
         // Queue recompile — it will run when the current compile finishes
         useDocumentStore.getState().setPendingRecompile(true);
-        console.log(`[claude-event] queued post-Claude recompile — already compiling`);
+        log.info("queued post-Claude recompile — already compiling");
       }
     }
 
@@ -335,9 +338,9 @@ export function useClaudeEvents() {
         (event) => {
           if (!cancelled) {
             const { tab_id: tabId, data: payload } = event.payload;
-            console.warn(`[claude-stderr] [${tabId}]`, payload);
+            log.warn(`[${tabId}] stderr: ${payload}`);
             if (payload.includes("Error") || payload.includes("error") || payload.includes("ECONNREFUSED") || payload.includes("timeout")) {
-              console.error(`[claude-stderr] [${tabId}] CRITICAL: ${payload}`);
+              log.error(`[${tabId}] CRITICAL: ${payload}`);
             }
           }
         },

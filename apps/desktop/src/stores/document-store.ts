@@ -21,6 +21,9 @@ import { clearDocCache } from "@/lib/mupdf/pdf-doc-cache";
 import { clearScrollPositionCache } from "@/components/workspace/preview/pdf-viewer";
 import { clearZoomCache } from "@/components/workspace/preview/pdf-preview";
 import { clearEditorStateCache } from "@/components/workspace/editor/latex-editor";
+import { createLogger } from "@/lib/debug/logger";
+
+const log = createLogger("document");
 
 export interface ProjectFile {
   id: string; // relativePath is the id
@@ -210,6 +213,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
   lastCompiledGenerations: new Map(),
 
   openProject: async (rootPath: string) => {
+    log.info(`Opening project: ${rootPath}`);
     const { files: fsFiles, folders: fsFolders } = await scanProjectFolder(rootPath);
     const projectFiles: ProjectFile[] = [];
 
@@ -279,11 +283,12 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
       .init(rootPath)
       .then(() => historyStore.loadSnapshots(rootPath))
       .catch((err) => {
-        console.error("Failed to initialize history:", err);
+        log.error("Failed to initialize history", { error: String(err) });
       });
   },
 
   closeProject: () => {
+    log.info("Closing project");
     if (autoSaveTimer) {
       clearTimeout(autoSaveTimer);
       autoSaveTimer = null;
@@ -346,7 +351,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
       try {
         await deleteFileFromDisk(file.absolutePath);
       } catch (e) {
-        console.error("Failed to delete file from disk:", e);
+        log.error("Failed to delete file from disk", { error: String(e) });
       }
     }
     const newFiles = state.files.filter((f) => f.id !== id);
@@ -393,7 +398,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
       const absPath = await join(state.projectRoot, folderPath);
       await deleteFolderFromDisk(absPath);
     } catch (e) {
-      console.error("Failed to delete folder from disk:", e);
+      log.error("Failed to delete folder from disk", { error: String(e) });
     }
 
     // Clean caches
@@ -447,7 +452,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
     try {
       await renameFileOnDisk(file.absolutePath, newAbsPath);
     } catch (e) {
-      console.error("Failed to rename file on disk:", e);
+      log.error("Failed to rename file on disk", { error: String(e) });
       return;
     }
     migratePdfBytesKey(id, newRelativePath);

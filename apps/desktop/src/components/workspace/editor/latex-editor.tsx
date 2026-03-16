@@ -59,6 +59,9 @@ import { SearchPanel } from "./search-panel";
 import { ProblemsPanel, type DiagnosticItem } from "./problems-panel";
 import { PdfViewer } from "@/components/workspace/preview/pdf-viewer";
 import { readFile } from "@tauri-apps/plugin-fs";
+import { createLogger } from "@/lib/debug/logger";
+
+const log = createLogger("merge-view");
 
 function getActiveFileContent(): string {
   const state = useDocumentStore.getState();
@@ -609,7 +612,7 @@ export function LatexEditor() {
   // Watch for proposed changes → activate/deactivate/update merge view
   useEffect(() => {
     const view = viewRef.current;
-    console.log("[merge-view] effect fired:", {
+    log.debug("effect fired", {
       hasView: !!view,
       isTextFile,
       activeFileChange: activeFileChange ? { id: activeFileChange.id, filePath: activeFileChange.filePath } : null,
@@ -620,7 +623,7 @@ export function LatexEditor() {
 
     if (activeFileChange && !isMergeActiveRef.current) {
       // Activate merge view: load newContent + enable merge extension in ONE atomic dispatch
-      console.log("[merge-view] ACTIVATING merge view for:", activeFileChange.filePath);
+      log.debug("ACTIVATING merge view for: " + activeFileChange.filePath);
       pendingChangeRef.current = activeFileChange;
       isMergeActiveRef.current = true;
       try {
@@ -638,18 +641,18 @@ export function LatexEditor() {
           annotations: Transaction.addToHistory.of(false),
         });
         view.scrollDOM.scrollTop = scrollTop;
-        console.log("[merge-view] merge view activated successfully");
+        log.debug("merge view activated successfully");
         // Auto-scroll to first chunk
         setTimeout(() => goToChunk(0), 50);
       } catch (err) {
-        console.error("[merge-view] failed to activate merge view:", err);
+        log.error("failed to activate merge view", { error: String(err) });
         isMergeActiveRef.current = false;
         pendingChangeRef.current = null;
       }
     } else if (activeFileChange && isMergeActiveRef.current && pendingChangeRef.current?.id !== activeFileChange.id) {
       // Stacked edit: the change was updated while merge was already active.
       // Re-dispatch the merge view with the accumulated diff (original → latest).
-      console.log("[merge-view] UPDATING merge view (stacked edit) for:", activeFileChange.filePath);
+      log.debug("UPDATING merge view (stacked edit) for: " + activeFileChange.filePath);
       pendingChangeRef.current = activeFileChange;
       try {
         const scrollTop = view.scrollDOM.scrollTop;
@@ -666,13 +669,13 @@ export function LatexEditor() {
           annotations: Transaction.addToHistory.of(false),
         });
         view.scrollDOM.scrollTop = scrollTop;
-        console.log("[merge-view] merge view updated successfully (stacked edit)");
+        log.debug("merge view updated successfully (stacked edit)");
       } catch (err) {
-        console.error("[merge-view] failed to update merge view:", err);
+        log.error("failed to update merge view", { error: String(err) });
       }
     } else if (!activeFileChange && isMergeActiveRef.current) {
       // Deactivate merge view (externally resolved)
-      console.log("[merge-view] DEACTIVATING merge view");
+      log.debug("DEACTIVATING merge view");
       view.dispatch({ effects: mergeCompartmentRef.current.reconfigure([]) });
       isMergeActiveRef.current = false;
       pendingChangeRef.current = null;

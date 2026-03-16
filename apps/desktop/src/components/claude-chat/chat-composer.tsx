@@ -11,6 +11,9 @@ import { getUniqueTargetName } from "@/lib/tauri/fs";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { cn } from "@/lib/utils";
 import { SlashCommandPicker, type SlashCommand } from "./slash-command-picker";
+import { createLogger } from "@/lib/debug/logger";
+
+const log = createLogger("chat-composer");
 
 // Re-export for other modules
 export type { SlashCommand };
@@ -313,7 +316,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
           setIsDragOver(false);
           // Skip if the sidebar already handled this drop (OS file dropped on sidebar file tree)
           if ((window as any).__sidebarHandledDrop) {
-            console.log("[chat-drop] skipped — sidebar handled this drop");
+            log.debug("skipped — sidebar handled this drop");
             return;
           }
           const paths = (event.payload as { paths: string[] }).paths;
@@ -390,7 +393,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
             selectedText: content,
           });
         } catch (err) {
-          console.error("[chat-paste] failed to save file:", fileName, err);
+          log.error("Failed to save pasted file", { fileName, error: String(err) });
         }
       }
 

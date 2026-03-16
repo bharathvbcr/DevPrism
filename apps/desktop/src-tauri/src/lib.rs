@@ -7,7 +7,7 @@ mod uv;
 mod zotero;
 
 use std::path::Path;
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 // --- External editor detection & opening ---
 
@@ -198,6 +198,66 @@ fn js_log(msg: String) {
     eprintln!("[js] {}", msg);
 }
 
+// --- Debug window ---
+
+#[tauri::command]
+fn open_debug_window(app: tauri::AppHandle) -> Result<(), String> {
+    // If a debug window already exists, just focus it
+    if let Some(win) = app.get_webview_window("debug") {
+        win.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    let url = WebviewUrl::App("index.html?debug=1".into());
+    WebviewWindowBuilder::new(&app, "debug", url)
+        .title("ClaudePrism — Debug")
+        .inner_size(560.0, 700.0)
+        .min_inner_size(400.0, 400.0)
+        .visible(true)
+        .build()
+        .map_err(|e| format!("Failed to create debug window: {}", e))?;
+
+    Ok(())
+}
+
+// --- System info for debug panel & bug reports ---
+
+#[derive(serde::Serialize)]
+struct SystemInfo {
+    os: String,
+    os_version: String,
+    arch: String,
+    app_version: String,
+}
+
+#[tauri::command]
+fn get_system_info(app: tauri::AppHandle) -> SystemInfo {
+    // Get OS version from uname on unix, or fallback to "unknown"
+    let os_version = {
+        #[cfg(unix)]
+        {
+            std::process::Command::new("uname")
+                .arg("-r")
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .map(|s| s.trim().to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        }
+        #[cfg(not(unix))]
+        {
+            "unknown".to_string()
+        }
+    };
+
+    SystemInfo {
+        os: std::env::consts::OS.to_string(),
+        os_version,
+        arch: std::env::consts::ARCH.to_string(),
+        app_version: app.package_info().version.to_string(),
+    }
+}
+
 // --- Clipboard file paths (for Cmd+V paste in file tree) ---
 
 #[tauri::command]
@@ -307,6 +367,8 @@ pub fn run() {
             uv::setup_project_venv,
             uv::uv_add_packages,
             uv::uv_run_command,
+            get_system_info,
+            open_debug_window,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -351,6 +413,15 @@ pub fn run() {
                          document.body.offsetHeight;\
                          document.body.style.display='';"
                     );
+                }
+            }
+            tauri::RunEvent::WindowEvent {
+                label,
+                event: tauri::WindowEvent::Focused(true),
+                ..
+            } => {
+                if let Some(window) = app_handle.get_webview_window(&label) {
+                    let _ = window.emit("window-focus-restored", ());
                 }
             }
             tauri::RunEvent::WindowEvent {

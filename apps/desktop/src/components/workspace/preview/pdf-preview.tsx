@@ -36,6 +36,9 @@ import { SelectionToolbar, type ToolbarAction } from "@/components/workspace/edi
 import { save } from "@tauri-apps/plugin-dialog";
 import { PdfViewer, type PdfTextSelection, type CaptureResult } from "./pdf-viewer";
 import { resolveTexRoot } from "@/stores/document-store";
+import { createLogger } from "@/lib/debug/logger";
+
+const log = createLogger("pdf-preview");
 
 type FitMode = "fit-width" | "fit-height" | null;
 
@@ -479,7 +482,7 @@ export function PdfPreview() {
         imageDataUrl: result.dataUrl,
       });
     } catch (err) {
-      console.error("[capture] failed to save:", err);
+      log.error("Capture failed to save", { error: String(err) });
     }
   };
 

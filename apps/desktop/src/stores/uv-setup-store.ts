@@ -1,5 +1,8 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
+import { createLogger } from "@/lib/debug/logger";
+
+const log = createLogger("uv");
 
 // ─── Types ───
 
@@ -57,10 +60,12 @@ export const useUvSetupStore = create<UvSetupState>((set, get) => ({
       const result = await invoke<UvStatus>("check_uv_status");
 
       if (!result.installed) {
+        log.info("uv not installed");
         set({ status: "not-installed", version: null, binaryPath: null });
         return;
       }
 
+      log.info(`uv ready: v${result.version}`);
       set({
         status: "ready",
         version: result.version,
@@ -93,13 +98,14 @@ export const useUvSetupStore = create<UvSetupState>((set, get) => ({
       const info = await invoke<VenvInfo>("setup_project_venv", {
         projectPath,
       });
+      log.info(`Venv ready at ${info.venv_path}`);
       set({
         venvReady: true,
         venvPath: info.venv_path,
         pythonPath: info.python_path,
       });
     } catch (err: any) {
-      console.error("[uv] Failed to setup venv:", err);
+      log.error("Failed to setup venv", { error: String(err) });
       // Don't set error status — uv itself is fine, just venv creation failed
       set({
         venvReady: false,

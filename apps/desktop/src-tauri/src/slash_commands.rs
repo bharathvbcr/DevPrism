@@ -37,14 +37,22 @@ impl CommandFrontmatterRaw {
         let allowed_tools = self.allowed_tools.and_then(|v| match v {
             serde_yaml::Value::String(s) => {
                 let tools: Vec<String> = s.split_whitespace().map(|t| t.to_string()).collect();
-                if tools.is_empty() { None } else { Some(tools) }
+                if tools.is_empty() {
+                    None
+                } else {
+                    Some(tools)
+                }
             }
             serde_yaml::Value::Sequence(seq) => {
                 let tools: Vec<String> = seq
                     .into_iter()
                     .filter_map(|v| v.as_str().map(|s| s.to_string()))
                     .collect();
-                if tools.is_empty() { None } else { Some(tools) }
+                if tools.is_empty() {
+                    None
+                } else {
+                    Some(tools)
+                }
             }
             _ => None,
         });
@@ -73,7 +81,10 @@ fn parse_markdown_with_frontmatter(content: &str) -> (Option<CommandFrontmatter>
 
     if let Some(end) = frontmatter_end {
         let frontmatter_content = lines.get(1..end).map(|s| s.join("\n")).unwrap_or_default();
-        let body_content = lines.get((end + 1)..).map(|s| s.join("\n")).unwrap_or_default();
+        let body_content = lines
+            .get((end + 1)..)
+            .map(|s| s.join("\n"))
+            .unwrap_or_default();
 
         match serde_yaml::from_str::<CommandFrontmatterRaw>(&frontmatter_content) {
             Ok(raw) => (Some(raw.into_parsed()), body_content),
@@ -101,18 +112,15 @@ fn extract_command_info(file_path: &Path, base_path: &Path) -> Option<(String, O
         Some((components.first()?.to_string(), None))
     } else {
         let command_name = components.last()?.to_string();
-        let namespace = components.get(..components.len() - 1)
+        let namespace = components
+            .get(..components.len() - 1)
             .map(|s| s.join(":"))
             .unwrap_or_default();
         Some((command_name, Some(namespace)))
     }
 }
 
-fn load_command_from_file(
-    file_path: &Path,
-    base_path: &Path,
-    scope: &str,
-) -> Option<SlashCommand> {
+fn load_command_from_file(file_path: &Path, base_path: &Path, scope: &str) -> Option<SlashCommand> {
     let content = fs::read_to_string(file_path).ok()?;
     let (frontmatter, body) = parse_markdown_with_frontmatter(&content);
     let (name, namespace) = extract_command_info(file_path, base_path)?;
@@ -339,9 +347,7 @@ pub async fn slash_commands_list(
             let mut md_files = Vec::new();
             find_markdown_files(&user_commands_dir, &mut md_files);
             for file_path in md_files {
-                if let Some(cmd) =
-                    load_command_from_file(&file_path, &user_commands_dir, "user")
-                {
+                if let Some(cmd) = load_command_from_file(&file_path, &user_commands_dir, "user") {
                     commands.push(cmd);
                 }
             }
@@ -574,7 +580,10 @@ mod tests {
             "Frontmatter with unknown fields (license, metadata) should parse successfully"
         );
         let fm = fm.unwrap();
-        assert_eq!(fm.description.unwrap(), "Comprehensive molecular biology toolkit.");
+        assert_eq!(
+            fm.description.unwrap(),
+            "Comprehensive molecular biology toolkit."
+        );
         assert_eq!(fm.name.unwrap(), "biopython");
         assert!(body.contains("# Biopython"));
     }
@@ -644,17 +653,33 @@ mod tests {
 
         let skills = load_skills_from_dir(dir.path(), "skill");
 
-        assert_eq!(skills.len(), 2, "Should find 2 skills, skip dir without SKILL.md");
+        assert_eq!(
+            skills.len(),
+            2,
+            "Should find 2 skills, skip dir without SKILL.md"
+        );
 
-        let bio = skills.iter().find(|s| s.full_command == "/biopython").unwrap();
+        let bio = skills
+            .iter()
+            .find(|s| s.full_command == "/biopython")
+            .unwrap();
         assert_eq!(bio.name, "biopython");
-        assert_eq!(bio.description.as_deref(), Some("Molecular biology toolkit."));
+        assert_eq!(
+            bio.description.as_deref(),
+            Some("Molecular biology toolkit.")
+        );
         assert_eq!(bio.scope, "skill");
         assert!(bio.accepts_arguments);
 
-        let custom = skills.iter().find(|s| s.full_command == "/custom-tool").unwrap();
+        let custom = skills
+            .iter()
+            .find(|s| s.full_command == "/custom-tool")
+            .unwrap();
         assert_eq!(custom.name, "Custom Tool");
-        assert!(custom.description.is_none(), "No frontmatter = no description");
+        assert!(
+            custom.description.is_none(),
+            "No frontmatter = no description"
+        );
     }
 
     #[test]
@@ -719,7 +744,11 @@ mod tests {
     fn test_load_command_from_file_simple() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("greet.md");
-        fs::write(&file, "Hello $ARGUMENTS, run !`echo hi` and check @main.tex").unwrap();
+        fs::write(
+            &file,
+            "Hello $ARGUMENTS, run !`echo hi` and check @main.tex",
+        )
+        .unwrap();
 
         let cmd = load_command_from_file(&file, dir.path(), "project").unwrap();
         assert_eq!(cmd.name, "greet");
@@ -775,7 +804,10 @@ mod tests {
         find_markdown_files(dir.path(), &mut files);
 
         assert_eq!(files.len(), 2);
-        let names: Vec<String> = files.iter().map(|f| f.file_name().unwrap().to_string_lossy().to_string()).collect();
+        let names: Vec<String> = files
+            .iter()
+            .map(|f| f.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
         assert!(names.contains(&"cmd1.md".to_string()));
         assert!(names.contains(&"cmd2.md".to_string()));
     }
@@ -792,7 +824,10 @@ mod tests {
         find_markdown_files(dir.path(), &mut files);
 
         assert_eq!(files.len(), 1);
-        assert_eq!(files[0].file_name().unwrap().to_str().unwrap(), "visible.md");
+        assert_eq!(
+            files[0].file_name().unwrap().to_str().unwrap(),
+            "visible.md"
+        );
     }
 
     #[test]
@@ -807,7 +842,10 @@ mod tests {
         find_markdown_files(dir.path(), &mut files);
 
         assert_eq!(files.len(), 2);
-        let names: Vec<String> = files.iter().map(|f| f.file_name().unwrap().to_string_lossy().to_string()).collect();
+        let names: Vec<String> = files
+            .iter()
+            .map(|f| f.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
         assert!(names.contains(&"top.md".to_string()));
         assert!(names.contains(&"nested.md".to_string()));
     }
@@ -822,7 +860,10 @@ mod tests {
 
         remove_empty_dirs(&deep);
 
-        assert!(!dir.path().join("a").exists(), "entire empty chain should be removed");
+        assert!(
+            !dir.path().join("a").exists(),
+            "entire empty chain should be removed"
+        );
     }
 
     #[test]
@@ -888,7 +929,11 @@ mod tests {
         assert_eq!(cmd.content, "Do something");
 
         // Verify file was created
-        let file = dir.path().join(".claude").join("commands").join("test-cmd.md");
+        let file = dir
+            .path()
+            .join(".claude")
+            .join("commands")
+            .join("test-cmd.md");
         assert!(file.exists());
         assert_eq!(fs::read_to_string(&file).unwrap(), "Do something");
     }
@@ -943,7 +988,13 @@ mod tests {
         assert_eq!(cmd.full_command, "/tools:rust:clippy");
 
         // Verify nested directory structure
-        let file = dir.path().join(".claude").join("commands").join("tools").join("rust").join("clippy.md");
+        let file = dir
+            .path()
+            .join(".claude")
+            .join("commands")
+            .join("tools")
+            .join("rust")
+            .join("clippy.md");
         assert!(file.exists());
     }
 

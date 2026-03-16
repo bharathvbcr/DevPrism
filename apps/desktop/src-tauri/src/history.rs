@@ -1,6 +1,4 @@
-use git2::{
-    DiffOptions, IndexAddOption, Oid, Repository, RepositoryInitOptions, Signature, Sort,
-};
+use git2::{DiffOptions, IndexAddOption, Oid, Repository, RepositoryInitOptions, Signature, Sort};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fs;
@@ -49,10 +47,11 @@ fn tag_map(repo: &Repository) -> HashMap<Oid, Vec<String>> {
     if let Ok(tags) = repo.tag_names(None) {
         for tag_name in tags.iter().flatten() {
             if let Ok(reference) = repo.revparse_single(tag_name) {
-                let oid = reference.peel_to_commit().map(|c| c.id()).unwrap_or(reference.id());
-                map.entry(oid)
-                    .or_default()
-                    .push(tag_name.to_string());
+                let oid = reference
+                    .peel_to_commit()
+                    .map(|c| c.id())
+                    .unwrap_or(reference.id());
+                map.entry(oid).or_default().push(tag_name.to_string());
             }
         }
     }
@@ -107,10 +106,7 @@ Thumbs.db
     }
     // Configure the repo to use this excludes file
     if let Ok(mut config) = repo.config() {
-        let _ = config.set_str(
-            "core.excludesFile",
-            &excludes_path.to_string_lossy(),
-        );
+        let _ = config.set_str("core.excludesFile", &excludes_path.to_string_lossy());
     }
 }
 
@@ -122,8 +118,8 @@ pub fn history_init(project_root: String) -> Result<(), String> {
 
     if git_dir.exists() {
         // Already initialized — verify and ensure excludes
-        let repo = Repository::open(&git_dir)
-            .map_err(|e| format!("Corrupt history repo: {}", e))?;
+        let repo =
+            Repository::open(&git_dir).map_err(|e| format!("Corrupt history repo: {}", e))?;
         ensure_excludes(&project_root, &repo);
         return Ok(());
     }
@@ -166,14 +162,24 @@ pub fn history_init(project_root: String) -> Result<(), String> {
         .map_err(|e| format!("Failed to find tree: {}", e))?;
 
     let sig = default_signature()?;
-    repo.commit(Some("HEAD"), &sig, &sig, "[init] Project opened", &tree, &[])
-        .map_err(|e| format!("Failed to create initial commit: {}", e))?;
+    repo.commit(
+        Some("HEAD"),
+        &sig,
+        &sig,
+        "[init] Project opened",
+        &tree,
+        &[],
+    )
+    .map_err(|e| format!("Failed to create initial commit: {}", e))?;
 
     Ok(())
 }
 
 #[tauri::command]
-pub fn history_snapshot(project_root: String, message: String) -> Result<Option<SnapshotInfo>, String> {
+pub fn history_snapshot(
+    project_root: String,
+    message: String,
+) -> Result<Option<SnapshotInfo>, String> {
     let repo = open_repo(&project_root)?;
 
     let mut index = repo
@@ -219,10 +225,7 @@ pub fn history_snapshot(project_root: String, message: String) -> Result<Option<
         .map_err(|e| format!("Failed to find tree: {}", e))?;
 
     let sig = default_signature()?;
-    let parent = repo
-        .head()
-        .ok()
-        .and_then(|h| h.peel_to_commit().ok());
+    let parent = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
     let parents: Vec<&git2::Commit> = parent.iter().collect();
 
     let oid = repo
@@ -236,7 +239,9 @@ pub fn history_snapshot(project_root: String, message: String) -> Result<Option<
             .map(|d| {
                 d.deltas()
                     .filter_map(|delta| {
-                        delta.new_file().path()
+                        delta
+                            .new_file()
+                            .path()
                             .or_else(|| delta.old_file().path())
                             .map(|p| p.to_string_lossy().to_string())
                     })
@@ -268,8 +273,12 @@ pub fn history_list(
     let mut revwalk = repo
         .revwalk()
         .map_err(|e| format!("Failed to create revwalk: {}", e))?;
-    revwalk.push_head().map_err(|e| format!("Failed to push HEAD: {}", e))?;
-    revwalk.set_sorting(Sort::TIME).map_err(|e| format!("Sort error: {}", e))?;
+    revwalk
+        .push_head()
+        .map_err(|e| format!("Failed to push HEAD: {}", e))?;
+    revwalk
+        .set_sorting(Sort::TIME)
+        .map_err(|e| format!("Sort error: {}", e))?;
 
     let mut snapshots = Vec::new();
     let mut count = 0u32;
@@ -301,7 +310,9 @@ pub fn history_list(
                 .map(|d| {
                     d.deltas()
                         .filter_map(|delta| {
-                            delta.new_file().path()
+                            delta
+                                .new_file()
+                                .path()
                                 .or_else(|| delta.old_file().path())
                                 .map(|p| p.to_string_lossy().to_string())
                         })
@@ -347,9 +358,7 @@ pub fn history_diff(
     let from_tree = from_commit
         .tree()
         .map_err(|e| format!("Tree error: {}", e))?;
-    let to_tree = to_commit
-        .tree()
-        .map_err(|e| format!("Tree error: {}", e))?;
+    let to_tree = to_commit.tree().map_err(|e| format!("Tree error: {}", e))?;
 
     let mut diff_opts = DiffOptions::new();
     let diff = repo
@@ -421,9 +430,7 @@ pub fn history_file_at(
     let commit = repo
         .find_commit(oid)
         .map_err(|e| format!("Commit not found: {}", e))?;
-    let tree = commit
-        .tree()
-        .map_err(|e| format!("Tree error: {}", e))?;
+    let tree = commit.tree().map_err(|e| format!("Tree error: {}", e))?;
     let entry = tree
         .get_path(Path::new(&file_path))
         .map_err(|e| format!("File not found in snapshot: {}", e))?;
@@ -439,18 +446,13 @@ pub fn history_file_at(
 }
 
 #[tauri::command]
-pub fn history_restore(
-    project_root: String,
-    snapshot_id: String,
-) -> Result<SnapshotInfo, String> {
+pub fn history_restore(project_root: String, snapshot_id: String) -> Result<SnapshotInfo, String> {
     let repo = open_repo(&project_root)?;
     let oid = Oid::from_str(&snapshot_id).map_err(|e| format!("Invalid snapshot_id: {}", e))?;
     let commit = repo
         .find_commit(oid)
         .map_err(|e| format!("Commit not found: {}", e))?;
-    let tree = commit
-        .tree()
-        .map_err(|e| format!("Tree error: {}", e))?;
+    let tree = commit.tree().map_err(|e| format!("Tree error: {}", e))?;
 
     // Checkout the tree to working directory
     repo.checkout_tree(
@@ -460,9 +462,7 @@ pub fn history_restore(
     .map_err(|e| format!("Checkout failed: {}", e))?;
 
     // Create a new "restore" commit on HEAD (not moving HEAD to old commit)
-    let mut index = repo
-        .index()
-        .map_err(|e| format!("Index error: {}", e))?;
+    let mut index = repo.index().map_err(|e| format!("Index error: {}", e))?;
     index
         .add_all(["*"].iter(), IndexAddOption::DEFAULT, None)
         .map_err(|e| format!("Add error: {}", e))?;
@@ -476,10 +476,7 @@ pub fn history_restore(
         .map_err(|e| format!("Find tree error: {}", e))?;
 
     let sig = default_signature()?;
-    let head_commit = repo
-        .head()
-        .ok()
-        .and_then(|h| h.peel_to_commit().ok());
+    let head_commit = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
     let parents: Vec<&git2::Commit> = head_commit.iter().collect();
 
     let short_id = &snapshot_id[..8.min(snapshot_id.len())];
@@ -687,7 +684,9 @@ mod tests {
         history_init(r.clone()).unwrap();
 
         fs::write(dir.path().join("main.tex"), "new content").unwrap();
-        let snap = history_snapshot(r.clone(), "update".into()).unwrap().unwrap();
+        let snap = history_snapshot(r.clone(), "update".into())
+            .unwrap()
+            .unwrap();
 
         let list = history_list(r.clone(), 10, 0).unwrap();
         let from_id = list[1].id.clone(); // init
@@ -708,7 +707,9 @@ mod tests {
         history_init(r.clone()).unwrap();
 
         fs::write(dir.path().join("b.tex"), "new file").unwrap();
-        let snap = history_snapshot(r.clone(), "add b".into()).unwrap().unwrap();
+        let snap = history_snapshot(r.clone(), "add b".into())
+            .unwrap()
+            .unwrap();
 
         let list = history_list(r.clone(), 10, 0).unwrap();
         let from_id = list[1].id.clone(); // init
@@ -847,7 +848,10 @@ mod tests {
         ensure_excludes(&r, &repo);
 
         let content = fs::read_to_string(&excludes_path).unwrap();
-        assert!(content.contains(".prism/"), "should migrate to include .prism/");
+        assert!(
+            content.contains(".prism/"),
+            "should migrate to include .prism/"
+        );
     }
 
     // ─── edge cases ───
@@ -861,7 +865,9 @@ mod tests {
         // Delete a file
         fs::remove_file(dir.path().join("b.tex")).unwrap();
 
-        let snap = history_snapshot(r.clone(), "delete b".into()).unwrap().unwrap();
+        let snap = history_snapshot(r.clone(), "delete b".into())
+            .unwrap()
+            .unwrap();
         assert!(!snap.changed_files.is_empty());
     }
 
@@ -875,7 +881,9 @@ mod tests {
         let init_id = list[0].id.clone();
 
         fs::remove_file(dir.path().join("b.tex")).unwrap();
-        let snap = history_snapshot(r.clone(), "delete b".into()).unwrap().unwrap();
+        let snap = history_snapshot(r.clone(), "delete b".into())
+            .unwrap()
+            .unwrap();
 
         let diffs = history_diff(r, init_id, snap.id).unwrap();
         let d = diffs.iter().find(|d| d.file_path == "b.tex").unwrap();

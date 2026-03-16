@@ -1,6 +1,6 @@
 [package]
 name = "claude-prism-desktop"
-version = "1.0.0"
+version = "1.0.1"
 description = "AI-powered LaTeX writing workspace"
 edition = "2021"
 
@@ -51,3 +51,6 @@ tempfile = "3"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSImage", "NSRunningApplication"] }
 objc2-foundation = { version = "0.3", features = ["NSData"] }
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-updater = "2"

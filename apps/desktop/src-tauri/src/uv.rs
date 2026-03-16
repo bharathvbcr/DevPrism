@@ -30,11 +30,12 @@ fn find_uv_binary() -> Result<String, String> {
             home.join(".local").join("bin").join("uv.exe"),
             home.join(".cargo").join("bin").join("uv.exe"),
             // %LOCALAPPDATA%\uv\bin\uv.exe
-            PathBuf::from(
-                std::env::var("LOCALAPPDATA").unwrap_or_else(|_| {
-                    home.join("AppData").join("Local").to_string_lossy().to_string()
-                }),
-            )
+            PathBuf::from(std::env::var("LOCALAPPDATA").unwrap_or_else(|_| {
+                home.join("AppData")
+                    .join("Local")
+                    .to_string_lossy()
+                    .to_string()
+            }))
             .join("uv")
             .join("bin")
             .join("uv.exe"),
@@ -50,11 +51,7 @@ fn find_uv_binary() -> Result<String, String> {
     // 3. Check standard paths (Unix only)
     #[cfg(not(target_os = "windows"))]
     {
-        let standard_paths = [
-            "/usr/local/bin/uv",
-            "/opt/homebrew/bin/uv",
-            "/usr/bin/uv",
-        ];
+        let standard_paths = ["/usr/local/bin/uv", "/opt/homebrew/bin/uv", "/usr/bin/uv"];
         for path in &standard_paths {
             if PathBuf::from(path).exists() {
                 return Ok(path.to_string());
@@ -180,12 +177,17 @@ pub async fn install_uv(window: WebviewWindow) -> Result<(), String> {
             let local_dir = home.join(".local");
             let script = format!(
                 "mkdir -p '{}' && chown -R {} '{}'",
-                local_bin.display(), user, local_dir.display()
+                local_bin.display(),
+                user,
+                local_dir.display()
             );
             let output = std::process::Command::new("osascript")
                 .args([
                     "-e",
-                    &format!("do shell script \"{}\" with administrator privileges", script),
+                    &format!(
+                        "do shell script \"{}\" with administrator privileges",
+                        script
+                    ),
                 ])
                 .output()
                 .map_err(|e| format!("Failed to fix permissions for ~/.local: {}", e))?;
@@ -214,7 +216,8 @@ pub async fn install_uv(window: WebviewWindow) -> Result<(), String> {
         c.creation_flags(CREATE_NO_WINDOW);
         c.args([
             "-NoProfile",
-            "-ExecutionPolicy", "Bypass",
+            "-ExecutionPolicy",
+            "Bypass",
             "-Command",
             "irm https://astral.sh/uv/install.ps1 | iex",
         ]);

@@ -18,8 +18,11 @@ fn consumer_key() -> String {
 }
 
 fn consumer_secret() -> String {
-    std::env::var("ZOTERO_CONSUMER_SECRET")
-        .unwrap_or_else(|_| option_env!("ZOTERO_CONSUMER_SECRET").unwrap_or("").to_string())
+    std::env::var("ZOTERO_CONSUMER_SECRET").unwrap_or_else(|_| {
+        option_env!("ZOTERO_CONSUMER_SECRET")
+            .unwrap_or("")
+            .to_string()
+    })
 }
 
 const REQUEST_TOKEN_URL: &str = "https://www.zotero.org/oauth/request";
@@ -81,8 +84,8 @@ fn get_timestamp() -> String {
 }
 
 fn hmac_sha1(key: &str, message: &str) -> Result<String, String> {
-    let mut mac = HmacSha1::new_from_slice(key.as_bytes())
-        .map_err(|e| format!("Invalid HMAC key: {}", e))?;
+    let mut mac =
+        HmacSha1::new_from_slice(key.as_bytes()).map_err(|e| format!("Invalid HMAC key: {}", e))?;
     mac.update(message.as_bytes());
     Ok(BASE64.encode(mac.finalize().into_bytes()))
 }
@@ -322,7 +325,8 @@ pub async fn zotero_start_oauth(
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .map_err(|e| format!("Failed to bind local server: {}", e))?;
-    let port = listener.local_addr()
+    let port = listener
+        .local_addr()
         .map_err(|e| format!("Failed to get local address: {}", e))?
         .port();
     let callback_url = format!("http://127.0.0.1:{}/callback", port);
@@ -363,9 +367,7 @@ pub async fn zotero_complete_oauth(
 }
 
 #[tauri::command]
-pub async fn zotero_cancel_oauth(
-    state: tauri::State<'_, ZoteroOAuthState>,
-) -> Result<(), String> {
+pub async fn zotero_cancel_oauth(state: tauri::State<'_, ZoteroOAuthState>) -> Result<(), String> {
     *state.lock().await = None;
     Ok(())
 }
@@ -404,7 +406,9 @@ mod tests {
         // HMAC-SHA1("key", "The quick brown fox jumps over the lazy dog") is a known value
         assert!(!result.is_empty());
         // Base64 encoded, should contain only valid base64 chars
-        assert!(result.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '='));
+        assert!(result
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '='));
     }
 
     #[test]
@@ -412,14 +416,25 @@ mod tests {
         let params = vec![
             ("oauth_consumer_key".to_string(), "key123".to_string()),
             ("oauth_nonce".to_string(), "nonce".to_string()),
-            ("oauth_signature_method".to_string(), "HMAC-SHA1".to_string()),
+            (
+                "oauth_signature_method".to_string(),
+                "HMAC-SHA1".to_string(),
+            ),
             ("oauth_timestamp".to_string(), "1234567890".to_string()),
             ("oauth_version".to_string(), "1.0".to_string()),
         ];
-        let sig = oauth_signature("POST", "https://example.com/api", &params, "consumer_secret", "token_secret");
+        let sig = oauth_signature(
+            "POST",
+            "https://example.com/api",
+            &params,
+            "consumer_secret",
+            "token_secret",
+        );
         assert!(!sig.is_empty());
         // Should be valid base64
-        assert!(sig.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '='));
+        assert!(sig
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '='));
     }
 
     #[test]

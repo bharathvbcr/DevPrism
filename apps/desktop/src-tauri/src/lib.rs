@@ -24,10 +24,26 @@ struct EditorDef {
 }
 
 const KNOWN_EDITORS: &[EditorDef] = &[
-    EditorDef { id: "cursor", name: "Cursor", cli: "cursor" },
-    EditorDef { id: "vscode", name: "VS Code", cli: "code" },
-    EditorDef { id: "zed", name: "Zed", cli: "zed" },
-    EditorDef { id: "sublime", name: "Sublime Text", cli: "subl" },
+    EditorDef {
+        id: "cursor",
+        name: "Cursor",
+        cli: "cursor",
+    },
+    EditorDef {
+        id: "vscode",
+        name: "VS Code",
+        cli: "code",
+    },
+    EditorDef {
+        id: "zed",
+        name: "Zed",
+        cli: "zed",
+    },
+    EditorDef {
+        id: "sublime",
+        name: "Sublime Text",
+        cli: "subl",
+    },
 ];
 
 #[cfg(target_os = "macos")]
@@ -43,7 +59,10 @@ fn detect_editors() -> Vec<EditorInfo> {
     KNOWN_EDITORS
         .iter()
         .filter(|e| is_editor_installed(e))
-        .map(|e| EditorInfo { id: e.id.to_string(), name: e.name.to_string() })
+        .map(|e| EditorInfo {
+            id: e.id.to_string(),
+            name: e.name.to_string(),
+        })
         .collect()
 }
 
@@ -90,7 +109,8 @@ fn open_in_editor(
         }
     }
 
-    cmd.spawn().map_err(|e| format!("Failed to open {}: {}", editor.name, e))?;
+    cmd.spawn()
+        .map_err(|e| format!("Failed to open {}: {}", editor.name, e))?;
     Ok(())
 }
 
@@ -124,8 +144,8 @@ fn resolve_editor_cli(cli: &str) -> Result<String, String> {
 #[cfg(target_os = "macos")]
 fn set_macos_app_icon() {
     use objc2::{AnyThread, MainThreadMarker};
-    use objc2_foundation::NSData;
     use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::NSData;
 
     let icon_bytes = include_bytes!("../icons/icon.png");
 
@@ -142,10 +162,13 @@ fn set_macos_app_icon() {
 
 #[tauri::command]
 fn create_new_window(app: tauri::AppHandle) -> Result<(), String> {
-    let label = format!("window-{}", std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis());
+    let label = format!(
+        "window-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    );
 
     let mut builder = WebviewWindowBuilder::new(&app, &label, WebviewUrl::default())
         .title("ClaudePrism")
@@ -160,7 +183,9 @@ fn create_new_window(app: tauri::AppHandle) -> Result<(), String> {
             .traffic_light_position(tauri::LogicalPosition::new(12.0, 12.0));
     }
 
-    builder.build().map_err(|e| format!("Failed to create window: {}", e))?;
+    builder
+        .build()
+        .map_err(|e| format!("Failed to create window: {}", e))?;
 
     Ok(())
 }
@@ -225,6 +250,7 @@ pub fn run() {
 
     #[allow(clippy::expect_used)]
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
@@ -232,9 +258,7 @@ pub fn run() {
         .manage(claude::ClaudeProcessState::default())
         .manage(latex::LatexCompilerState::default())
         .manage(zotero::ZoteroOAuthState::default())
-        .setup(|_app| {
-            Ok(())
-        })
+        .setup(|_app| Ok(()))
         .invoke_handler(tauri::generate_handler![
             create_new_window,
             detect_editors,
@@ -295,7 +319,11 @@ pub fn run() {
             tauri::RunEvent::Ready => {
                 set_macos_app_icon();
             }
-            tauri::RunEvent::WindowEvent { label, event: tauri::WindowEvent::Destroyed, .. } => {
+            tauri::RunEvent::WindowEvent {
+                label,
+                event: tauri::WindowEvent::Destroyed,
+                ..
+            } => {
                 // Kill Claude process associated with this window
                 let claude_state = app_handle.state::<claude::ClaudeProcessState>();
                 let label_clone = label.clone();

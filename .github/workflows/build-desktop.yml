@@ -354,12 +354,12 @@ jobs:
           node -e "
             const BASE = process.env.BASE_URL;
             const platforms = {};
-            if (process.env.MAC_SIG && process.env.MAC_URL)
-              platforms['darwin-aarch64'] = { signature: process.env.MAC_SIG, url: BASE + '/' + process.env.MAC_URL };
-            if (process.env.LIN_SIG && process.env.LIN_URL)
-              platforms['linux-x86_64'] = { signature: process.env.LIN_SIG, url: BASE + '/' + process.env.LIN_URL };
-            if (process.env.WIN_SIG && process.env.WIN_URL)
-              platforms['windows-x86_64'] = { signature: process.env.WIN_SIG, url: BASE + '/' + process.env.WIN_URL };
+            if (process.env.MAC_SIG)
+              platforms['darwin-aarch64'] = { signature: process.env.MAC_SIG, url: BASE + '/ClaudePrism-macOS.app.tar.gz' };
+            if (process.env.LIN_SIG)
+              platforms['linux-x86_64'] = { signature: process.env.LIN_SIG, url: BASE + '/ClaudePrism-Linux.AppImage' };
+            if (process.env.WIN_SIG)
+              platforms['windows-x86_64'] = { signature: process.env.WIN_SIG, url: BASE + '/ClaudePrism-Windows-setup.exe' };
 
             const data = {
               version: '$VERSION',
@@ -379,22 +379,28 @@ jobs:
           gh release view "$TAG" > /dev/null 2>&1 || \
             gh release create "$TAG" --title "ClaudePrism $TAG" --generate-notes --draft
 
-      - name: Upload all assets to release
+      - name: Rename and upload assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
+          mkdir -p upload
 
-          # Upload latest.json
-          gh release upload "$TAG" latest.json --clobber
+          # Rename platform artifacts to version-free names
+          find artifacts -name "*.dmg" | head -1 | xargs -I{} cp {} upload/ClaudePrism-macOS.dmg
+          find artifacts -name "*.app.tar.gz" | head -1 | xargs -I{} cp {} upload/ClaudePrism-macOS.app.tar.gz
+          find artifacts -name "*-setup.exe" | head -1 | xargs -I{} cp {} upload/ClaudePrism-Windows-setup.exe
+          find artifacts -name "*.msi" | head -1 | xargs -I{} cp {} upload/ClaudePrism-Windows.msi
+          find artifacts -name "*.deb" | head -1 | xargs -I{} cp {} upload/ClaudePrism-Linux.deb
+          find artifacts -name "*.rpm" | head -1 | xargs -I{} cp {} upload/ClaudePrism-Linux.rpm
+          find artifacts -name "*.AppImage" | head -1 | xargs -I{} cp {} upload/ClaudePrism-Linux.AppImage
 
-          # Upload all platform artifacts
-          find artifacts -type f \( \
-            -name "*.dmg" -o -name "*.app.tar.gz" -o \
-            -name "*.exe" -o -name "*.msi" -o \
-            -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" \
-          \) | while read -r file; do
-            echo "Uploading: $file"
+          cp latest.json upload/
+
+          echo "==> Uploading:"
+          ls -la upload/
+
+          for file in upload/*; do
             gh release upload "$TAG" "$file" --clobber
           done
 

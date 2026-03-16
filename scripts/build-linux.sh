@@ -66,7 +66,7 @@ if [ -n "$APPIMAGE_PATH" ] && [ -n "$APPIMAGE_SIG" ]; then
       const data = JSON.parse(fs.readFileSync('$LATEST_JSON', 'utf8'));
       data.platforms['linux-x86_64'] = {
         signature: \`$SIGNATURE\`,
-        url: 'https://github.com/delibae/claude-prism/releases/download/$TAG/$APPIMAGE_FILENAME'
+        url: 'https://github.com/delibae/claude-prism/releases/download/$TAG/ClaudePrism-Linux.AppImage'
       };
       fs.writeFileSync('$LATEST_JSON', JSON.stringify(data, null, 2));
     "
@@ -79,7 +79,7 @@ if [ -n "$APPIMAGE_PATH" ] && [ -n "$APPIMAGE_SIG" ]; then
   "platforms": {
     "linux-x86_64": {
       "signature": "$SIGNATURE",
-      "url": "https://github.com/delibae/claude-prism/releases/download/$TAG/$APPIMAGE_FILENAME"
+      "url": "https://github.com/delibae/claude-prism/releases/download/$TAG/ClaudePrism-Linux.AppImage"
     }
   }
 }

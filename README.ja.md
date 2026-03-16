@@ -30,8 +30,8 @@
   <a href="https://github.com/delibae/claude-prism/releases/latest/download/ClaudePrism-Windows-setup.exe">
     <img src="https://img.shields.io/badge/Download-Windows-0078D4?style=for-the-badge&logo=windows&logoColor=white" alt="Windows 版をダウンロード" />
   </a>&nbsp;
-  <a href="https://github.com/delibae/claude-prism/releases/latest/download/ClaudePrism-Linux.deb">
-    <img src="https://img.shields.io/badge/Download-Linux_(deb)-FCC624?style=for-the-badge&logo=linux&logoColor=black" alt="Linux 版をダウンロード" />
+  <a href="https://github.com/delibae/claude-prism/releases/latest/download/ClaudePrism-Linux.AppImage">
+    <img src="https://img.shields.io/badge/Download-Linux_(AppImage)-FCC624?style=for-the-badge&logo=linux&logoColor=black" alt="Linux 版をダウンロード" />
   </a>
 </p>
 <p align="center">

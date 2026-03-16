@@ -5,6 +5,7 @@ import { ask } from "@tauri-apps/plugin-dialog";
 import { getCachedDocument, getOrOpenDocument } from "@/lib/mupdf/pdf-doc-cache";
 import { MupdfPage } from "./mupdf-page";
 import { createLogger } from "@/lib/debug/logger";
+import { APP_VISIBILITY_RESTORED } from "@/lib/debug/log-store";
 import type { PageSize } from "@/lib/mupdf/types";
 
 const log = createLogger("pdf-viewer");
@@ -97,8 +98,8 @@ export function PdfViewer({
   const [focusGen, setFocusGen] = useState(0);
   useEffect(() => {
     const handleRestore = () => setFocusGen((g) => g + 1);
-    window.addEventListener("app-visibility-restored", handleRestore);
-    return () => window.removeEventListener("app-visibility-restored", handleRestore);
+    window.addEventListener(APP_VISIBILITY_RESTORED, handleRestore);
+    return () => window.removeEventListener(APP_VISIBILITY_RESTORED, handleRestore);
   }, []);
 
   // Keep-alive scroll save/restore

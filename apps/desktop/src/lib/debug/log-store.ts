@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
+import { emit, listen } from "@tauri-apps/api/event";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -11,6 +12,16 @@ export interface LogEntry {
   data?: unknown;
 }
 
+/** Custom event name constant to avoid stringly-typed bugs. */
+export const APP_VISIBILITY_RESTORED = "app-visibility-restored";
+
+export interface SystemInfo {
+  os: string;
+  os_version: string;
+  arch: string;
+  app_version: string;
+}
+
 const MAX_ENTRIES = 2000;
 const LOG_LEVEL_ORDER: Record<LogLevel, number> = {
   debug: 0,
@@ -19,9 +30,33 @@ const LOG_LEVEL_ORDER: Record<LogLevel, number> = {
   error: 3,
 };
 
+// Detect if this is the debug window (separate webview)
+const _isDebugWindow = new URLSearchParams(window.location.search).has("debug");
+
+// Cache debug flag in memory — updated via storage event
+let _debugEnabled = !!localStorage.getItem("debug");
+window.addEventListener("storage", (e) => {
+  if (e.key === "debug") _debugEnabled = !!e.newValue;
+});
+
+// Mutable ring buffer — avoids spreading 2000-entry arrays on every log call.
+// Only exposed to React via a version counter that triggers selective re-reads.
+const _buffer: LogEntry[] = [];
+let _version = 0;
+
+/** Push an entry into the local buffer without emitting to other windows. */
+function _pushEntry(entry: LogEntry) {
+  _buffer.push(entry);
+  if (_buffer.length > MAX_ENTRIES) {
+    _buffer.splice(0, _buffer.length - MAX_ENTRIES);
+  }
+}
+
 interface LogStore {
-  entries: LogEntry[];
+  /** Incremented on each log/clear — subscribers use this to know when to re-read. */
+  version: number;
   log: (level: LogLevel, source: string, message: string, data?: unknown) => void;
+  getEntries: () => readonly LogEntry[];
   getFilteredLogs: (opts?: {
     level?: LogLevel;
     source?: string;
@@ -31,12 +66,11 @@ interface LogStore {
   clear: () => void;
 }
 
-export const useLogStore = create<LogStore>((set, get) => ({
-  entries: [],
+export const useLogStore = create<LogStore>((set) => ({
+  version: 0,
 
   log: (level, source, message, data) => {
-    // Skip debug-level entries when debug mode is off
-    if (level === "debug" && !localStorage.getItem("debug")) return;
+    if (level === "debug" && !_debugEnabled) return;
 
     const entry: LogEntry = {
       timestamp: Date.now(),
@@ -46,13 +80,11 @@ export const useLogStore = create<LogStore>((set, get) => ({
       data,
     };
 
-    set((state) => {
-      const next = [...state.entries, entry];
-      if (next.length > MAX_ENTRIES) {
-        next.splice(0, next.length - MAX_ENTRIES);
-      }
-      return { entries: next };
-    });
+    _pushEntry(entry);
+    set({ version: ++_version });
+
+    // Broadcast to other windows (main → debug, or debug → main)
+    emit("debug-log-entry", entry).catch(() => {});
 
     // Forward warn/error to Rust stderr via existing js_log command
     if (level === "warn" || level === "error") {
@@ -62,15 +94,16 @@ export const useLogStore = create<LogStore>((set, get) => ({
     }
   },
 
+  getEntries: () => _buffer,
+
   getFilteredLogs: (opts) => {
-    const { entries } = get();
-    if (!opts) return entries;
+    if (!opts) return _buffer;
 
     const { level, source, search } = opts;
     const minLevel = level ? LOG_LEVEL_ORDER[level] : 0;
     const searchLower = search?.toLowerCase();
 
-    return entries.filter((e) => {
+    return _buffer.filter((e) => {
       if (LOG_LEVEL_ORDER[e.level] < minLevel) return false;
       if (source && e.source !== source) return false;
       if (searchLower) {
@@ -82,8 +115,74 @@ export const useLogStore = create<LogStore>((set, get) => ({
   },
 
   exportLogs: () => {
-    return JSON.stringify(get().entries, null, 2);
+    return JSON.stringify(_buffer, null, 2);
   },
 
-  clear: () => set({ entries: [] }),
+  clear: () => {
+    _buffer.length = 0;
+    set({ version: ++_version });
+  },
 }));
+
+// ── Cross-window log synchronization ──
+// Listen for log entries emitted by other windows and insert into local buffer.
+listen<LogEntry>("debug-log-entry", (event) => {
+  _pushEntry(event.payload);
+  useLogStore.setState({ version: ++_version });
+});
+
+// When the debug window opens, request a bulk sync of existing logs from the main window.
+if (_isDebugWindow) {
+  emit("debug-log-sync-request").catch(() => {});
+}
+
+// Main window responds to sync requests by sending the full buffer.
+listen("debug-log-sync-request", () => {
+  if (!_isDebugWindow && _buffer.length > 0) {
+    emit("debug-log-sync", _buffer).catch(() => {});
+  }
+});
+
+// Debug window receives the bulk sync.
+listen<LogEntry[]>("debug-log-sync", (event) => {
+  if (_isDebugWindow && event.payload.length > 0) {
+    // Merge: only add entries we don't already have (by timestamp dedup)
+    const existing = new Set(_buffer.map((e) => e.timestamp));
+    for (const entry of event.payload) {
+      if (!existing.has(entry.timestamp)) {
+        _pushEntry(entry);
+      }
+    }
+    // Sort by timestamp after merge
+    _buffer.sort((a, b) => a.timestamp - b.timestamp);
+    useLogStore.setState({ version: ++_version });
+  }
+});
+
+/** Get the GPU renderer string. Result is cached after first call. */
+let _gpuRendererCache: string | null = null;
+export function getGpuRenderer(): string {
+  if (_gpuRendererCache !== null) return _gpuRendererCache;
+  try {
+    const canvas = document.createElement("canvas");
+    const gl = canvas.getContext("webgl") || canvas.getContext("experimental-webgl");
+    if (gl && gl instanceof WebGLRenderingContext) {
+      const ext = gl.getExtension("WEBGL_debug_renderer_info");
+      if (ext) {
+        _gpuRendererCache = gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) as string;
+        return _gpuRendererCache;
+      }
+    }
+  } catch {
+    // ignore
+  }
+  _gpuRendererCache = "Unknown";
+  return _gpuRendererCache;
+}
+
+/** Get recent visibility-related log entries. */
+export function getVisibilityLogs(limit = 10): LogEntry[] {
+  return _buffer
+    .filter((e) => e.source === "app" && e.message.includes("Visibility"))
+    .slice(-limit);
+}

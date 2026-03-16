@@ -18,12 +18,12 @@ import {
 import { useHistoryStore } from "@/stores/history-store";
 import { useClaudeChatStore } from "@/stores/claude-chat-store";
 import { clearDocCache } from "@/lib/mupdf/pdf-doc-cache";
-import { createLogger } from "@/lib/debug/logger";
-
-const log = createLogger("document");
 import { clearScrollPositionCache } from "@/components/workspace/preview/pdf-viewer";
 import { clearZoomCache } from "@/components/workspace/preview/pdf-preview";
 import { clearEditorStateCache } from "@/components/workspace/editor/latex-editor";
+import { createLogger } from "@/lib/debug/logger";
+
+const log = createLogger("document");
 
 export interface ProjectFile {
   id: string; // relativePath is the id

@@ -16,7 +16,6 @@ import {
 } from "@/components/scientific-skills/scientific-skills-onboarding";
 import { useUvSetupStore } from "@/stores/uv-setup-store";
 import { ErrorFallback } from "@/components/error-fallback";
-import { DebugPanel } from "@/components/debug/debug-panel";
 import { createLogger } from "@/lib/debug/logger";
 
 const log = createLogger("app");
@@ -108,7 +107,6 @@ export function App({ onReady }: { onReady?: () => void }) {
           />
           {projectRoot ? <WorkspaceWithClaude /> : <ProjectPicker />}
           <Toaster />
-          <DebugPanel />
         </TooltipProvider>
       </ThemeProvider>
     </ErrorBoundary>

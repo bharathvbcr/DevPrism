@@ -1,28 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useLogStore } from "./log-store";
-
-interface SystemInfo {
-  os: string;
-  os_version: string;
-  arch: string;
-  app_version: string;
-}
-
-function getGpuRenderer(): string {
-  try {
-    const canvas = document.createElement("canvas");
-    const gl = canvas.getContext("webgl") || canvas.getContext("experimental-webgl");
-    if (gl && gl instanceof WebGLRenderingContext) {
-      const ext = gl.getExtension("WEBGL_debug_renderer_info");
-      if (ext) {
-        return gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) as string;
-      }
-    }
-  } catch {
-    // ignore
-  }
-  return "Unknown";
-}
+import {
+  useLogStore,
+  getGpuRenderer,
+  getVisibilityLogs,
+  type SystemInfo,
+} from "./log-store";
 
 /**
  * Generate a JSON bug report containing logs, system info, and render state.
@@ -36,12 +18,7 @@ export async function generateBugReport(): Promise<string> {
     // Tauri command may not be available in all contexts
   }
 
-  const logEntries = useLogStore.getState().entries;
-
-  // Collect recent visibility events
-  const visibilityEvents = logEntries
-    .filter((e) => e.source === "app" && e.message.includes("Visibility"))
-    .slice(-10);
+  const entries = useLogStore.getState().getEntries();
 
   const report = {
     generated_at: new Date().toISOString(),
@@ -58,18 +35,18 @@ export async function generateBugReport(): Promise<string> {
       visibility_state: document.visibilityState,
       window_focused: document.hasFocus(),
     },
-    visibility_events: visibilityEvents.map((e) => ({
+    visibility_events: getVisibilityLogs().map((e) => ({
       timestamp: new Date(e.timestamp).toISOString(),
       message: e.message,
     })),
-    logs: logEntries.slice(-500).map((e) => ({
+    logs: entries.slice(-500).map((e) => ({
       time: new Date(e.timestamp).toISOString(),
       level: e.level,
       source: e.source,
       message: e.message,
       ...(e.data !== undefined ? { data: e.data } : {}),
     })),
-    total_log_entries: logEntries.length,
+    total_log_entries: entries.length,
   };
 
   return JSON.stringify(report, null, 2);

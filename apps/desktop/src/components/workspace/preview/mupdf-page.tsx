@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback, memo } from "react";
 import { getMupdfClient } from "@/lib/mupdf/mupdf-client";
 import { createLogger } from "@/lib/debug/logger";
+import { APP_VISIBILITY_RESTORED } from "@/lib/debug/log-store";
 import type { StructuredTextData, LinkData } from "@/lib/mupdf/types";
 
 const log = createLogger("mupdf-page");
@@ -14,22 +15,19 @@ interface MupdfPageProps {
   isVisible: boolean;
 }
 
-/** Check if a canvas appears blank (GPU context was silently invalidated). */
+/** Check if a canvas appears blank (GPU context was silently invalidated).
+ *  Uses a single getImageData call covering a small center region. */
 function isCanvasBlank(canvas: HTMLCanvasElement): boolean {
   if (canvas.width === 0 || canvas.height === 0) return false;
   const ctx = canvas.getContext("2d");
   if (!ctx) return true; // context fully lost
-  // Sample a few pixels to detect blank canvas
-  const samples = [
-    [1, 1],
-    [Math.floor(canvas.width / 2), Math.floor(canvas.height / 2)],
-    [canvas.width - 2, canvas.height - 2],
-  ];
-  for (const [x, y] of samples) {
-    if (x < 0 || y < 0 || x >= canvas.width || y >= canvas.height) continue;
-    const pixel = ctx.getImageData(x, y, 1, 1).data;
-    // If any sample has non-zero alpha content, canvas is not blank
-    if (pixel[3] !== 0) return false;
+  // Sample a 2x2 region from the center in one GPU readback
+  const cx = Math.max(0, Math.floor(canvas.width / 2) - 1);
+  const cy = Math.max(0, Math.floor(canvas.height / 2) - 1);
+  const data = ctx.getImageData(cx, cy, 2, 2).data;
+  // If all sampled pixels have zero alpha, canvas is blank
+  for (let i = 3; i < data.length; i += 4) {
+    if (data[i] !== 0) return false;
   }
   return true;
 }
@@ -107,8 +105,8 @@ export const MupdfPage = memo(function MupdfPage({
       }
     };
 
-    window.addEventListener("app-visibility-restored", handleVisibilityRestored);
-    return () => window.removeEventListener("app-visibility-restored", handleVisibilityRestored);
+    window.addEventListener(APP_VISIBILITY_RESTORED, handleVisibilityRestored);
+    return () => window.removeEventListener(APP_VISIBILITY_RESTORED, handleVisibilityRestored);
   }, [docId, pageIndex, scale, isVisible, renderPage]);
 
   return (

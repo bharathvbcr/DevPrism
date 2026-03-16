@@ -197,6 +197,28 @@ fn js_log(msg: String) {
     eprintln!("[js] {}", msg);
 }
 
+// --- Debug window ---
+
+#[tauri::command]
+fn open_debug_window(app: tauri::AppHandle) -> Result<(), String> {
+    // If a debug window already exists, just focus it
+    if let Some(win) = app.get_webview_window("debug") {
+        win.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    let url = WebviewUrl::App("index.html?debug=1".into());
+    WebviewWindowBuilder::new(&app, "debug", url)
+        .title("ClaudePrism — Debug")
+        .inner_size(560.0, 700.0)
+        .min_inner_size(400.0, 400.0)
+        .visible(true)
+        .build()
+        .map_err(|e| format!("Failed to create debug window: {}", e))?;
+
+    Ok(())
+}
+
 // --- System info for debug panel & bug reports ---
 
 #[derive(serde::Serialize)]
@@ -345,6 +367,7 @@ pub fn run() {
             uv::uv_add_packages,
             uv::uv_run_command,
             get_system_info,
+            open_debug_window,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

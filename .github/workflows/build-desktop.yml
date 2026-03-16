@@ -349,16 +349,17 @@ jobs:
         run: |
           VERSION="${TAG#v}"
           PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          BASE_URL="https://github.com/delibae/claude-prism/releases/download/$TAG"
+          export BASE_URL="https://github.com/delibae/claude-prism/releases/download/$TAG"
 
           node -e "
+            const BASE = process.env.BASE_URL;
             const platforms = {};
             if (process.env.MAC_SIG && process.env.MAC_URL)
-              platforms['darwin-aarch64'] = { signature: process.env.MAC_SIG, url: process.env.BASE_URL + '/' + process.env.MAC_URL };
+              platforms['darwin-aarch64'] = { signature: process.env.MAC_SIG, url: BASE + '/' + process.env.MAC_URL };
             if (process.env.LIN_SIG && process.env.LIN_URL)
-              platforms['linux-x86_64'] = { signature: process.env.LIN_SIG, url: process.env.BASE_URL + '/' + process.env.LIN_URL };
+              platforms['linux-x86_64'] = { signature: process.env.LIN_SIG, url: BASE + '/' + process.env.LIN_URL };
             if (process.env.WIN_SIG && process.env.WIN_URL)
-              platforms['windows-x86_64'] = { signature: process.env.WIN_SIG, url: process.env.BASE_URL + '/' + process.env.WIN_URL };
+              platforms['windows-x86_64'] = { signature: process.env.WIN_SIG, url: BASE + '/' + process.env.WIN_URL };
 
             const data = {
               version: '$VERSION',

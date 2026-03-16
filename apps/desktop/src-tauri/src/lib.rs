@@ -9,6 +9,13 @@ mod zotero;
 use std::path::Path;
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
+/// Entry point for the `--tectonic-compile` subprocess mode.
+/// Runs tectonic compilation in an isolated process so that C-level global state
+/// (font cache, etc.) is cleaned up on exit, preventing assertion failures on retry.
+pub fn tectonic_compile_subprocess(work_dir: &Path, main_file: &str) -> Result<(), String> {
+    latex::compile_with_tectonic(work_dir, main_file)
+}
+
 // --- External editor detection & opening ---
 
 #[derive(serde::Serialize, Clone)]
@@ -392,35 +399,29 @@ pub fn run() {
             // Either one alone may not cover all cases.
             // See https://github.com/tauri-apps/tauri/issues/5226
             //     https://github.com/tauri-apps/tauri/issues/14843
-            #[cfg(target_os = "macos")]
             tauri::RunEvent::WindowEvent {
                 ref label,
                 event: tauri::WindowEvent::Focused(true),
                 ..
             } => {
                 if let Some(window) = app_handle.get_webview_window(label) {
-                    // 1) Native resize nudge
-                    if let Ok(size) = window.inner_size() {
-                        let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize {
-                            width: size.width + 1,
-                            height: size.height,
-                        }));
-                        let _ = window.set_size(tauri::Size::Physical(size));
+                    // macOS: nudge window size to fix black screen after wake/focus
+                    // See https://github.com/tauri-apps/tauri/issues/5226
+                    #[cfg(target_os = "macos")]
+                    {
+                        if let Ok(size) = window.inner_size() {
+                            let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize {
+                                width: size.width + 1,
+                                height: size.height,
+                            }));
+                            let _ = window.set_size(tauri::Size::Physical(size));
+                        }
+                        let _ = window.eval(
+                            "document.body.style.display='none';\
+                             document.body.offsetHeight;\
+                             document.body.style.display='';"
+                        );
                     }
-                    // 2) DOM reflow to force WKWebView render tree rebuild
-                    let _ = window.eval(
-                        "document.body.style.display='none';\
-                         document.body.offsetHeight;\
-                         document.body.style.display='';"
-                    );
-                }
-            }
-            tauri::RunEvent::WindowEvent {
-                label,
-                event: tauri::WindowEvent::Focused(true),
-                ..
-            } => {
-                if let Some(window) = app_handle.get_webview_window(&label) {
                     let _ = window.emit("window-focus-restored", ());
                 }
             }

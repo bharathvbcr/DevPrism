@@ -514,7 +514,7 @@ export function PdfPreview() {
     setScale(newScale);
   };
 
-  const handleCompile = async () => {
+  const handleCompile = async (force = false) => {
     // Read all guard values from the store to avoid stale closures
     const state = useDocumentStore.getState();
     if (!state.projectRoot) return;
@@ -536,17 +536,21 @@ export function PdfPreview() {
     }
     const { rootId, targetPath: targetFile } = resolved;
     // Skip recompile if no edits since last successful compile of this root
-    const lastGen = state.lastCompiledGenerations.get(rootId);
-    if (
-      hasPdfData() &&
-      lastGen !== undefined &&
-      state.contentGeneration === lastGen
-    )
-      return;
+    // (unless force=true, e.g. user clicked Recompile button)
+    if (!force) {
+      const lastGen = state.lastCompiledGenerations.get(rootId);
+      if (
+        hasPdfData() &&
+        lastGen !== undefined &&
+        state.contentGeneration === lastGen
+      )
+        return;
+    }
     useHistoryStore.getState().stopReview();
     setIsCompiling(true);
     state.setPendingRecompile(false);
     setPdfError(null);
+    const compileStart = Date.now();
     try {
       await saveAllFiles();
       const data = await compileLatex(state.projectRoot, targetFile);
@@ -554,6 +558,11 @@ export function PdfPreview() {
     } catch (error) {
       setCompileError(formatCompileError(error), rootId);
     } finally {
+      // Ensure the spinner is visible for at least 500ms for visual feedback
+      const elapsed = Date.now() - compileStart;
+      if (elapsed < 500) {
+        await new Promise((r) => setTimeout(r, 500 - elapsed));
+      }
       setIsCompiling(false);
       // If a recompile was requested while we were compiling, trigger it now
       // Use setTimeout to avoid unbounded recursion on the call stack
@@ -655,7 +664,7 @@ export function PdfPreview() {
                 Fix with Chat
               </button>
               <button
-                onClick={handleCompile}
+                onClick={() => handleCompile(true)}
                 className="flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 font-medium text-foreground text-xs transition-colors hover:bg-muted"
               >
                 <RefreshCwIcon className="size-3.5" />
@@ -681,7 +690,7 @@ export function PdfPreview() {
               variant="outline"
               size="sm"
               className="gap-1.5"
-              onClick={handleCompile}
+              onClick={() => handleCompile(true)}
             >
               <RefreshCwIcon className="size-3.5" />
               Compile
@@ -726,7 +735,7 @@ export function PdfPreview() {
                     variant="outline"
                     size="sm"
                     className="gap-1.5"
-                    onClick={handleCompile}
+                    onClick={() => handleCompile(true)}
                   >
                     <RefreshCwIcon className="size-3.5" />
                     Recompile
@@ -808,7 +817,7 @@ export function PdfPreview() {
               variant="ghost"
               size="sm"
               className="h-7 gap-1.5 px-2.5 text-xs"
-              onClick={handleCompile}
+              onClick={() => handleCompile(true)}
             >
               <RefreshCwIcon className="size-3.5" />
               {pdfData ? "Recompile" : "Compile"}
@@ -819,7 +828,7 @@ export function PdfPreview() {
               variant="ghost"
               size="sm"
               className="h-7 gap-1.5 px-2.5 text-destructive text-xs hover:text-destructive"
-              onClick={handleCompile}
+              onClick={() => handleCompile(true)}
               disabled={!isTexActive}
             >
               <RefreshCwIcon className="size-3.5" />

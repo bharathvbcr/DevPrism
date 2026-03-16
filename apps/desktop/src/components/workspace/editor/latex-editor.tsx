@@ -8,7 +8,14 @@ import {
   highlightActiveLineGutter,
   scrollPastEnd,
 } from "@codemirror/view";
-import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
+import {
+  defaultKeymap,
+  history,
+  historyKeymap,
+  indentMore,
+  indentLess,
+  toggleComment,
+} from "@codemirror/commands";
 import { syntaxHighlighting, syntaxTreeAvailable } from "@codemirror/language";
 import { oneDark, oneDarkHighlightStyle } from "@codemirror/theme-one-dark";
 import { defaultHighlightStyle } from "@codemirror/language";
@@ -385,13 +392,10 @@ export function LatexEditor() {
       return;
     }
     const { rootId, targetPath } = resolved;
-    // Skip recompile if no edits since last successful compile of this root
-    const lastGen = lastCompiledGenerations.get(rootId);
-    if (hasPdfData() && lastGen !== undefined && contentGeneration === lastGen)
-      return;
     useHistoryStore.getState().stopReview();
     setIsCompiling(true);
     state.setPendingRecompile(false);
+    const compileStart = Date.now();
     try {
       await saveAllFiles();
       // Pre-compile snapshot (fire-and-forget to avoid blocking compilation start)
@@ -404,6 +408,11 @@ export function LatexEditor() {
     } catch (error) {
       setCompileError(formatCompileError(error), rootId);
     } finally {
+      // Ensure the spinner is visible for at least 500ms for visual feedback
+      const elapsed = Date.now() - compileStart;
+      if (elapsed < 500) {
+        await new Promise((r) => setTimeout(r, 500 - elapsed));
+      }
       setIsCompiling(false);
       // If a recompile was requested while we were compiling, trigger it now
       // Use setTimeout to avoid unbounded recursion on the call stack
@@ -522,6 +531,19 @@ export function LatexEditor() {
       }
     });
 
+    // Wrap selected text with a LaTeX command, or insert empty command at cursor
+    const wrapSelection = (view: EditorView, cmd: string): boolean => {
+      const { from, to } = view.state.selection.main;
+      const selected = view.state.sliceDoc(from, to);
+      const wrapped = `\\${cmd}{${selected}}`;
+      const cursorPos = selected ? from + wrapped.length : from + cmd.length + 2;
+      view.dispatch({
+        changes: { from, to, insert: wrapped },
+        selection: { anchor: cursorPos },
+      });
+      return true;
+    };
+
     const compileKeymap = Prec.highest(
       keymap.of([
         {
@@ -579,6 +601,18 @@ export function LatexEditor() {
             return false;
           },
         },
+        {
+          key: "Mod-b",
+          run: (view) => wrapSelection(view, "textbf"),
+        },
+        {
+          key: "Mod-i",
+          run: (view) => wrapSelection(view, "textit"),
+        },
+        {
+          key: "Mod-/",
+          run: toggleComment,
+        },
       ]),
     );
 
@@ -590,7 +624,11 @@ export function LatexEditor() {
         highlightActiveLine(),
         highlightActiveLineGutter(),
         history(),
-        keymap.of([...defaultKeymap, ...historyKeymap]),
+        keymap.of([
+          { key: "Tab", run: indentMore, shift: indentLess },
+          ...defaultKeymap,
+          ...historyKeymap,
+        ]),
         activeFile?.type === "bib" ? bibtex() : latex({ enableLinting: false }),
         ...(activeFile?.type === "tex"
           ? [
@@ -644,14 +682,23 @@ export function LatexEditor() {
             fontSize: "14px",
             color: "var(--foreground)",
             backgroundColor: "var(--background)",
+            WebkitBackfaceVisibility: "hidden",
+            backfaceVisibility: "hidden",
           },
-          ".cm-scroller": { overflow: "auto" },
+          ".cm-scroller": {
+            overflow: "auto",
+            WebkitTransform: "translateZ(0)",
+            transform: "translateZ(0)",
+          },
           ".cm-gutters": { paddingRight: "4px" },
           ".cm-lineNumbers .cm-gutterElement": {
             paddingLeft: "8px",
             paddingRight: "4px",
           },
-          ".cm-content": { paddingLeft: "8px", paddingRight: "12px" },
+          ".cm-content": {
+            paddingLeft: "8px",
+            paddingRight: "12px",
+          },
           ".cm-searchMatch": {
             backgroundColor: "#facc15 !important",
             color: "#000 !important",

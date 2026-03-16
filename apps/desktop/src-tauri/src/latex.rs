@@ -220,7 +220,7 @@ fn lower_thread_priority() {
 
 // --- Tectonic Compilation ---
 
-fn compile_with_tectonic(work_dir: &Path, main_file: &str) -> Result<(), String> {
+pub(crate) fn compile_with_tectonic(work_dir: &Path, main_file: &str) -> Result<(), String> {
     use tectonic::config::PersistentConfig;
     use tectonic::driver::{OutputFormat, PassSetting, ProcessingSessionBuilder};
     use tectonic::status::NoopStatusBackend;
@@ -263,6 +263,34 @@ fn compile_with_tectonic(work_dir: &Path, main_file: &str) -> Result<(), String>
     session.run(&mut status).map_err(|e| format!("{}", e))?;
 
     Ok(())
+}
+
+/// Run tectonic compilation in an isolated subprocess.
+///
+/// This avoids the font cache assertion failure (`font_cache.fonts == NULL`)
+/// that occurs when tectonic is called multiple times in the same process.
+/// The C-level static `font_cache` in `dpx-pdffont.c` is not cleaned up
+/// on compilation failure, causing subsequent calls to abort.
+///
+/// By spawning a subprocess, each compilation gets a fresh process with
+/// clean global state, and cleanup happens automatically on process exit.
+fn compile_with_tectonic_subprocess(work_dir: &Path, main_file: &str) -> Result<(), String> {
+    let exe = std::env::current_exe()
+        .map_err(|e| format!("Failed to get current executable path: {}", e))?;
+
+    let output = std::process::Command::new(&exe)
+        .args(["--tectonic-compile", &work_dir.to_string_lossy(), main_file])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|e| format!("Failed to spawn tectonic subprocess: {}", e))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(stderr.trim().to_string())
+    }
 }
 
 // --- SyncTeX Native Parser ---
@@ -499,12 +527,13 @@ pub async fn compile_latex(
         }
     }
 
-    // Run Tectonic in a blocking task with reduced priority so the UI stays responsive.
+    // Run Tectonic in a subprocess to isolate C-level global state (font cache, etc.).
+    // This prevents the font_cache assertion failure on retry after a failed compilation.
     let work_dir_clone = work_dir.clone();
     let main_file_clone = main_file.clone();
     let compile_result = tokio::task::spawn_blocking(move || {
         lower_thread_priority();
-        compile_with_tectonic(&work_dir_clone, &main_file_clone)
+        compile_with_tectonic_subprocess(&work_dir_clone, &main_file_clone)
     })
     .await
     .map_err(|e| format!("Compilation task panicked: {}", e))?;
@@ -550,7 +579,7 @@ pub async fn compile_latex(
 
         if needs_retry {
             let retry_result = tokio::task::spawn_blocking(move || {
-                compile_with_tectonic(&work_dir_clone, &main_file_clone)
+                compile_with_tectonic_subprocess(&work_dir_clone, &main_file_clone)
             })
             .await
             .map_err(|e| format!("Retry task panicked: {}", e))?;

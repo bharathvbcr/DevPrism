@@ -76,7 +76,7 @@ else
       const data = JSON.parse(fs.readFileSync('$LATEST_JSON', 'utf8'));
       data.platforms['darwin-aarch64'] = {
         signature: \`$SIGNATURE\`,
-        url: 'https://github.com/delibae/claude-prism/releases/download/$TAG/$UPDATE_FILENAME'
+        url: 'https://github.com/delibae/claude-prism/releases/download/$TAG/ClaudePrism-macOS.app.tar.gz'
       };
       fs.writeFileSync('$LATEST_JSON', JSON.stringify(data, null, 2));
     "
@@ -89,7 +89,7 @@ else
   "platforms": {
     "darwin-aarch64": {
       "signature": "$SIGNATURE",
-      "url": "https://github.com/delibae/claude-prism/releases/download/$TAG/$UPDATE_FILENAME"
+      "url": "https://github.com/delibae/claude-prism/releases/download/$TAG/ClaudePrism-macOS.app.tar.gz"
     }
   }
 }
@@ -103,8 +103,16 @@ echo "==> Uploading to GitHub Release $TAG"
 gh release view "$TAG" --repo delibae/claude-prism >/dev/null 2>&1 || \
   gh release create "$TAG" --repo delibae/claude-prism --title "ClaudePrism $TAG" --generate-notes
 
-UPLOAD_ASSETS=("$DMG_PATH")
-[ -n "${UPDATE_TAR:-}" ] && UPLOAD_ASSETS+=("$UPDATE_TAR")
+# Rename to version-free names
+RENAMED_DMG="apps/desktop/src-tauri/target/ClaudePrism-macOS.dmg"
+cp "$DMG_PATH" "$RENAMED_DMG"
+UPLOAD_ASSETS=("$RENAMED_DMG")
+
+if [ -n "${UPDATE_TAR:-}" ]; then
+  RENAMED_TAR="apps/desktop/src-tauri/target/ClaudePrism-macOS.app.tar.gz"
+  cp "$UPDATE_TAR" "$RENAMED_TAR"
+  UPLOAD_ASSETS+=("$RENAMED_TAR")
+fi
 [ -f "${LATEST_JSON:-}" ] && UPLOAD_ASSETS+=("$LATEST_JSON")
 
 gh release upload "$TAG" \

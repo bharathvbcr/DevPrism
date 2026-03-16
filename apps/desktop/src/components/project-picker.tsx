@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
@@ -35,6 +36,7 @@ import { cn } from "@/lib/utils";
 export function ProjectPicker() {
   const [showModeDialog, setShowModeDialog] = useState(false);
   const [wizardMode, setWizardMode] = useState<CreationMode | null>(null);
+  const [appVersion, setAppVersion] = useState("");
 
   const recentProjects = useProjectStore((s) => s.recentProjects);
   const addRecentProject = useProjectStore((s) => s.addRecentProject);
@@ -47,6 +49,7 @@ export function ProjectPicker() {
 
   useEffect(() => {
     checkClaudeStatus();
+    getVersion().then(setAppVersion);
   }, [checkClaudeStatus]);
 
   const handleOpenFolder = async () => {
@@ -86,6 +89,9 @@ export function ProjectPicker() {
         <div className="flex flex-col items-center gap-2">
           <img src="/icon-192.png" alt="ClaudePrism" className="size-16" />
           <h1 className="font-bold text-2xl">ClaudePrism</h1>
+          {appVersion && (
+            <span className="text-xs text-muted-foreground">v{appVersion}</span>
+          )}
           <p className="text-center text-muted-foreground text-sm">
             AI-powered academic writing workspace
           </p>

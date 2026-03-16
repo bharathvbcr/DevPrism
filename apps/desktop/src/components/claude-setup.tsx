@@ -350,15 +350,30 @@ export function ClaudeSetup() {
 
         {hasInstallSteps && <InstallLogOutput />}
 
-        <Button
-          variant="outline"
-          size="sm"
-          className="w-fit gap-2"
-          onClick={hasInstallSteps ? install : checkStatus}
-        >
-          <RefreshCwIcon className="size-3.5" />
-          {hasInstallSteps ? "Retry Installation" : "Retry"}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-2"
+            onClick={hasInstallSteps ? install : checkStatus}
+          >
+            <RefreshCwIcon className="size-3.5" />
+            {hasInstallSteps ? "Retry Installation" : "Retry"}
+          </Button>
+          {!hasInstallSteps && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="gap-2 text-muted-foreground"
+              onClick={() => {
+                shellOpen("https://code.claude.com/docs/quickstart");
+              }}
+            >
+              <ExternalLinkIcon className="size-3.5" />
+              Setup Guide
+            </Button>
+          )}
+        </div>
       </div>
     );
   }

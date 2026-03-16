@@ -1,5 +1,8 @@
 import { getMupdfClient } from "./mupdf-client";
+import { createLogger } from "@/lib/debug/logger";
 import type { PageSize } from "./types";
+
+const log = createLogger("pdf-doc-cache");
 
 interface CachedDoc {
   docId: number;
@@ -35,6 +38,7 @@ async function evictOldest(): Promise<void> {
   if (oldestKey) {
     const entry = cache.get(oldestKey)!;
     cache.delete(oldestKey);
+    log.debug(`Evicted doc ${entry.docId} (cache size was ${cache.size + 1})`);
     await getMupdfClient().closeDocument(entry.docId).catch(() => {});
   }
 }
@@ -73,6 +77,7 @@ export async function getOrOpenDocument(data: Uint8Array): Promise<DocCacheResul
   await evictOldest();
   const fingerprint = computeFingerprint(data);
 
+  log.debug(`Cache miss, opening document (${(data.byteLength / 1024).toFixed(0)} KB)`);
   const client = getMupdfClient();
   // Always copy — the original buffer may not be transferable (e.g., from Tauri),
   // and transfer detaches the ArrayBuffer which would corrupt the pdfCache reference.
@@ -89,6 +94,7 @@ export async function getOrOpenDocument(data: Uint8Array): Promise<DocCacheResul
     lastAccess: Date.now(),
   });
 
+  log.info(`Opened doc ${docId}: ${pageSizes.length} pages, cache size=${cache.size}`);
   return { docId, pageSizes, cacheHit: false };
 }
 
@@ -105,10 +111,12 @@ export function invalidateDoc(docId: number): void {
 
 /** Close all cached documents (e.g., on project close). */
 export async function clearDocCache(): Promise<void> {
+  const count = cache.size;
   const client = getMupdfClient();
   const closePromises = [...cache.values()].map(
     (entry) => client.closeDocument(entry.docId).catch(() => {}),
   );
   cache.clear();
   await Promise.all(closePromises);
+  log.info(`Cleared doc cache (${count} documents closed)`);
 }

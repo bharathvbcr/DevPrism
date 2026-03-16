@@ -2,11 +2,31 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { App } from "./App";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
+import { createLogger } from "./lib/debug/logger";
 import "./styles/globals.css";
+
+const log = createLogger("app");
 
 // Catch unhandled promise rejections to prevent silent failures
 window.addEventListener("unhandledrejection", (event) => {
-  console.error("[unhandledrejection]", event.reason);
+  log.error("Unhandled promise rejection", { reason: String(event.reason) });
+});
+
+// Dispatch app-visibility-restored when returning from background / app switch.
+// This triggers canvas re-rendering and IntersectionObserver reconnection.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") {
+    log.info("Visibility restored (visibilitychange)");
+    window.dispatchEvent(new CustomEvent("app-visibility-restored"));
+  }
+});
+
+// Also listen for the Tauri-native focus event (more reliable than visibilitychange
+// on macOS, fires even when the webview doesn't properly emit visibilitychange).
+listen("window-focus-restored", () => {
+  log.info("Visibility restored (window-focus-restored)");
+  window.dispatchEvent(new CustomEvent("app-visibility-restored"));
 });
 
 // Platform-specific titlebar height adjustments

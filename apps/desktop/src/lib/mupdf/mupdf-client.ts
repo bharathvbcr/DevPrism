@@ -1,4 +1,7 @@
 import type { StructuredTextData, LinkData, PageSize, WorkerResponse } from "./types";
+import { createLogger } from "@/lib/debug/logger";
+
+const log = createLogger("mupdf-worker");
 
 export interface MupdfClient {
   openDocument(buffer: ArrayBuffer, magic?: string): Promise<number>;
@@ -38,6 +41,7 @@ function createClient(): MupdfClient {
     const [type, id, payload] = data;
 
     if (type === "INIT") {
+      log.info("Worker initialized");
       resolveReady();
       return;
     }
@@ -55,7 +59,9 @@ function createClient(): MupdfClient {
   };
 
   worker.onerror = (event) => {
-    console.error("[mupdf-worker] error:", event);
+    log.error("Worker fatal error", { message: event.message });
+    // Nullify singleton so next getMupdfClient() creates a fresh worker
+    instance = null;
   };
 
   const CALL_TIMEOUT_MS = 30_000;
@@ -110,4 +116,12 @@ export function getMupdfClient(): MupdfClient {
     instance = createClient();
   }
   return instance;
+}
+
+/** Terminate the current worker and clear the singleton, forcing recreation on next use. */
+export function resetMupdfClient(): void {
+  if (instance) {
+    instance.destroy();
+    instance = null;
+  }
 }

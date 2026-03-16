@@ -2,6 +2,9 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { useDocumentStore } from "./document-store";
 import { useHistoryStore } from "./history-store";
+import { createLogger } from "@/lib/debug/logger";
+
+const log = createLogger("claude");
 
 /** Convert a character offset to 1-based line:col */
 export function offsetToLineCol(
@@ -239,8 +242,8 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
 
     const { sessionId, selectedModel, effortLevel } = state;
 
-    console.time("[claude] total-send");
-    console.log("[claude] sendPrompt start", { sessionId: !!sessionId, hasContext: !!contextOverride, tab: activeTabId });
+    const sendStart = performance.now();
+    log.info("sendPrompt start", { sessionId: !!sessionId, hasContext: !!contextOverride, tab: activeTabId });
 
     const docState = useDocumentStore.getState();
     const projectPath = docState.projectRoot;
@@ -297,17 +300,17 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
 
     // Flush unsaved edits to disk so Claude reads the latest content
     if (docState.files.some((f) => f.isDirty)) {
-      console.timeLog("[claude] total-send", "saving dirty files...");
+      log.debug("saving dirty files...");
       await docState.saveAllFiles();
-      console.timeLog("[claude] total-send", "saveAllFiles done");
+      log.debug("saveAllFiles done");
     }
 
     // Snapshot before Claude edit
     if (projectPath) {
       try {
-        console.timeLog("[claude] total-send", "creating snapshot...");
+        log.debug("creating snapshot...");
         await useHistoryStore.getState().createSnapshot(projectPath, "[claude] Before Claude edit");
-        console.timeLog("[claude] total-send", "snapshot done");
+        log.debug("snapshot done");
       } catch { /* snapshot failure should not block Claude */ }
     }
 
@@ -332,8 +335,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       }
       prompt = `${ctx}\n\n${userPrompt}`;
     }
-    console.timeLog("[claude] total-send", "invoking CLI...");
-    console.log("[claude] prompt length:", prompt.length, "chars | mode:", sessionId ? "resume" : "new");
+    log.info("invoking CLI", { promptLength: prompt.length, mode: sessionId ? "resume" : "new" });
 
     try {
       if (sessionId) {
@@ -356,10 +358,9 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
           effortLevel,
         });
       }
-      console.timeEnd("[claude] total-send");
+      log.info(`sendPrompt complete in ${(performance.now() - sendStart).toFixed(0)}ms`);
     } catch (err: any) {
-      console.timeEnd("[claude] total-send");
-      console.error("[claude] invoke failed:", err);
+      log.error(`sendPrompt failed after ${(performance.now() - sendStart).toFixed(0)}ms`, { error: String(err) });
       set((s) => applyTabUpdate(s, activeTabId, {
         isStreaming: false,
         error: err?.message || String(err),
@@ -389,6 +390,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
   },
 
   newSession: () => {
+    log.info("Starting new session");
     const { activeTabId } = get();
     set((s) => applyTabUpdate(s, activeTabId, {
       messages: [],
@@ -402,6 +404,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
   },
 
   resumeSession: async (sessionId: string) => {
+    log.info(`Resuming session: ${sessionId.slice(0, 8)}`);
     const { activeTabId } = get();
     const projectPath = useDocumentStore.getState().projectRoot;
 
@@ -433,8 +436,8 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         }
 
         set((s) => applyTabUpdate(s, activeTabId, { messages }));
-      } catch {
-        // Failed to load session history
+      } catch (err) {
+        log.error("Failed to load session history", { error: String(err) });
       }
     }
   },
@@ -442,6 +445,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
   // ─── Tab Actions ───
 
   createTab: () => {
+    log.debug("Creating new tab");
     const id = nextTabId();
     const newTab = makeDefaultTab(id);
     set((s) => ({

@@ -12,6 +12,9 @@ import {
 } from "@/lib/zotero-api";
 import { useDocumentStore } from "@/stores/document-store";
 import { createFileOnDisk } from "@/lib/tauri/fs";
+import { createLogger } from "@/lib/debug/logger";
+
+const log = createLogger("zotero");
 
 /** Per-collection sync metadata (persisted) */
 export interface CollectionSyncInfo {
@@ -94,10 +97,12 @@ export const useZoteroStore = create<ZoteroState>()(
       isLoadingCollections: false,
 
       connectWithOAuth: async () => {
+        log.info("Starting OAuth connection");
         set({ isValidating: true, error: null });
         try {
           await startOAuth();
           const creds = await completeOAuth();
+          log.info(`OAuth connected as ${creds.username}`);
           set({
             apiKey: creds.apiKey,
             userID: creds.userID,
@@ -161,13 +166,15 @@ export const useZoteroStore = create<ZoteroState>()(
         if (!apiKey) return;
         try {
           const creds = await validateApiKey(apiKey);
+          log.debug(`Revalidated as ${creds.username}`);
           set({
             userID: creds.userID,
             username: creds.username,
             isAuthenticated: true,
           });
           get().loadCollections();
-        } catch {
+        } catch (err) {
+          log.warn("Revalidation failed", { error: String(err) });
           set({ isAuthenticated: false });
         }
       },
@@ -178,8 +185,10 @@ export const useZoteroStore = create<ZoteroState>()(
         set({ isLoadingCollections: true });
         try {
           const collections = await fetchCollections(apiKey, userID);
+          log.debug(`Loaded ${collections.length} collections`);
           set({ collections, isLoadingCollections: false });
-        } catch {
+        } catch (err) {
+          log.error("Failed to load collections", { error: String(err) });
           set({ isLoadingCollections: false });
         }
       },

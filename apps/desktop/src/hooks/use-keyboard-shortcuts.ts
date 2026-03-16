@@ -24,6 +24,12 @@ export function useKeyboardShortcuts() {
         e.preventDefault();
         window.dispatchEvent(new CustomEvent("toggle-capture-mode"));
       }
+
+      // Cmd+Shift+D (macOS) / Ctrl+Shift+D (others): Toggle debug panel
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "d") {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent("toggle-debug-panel"));
+      }
     };
 
     window.addEventListener("keydown", handleKeyDown);

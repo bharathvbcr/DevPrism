@@ -4,7 +4,10 @@ import { open as shellOpen } from "@tauri-apps/plugin-shell";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { getCachedDocument, getOrOpenDocument } from "@/lib/mupdf/pdf-doc-cache";
 import { MupdfPage } from "./mupdf-page";
+import { createLogger } from "@/lib/debug/logger";
 import type { PageSize } from "@/lib/mupdf/types";
+
+const log = createLogger("pdf-viewer");
 
 /** Module-level scroll position cache: rootFileId → page number */
 const scrollPositionCache = new Map<string, number>();
@@ -90,6 +93,14 @@ export function PdfViewer({
   const isFirstLoad = useRef(true);
   const savedPageRef = useRef<number>(0);
 
+  // Increment on app-visibility-restored to force IntersectionObserver reconnection
+  const [focusGen, setFocusGen] = useState(0);
+  useEffect(() => {
+    const handleRestore = () => setFocusGen((g) => g + 1);
+    window.addEventListener("app-visibility-restored", handleRestore);
+    return () => window.removeEventListener("app-visibility-restored", handleRestore);
+  }, []);
+
   // Keep-alive scroll save/restore
   const savedScrollTop = useRef(0);
   const prevIsActive = useRef(isActive);
@@ -170,7 +181,7 @@ export function PdfViewer({
 
     // Validate PDF header — must start with %PDF-
     if (pdfData.length < 5 || pdfData[0] !== 0x25 || pdfData[1] !== 0x50 || pdfData[2] !== 0x44 || pdfData[3] !== 0x46) {
-      console.error("[pdf-viewer] invalid PDF data: missing %PDF- header, length=", pdfData.length, "first bytes:", Array.from(pdfData.slice(0, 16)));
+      log.error("Invalid PDF data: missing %PDF- header", { length: pdfData.length, firstBytes: Array.from(pdfData.slice(0, 16)) });
       setLoading(false);
       onError?.("Invalid PDF data received. Try recompiling the document.");
       return;
@@ -305,7 +316,7 @@ export function PdfViewer({
     pages.forEach((p) => observer.observe(p));
 
     return () => observer.disconnect();
-  }, [pageSizes, scale, isActive]);
+  }, [pageSizes, scale, isActive, focusGen]);
 
   // Report container dimensions to parent for fit-to-width/height
   useEffect(() => {

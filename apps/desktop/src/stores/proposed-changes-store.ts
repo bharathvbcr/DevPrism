@@ -1,6 +1,9 @@
 import { create } from "zustand";
 import { useDocumentStore } from "./document-store";
 import { writeTexFileContent } from "@/lib/tauri/fs";
+import { createLogger } from "@/lib/debug/logger";
+
+const log = createLogger("proposed-changes");
 
 export interface ProposedChange {
   id: string; // tool_use_id
@@ -32,6 +35,7 @@ export const useProposedChangesStore = create<ProposedChangesState>()(
     changes: [],
 
     addChange: (change) => {
+      log.debug(`Adding change: ${change.toolName} on ${change.filePath}`);
       set((state) => {
         // If there's already a pending change for the same file, merge them:
         // keep the original oldContent (true baseline), use the new newContent and id
@@ -76,7 +80,7 @@ export const useProposedChangesStore = create<ProposedChangesState>()(
         .files.find((f) => f.relativePath === change.filePath);
       if (file?.content != null) {
         writeTexFileContent(change.absolutePath, file.content).catch(
-          console.error,
+          (err) => log.error("Failed to write kept change", { error: String(err) }),
         );
       }
 
@@ -90,6 +94,7 @@ export const useProposedChangesStore = create<ProposedChangesState>()(
       const change = get().changes.find((c) => c.id === id);
       if (!change) return;
 
+      log.info(`Undoing change on ${change.filePath}`);
       // Restore oldContent to disk
       await writeTexFileContent(change.absolutePath, change.oldContent);
 
@@ -112,6 +117,7 @@ export const useProposedChangesStore = create<ProposedChangesState>()(
 
     undoAll: async () => {
       const { changes } = get();
+      log.info(`Undoing all ${changes.length} changes`);
       for (const change of changes) {
         await writeTexFileContent(change.absolutePath, change.oldContent);
         await useDocumentStore.getState().reloadFile(change.filePath);

@@ -130,6 +130,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Build tools required by vcpkg ports (autotools for gperf, fontconfig, etc.)
+      # These are compile-time only — they do NOT create runtime dylib dependencies.
+      - name: Install build tools
+        run: brew install autoconf autoconf-archive automake libtool pkg-config
+
       # Static linking via vcpkg — avoids runtime dependency on Homebrew dylibs.
       # Ref: https://tectonic-typesetting.github.io/book/latest/howto/build-tectonic/
       # Ref: https://learn.microsoft.com/en-us/vcpkg/users/triplets (arm64-osx defaults to static)
@@ -284,6 +289,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      # Build tools required by vcpkg ports (autotools for gperf, fontconfig, etc.)
+      - name: Install build tools
+        run: brew install autoconf autoconf-archive automake libtool pkg-config
 
       # Static linking via vcpkg — same approach as Apple Silicon and Windows.
       - name: Setup vcpkg

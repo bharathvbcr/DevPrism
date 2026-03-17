@@ -130,16 +130,45 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install macOS dependencies
+      # Static linking via vcpkg — avoids runtime dependency on Homebrew dylibs.
+      # Ref: https://tectonic-typesetting.github.io/book/latest/howto/build-tectonic/
+      # Ref: https://learn.microsoft.com/en-us/vcpkg/users/triplets (arm64-osx defaults to static)
+      - name: Setup vcpkg
         run: |
-          brew install icu4c harfbuzz pkg-config graphite2 freetype fontconfig
-          INCLUDES="-I$(brew --prefix harfbuzz)/include -I$(brew --prefix freetype)/include -I$(brew --prefix graphite2)/include -I$(brew --prefix icu4c)/include"
-          {
-            echo "PKG_CONFIG_PATH=$(brew --prefix icu4c)/lib/pkgconfig:$(brew --prefix harfbuzz)/lib/pkgconfig:$(brew --prefix graphite2)/lib/pkgconfig:$(brew --prefix freetype)/lib/pkgconfig:$(brew --prefix libpng)/lib/pkgconfig:$(brew --prefix fontconfig)/lib/pkgconfig"
-            echo "CXXFLAGS=-std=c++17 $INCLUDES"
-            echo "CFLAGS=$INCLUDES"
-            echo "LDFLAGS=-L$(brew --prefix harfbuzz)/lib -L$(brew --prefix freetype)/lib -L$(brew --prefix graphite2)/lib -L$(brew --prefix icu4c)/lib"
-          } >> $GITHUB_ENV
+          git clone --depth 1 https://github.com/microsoft/vcpkg $HOME/vcpkg
+          $HOME/vcpkg/bootstrap-vcpkg.sh
+          echo "VCPKG_ROOT=$HOME/vcpkg" >> $GITHUB_ENV
+
+      - name: Restore vcpkg cache
+        id: vcpkg-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/vcpkg/installed
+          key: vcpkg-macos-arm64-v1
+
+      - name: Install macOS dependencies (vcpkg)
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        env:
+          VCPKG_BINARY_SOURCES: "clear"
+        run: |
+          $HOME/vcpkg/vcpkg install \
+            "harfbuzz[graphite2]:arm64-osx" \
+            fontconfig:arm64-osx \
+            freetype:arm64-osx \
+            icu:arm64-osx
+
+      - name: Save vcpkg cache
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/vcpkg/installed
+          key: vcpkg-macos-arm64-v1
+
+      - name: Set macOS build environment
+        run: |
+          echo "TECTONIC_DEP_BACKEND=vcpkg" >> $GITHUB_ENV
+          echo "CXXFLAGS=-std=c++17" >> $GITHUB_ENV
+          echo "CFLAGS=" >> $GITHUB_ENV
 
       - name: Import Apple certificate
         env:
@@ -186,7 +215,6 @@ jobs:
           ZOTERO_CONSUMER_KEY: ${{ secrets.ZOTERO_CONSUMER_KEY }}
           ZOTERO_CONSUMER_SECRET: ${{ secrets.ZOTERO_CONSUMER_SECRET }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          TECTONIC_DEP_BACKEND: pkg-config
         run: pnpm --filter @claude-prism/desktop tauri build --target aarch64-apple-darwin
 
       - name: Notarize DMG
@@ -257,16 +285,43 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install macOS dependencies
+      # Static linking via vcpkg — same approach as Apple Silicon and Windows.
+      - name: Setup vcpkg
         run: |
-          brew install icu4c harfbuzz pkg-config graphite2 freetype fontconfig
-          INCLUDES="-I$(brew --prefix harfbuzz)/include -I$(brew --prefix freetype)/include -I$(brew --prefix graphite2)/include -I$(brew --prefix icu4c)/include"
-          {
-            echo "PKG_CONFIG_PATH=$(brew --prefix icu4c)/lib/pkgconfig:$(brew --prefix harfbuzz)/lib/pkgconfig:$(brew --prefix graphite2)/lib/pkgconfig:$(brew --prefix freetype)/lib/pkgconfig:$(brew --prefix libpng)/lib/pkgconfig:$(brew --prefix fontconfig)/lib/pkgconfig"
-            echo "CXXFLAGS=-std=c++17 $INCLUDES"
-            echo "CFLAGS=$INCLUDES"
-            echo "LDFLAGS=-L$(brew --prefix harfbuzz)/lib -L$(brew --prefix freetype)/lib -L$(brew --prefix graphite2)/lib -L$(brew --prefix icu4c)/lib"
-          } >> $GITHUB_ENV
+          git clone --depth 1 https://github.com/microsoft/vcpkg $HOME/vcpkg
+          $HOME/vcpkg/bootstrap-vcpkg.sh
+          echo "VCPKG_ROOT=$HOME/vcpkg" >> $GITHUB_ENV
+
+      - name: Restore vcpkg cache
+        id: vcpkg-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/vcpkg/installed
+          key: vcpkg-macos-x64-v1
+
+      - name: Install macOS dependencies (vcpkg)
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        env:
+          VCPKG_BINARY_SOURCES: "clear"
+        run: |
+          $HOME/vcpkg/vcpkg install \
+            "harfbuzz[graphite2]:x64-osx" \
+            fontconfig:x64-osx \
+            freetype:x64-osx \
+            icu:x64-osx
+
+      - name: Save vcpkg cache
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/vcpkg/installed
+          key: vcpkg-macos-x64-v1
+
+      - name: Set macOS build environment
+        run: |
+          echo "TECTONIC_DEP_BACKEND=vcpkg" >> $GITHUB_ENV
+          echo "CXXFLAGS=-std=c++17" >> $GITHUB_ENV
+          echo "CFLAGS=" >> $GITHUB_ENV
 
       - name: Import Apple certificate
         env:
@@ -313,7 +368,6 @@ jobs:
           ZOTERO_CONSUMER_KEY: ${{ secrets.ZOTERO_CONSUMER_KEY }}
           ZOTERO_CONSUMER_SECRET: ${{ secrets.ZOTERO_CONSUMER_SECRET }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          TECTONIC_DEP_BACKEND: pkg-config
         run: pnpm --filter @claude-prism/desktop tauri build --target x86_64-apple-darwin
 
       - name: Notarize DMG

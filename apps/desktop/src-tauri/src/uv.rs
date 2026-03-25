@@ -230,35 +230,9 @@ pub async fn install_uv(window: WebviewWindow) -> Result<(), String> {
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 
-    // Inherit essential environment variables
+    // Inherit essential environment variables (shared helper handles case-insensitive matching)
     for (key, value) in std::env::vars() {
-        if key == "PATH"
-            || key == "HOME"
-            || key == "USER"
-            || key == "SHELL"
-            || key == "LANG"
-            || key.starts_with("LC_")
-            || key == "HOMEBREW_PREFIX"
-            || key == "HOMEBREW_CELLAR"
-            || key == "HTTP_PROXY"
-            || key == "HTTPS_PROXY"
-            || key == "NO_PROXY"
-            || key == "ALL_PROXY"
-            // Windows-essential variables
-            || key == "USERPROFILE"
-            || key == "LOCALAPPDATA"
-            || key == "APPDATA"
-            || key == "TEMP"
-            || key == "TMP"
-            || key == "SystemRoot"
-            || key == "WINDIR"
-            || key == "PROGRAMFILES"
-            || key == "PROGRAMFILES(X86)"
-            || key == "COMMONPROGRAMFILES"
-            || key == "SystemDrive"
-            || key == "COMPUTERNAME"
-            || key == "USERNAME"
-        {
+        if key.eq_ignore_ascii_case("PATH") || crate::claude::is_essential_env_var(&key) {
             cmd.env(&key, &value);
         }
     }

@@ -7,6 +7,34 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
+/// Check if an environment variable should be explicitly passed to child processes.
+///
+/// NOTE: This is NOT a true whitelist — we do NOT call `env_clear()`, so the
+/// child inherits the full parent environment.  This helper only identifies vars
+/// that we *explicitly* re-set via `cmd.env()` to guarantee they are present
+/// even when other per-key overrides are applied (e.g. prepending to PATH).
+/// Uses case-insensitive comparison for Windows compatibility.
+pub(crate) fn is_essential_env_var(key: &str) -> bool {
+    let k = key.to_ascii_uppercase();
+    // Cross-platform
+    matches!(
+        k.as_str(),
+        "HOME" | "USER" | "SHELL" | "LANG"
+        | "HOMEBREW_PREFIX" | "HOMEBREW_CELLAR"
+        | "HTTP_PROXY" | "HTTPS_PROXY" | "NO_PROXY" | "ALL_PROXY"
+    ) || k.starts_with("LC_")
+    // Windows-specific
+    || matches!(
+        k.as_str(),
+        "USERPROFILE" | "APPDATA" | "LOCALAPPDATA"
+        | "TEMP" | "TMP"
+        | "SYSTEMROOT" | "SYSTEMDRIVE"
+        | "COMPUTERNAME" | "USERNAME"
+        | "PROGRAMFILES" | "PROGRAMFILES(X86)" | "COMMONPROGRAMFILES"
+        | "PATHEXT" | "PSMODULEPATH" | "WINDIR"
+    )
+}
+
 /// Windows CREATE_NO_WINDOW flag to prevent console windows from flashing
 /// when spawning child processes (e.g. Claude CLI, cmd.exe, node.exe).
 #[cfg(target_os = "windows")]
@@ -900,7 +928,7 @@ pub async fn install_claude_cli(window: WebviewWindow) -> Result<(), String> {
     #[cfg(not(target_os = "windows"))]
     let path_sep = ":";
     for (key, value) in std::env::vars() {
-        if key == "PATH" {
+        if key.eq_ignore_ascii_case("PATH") {
             // Prepend ~/.local/bin so the installer sees it in PATH
             if let Some(home) = dirs::home_dir() {
                 let local_bin = home.join(".local").join("bin");
@@ -913,18 +941,7 @@ pub async fn install_claude_cli(window: WebviewWindow) -> Result<(), String> {
             } else {
                 cmd.env("PATH", &value);
             }
-        } else if key == "HOME"
-            || key == "USER"
-            || key == "SHELL"
-            || key == "LANG"
-            || key.starts_with("LC_")
-            || key == "HOMEBREW_PREFIX"
-            || key == "HOMEBREW_CELLAR"
-            || key == "HTTP_PROXY"
-            || key == "HTTPS_PROXY"
-            || key == "NO_PROXY"
-            || key == "ALL_PROXY"
-        {
+        } else if is_essential_env_var(&key) {
             cmd.env(&key, &value);
         }
     }
@@ -1015,19 +1032,7 @@ pub async fn login_claude(window: WebviewWindow) -> Result<(), String> {
 
     // Inherit essential environment variables
     for (key, value) in std::env::vars() {
-        if key == "PATH"
-            || key == "HOME"
-            || key == "USER"
-            || key == "SHELL"
-            || key == "LANG"
-            || key.starts_with("LC_")
-            || key == "HOMEBREW_PREFIX"
-            || key == "HOMEBREW_CELLAR"
-            || key == "HTTP_PROXY"
-            || key == "HTTPS_PROXY"
-            || key == "NO_PROXY"
-            || key == "ALL_PROXY"
-        {
+        if key.eq_ignore_ascii_case("PATH") || is_essential_env_var(&key) {
             cmd.env(&key, &value);
         }
     }

@@ -326,7 +326,27 @@ pub fn run() {
         .manage(claude::ClaudeProcessState::default())
         .manage(latex::LatexCompilerState::default())
         .manage(zotero::ZoteroOAuthState::default())
-        .setup(|_app| Ok(()))
+        .setup(|app| {
+            // Safety net: force-show the main window after a timeout if the
+            // frontend JS never calls `getCurrentWindow().show()`.
+            // This prevents the window from staying permanently hidden when
+            // WKWebView fails to execute JS (e.g. WebKit top-level-await bug
+            // on macOS 12). See https://bugs.webkit.org/show_bug.cgi?id=242740
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+                if let Some(window) = handle.get_webview_window("main") {
+                    if !window.is_visible().unwrap_or(true) {
+                        eprintln!(
+                            "[safety] Main window still hidden after 8s, force-showing"
+                        );
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                }
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             create_new_window,
             detect_editors,

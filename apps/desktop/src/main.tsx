@@ -73,10 +73,11 @@ if (isDebugWindow) {
   });
 } else {
   // Main app window
-  const { App } = await import("./App");
-  ReactDOM.createRoot(rootEl).render(
-    <React.StrictMode>
-      <App onReady={hideLoadingScreen} />
-    </React.StrictMode>,
-  );
+  import("./App").then(({ App }) => {
+    ReactDOM.createRoot(rootEl).render(
+      <React.StrictMode>
+        <App onReady={hideLoadingScreen} />
+      </React.StrictMode>,
+    );
+  });
 }

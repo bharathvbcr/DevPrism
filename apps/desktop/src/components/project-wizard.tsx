@@ -138,7 +138,9 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
           await mkdir(dir, { recursive: true }).catch(() => {});
           setProjectFolder(dir);
         })
-        .catch((err) => console.warn("Failed to resolve default project folder:", err));
+        .catch((err) =>
+          console.warn("Failed to resolve default project folder:", err),
+        );
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -451,7 +453,8 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
                 </div>
                 {!locationOpen && projectFolder && projectName.trim() && (
                   <span className="min-w-0 max-w-[180px] truncate rounded-md bg-muted/40 px-2 py-0.5 font-mono text-[11px] text-muted-foreground/60">
-                    .../{projectFolder.split(/[/\\]/).pop()}/{projectName.trim()}
+                    .../{projectFolder.split(/[/\\]/).pop()}/
+                    {projectName.trim()}
                   </span>
                 )}
                 <ChevronDownIcon

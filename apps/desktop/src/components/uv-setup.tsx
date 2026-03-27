@@ -151,8 +151,7 @@ export function UvSetupDialog({ open, onClose }: UvSetupDialogProps) {
                     className="truncate text-muted-foreground text-xs"
                     title={pythonPath}
                   >
-                    Python:{" "}
-                    {pythonPath.split(/[/\\]/).pop()}
+                    Python: {pythonPath.split(/[/\\]/).pop()}
                   </div>
                 )}
               </div>

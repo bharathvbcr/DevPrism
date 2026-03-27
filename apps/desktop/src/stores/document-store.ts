@@ -241,7 +241,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
     for (const f of fsFiles) {
       const pf: ProjectFile = {
         id: f.relativePath,
-        name: f.relativePath.split("/").pop() || f.relativePath,
+        name: f.relativePath.split(/[/\\]/).pop() || f.relativePath,
         relativePath: f.relativePath,
         absolutePath: f.absolutePath,
         type: f.type,
@@ -796,7 +796,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
     const newAbsPath = await join(state.projectRoot, newRelativePath);
     await renameFileOnDisk(file.absolutePath, newAbsPath);
 
-    const newName = newRelativePath.split("/").pop() || file.name;
+    const newName = newRelativePath.split(/[/\\]/).pop() || file.name;
     migratePdfBytesKey(fileId, newRelativePath);
     set((s) => {
       const compileErrorCache = migrateCacheKey(
@@ -833,7 +833,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
     const state = get();
     if (!state.projectRoot) return;
 
-    const folderName = folderPath.split("/").pop()!;
+    const folderName = folderPath.split(/[/\\]/).pop()!;
     const newFolderPath = targetFolder
       ? `${targetFolder}/${folderName}`
       : folderName;
@@ -911,7 +911,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
         // New file on disk
         const pf: ProjectFile = {
           id: fsFile.relativePath,
-          name: fsFile.relativePath.split("/").pop() || fsFile.relativePath,
+          name: fsFile.relativePath.split(/[/\\]/).pop() || fsFile.relativePath,
           relativePath: fsFile.relativePath,
           absolutePath: fsFile.absolutePath,
           type: fsFile.type,

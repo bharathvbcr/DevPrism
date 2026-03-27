@@ -2,7 +2,8 @@ import { useState, useCallback, useEffect, useRef } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { mkdir, writeTextFile } from "@tauri-apps/plugin-fs";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { documentDir } from "@tauri-apps/api/path";
+import { homeDir } from "@tauri-apps/api/path";
+import { toast } from "sonner";
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -159,9 +160,15 @@ export function TemplatePreview() {
     if (lastProjectFolder) {
       setProjectFolder(lastProjectFolder);
     } else {
-      documentDir()
-        .then((dir) => setProjectFolder(dir))
-        .catch(() => {});
+      homeDir()
+        .then((home) => join(home, "Documents", "ClaudePrism"))
+        .then(async (dir) => {
+          await mkdir(dir, { recursive: true }).catch(() => {});
+          setProjectFolder(dir);
+        })
+        .catch((err) =>
+          console.warn("Failed to resolve default project folder:", err),
+        );
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -400,7 +407,7 @@ export function TemplatePreview() {
 
     try {
       const projectPath = await join(projectFolder, projectName.trim());
-      await mkdir(projectPath, { recursive: true }).catch(() => {});
+      await mkdir(projectPath, { recursive: true });
 
       const mainTexPath = await join(projectPath, template.mainFileName);
       const mainExists = await exists(mainTexPath);
@@ -418,12 +425,12 @@ export function TemplatePreview() {
 
       if (attachments.length > 0) {
         const attachmentsDir = await join(projectPath, "attachments");
-        await mkdir(attachmentsDir, { recursive: true }).catch(() => {});
+        await mkdir(attachmentsDir, { recursive: true });
       }
 
       if (purpose.trim()) {
         const attachmentNames = attachments
-          .map((p) => p.split("/").pop())
+          .map((p) => p.split(/[/\\]/).pop())
           .filter(Boolean);
         const attachmentSection =
           attachmentNames.length > 0
@@ -465,6 +472,9 @@ export function TemplatePreview() {
       closePreview();
     } catch (err) {
       console.error("Failed to create project:", err);
+      toast.error("Failed to create project", {
+        description: err instanceof Error ? err.message : String(err),
+      });
     } finally {
       setIsCreating(false);
     }
@@ -650,7 +660,7 @@ export function TemplatePreview() {
                               >
                                 <PaperclipIcon className="size-3 shrink-0 text-muted-foreground/70" />
                                 <span className="max-w-30 truncate text-foreground/80">
-                                  {path.split("/").pop()}
+                                  {path.split(/[/\\]/).pop()}
                                 </span>
                                 <button
                                   onClick={() => handleRemoveAttachment(path)}
@@ -713,7 +723,7 @@ export function TemplatePreview() {
                       </div>
                       {!locationOpen && projectFolder && projectName.trim() && (
                         <span className="min-w-0 max-w-35 truncate rounded-md bg-muted/40 px-2 py-0.5 font-mono text-[11px] text-muted-foreground/60">
-                          .../{projectFolder.split("/").pop()}/
+                          .../{projectFolder.split(/[/\\]/).pop()}/
                           {projectName.trim()}
                         </span>
                       )}

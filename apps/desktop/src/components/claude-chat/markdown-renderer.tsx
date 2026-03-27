@@ -220,7 +220,7 @@ const CodeBlock: FC<{ language: string; code: string }> = ({
             <span className="text-xs">
               Run in{" "}
               <code className="rounded bg-muted px-1 text-xs">
-                {projectRoot?.split("/").pop()}/
+                {projectRoot?.split(/[/\\]/).pop()}/
               </code>
             </span>
           </div>

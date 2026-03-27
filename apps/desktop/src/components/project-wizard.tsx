@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { mkdir, writeTextFile } from "@tauri-apps/plugin-fs";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { homeDir } from "@tauri-apps/api/path";
+import { toast } from "sonner";
 import {
   ArrowLeftIcon,
   FolderOpenIcon,
@@ -133,11 +134,11 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
     } else {
       homeDir()
         .then((home) => join(home, "Documents", "ClaudePrism"))
-        .then((dir) => {
-          mkdir(dir, { recursive: true }).catch(() => {});
+        .then(async (dir) => {
+          await mkdir(dir, { recursive: true }).catch(() => {});
           setProjectFolder(dir);
         })
-        .catch(() => {});
+        .catch((err) => console.warn("Failed to resolve default project folder:", err));
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -234,7 +235,7 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
 
     try {
       const projectPath = await join(projectFolder, projectName.trim());
-      await mkdir(projectPath, { recursive: true }).catch(() => {});
+      await mkdir(projectPath, { recursive: true });
 
       // Create CLAUDE.md for Claude Code context
       const claudeMdPath = await join(projectPath, "CLAUDE.md");
@@ -259,12 +260,12 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
 
       if (attachments.length > 0) {
         const attachmentsDir = await join(projectPath, "attachments");
-        await mkdir(attachmentsDir, { recursive: true }).catch(() => {});
+        await mkdir(attachmentsDir, { recursive: true });
       }
 
       if (purpose.trim()) {
         const attachmentNames = attachments
-          .map((p) => p.split("/").pop())
+          .map((p) => p.split(/[/\\]/).pop())
           .filter(Boolean);
         const attachmentSection =
           attachmentNames.length > 0
@@ -303,6 +304,9 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
       }
     } catch (err) {
       console.error("Failed to create project:", err);
+      toast.error("Failed to create project", {
+        description: err instanceof Error ? err.message : String(err),
+      });
     } finally {
       setIsCreating(false);
     }
@@ -383,7 +387,7 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
                         >
                           <PaperclipIcon className="size-3 shrink-0 text-muted-foreground/70" />
                           <span className="max-w-[140px] truncate text-foreground/80">
-                            {path.split("/").pop()}
+                            {path.split(/[/\\]/).pop()}
                           </span>
                           <button
                             onClick={() => handleRemoveAttachment(path)}
@@ -447,7 +451,7 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
                 </div>
                 {!locationOpen && projectFolder && projectName.trim() && (
                   <span className="min-w-0 max-w-[180px] truncate rounded-md bg-muted/40 px-2 py-0.5 font-mono text-[11px] text-muted-foreground/60">
-                    .../{projectFolder.split("/").pop()}/{projectName.trim()}
+                    .../{projectFolder.split(/[/\\]/).pop()}/{projectName.trim()}
                   </span>
                 )}
                 <ChevronDownIcon

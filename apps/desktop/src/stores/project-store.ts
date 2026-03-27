@@ -26,7 +26,7 @@ export const useProjectStore = create<ProjectState>()(
       setLastProjectFolder: (path) => set({ lastProjectFolder: path }),
 
       addRecentProject: (path) => {
-        const name = path.split("/").pop() || path;
+        const name = path.split(/[/\\]/).pop() || path;
         set((state) => {
           const filtered = state.recentProjects.filter((p) => p.path !== path);
           return {

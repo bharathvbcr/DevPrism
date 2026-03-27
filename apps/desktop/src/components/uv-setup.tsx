@@ -152,8 +152,7 @@ export function UvSetupDialog({ open, onClose }: UvSetupDialogProps) {
                     title={pythonPath}
                   >
                     Python:{" "}
-                    {pythonPath.split("/").pop() ||
-                      pythonPath.split("\\").pop()}
+                    {pythonPath.split(/[/\\]/).pop()}
                   </div>
                 )}
               </div>

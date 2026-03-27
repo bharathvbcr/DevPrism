@@ -344,7 +344,7 @@ function SnapshotRow({
             {hasFiles && (
               <div className="mt-0.5 truncate text-muted-foreground text-xs">
                 {snapshot.changed_files
-                  .map((f) => f.split("/").pop())
+                  .map((f) => f.split(/[/\\]/).pop())
                   .join(", ")}
               </div>
             )}

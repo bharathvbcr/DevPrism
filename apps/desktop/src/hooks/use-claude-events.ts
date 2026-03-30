@@ -308,9 +308,12 @@ export function useClaudeEvents() {
         !chatStore._cancelledByUser
       ) {
         if (count === 0) {
+          const isWindows = navigator.userAgent.includes("Windows");
           chatStore._setError(
             tabId,
-            "Claude process failed to start. Check that Claude Code CLI is installed and git-bash is available on Windows.",
+            isWindows
+              ? "Claude process failed to start. Check that Claude Code CLI is installed and git-bash is available."
+              : "Claude process failed to start. Check that Claude Code CLI is installed.",
           );
         } else {
           chatStore._setError(
@@ -423,11 +426,13 @@ export function useClaudeEvents() {
             ) {
               log.error(`[${tabId}] CRITICAL: ${payload}`);
             }
-            // Surface critical stderr messages to the user UI
+            // Surface critical stderr messages to the user UI (only if no error is already set)
             if (
-              payload.includes("git-bash") ||
-              payload.includes("git bash") ||
-              payload.includes("bash.exe")
+              (payload.includes("git-bash") ||
+                payload.includes("git bash") ||
+                payload.includes("bash.exe")) &&
+              !useClaudeChatStore.getState().tabs.find((t) => t.id === tabId)
+                ?.error
             ) {
               useClaudeChatStore
                 .getState()

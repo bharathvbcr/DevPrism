@@ -127,8 +127,8 @@ export function App({ onReady }: { onReady?: () => void }) {
                 className="absolute inset-0 bg-black/20"
                 onClick={() => setShowDebug(false)}
               />
-              <div className="relative h-[60vh] w-full border-t border-border bg-background shadow-lg">
-                <div className="flex h-8 items-center justify-between border-b border-border bg-muted/50 px-3">
+              <div className="relative h-[60vh] w-full border-border border-t bg-background shadow-lg">
+                <div className="flex h-8 items-center justify-between border-border border-b bg-muted/50 px-3">
                   <span className="font-medium text-xs">Debug Panel</span>
                   <button
                     className="text-muted-foreground text-xs hover:text-foreground"
@@ -138,7 +138,13 @@ export function App({ onReady }: { onReady?: () => void }) {
                   </button>
                 </div>
                 <div className="h-[calc(60vh-2rem)] overflow-auto">
-                  <Suspense fallback={<div className="p-4 text-muted-foreground text-sm">Loading...</div>}>
+                  <Suspense
+                    fallback={
+                      <div className="p-4 text-muted-foreground text-sm">
+                        Loading...
+                      </div>
+                    }
+                  >
                     <LazyDebugPage />
                   </Suspense>
                 </div>

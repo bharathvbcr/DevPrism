@@ -59,6 +59,8 @@ impl Default for ClaudeProcessState {
 /// On Windows, read User + System PATH from the registry and search for claude.
 /// This catches cases where claude was installed after the GUI app launched,
 /// since the process PATH is stale but the registry PATH is up to date.
+/// Registry values may contain unexpanded variables like `%USERPROFILE%`,
+/// so we expand them via `ExpandEnvironmentStringsW` before searching.
 #[cfg(target_os = "windows")]
 fn find_claude_in_registry_path() -> Option<String> {
     use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
@@ -69,7 +71,12 @@ fn find_claude_in_registry_path() -> Option<String> {
     // User PATH
     if let Ok(env) = RegKey::predef(HKEY_CURRENT_USER).open_subkey("Environment") {
         if let Ok(user_path) = env.get_value::<String, _>("Path") {
-            dirs.extend(user_path.split(';').filter(|s| !s.is_empty()).map(String::from));
+            dirs.extend(
+                user_path
+                    .split(';')
+                    .filter(|s| !s.is_empty())
+                    .map(|s| expand_env_vars(s)),
+            );
         }
     }
 
@@ -78,7 +85,12 @@ fn find_claude_in_registry_path() -> Option<String> {
         .open_subkey(r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment")
     {
         if let Ok(sys_path) = env.get_value::<String, _>("Path") {
-            dirs.extend(sys_path.split(';').filter(|s| !s.is_empty()).map(String::from));
+            dirs.extend(
+                sys_path
+                    .split(';')
+                    .filter(|s| !s.is_empty())
+                    .map(|s| expand_env_vars(s)),
+            );
         }
     }
 
@@ -86,7 +98,7 @@ fn find_claude_in_registry_path() -> Option<String> {
     for dir in &dirs {
         for name in &candidates {
             let p = PathBuf::from(dir).join(name);
-            if p.exists() {
+            if p.is_file() {
                 return Some(p.to_string_lossy().to_string());
             }
         }
@@ -95,8 +107,49 @@ fn find_claude_in_registry_path() -> Option<String> {
     None
 }
 
+/// Expand Windows environment variables like `%USERPROFILE%` in a string.
+#[cfg(target_os = "windows")]
+fn expand_env_vars(s: &str) -> String {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+    let wide: Vec<u16> = OsString::from(s).encode_wide().chain(std::iter::once(0)).collect();
+
+    // First call to get required buffer size
+    let size = unsafe {
+        windows_sys::Win32::System::Environment::ExpandEnvironmentStringsW(
+            wide.as_ptr(),
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if size == 0 {
+        return s.to_string();
+    }
+
+    let mut buf: Vec<u16> = vec![0u16; size as usize];
+    let result = unsafe {
+        windows_sys::Win32::System::Environment::ExpandEnvironmentStringsW(
+            wide.as_ptr(),
+            buf.as_mut_ptr(),
+            size,
+        )
+    };
+    if result == 0 {
+        return s.to_string();
+    }
+
+    // Trim trailing null
+    if let Some(pos) = buf.iter().position(|&c| c == 0) {
+        buf.truncate(pos);
+    }
+    OsString::from_wide(&buf).to_string_lossy().to_string()
+}
+
 /// Discover the claude binary on the system.
-/// Checks: ~/.local/bin (native install) → which → NVM paths → standard paths → bare fallback.
+/// Search order: ~/.local/bin → NVM_BIN → which → registry PATH (Windows) →
+/// login shell (Unix) → npm/nvm global → standard paths → user-specific paths.
+/// Returns Err if not found.
 fn find_claude_binary() -> Result<String, String> {
     // 1. Check the native installer's default location first
     //    (GUI apps often don't have ~/.local/bin in PATH)
@@ -155,7 +208,7 @@ fn find_claude_binary() -> Result<String, String> {
         }
     }
 
-    // 6. Check NVM directories (Unix) or npm global (Windows)
+    // 6. Check NVM directories (Unix) or npm/nvm global (Windows)
     #[allow(unused_variables)]
     if let Some(home) = dirs::home_dir() {
         #[cfg(not(target_os = "windows"))]
@@ -213,7 +266,7 @@ fn find_claude_binary() -> Result<String, String> {
         }
     }
 
-    // 6. Check standard paths (Unix only)
+    // 7. Check standard paths (Unix only)
     #[cfg(not(target_os = "windows"))]
     {
         let standard_paths = [
@@ -229,7 +282,7 @@ fn find_claude_binary() -> Result<String, String> {
         }
     }
 
-    // 7. Check user-specific paths
+    // 8. Check user-specific paths
     if let Some(home) = dirs::home_dir() {
         #[cfg(not(target_os = "windows"))]
         let user_paths = vec![
@@ -273,7 +326,7 @@ fn find_claude_binary() -> Result<String, String> {
         }
     }
 
-    Err("Claude CLI not found. Install it from https://claude.ai".to_string())
+    Err("Not found in any known location. Install from https://claude.ai".to_string())
 }
 
 /// Strip ANSI escape sequences from CLI output before sending to the frontend.

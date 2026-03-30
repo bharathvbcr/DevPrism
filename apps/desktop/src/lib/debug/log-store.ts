@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import { emit, listen } from "@tauri-apps/api/event";
+import { emitTo, listen } from "@tauri-apps/api/event";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -93,7 +93,7 @@ export const useLogStore = create<LogStore>((set) => ({
 
     // Only emit to debug window if one is connected
     if (_debugWindowConnected && !_isDebugWindow) {
-      emit("debug-log-entry", entry).catch(() => {});
+      emitTo("debug", "debug-log-entry", entry).catch(() => {});
     }
 
     // Forward warn/error to Rust stderr via existing js_log command
@@ -143,8 +143,8 @@ if (_isDebugWindow) {
     useLogStore.setState({ version: ++_version });
   });
 
-  // Request bulk sync on open
-  emit("debug-log-sync-request").catch(() => {});
+  // Request bulk sync on open — send to main window
+  emitTo("main", "debug-log-sync-request").catch(() => {});
 }
 
 // Main window responds to sync requests by sending the full buffer.
@@ -152,7 +152,7 @@ if (!_isDebugWindow) {
   listen("debug-log-sync-request", () => {
     _debugWindowConnected = true;
     if (_buffer.length > 0) {
-      emit("debug-log-sync", _buffer).catch(() => {});
+      emitTo("debug", "debug-log-sync", _buffer).catch(() => {});
     }
   });
 }

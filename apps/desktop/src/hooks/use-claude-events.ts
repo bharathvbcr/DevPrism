@@ -303,15 +303,24 @@ export function useClaudeEvents() {
 
       if (
         !success &&
-        count > 0 &&
         !tab.error &&
         !cancelledForAskRef.current.get(tabId) &&
         !chatStore._cancelledByUser
       ) {
-        chatStore._setError(
-          tabId,
-          "Claude process exited unexpectedly. This may be due to rate limiting or an API error.",
-        );
+        if (count === 0) {
+          const isWindows = navigator.userAgent.includes("Windows");
+          chatStore._setError(
+            tabId,
+            isWindows
+              ? "Claude process failed to start. Check that Claude Code CLI is installed and git-bash is available."
+              : "Claude process failed to start. Check that Claude Code CLI is installed.",
+          );
+        } else {
+          chatStore._setError(
+            tabId,
+            "Claude process exited unexpectedly. This may be due to rate limiting or an API error.",
+          );
+        }
       }
 
       // Clean up per-tab state
@@ -416,6 +425,21 @@ export function useClaudeEvents() {
               payload.includes("timeout")
             ) {
               log.error(`[${tabId}] CRITICAL: ${payload}`);
+            }
+            // Surface critical stderr messages to the user UI (only if no error is already set)
+            if (
+              (payload.includes("git-bash") ||
+                payload.includes("git bash") ||
+                payload.includes("bash.exe")) &&
+              !useClaudeChatStore.getState().tabs.find((t) => t.id === tabId)
+                ?.error
+            ) {
+              useClaudeChatStore
+                .getState()
+                ._setError(
+                  tabId,
+                  "Claude Code requires git-bash on Windows. Please install Git for Windows or set the CLAUDE_CODE_GIT_BASH_PATH environment variable.",
+                );
             }
           }
         },

@@ -560,12 +560,26 @@ fn create_command(
     cmd.env_remove("CLAUDECODE");
     cmd.env_remove("CLAUDE_AGENT_SDK_VERSION");
     for (key, _) in std::env::vars() {
+        // Keep CLAUDE_CODE_GIT_BASH_PATH — Claude Code needs it on Windows to locate git-bash
+        if key == "CLAUDE_CODE_GIT_BASH_PATH" {
+            continue;
+        }
         if key.starts_with("CLAUDE_CODE_") || key.starts_with("CLAUDE_AGENT_") {
             cmd.env_remove(&key);
         }
     }
     // Set effort level (default: low for fast responses)
     cmd.env("CLAUDE_CODE_EFFORT_LEVEL", effort_level.unwrap_or("low"));
+
+    // On Windows, ensure CLAUDE_CODE_GIT_BASH_PATH is set.
+    // Claude Code requires git-bash to run on Windows.
+    // Uses find_git_bash() which also validates user-specified paths.
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(bash_path) = find_git_bash() {
+            cmd.env("CLAUDE_CODE_GIT_BASH_PATH", bash_path);
+        }
+    }
 
     // Build PATH: start with current PATH, prepend program dir and venv bin
     // Strip nul bytes from inherited PATH to prevent spawn failures
@@ -864,13 +878,15 @@ pub struct ClaudeStatus {
     pub missing_git: bool,
 }
 
-/// Check whether Git for Windows (git-bash) is available on Windows.
+/// Find the path to git-bash on Windows.
+/// Returns `Some(path)` if found, `None` otherwise.
+/// Used by both `create_command` (to set the env var) and `check_claude_status` (to report status).
 #[cfg(target_os = "windows")]
-fn is_git_bash_available() -> bool {
-    // 1. User-specified override
+fn find_git_bash() -> Option<String> {
+    // 1. User-specified override (only if the path actually exists)
     if let Ok(p) = std::env::var("CLAUDE_CODE_GIT_BASH_PATH") {
-        if PathBuf::from(&p).exists() {
-            return true;
+        if PathBuf::from(&p).is_file() {
+            return Some(p);
         }
     }
 
@@ -880,8 +896,8 @@ fn is_git_bash_available() -> bool {
         r"C:\Program Files (x86)\Git\bin\bash.exe",
     ];
     for path in &candidates {
-        if PathBuf::from(path).exists() {
-            return true;
+        if PathBuf::from(path).is_file() {
+            return Some(path.to_string());
         }
     }
 
@@ -890,22 +906,27 @@ fn is_git_bash_available() -> bool {
         // git.exe is typically at Git/cmd/git.exe → bash.exe at Git/bin/bash.exe
         if let Some(cmd_dir) = git_path.parent() {
             if let Some(git_root) = cmd_dir.parent() {
-                if git_root.join("bin").join("bash.exe").exists() {
-                    return true;
+                let bash = git_root.join("bin").join("bash.exe");
+                if bash.is_file() {
+                    return Some(bash.to_string_lossy().to_string());
                 }
             }
         }
     }
 
     // 4. bash directly on PATH
-    which::which("bash").is_ok()
+    if let Ok(bash_path) = which::which("bash") {
+        return Some(bash_path.to_string_lossy().to_string());
+    }
+
+    None
 }
 
 #[tauri::command]
 pub async fn check_claude_status() -> Result<ClaudeStatus, String> {
     // On Windows, check for Git for Windows first — Claude Code requires it.
     #[cfg(target_os = "windows")]
-    let missing_git = !is_git_bash_available();
+    let missing_git = find_git_bash().is_none();
     #[cfg(not(target_os = "windows"))]
     let missing_git = false;
 

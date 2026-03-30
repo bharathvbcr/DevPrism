@@ -560,12 +560,52 @@ fn create_command(
     cmd.env_remove("CLAUDECODE");
     cmd.env_remove("CLAUDE_AGENT_SDK_VERSION");
     for (key, _) in std::env::vars() {
+        // Keep CLAUDE_CODE_GIT_BASH_PATH — Claude Code needs it on Windows to locate git-bash
+        if key == "CLAUDE_CODE_GIT_BASH_PATH" {
+            continue;
+        }
         if key.starts_with("CLAUDE_CODE_") || key.starts_with("CLAUDE_AGENT_") {
             cmd.env_remove(&key);
         }
     }
     // Set effort level (default: low for fast responses)
     cmd.env("CLAUDE_CODE_EFFORT_LEVEL", effort_level.unwrap_or("low"));
+
+    // On Windows, auto-detect git-bash if CLAUDE_CODE_GIT_BASH_PATH is not set.
+    // Claude Code requires git-bash to run on Windows.
+    #[cfg(target_os = "windows")]
+    {
+        if std::env::var("CLAUDE_CODE_GIT_BASH_PATH").is_err() {
+            // Reuse the same detection logic as is_git_bash_available()
+            let mut found: Option<String> = None;
+            let candidates = [
+                r"C:\Program Files\Git\bin\bash.exe",
+                r"C:\Program Files (x86)\Git\bin\bash.exe",
+            ];
+            for candidate in &candidates {
+                if std::path::Path::new(candidate).is_file() {
+                    found = Some(candidate.to_string());
+                    break;
+                }
+            }
+            // Also try deriving from git.exe on PATH
+            if found.is_none() {
+                if let Ok(git_path) = which::which("git") {
+                    if let Some(cmd_dir) = git_path.parent() {
+                        if let Some(git_root) = cmd_dir.parent() {
+                            let bash = git_root.join("bin").join("bash.exe");
+                            if bash.is_file() {
+                                found = Some(bash.to_string_lossy().to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(bash_path) = found {
+                cmd.env("CLAUDE_CODE_GIT_BASH_PATH", bash_path);
+            }
+        }
+    }
 
     // Build PATH: start with current PATH, prepend program dir and venv bin
     // Strip nul bytes from inherited PATH to prevent spawn failures

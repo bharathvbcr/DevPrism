@@ -58,14 +58,14 @@ export function useKeyboardShortcuts() {
         window.dispatchEvent(new CustomEvent("toggle-capture-mode"));
       }
 
-      // Cmd+Shift+D (macOS) / Ctrl+Shift+D (others): Open debug window
+      // Cmd+Shift+D (macOS) / Ctrl+Shift+D (others): Toggle debug panel
       if (
         (e.metaKey || e.ctrlKey) &&
         e.shiftKey &&
         e.key.toLowerCase() === "d"
       ) {
         e.preventDefault();
-        invoke("open_debug_window").catch(console.error);
+        window.dispatchEvent(new CustomEvent("toggle-debug-panel"));
       }
     };
 

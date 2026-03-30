@@ -7,7 +7,7 @@ import { useDocumentStore } from "@/stores/document-store";
 import { useClaudeChatStore } from "@/stores/claude-chat-store";
 import { ProjectPicker } from "@/components/project-picker";
 import { WorkspaceLayout } from "@/components/workspace/workspace-layout";
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
@@ -19,6 +19,12 @@ import { ErrorFallback } from "@/components/error-fallback";
 import { createLogger } from "@/lib/debug/logger";
 
 const log = createLogger("app");
+
+const LazyDebugPage = lazy(() =>
+  import("@/components/debug/debug-page").then((m) => ({
+    default: m.DebugPage,
+  })),
+);
 
 function WorkspaceWithClaude() {
   const projectRoot = useDocumentStore((s) => s.projectRoot);
@@ -89,6 +95,7 @@ function WorkspaceWithClaude() {
 
 export function App({ onReady }: { onReady?: () => void }) {
   const projectRoot = useDocumentStore((s) => s.projectRoot);
+  const [showDebug, setShowDebug] = useState(false);
 
   // Register global keyboard shortcuts (Cmd+S, Cmd+N) at the app level
   useKeyboardShortcuts();
@@ -96,6 +103,13 @@ export function App({ onReady }: { onReady?: () => void }) {
   useEffect(() => {
     onReady?.();
   }, [onReady]);
+
+  // Listen for debug panel toggle (Ctrl+Shift+D)
+  useEffect(() => {
+    const handler = () => setShowDebug((prev) => !prev);
+    window.addEventListener("toggle-debug-panel", handler);
+    return () => window.removeEventListener("toggle-debug-panel", handler);
+  }, []);
 
   return (
     <ErrorBoundary FallbackComponent={ErrorFallback}>
@@ -107,6 +121,30 @@ export function App({ onReady }: { onReady?: () => void }) {
             className="fixed inset-x-0 top-0 z-[9999] h-[var(--titlebar-height)]"
           />
           {projectRoot ? <WorkspaceWithClaude /> : <ProjectPicker />}
+          {showDebug && (
+            <div className="fixed inset-0 z-[9998] flex items-end justify-center">
+              <div
+                className="absolute inset-0 bg-black/20"
+                onClick={() => setShowDebug(false)}
+              />
+              <div className="relative h-[60vh] w-full border-t border-border bg-background shadow-lg">
+                <div className="flex h-8 items-center justify-between border-b border-border bg-muted/50 px-3">
+                  <span className="font-medium text-xs">Debug Panel</span>
+                  <button
+                    className="text-muted-foreground text-xs hover:text-foreground"
+                    onClick={() => setShowDebug(false)}
+                  >
+                    Close (Ctrl+Shift+D)
+                  </button>
+                </div>
+                <div className="h-[calc(60vh-2rem)] overflow-auto">
+                  <Suspense fallback={<div className="p-4 text-muted-foreground text-sm">Loading...</div>}>
+                    <LazyDebugPage />
+                  </Suspense>
+                </div>
+              </div>
+            </div>
+          )}
           <Toaster />
         </TooltipProvider>
       </ThemeProvider>

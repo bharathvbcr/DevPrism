@@ -5,6 +5,8 @@ import { createLogger } from "@/lib/debug/logger";
 const log = createLogger("latex");
 
 /** Resolve which file to compile and the root ID for caching.
+ *  resolveTexRoot now handles \documentclass detection and main.tex fallback,
+ *  so the only remaining fallback here is for projects with no .tex files.
  *  Returns `null` when the project has no compilable .tex file. */
 export function resolveCompileTarget(
   activeFileId: string,
@@ -15,19 +17,11 @@ export function resolveCompileTarget(
   if (rootEntry?.type === "tex") {
     return { rootId, targetPath: rootEntry.relativePath };
   }
-  // Fallback: look for any well-known root tex file
-  const fallback = files.find(
-    (f) => f.name === "main.tex" || f.name === "document.tex",
-  );
-  if (fallback) {
-    return { rootId: fallback.id, targetPath: fallback.relativePath };
-  }
-  // Final fallback: use the first available .tex file in the project
+  // No .tex file exists — cannot compile
   const anyTex = files.find((f) => f.type === "tex");
   if (anyTex) {
     return { rootId: anyTex.id, targetPath: anyTex.relativePath };
   }
-  // No .tex file exists — cannot compile
   return null;
 }
 

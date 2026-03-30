@@ -56,6 +56,45 @@ impl Default for ClaudeProcessState {
     }
 }
 
+/// On Windows, read User + System PATH from the registry and search for claude.
+/// This catches cases where claude was installed after the GUI app launched,
+/// since the process PATH is stale but the registry PATH is up to date.
+#[cfg(target_os = "windows")]
+fn find_claude_in_registry_path() -> Option<String> {
+    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    use winreg::RegKey;
+
+    let mut dirs: Vec<String> = Vec::new();
+
+    // User PATH
+    if let Ok(env) = RegKey::predef(HKEY_CURRENT_USER).open_subkey("Environment") {
+        if let Ok(user_path) = env.get_value::<String, _>("Path") {
+            dirs.extend(user_path.split(';').filter(|s| !s.is_empty()).map(String::from));
+        }
+    }
+
+    // System PATH
+    if let Ok(env) = RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey(r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment")
+    {
+        if let Ok(sys_path) = env.get_value::<String, _>("Path") {
+            dirs.extend(sys_path.split(';').filter(|s| !s.is_empty()).map(String::from));
+        }
+    }
+
+    let candidates = ["claude.exe", "claude.cmd"];
+    for dir in &dirs {
+        for name in &candidates {
+            let p = PathBuf::from(dir).join(name);
+            if p.exists() {
+                return Some(p.to_string_lossy().to_string());
+            }
+        }
+    }
+
+    None
+}
+
 /// Discover the claude binary on the system.
 /// Checks: ~/.local/bin (native install) → which → NVM paths → standard paths → bare fallback.
 fn find_claude_binary() -> Result<String, String> {
@@ -106,7 +145,17 @@ fn find_claude_binary() -> Result<String, String> {
         }
     }
 
-    // 5. Check NVM directories (Unix) or npm global (Windows)
+    // 5. On Windows, read the real PATH from the registry.
+    //    GUI apps inherit the PATH from login time; if the user installed Claude
+    //    after that, the registry PATH has it but the process PATH does not.
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(path) = find_claude_in_registry_path() {
+            return Ok(path);
+        }
+    }
+
+    // 6. Check NVM directories (Unix) or npm global (Windows)
     #[allow(unused_variables)]
     if let Some(home) = dirs::home_dir() {
         #[cfg(not(target_os = "windows"))]
@@ -198,6 +247,23 @@ fn find_claude_binary() -> Result<String, String> {
                 .join("Programs")
                 .join("claude")
                 .join("claude.exe"),
+            // Volta
+            home.join("AppData")
+                .join("Local")
+                .join("Volta")
+                .join("bin")
+                .join("claude.cmd"),
+            // pnpm global
+            home.join("AppData")
+                .join("Local")
+                .join("pnpm")
+                .join("claude.cmd"),
+            // Scoop
+            home.join("scoop")
+                .join("shims")
+                .join("claude.cmd"),
+            // Standard Node.js install
+            PathBuf::from(r"C:\Program Files\nodejs\claude.cmd"),
         ];
 
         for path in &user_paths {
@@ -207,8 +273,7 @@ fn find_claude_binary() -> Result<String, String> {
         }
     }
 
-    // 8. Bare fallback — hope it's in PATH
-    Ok("claude".to_string())
+    Err("Claude CLI not found. Install it from https://claude.ai".to_string())
 }
 
 /// Strip ANSI escape sequences from CLI output before sending to the frontend.

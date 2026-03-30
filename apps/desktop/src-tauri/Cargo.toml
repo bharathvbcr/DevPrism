@@ -52,5 +52,9 @@ objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSImage", "NSRunningApplication"] }
 objc2-foundation = { version = "0.3", features = ["NSData"] }
 
+[target.'cfg(target_os = "windows")'.dependencies]
+winreg = "0.55"
+windows-sys = { version = "0.52", features = ["Win32_System_Environment"] }
+
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"

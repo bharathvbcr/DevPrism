@@ -143,7 +143,7 @@ if (_isDebugWindow) {
     useLogStore.setState({ version: ++_version });
   });
 
-  // Request bulk sync on open
+  // Request bulk sync on open — send to main window
   emit("debug-log-sync-request").catch(() => {});
 }
 

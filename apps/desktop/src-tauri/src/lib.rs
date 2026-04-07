@@ -7,6 +7,7 @@ mod uv;
 mod zotero;
 
 use std::path::Path;
+use tauri_plugin_fs::FsExt;
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 /// Entry point for the `--tectonic-compile` subprocess mode.
@@ -198,6 +199,21 @@ fn create_new_window(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn allow_project_directory(app: tauri::AppHandle, root_path: String) -> Result<(), String> {
+    let fs_scope = app.fs_scope();
+    fs_scope
+        .allow_directory(&root_path, true)
+        .map_err(|e| format!("Failed to allow project directory: {}", e))?;
+
+    let asset_scope = app.state::<tauri::scope::Scopes>();
+    asset_scope
+        .allow_directory(&root_path, true)
+        .map_err(|e| format!("Failed to allow project assets: {}", e))?;
+
+    Ok(())
+}
+
 // --- Debug logging from JS (survives white-screen crashes) ---
 
 #[tauri::command]
@@ -349,6 +365,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             create_new_window,
+            allow_project_directory,
             detect_editors,
             open_in_editor,
             js_log,

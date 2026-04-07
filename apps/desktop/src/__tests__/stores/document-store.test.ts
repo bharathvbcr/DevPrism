@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { writeTextFile } from "@tauri-apps/plugin-fs";
+import { invoke } from "@tauri-apps/api/core";
+import { readDir, readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import {
   useDocumentStore,
   getCurrentPdfBytes,
@@ -42,6 +43,7 @@ function makeFile(overrides: Partial<ProjectFile> = {}): ProjectFile {
 
 describe("useDocumentStore", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     clearPdfBytesCache();
     useDocumentStore.setState({
       projectRoot: "/project",
@@ -80,6 +82,38 @@ describe("useDocumentStore", () => {
         .getState()
         .files.find((f) => f.id === "main.tex")!;
       expect(file.content).toBe("Hello World");
+    });
+  });
+
+  describe("openProject", () => {
+    it("re-authorizes the project directory before scanning", async () => {
+      const projectPath = "E:\\overleaf-cache\\论文项目";
+      let resolveAuthorization!: () => void;
+      const authorizationPromise = new Promise<void>((resolve) => {
+        resolveAuthorization = resolve;
+      });
+
+      vi.mocked(invoke).mockReturnValue(
+        authorizationPromise as ReturnType<typeof invoke>,
+      );
+      vi.mocked(readDir).mockResolvedValue([
+        { name: "main.tex", isDirectory: false },
+      ] as any);
+      vi.mocked(readTextFile).mockResolvedValue("\\documentclass{article}");
+
+      const openProjectPromise = useDocumentStore
+        .getState()
+        .openProject(projectPath);
+
+      expect(invoke).toHaveBeenCalledWith("allow_project_directory", {
+        rootPath: projectPath,
+      });
+      expect(readDir).not.toHaveBeenCalled();
+
+      resolveAuthorization();
+      await openProjectPromise;
+
+      expect(readDir).toHaveBeenCalled();
     });
   });
 

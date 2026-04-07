@@ -22,9 +22,7 @@ export default defineConfig({
     },
   },
   define: {
-    __MUPDF_WASM_FS_PATH__: JSON.stringify(
-      mupdfWasmFile.replace(/\\/g, "/"),
-    ),
+    __MUPDF_WASM_FS_PATH__: JSON.stringify(mupdfWasmFile.replace(/\\/g, "/")),
   },
   worker: {
     format: "es",

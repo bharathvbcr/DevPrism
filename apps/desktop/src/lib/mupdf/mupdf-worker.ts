@@ -6,9 +6,11 @@ type MupdfWasmModuleConfig = {
   locateFile?: (path: string) => string;
 };
 
-const wasmModuleConfig = ((globalThis as typeof globalThis & {
-  $libmupdf_wasm_Module?: MupdfWasmModuleConfig;
-}).$libmupdf_wasm_Module ??= {});
+const wasmModuleConfig = ((
+  globalThis as typeof globalThis & {
+    $libmupdf_wasm_Module?: MupdfWasmModuleConfig;
+  }
+).$libmupdf_wasm_Module ??= {});
 
 // In Vite dev, requests for /node_modules/.../mupdf-wasm.wasm can fall back to
 // index.html. Pointing MuPDF at Vite's @fs URL keeps worker startup on the

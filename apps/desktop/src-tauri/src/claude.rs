@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{Emitter, Manager, WebviewWindow};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
@@ -785,6 +785,19 @@ fn create_command(
     cmd
 }
 
+fn with_prompt_transport(mut args: Vec<String>, prompt: String) -> (Vec<String>, Option<String>) {
+    args.push("-p".to_string());
+    #[cfg(target_os = "windows")]
+    {
+        (args, Some(prompt))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        args.push(prompt);
+        (args, None)
+    }
+}
+
 // ─── Event payloads (include tab_id for multi-tab routing) ───
 
 #[derive(Clone, serde::Serialize)]
@@ -811,9 +824,14 @@ async fn spawn_claude_process(
     window: WebviewWindow,
     mut cmd: Command,
     tab_id: String,
+    stdin_payload: Option<String>,
 ) -> Result<(), String> {
     let window_label = window.label().to_string();
     let process_key = format!("{}:{}", window_label, tab_id);
+
+    if stdin_payload.is_some() {
+        cmd.stdin(std::process::Stdio::piped());
+    }
 
     // Spawn the process
     let mut child = cmd.spawn().map_err(|e| {
@@ -826,6 +844,15 @@ async fn spawn_claude_process(
             e
         )
     })?;
+
+    if let Some(payload) = stdin_payload {
+        if let Some(mut stdin) = child.stdin.take() {
+            tokio::spawn(async move {
+                let _ = stdin.write_all(payload.as_bytes()).await;
+                let _ = stdin.shutdown().await;
+            });
+        }
+    }
 
     let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
     let stderr = child.stderr.take().ok_or("Failed to capture stderr")?;
@@ -1481,7 +1508,7 @@ pub async fn execute_claude_code(
 ) -> Result<(), String> {
     let claude_path = find_claude_binary()?;
 
-    let mut args = vec!["-p".to_string(), prompt];
+    let (mut args, stdin_payload) = with_prompt_transport(Vec::new(), prompt);
     if let Some(m) = model {
         args.push("--model".to_string());
         args.push(m);
@@ -1489,7 +1516,7 @@ pub async fn execute_claude_code(
     args.extend(common_claude_args());
 
     let cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref());
-    spawn_claude_process(window, cmd, tab_id).await
+    spawn_claude_process(window, cmd, tab_id, stdin_payload).await
 }
 
 #[tauri::command]
@@ -1503,7 +1530,7 @@ pub async fn continue_claude_code(
 ) -> Result<(), String> {
     let claude_path = find_claude_binary()?;
 
-    let mut args = vec!["-c".to_string(), "-p".to_string(), prompt];
+    let (mut args, stdin_payload) = with_prompt_transport(vec!["-c".to_string()], prompt);
     if let Some(m) = model {
         args.push("--model".to_string());
         args.push(m);
@@ -1511,7 +1538,7 @@ pub async fn continue_claude_code(
     args.extend(common_claude_args());
 
     let cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref());
-    spawn_claude_process(window, cmd, tab_id).await
+    spawn_claude_process(window, cmd, tab_id, stdin_payload).await
 }
 
 #[tauri::command]
@@ -1526,7 +1553,8 @@ pub async fn resume_claude_code(
 ) -> Result<(), String> {
     let claude_path = find_claude_binary()?;
 
-    let mut args = vec!["--resume".to_string(), session_id, "-p".to_string(), prompt];
+    let (mut args, stdin_payload) =
+        with_prompt_transport(vec!["--resume".to_string(), session_id], prompt);
     if let Some(m) = model {
         args.push("--model".to_string());
         args.push(m);
@@ -1534,7 +1562,7 @@ pub async fn resume_claude_code(
     args.extend(common_claude_args());
 
     let cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref());
-    spawn_claude_process(window, cmd, tab_id).await
+    spawn_claude_process(window, cmd, tab_id, stdin_payload).await
 }
 
 #[tauri::command]
@@ -2010,6 +2038,23 @@ mod tests {
             .unwrap();
         let prompt = &args[prompt_idx + 1];
         assert!(prompt.contains("LaTeX"));
+    }
+
+    #[test]
+    fn test_with_prompt_transport_always_includes_print_flag() {
+        let (args, stdin_payload) =
+            with_prompt_transport(vec!["--resume".to_string(), "abc".to_string()], "hello 文件".into());
+        assert!(args.contains(&"-p".to_string()));
+        #[cfg(target_os = "windows")]
+        {
+            assert_eq!(stdin_payload.as_deref(), Some("hello 文件"));
+            assert!(!args.contains(&"hello 文件".to_string()));
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            assert_eq!(stdin_payload, None);
+            assert_eq!(args.last().map(String::as_str), Some("hello 文件"));
+        }
     }
 
     // --- create_command ---

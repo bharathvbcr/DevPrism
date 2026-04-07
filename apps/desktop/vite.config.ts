@@ -4,6 +4,15 @@ import topLevelAwait from "vite-plugin-top-level-await";
 import path from "node:path";
 
 const host = process.env.TAURI_DEV_HOST;
+const mupdfWasmFile = path.resolve(
+  __dirname,
+  "..",
+  "..",
+  "node_modules",
+  "mupdf",
+  "dist",
+  "mupdf-wasm.wasm",
+);
 
 export default defineConfig({
   plugins: [react(), topLevelAwait()],
@@ -11,6 +20,11 @@ export default defineConfig({
     alias: {
       "@": path.resolve(__dirname, "src"),
     },
+  },
+  define: {
+    __MUPDF_WASM_FS_PATH__: JSON.stringify(
+      mupdfWasmFile.replace(/\\/g, "/"),
+    ),
   },
   worker: {
     format: "es",

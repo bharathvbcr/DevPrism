@@ -1,13 +1,43 @@
-import * as mupdf from "mupdf";
+import type { PDFDocument } from "mupdf";
 
-const documentMap = new Map<number, mupdf.PDFDocument>();
+type MupdfModule = typeof import("mupdf");
+
+type MupdfWasmModuleConfig = {
+  locateFile?: (path: string) => string;
+};
+
+const wasmModuleConfig = ((
+  globalThis as typeof globalThis & {
+    $libmupdf_wasm_Module?: MupdfWasmModuleConfig;
+  }
+).$libmupdf_wasm_Module ??= {});
+
+// In Vite dev, requests for /node_modules/.../mupdf-wasm.wasm can fall back to
+// index.html. Pointing MuPDF at Vite's @fs URL keeps worker startup on the
+// actual binary during local development without changing packaged builds.
+if (import.meta.env.DEV) {
+  const devWasmUrl = `/@fs/${__MUPDF_WASM_FS_PATH__}`;
+  wasmModuleConfig.locateFile = (path: string) => {
+    if (path.endsWith("mupdf-wasm.wasm")) {
+      return devWasmUrl;
+    }
+    return path;
+  };
+}
+
+const mupdf: MupdfModule = await import("mupdf");
+
+const documentMap = new Map<number, PDFDocument>();
 let nextDocId = 1;
 
 const methods: Record<string, (...args: any[]) => any> = {};
 
 methods.openDocument = (buffer: ArrayBuffer, magic: string): number => {
   const docId = nextDocId++;
-  const doc = mupdf.Document.openDocument(buffer, magic) as mupdf.PDFDocument;
+  const doc = mupdf.Document.openDocument(
+    buffer,
+    magic,
+  ) as unknown as PDFDocument;
   documentMap.set(docId, doc);
   return docId;
 };

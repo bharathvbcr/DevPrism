@@ -56,12 +56,7 @@ function resetClaudeChatStore() {
 }
 
 function setMockDocumentState(overrides: Partial<any> = {}) {
-  const content = [
-    "Line 1",
-    "Line 2",
-    "Line 3",
-    "Line 4",
-  ].join("\n");
+  const content = ["Line 1", "Line 2", "Line 3", "Line 4"].join("\n");
 
   const state = {
     projectRoot: "/project",
@@ -84,7 +79,9 @@ function setMockDocumentState(overrides: Partial<any> = {}) {
     ...overrides,
   };
 
-  Object.keys(mockDocumentState).forEach((key) => delete mockDocumentState[key]);
+  Object.keys(mockDocumentState).forEach(
+    (key) => delete mockDocumentState[key],
+  );
   Object.assign(mockDocumentState, state);
   getDocumentState.mockImplementation(() => mockDocumentState);
   return state;
@@ -116,7 +113,8 @@ describe("useClaudeChatStore.sendPrompt context assembly", () => {
       }),
     );
 
-    const prompt = (vi.mocked(invoke).mock.calls[0]?.[1] as any)?.prompt as string;
+    const prompt = (vi.mocked(invoke).mock.calls[0]?.[1] as any)
+      ?.prompt as string;
     expect(prompt).toContain("[Currently open file: main.tex]");
     expect(prompt).toContain("[Selection: @main.tex]");
     expect(prompt).toContain(wholeFileText);
@@ -153,7 +151,8 @@ describe("useClaudeChatStore.sendPrompt context assembly", () => {
       }),
     );
 
-    const prompt = (vi.mocked(invoke).mock.calls[0]?.[1] as any)?.prompt as string;
+    const prompt = (vi.mocked(invoke).mock.calls[0]?.[1] as any)
+      ?.prompt as string;
     expect(prompt).toContain("[Currently open file: main.tex]");
     expect(prompt).toContain("[Selection: @main.tex:2:1-3:6]");
     expect(prompt).toContain("[Selected text:\nbeta\ngamma\n]");

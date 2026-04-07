@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { invoke } from "@tauri-apps/api/core";
 import {
   scanProjectFolder,
   readTexFileContent,
@@ -266,6 +267,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
 
   openProject: async (rootPath: string) => {
     log.info(`Opening project: ${rootPath}`);
+    await invoke("allow_project_directory", { rootPath });
     const { files: fsFiles, folders: fsFolders } =
       await scanProjectFolder(rootPath);
     const projectFiles: ProjectFile[] = [];

@@ -1,0 +1,76 @@
+[package]
+name = "devprism"
+version = "1.1.6"
+description = "AI-powered LaTeX writing workspace"
+edition = "2021"
+
+[lib]
+name = "dev_prism_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+dotenvy = "0.15"
+
+[dependencies]
+tauri = { version = "2", features = ["devtools"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-shell = "2"
+tauri-plugin-process = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+regex = "1"
+async-trait = "0.1"
+tokio = { version = "1", features = ["full"] }
+dirs = "5"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+hmac = "0.12"
+sha1 = "0.10"
+base64 = "0.22"
+dotenvy = "0.15"
+git2 = { version = "0.20", default-features = false, features = ["vendored-libgit2"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+which = "7"
+# NOTE: Building tectonic requires external harfbuzz/graphite2/icu/freetype:
+#   macOS:   brew install icu4c harfbuzz pkg-config
+#   Linux:   apt install libicu-dev libgraphite2-dev libharfbuzz-dev libfreetype-dev libfontconfig-dev
+#   Windows: vcpkg install harfbuzz[graphite2] freetype icu fontconfig (with TECTONIC_DEP_BACKEND=vcpkg)
+flate2 = "1"
+tar = "0.4"
+futures = "0.3"
+async-stream = "0.3"
+clap = { version = "4.6.1", features = ["derive"] }
+colored = "3.1.1"
+rustyline = "18.0.0"
+lazy_static = "1"
+indicatif = "0.17"
+walkdir = "2.5.0"
+similar = "3.1.0"
+tectonic = { version = "0.15", default-features = true, features = ["external-harfbuzz"], optional = true }
+
+[features]
+default = []
+latex-tectonic = ["dep:tectonic"]
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+
+[dev-dependencies]
+tempfile = "3"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSImage", "NSRunningApplication"] }
+objc2-foundation = { version = "0.3", features = ["NSData"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+winreg = "0.55"
+windows-sys = { version = "0.52", features = ["Win32_System_Environment"] }
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-updater = "2"

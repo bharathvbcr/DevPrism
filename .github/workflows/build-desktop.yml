@@ -671,13 +671,14 @@ jobs:
             console.log(JSON.stringify(data, null, 2));
           "
 
-      - name: Create draft release
+      - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
           gh release view "$TAG" > /dev/null 2>&1 || \
-            gh release create "$TAG" --title "DevPrism $TAG" --generate-notes --draft
+            gh release create "$TAG" --title "DevCouncil $TAG" --generate-notes
+          gh release edit "$TAG" --draft=false --title "DevCouncil $TAG"
 
       - name: Rename and upload assets
         env:
@@ -710,4 +711,4 @@ jobs:
             gh release upload "$TAG" "$file" --clobber
           done
 
-      # Release stays as draft — publish manually from GitHub Releases UI
+      # Release is published by the workflow so updater metadata is public.

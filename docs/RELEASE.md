@@ -28,8 +28,8 @@ pnpm build
 Create and push a version tag:
 
 ```bash
-git tag v1.1.6
-git push origin v1.1.6
+git tag v0.0.1
+git push origin v0.0.1
 ```
 
 The `Build Desktop` workflow creates platform artifacts, uploads them to a draft GitHub Release, and generates `latest.json` for the Tauri updater.

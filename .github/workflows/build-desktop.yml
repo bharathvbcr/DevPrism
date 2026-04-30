@@ -252,7 +252,11 @@ jobs:
           ZOTERO_CONSUMER_KEY: ${{ secrets.ZOTERO_CONSUMER_KEY }}
           ZOTERO_CONSUMER_SECRET: ${{ secrets.ZOTERO_CONSUMER_SECRET }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-        run: pnpm --filter @devprism/desktop tauri build --target aarch64-apple-darwin --config src-tauri/tauri.ci.conf.json
+        run: |
+          if [ "$APPLE_CERTIFICATE_AVAILABLE" != "true" ]; then
+            unset APPLE_SIGNING_IDENTITY
+          fi
+          pnpm --filter @devprism/desktop tauri build --target aarch64-apple-darwin --config src-tauri/tauri.ci.conf.json
 
       - name: Notarize DMG
         if: env.APPLE_CERTIFICATE_AVAILABLE == 'true' && env.APPLE_NOTARIZATION_AVAILABLE == 'true'
@@ -425,7 +429,11 @@ jobs:
           ZOTERO_CONSUMER_KEY: ${{ secrets.ZOTERO_CONSUMER_KEY }}
           ZOTERO_CONSUMER_SECRET: ${{ secrets.ZOTERO_CONSUMER_SECRET }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-        run: pnpm --filter @devprism/desktop tauri build --target x86_64-apple-darwin --config src-tauri/tauri.ci.conf.json
+        run: |
+          if [ "$APPLE_CERTIFICATE_AVAILABLE" != "true" ]; then
+            unset APPLE_SIGNING_IDENTITY
+          fi
+          pnpm --filter @devprism/desktop tauri build --target x86_64-apple-darwin --config src-tauri/tauri.ci.conf.json
 
       - name: Notarize DMG
         if: env.APPLE_CERTIFICATE_AVAILABLE == 'true' && env.APPLE_NOTARIZATION_AVAILABLE == 'true'

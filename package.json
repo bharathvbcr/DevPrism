@@ -1,7 +1,7 @@
 {
   "name": "devcouncil",
   "description": "Open-Source AI LaTeX writing workspace",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "repository": {
     "type": "git",
     "url": "https://github.com/bharathvbcr/DevPrism"

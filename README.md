@@ -1,12 +1,11 @@
 <p align="center">
-  <img src="./apps/desktop/src-tauri/icons/icon.png" width="120" height="120" alt="DevPrism" />
+  <img src="./assets/logo-devprism.png" width="140" height="140" alt="DevPrism logo" />
 </p>
 
 <h1 align="center">DevPrism</h1>
 
 <p align="center">
-  An offline-first scientific writing workspace powered by Gemini and Ollama.<br/>
-  LaTeX + Python + 100+ scientific skills — runs on your desktop.
+  A local-first desktop workspace for technical writing, LaTeX projects, research notes, and AI-assisted document work.
 </p>
 
 <p align="center">
@@ -17,171 +16,181 @@
 </p>
 
 <p align="center">
-  <img src="./assets/demo/main.webp" alt="DevPrism Demo" width="800" />
+  <img src="./assets/demo/main.webp" alt="DevPrism workspace" width="800" />
 </p>
 
 <p align="center">
   <a href="https://github.com/bharathvbcr/DevPrism">
-    <img src="https://img.shields.io/badge/Website-devprism.dev-blue?style=flat-square&logo=googlechrome&logoColor=white" alt="Website" />
+    <img src="https://img.shields.io/badge/Repo-DevPrism-red?style=flat-square&logo=github&logoColor=white" alt="DevPrism repository" />
   </a>&nbsp;
   <a href="https://github.com/bharathvbcr/DevPrism/releases/latest/download/DevPrism-macOS.dmg">
-    <img src="https://img.shields.io/badge/Download-macOS_(Apple_Silicon)-black?style=for-the-badge&logo=apple&logoColor=white" alt="Download for macOS (Apple Silicon)" />
+    <img src="https://img.shields.io/badge/Download-macOS_Apple_Silicon-black?style=for-the-badge&logo=apple&logoColor=white" alt="Download for macOS Apple Silicon" />
   </a>&nbsp;
   <a href="https://github.com/bharathvbcr/DevPrism/releases/latest/download/DevPrism-macOS-Intel.dmg">
-    <img src="https://img.shields.io/badge/Download-macOS_(Intel)-555555?style=for-the-badge&logo=apple&logoColor=white" alt="Download for macOS (Intel)" />
+    <img src="https://img.shields.io/badge/Download-macOS_Intel-555555?style=for-the-badge&logo=apple&logoColor=white" alt="Download for macOS Intel" />
   </a>&nbsp;
   <a href="https://github.com/bharathvbcr/DevPrism/releases/latest/download/DevPrism-Windows-setup.exe">
-    <img src="https://img.shields.io/badge/Download-Windows-0078D4?style=for-the-badge&logo=windows&logoColor=white" alt="Download for Windows" />
+    <img src="https://img.shields.io/badge/Download-Windows-B00020?style=for-the-badge&logo=windows&logoColor=white" alt="Download for Windows" />
   </a>&nbsp;
   <a href="https://github.com/bharathvbcr/DevPrism/releases/latest/download/DevPrism-Linux.AppImage">
-    <img src="https://img.shields.io/badge/Download-Linux_(AppImage)-FCC624?style=for-the-badge&logo=linux&logoColor=black" alt="Download for Linux" />
+    <img src="https://img.shields.io/badge/Download-Linux_AppImage-222222?style=for-the-badge&logo=linux&logoColor=white" alt="Download for Linux AppImage" />
   </a>
 </p>
+
 <p align="center">
   <a href="https://github.com/bharathvbcr/DevPrism/releases">
-    <img src="https://img.shields.io/github/v/release/bharathvbcr/DevPrism?style=flat-square&label=Latest%20Release&color=green" alt="Latest Release" />
+    <img src="https://img.shields.io/github/v/release/bharathvbcr/DevPrism?style=flat-square&label=Latest%20Release&color=B00020" alt="Latest Release" />
   </a>
 </p>
 
 ---
 
-## Why DevPrism?
+## What DevPrism Is
 
-[OpenAI Prism](https://openai.com/prism/) is a cloud-based LaTeX workspace — all your files and data must be uploaded to OpenAI's servers to use it.
+DevPrism is a native desktop environment for writing and revising technical documents without handing the whole workflow to a hosted editor. It combines a LaTeX editor, PDF preview, project templates, local project history, AI chat, Python tooling, and research-oriented skills in one Tauri app.
 
-DevPrism is a **local-first** alternative — your files are stored on your disk, compiled offline, and edited locally. AI features run via Gemini API or locally with Ollama.
+The goal is practical: keep project files on disk, make document compilation and review fast, and let AI help with edits, explanations, analysis, and project automation when you choose to enable it.
 
-| | OpenAI Prism | DevPrism |
-|---|:---:|:---:|
-| AI Model | GPT-5.2 | **Gemini 1.5 / Ollama / Llama 3** |
-| Runtime | Browser (cloud) | **Native desktop (Tauri 2 + Rust)** |
-| LaTeX | Cloud compilation | **Tectonic (embedded, offline)** |
-| Python Environment | — | **Built-in uv + venv — one-click scientific Python setup** |
-| Scientific Skills | — | **100+ domain skills (bioinformatics, cheminformatics, ML, ...)** |
-| Getting Started | Account setup required | **Install and go — template gallery + project wizard** |
-| Version Control | — | **Git-based history with labels & diff** |
-| Source Code | Proprietary | **Open source (MIT)** |
+## Why Use It
 
-### Data & Privacy
+- **Local project ownership:** documents, templates, snapshots, and project configuration live in your workspace.
+- **Offline-capable LaTeX:** the app uses embedded Tectonic support, with packages cached after first use.
+- **AI when useful:** use Gemini API for hosted model access or Ollama for local inference.
+- **Built for research workflows:** add scientific skills, manage references, run Python analysis, and keep writing context close to the document.
+- **Change control:** assistant edits are staged as proposed changes, and project history is backed by a local Git repository.
 
-DevPrism stores and compiles your documents locally — nothing is uploaded to a remote server for storage. When using cloud AI, **prompts and file contents are sent to the provider's API (e.g. Gemini)**. For 100% privacy, use **Ollama** for local inference.
+## Core Workflow
 
----
+1. Create a project from a template such as a paper, thesis, report, poster, presentation, CV, or blank document.
+2. Write in the LaTeX/BibTeX editor with live linting, search, auto-save, and PDF preview.
+3. Ask the assistant to review text, edit files, explain errors, generate snippets, or work with selected PDF regions.
+4. Accept or reject proposed edits chunk by chunk.
+5. Label checkpoints and compare project history when you need to recover or audit changes.
 
 ## Features
 
-### Python Environment (uv)
-DevPrism integrates [uv](https://docs.astral.sh/uv/) — the fast Python package manager — directly into the app. One click to install uv, one click to create a project-level virtual environment. The Dev Engine automatically uses the `.venv` when running Python code, so you can generate plots, run analysis scripts, and process data without leaving the editor.
+### Writing Workspace
 
-<p align="center">
-  <img src="./assets/demo/python.webp" alt="Python Environment" width="600" />
-</p>
+DevPrism provides a CodeMirror-based LaTeX editor, BibTeX syntax support, real-time problem reporting, multi-file project navigation, PDF preview, zoom, text selection, and SyncTeX-style navigation between source and rendered output.
 
-### 100+ Scientific Skills
-Browse and install domain-specific skills — curated prompts and tool configurations that give the Assistant deep knowledge in specialized fields:
+### Assistant Chat
 
-| Domain | Skills |
-|--------|--------|
-| **Bioinformatics & Genomics** | Scanpy, BioPython, PyDESeq2, PySAM, gget, AnnData, ... |
-| **Cheminformatics & Drug Discovery** | RDKit, DeepChem, DiffDock, PubChem, ChEMBL, ... |
-| **Data Analysis & Visualization** | Matplotlib, Seaborn, Plotly, Polars, scikit-learn, ... |
-| **Machine Learning & AI** | PyTorch Lightning, Transformers, SHAP, UMAP, PyMC, ... |
-| **Clinical Research** | ClinicalTrials.gov, ClinVar, DrugBank, FDA, ... |
-| **Scientific Communication** | Literature Review, Grant Writing, Citation Management, ... |
-| **Multi-omics & Systems Biology** | scvi-tools, COBRApy, Reactome, Bioservices, ... |
-| **And more** | Materials Science, Lab Automation, Proteomics, Physics, ... |
-
-Skills are installed globally (`~/.devprism/skills/`) or per-project, and the Assistant automatically loads them when relevant.
-
-<p align="center">
-  <img src="./assets/demo/scientific.webp" alt="Scientific Skills" width="700" />
-</p>
-
-### Quick Start with Templates & Project Wizard
-Pick a template (paper, thesis, presentation, poster, letter, etc.), give it a name, optionally describe what you're writing — DevPrism sets up the project and generates initial content with AI. Drag & drop reference files (PDF, BIB, images) and start writing immediately.
-
-<p align="center">
-  <img src="./assets/demo/starter.webp" alt="Template Gallery & Project Wizard" width="700" />
-</p>
-
-### AI Assistant
-Chat with your assistant directly in the editor. Select between Gemini and Ollama models. Persistent sessions, tool use (file edit, bash, search), and extensible slash commands.
-
-### History & Proposed Changes
-Every save creates a snapshot in a local Git repository (`.devprism/history.git/`). Label important checkpoints, browse diffs between any two snapshots, and restore previous versions. When the assistant suggests edits, changes appear in a dedicated panel with visual diffs — accept or reject per chunk, or apply/undo all at once (`⌘Y` / `⌘N`).
-
-<p align="center">
-  <img src="./assets/demo/history.webp" alt="History & Proposed Changes" width="700" />
-</p>
-
-### Offline LaTeX Compilation
-Tectonic is embedded directly in the app. Packages are downloaded once on first use and cached locally. After that, compilation works fully offline with no TeX Live installation required.
+The assistant drawer supports persistent sessions, provider selection, project-aware tool use, slash commands, and proposed file changes. It is designed for document work rather than generic chat bolted onto an editor.
 
 ### Capture & Ask
-Press `⌘X` to enter capture mode, drag to select any region in the PDF — the captured image is pinned to the chat composer so you can immediately ask about it. Great for asking about equations, figures, tables, or reviewer comments.
+
+Use capture mode to select a region of the PDF and attach it directly to the assistant. This is useful for equations, figure details, table checks, reviewer comments, or layout questions.
 
 <p align="center">
-  <img src="./assets/demo/capture_ask.webp" alt="Capture & Ask" width="700" />
+  <img src="./assets/demo/capture_ask.webp" alt="Capture and ask workflow" width="700" />
 </p>
 
-### Live PDF Preview
-Native MuPDF rendering with SyncTeX support — click a position in the PDF to jump to the corresponding source line. Supports zoom, text selection, and capture.
+### Templates & Project Wizard
 
-### Editor
-CodeMirror 6 with LaTeX/BibTeX syntax highlighting, real-time error linting, find & replace (regex), and multi-file project support with auto-save.
-
-### More
-- **Zotero Integration** — OAuth-based bibliography management and citation insertion.
+Start from bundled document templates and let the project wizard create the initial folder structure. Templates cover common technical and academic formats, including papers, reports, theses, posters, presentations, letters, newsletters, books, and CVs.
 
 <p align="center">
-  <img src="./assets/demo/zotero.webp" alt="Zotero Integration" width="300" />
+  <img src="./assets/demo/starter.webp" alt="Template gallery and project wizard" width="700" />
 </p>
 
-- **Slash Commands** — Built-in (`/review`, `/init`) + custom commands from `.devprism/commands/`.
-- **External Editors** — Open projects in Cursor, VS Code, Zed, or Sublime Text.
-- **Dark / Light Theme** — Automatic switching.
+### Python Environment
 
----
+DevPrism includes uv-based Python setup for project analysis and figure generation. A project-level `.venv` can be created from the app, then reused by assistant tools and scripts.
 
-## Installation
+<p align="center">
+  <img src="./assets/demo/python.webp" alt="Python environment setup" width="600" />
+</p>
 
-Download the latest build from [GitHub Releases](https://github.com/bharathvbcr/DevPrism/releases).
+### Scientific Skills
 
-## Architecture
+Install domain-specific skills globally or per project. Skills can provide focused assistance for literature review, citation work, bioinformatics, cheminformatics, clinical research, machine learning, visualization, and other research tasks.
 
-DevPrism is a Tauri 2 desktop app. The React/Vite frontend owns the editor, template gallery, PDF preview, settings, and agent chat UI. The Rust host owns local filesystem access, Tectonic compilation, SyncTeX, Git-backed project history, uv setup, scientific skill installation, Zotero OAuth, and the native app lifecycle.
+<p align="center">
+  <img src="./assets/demo/scientific.webp" alt="Scientific skills browser" width="700" />
+</p>
 
-Runtime data is local by default:
+### History & Review
+
+Each save can be captured into `.devprism/history.git/`. You can label checkpoints, inspect diffs, restore previous states, and review assistant-generated edits before applying them.
+
+<p align="center">
+  <img src="./assets/demo/history.webp" alt="History and proposed changes" width="700" />
+</p>
+
+### Zotero
+
+DevPrism includes Zotero integration for bibliography workflows and citation insertion.
+
+<p align="center">
+  <img src="./assets/demo/zotero.webp" alt="Zotero integration" width="300" />
+</p>
+
+## Privacy Model
+
+DevPrism is local-first, not magic-air-gapped. Files are stored and compiled locally by default. If you enable a hosted AI provider, prompts and relevant project context can be sent to that provider. For fully local inference, configure Ollama and keep hosted model providers disabled.
+
+Runtime paths:
 
 - Project history: `.devprism/history.git/`
 - Project skills: `.devprism/skills/`
 - User settings and global skills: `~/.devprism/`
 - Project Python environment: `.venv/`
 
-See [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) for the full module map and [docs/RELEASE.md](./docs/RELEASE.md) for GitHub build and release deployment.
+## Installation
+
+Download the latest build from [GitHub Releases](https://github.com/bharathvbcr/DevPrism/releases).
+
+Available release artifacts are expected for:
+
+- macOS Apple Silicon
+- macOS Intel
+- Windows
+- Linux AppImage
 
 ## Development
 
+Install dependencies:
+
 ```bash
 pnpm install --frozen-lockfile
+```
+
+Run common checks:
+
+```bash
 pnpm lint
 pnpm --filter @devprism/desktop test
 pnpm --filter @devprism/desktop build
 ```
 
-Native desktop packaging is run with:
+Run the desktop app in development:
+
+```bash
+pnpm dev
+```
+
+Build native packages:
 
 ```bash
 pnpm build
 ```
 
+## Architecture
+
+DevPrism is built with Tauri 2, Rust, React, Vite, and TypeScript.
+
+- The React frontend owns the editor, PDF preview, template gallery, assistant UI, settings, and project workflows.
+- The Rust host owns filesystem access, native app lifecycle, LaTeX compilation, SyncTeX plumbing, local history, skill installation, uv setup, Zotero OAuth, and privileged tool execution.
+
+See [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) for the module map and [docs/RELEASE.md](./docs/RELEASE.md) for release packaging notes.
+
 ## Contributing
 
-Contributions are welcome! See [CONTRIBUTING.md](./CONTRIBUTING.md) for development setup, testing, and guidelines.
+Contributions are welcome. See [CONTRIBUTING.md](./CONTRIBUTING.md) for setup, testing, and contribution guidelines.
 
 ## Acknowledgments
 
-This project started from [Open Prism](https://github.com/assistant-ui/open-prism) by [assistant-ui](https://github.com/assistant-ui).
+DevPrism builds on the ideas and foundation of Claude Prism / Open Prism by [assistant-ui](https://github.com/assistant-ui), including the original local AI writing workspace direction. This project has been reworked under the DevPrism brand with its own documentation, packaging, feature scope, and release path.
 
 ## License
 

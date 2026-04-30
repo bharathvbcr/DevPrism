@@ -108,15 +108,15 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ZOTERO_CONSUMER_KEY: ${{ secrets.ZOTERO_CONSUMER_KEY }}
           ZOTERO_CONSUMER_SECRET: ${{ secrets.ZOTERO_CONSUMER_SECRET }}
-        run: pnpm --filter @devprism/desktop tauri build --target x86_64-pc-windows-msvc --config src-tauri/tauri.ci.conf.json
+        run: pnpm --filter @devcouncil/desktop tauri build --target x86_64-pc-windows-msvc --config src-tauri/tauri.ci.conf.json
 
       - name: Collect updater artifacts
         id: collect
         shell: bash
         run: |
           BUNDLE="apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle"
-          NSIS_SIG=$(find "$BUNDLE/nsis" -name '*-setup.exe.sig' 2>/dev/null | head -1)
-          NSIS_EXE=$(find "$BUNDLE/nsis" -name '*-setup.exe' ! -name '*.sig' 2>/dev/null | head -1)
+          NSIS_SIG=$(find "$BUNDLE/nsis" -name '*-setup.exe.sig' 2>/dev/null | head -1 || true)
+          NSIS_EXE=$(find "$BUNDLE/nsis" -name '*-setup.exe' ! -name '*.sig' 2>/dev/null | head -1 || true)
 
           if [ -n "$NSIS_SIG" ] && [ -n "$NSIS_EXE" ]; then
             echo "sig=$(cat "$NSIS_SIG")" >> $GITHUB_OUTPUT
@@ -256,7 +256,7 @@ jobs:
           if [ "$APPLE_CERTIFICATE_AVAILABLE" != "true" ]; then
             unset APPLE_SIGNING_IDENTITY
           fi
-          pnpm --filter @devprism/desktop tauri build --target aarch64-apple-darwin --config src-tauri/tauri.ci.conf.json
+          pnpm --filter @devcouncil/desktop tauri build --target aarch64-apple-darwin --config src-tauri/tauri.ci.conf.json
 
       - name: Notarize DMG
         if: env.APPLE_CERTIFICATE_AVAILABLE == 'true' && env.APPLE_NOTARIZATION_AVAILABLE == 'true'
@@ -290,8 +290,8 @@ jobs:
         id: collect
         run: |
           BUNDLE="apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle"
-          TAR_SIG=$(find "$BUNDLE/macos" -name '*.app.tar.gz.sig' 2>/dev/null | head -1)
-          TAR_GZ=$(find "$BUNDLE/macos" -name '*.app.tar.gz' ! -name '*.sig' 2>/dev/null | head -1)
+          TAR_SIG=$(find "$BUNDLE/macos" -name '*.app.tar.gz.sig' 2>/dev/null | head -1 || true)
+          TAR_GZ=$(find "$BUNDLE/macos" -name '*.app.tar.gz' ! -name '*.sig' 2>/dev/null | head -1 || true)
 
           if [ -n "$TAR_SIG" ] && [ -n "$TAR_GZ" ]; then
             echo "sig=$(cat "$TAR_SIG")" >> $GITHUB_OUTPUT
@@ -433,7 +433,7 @@ jobs:
           if [ "$APPLE_CERTIFICATE_AVAILABLE" != "true" ]; then
             unset APPLE_SIGNING_IDENTITY
           fi
-          pnpm --filter @devprism/desktop tauri build --target x86_64-apple-darwin --config src-tauri/tauri.ci.conf.json
+          pnpm --filter @devcouncil/desktop tauri build --target x86_64-apple-darwin --config src-tauri/tauri.ci.conf.json
 
       - name: Notarize DMG
         if: env.APPLE_CERTIFICATE_AVAILABLE == 'true' && env.APPLE_NOTARIZATION_AVAILABLE == 'true'
@@ -467,8 +467,8 @@ jobs:
         id: collect
         run: |
           BUNDLE="apps/desktop/src-tauri/target/x86_64-apple-darwin/release/bundle"
-          TAR_SIG=$(find "$BUNDLE/macos" -name '*.app.tar.gz.sig' 2>/dev/null | head -1)
-          TAR_GZ=$(find "$BUNDLE/macos" -name '*.app.tar.gz' ! -name '*.sig' 2>/dev/null | head -1)
+          TAR_SIG=$(find "$BUNDLE/macos" -name '*.app.tar.gz.sig' 2>/dev/null | head -1 || true)
+          TAR_GZ=$(find "$BUNDLE/macos" -name '*.app.tar.gz' ! -name '*.sig' 2>/dev/null | head -1 || true)
 
           if [ -n "$TAR_SIG" ] && [ -n "$TAR_GZ" ]; then
             echo "sig=$(cat "$TAR_SIG")" >> $GITHUB_OUTPUT
@@ -579,14 +579,14 @@ jobs:
           TECTONIC_DEP_BACKEND: vcpkg
           CXXFLAGS: "-std=c++17"
           CFLAGS: ""
-        run: pnpm --filter @devprism/desktop tauri build --target x86_64-unknown-linux-gnu --config src-tauri/tauri.ci.conf.json
+        run: pnpm --filter @devcouncil/desktop tauri build --target x86_64-unknown-linux-gnu --config src-tauri/tauri.ci.conf.json
 
       - name: Collect updater artifacts
         id: collect
         run: |
           BUNDLE="apps/desktop/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle"
-          APPIMAGE_SIG=$(find "$BUNDLE/appimage" -name '*.AppImage.sig' 2>/dev/null | head -1)
-          APPIMAGE=$(find "$BUNDLE/appimage" -name '*.AppImage' ! -name '*.sig' 2>/dev/null | head -1)
+          APPIMAGE_SIG=$(find "$BUNDLE/appimage" -name '*.AppImage.sig' 2>/dev/null | head -1 || true)
+          APPIMAGE=$(find "$BUNDLE/appimage" -name '*.AppImage' ! -name '*.sig' 2>/dev/null | head -1 || true)
 
           if [ -n "$APPIMAGE_SIG" ] && [ -n "$APPIMAGE" ]; then
             echo "sig=$(cat "$APPIMAGE_SIG")" >> $GITHUB_OUTPUT
@@ -653,17 +653,17 @@ jobs:
             const BASE = process.env.BASE_URL;
             const platforms = {};
             if (process.env.MAC_SIG)
-              platforms['darwin-aarch64'] = { signature: process.env.MAC_SIG, url: BASE + '/DevPrism-macOS.app.tar.gz' };
+              platforms['darwin-aarch64'] = { signature: process.env.MAC_SIG, url: BASE + '/DevCouncil-macOS.app.tar.gz' };
             if (process.env.MAC_INTEL_SIG)
-              platforms['darwin-x86_64'] = { signature: process.env.MAC_INTEL_SIG, url: BASE + '/DevPrism-macOS-Intel.app.tar.gz' };
+              platforms['darwin-x86_64'] = { signature: process.env.MAC_INTEL_SIG, url: BASE + '/DevCouncil-macOS-Intel.app.tar.gz' };
             if (process.env.LIN_SIG)
-              platforms['linux-x86_64'] = { signature: process.env.LIN_SIG, url: BASE + '/DevPrism-Linux.AppImage' };
+              platforms['linux-x86_64'] = { signature: process.env.LIN_SIG, url: BASE + '/DevCouncil-Linux.AppImage' };
             if (process.env.WIN_SIG)
-              platforms['windows-x86_64'] = { signature: process.env.WIN_SIG, url: BASE + '/DevPrism-Windows-setup.exe' };
+              platforms['windows-x86_64'] = { signature: process.env.WIN_SIG, url: BASE + '/DevCouncil-Windows-setup.exe' };
 
             const data = {
               version: '$VERSION',
-              notes: 'DevPrism $TAG',
+              notes: 'DevCouncil $TAG',
               pub_date: '$PUB_DATE',
               platforms
             };
@@ -688,18 +688,18 @@ jobs:
 
           # Rename platform artifacts to version-free names
           # macOS Apple Silicon (from desktop-macos artifact)
-          find artifacts/desktop-macos -name "*.dmg" 2>/dev/null | head -1 | xargs -I{} cp {} upload/DevPrism-macOS.dmg
-          find artifacts/desktop-macos -name "*.app.tar.gz" 2>/dev/null | head -1 | xargs -I{} cp {} upload/DevPrism-macOS.app.tar.gz
+          find artifacts/desktop-macos -name "*.dmg" 2>/dev/null | head -1 | xargs -I{} cp {} upload/DevCouncil-macOS.dmg
+          find artifacts/desktop-macos -name "*.app.tar.gz" 2>/dev/null | head -1 | xargs -I{} cp {} upload/DevCouncil-macOS.app.tar.gz
           # macOS Intel (from desktop-macos-intel artifact)
-          find artifacts/desktop-macos-intel -name "*.dmg" 2>/dev/null | head -1 | xargs -I{} cp {} upload/DevPrism-macOS-Intel.dmg
-          find artifacts/desktop-macos-intel -name "*.app.tar.gz" 2>/dev/null | head -1 | xargs -I{} cp {} upload/DevPrism-macOS-Intel.app.tar.gz
+          find artifacts/desktop-macos-intel -name "*.dmg" 2>/dev/null | head -1 | xargs -I{} cp {} upload/DevCouncil-macOS-Intel.dmg
+          find artifacts/desktop-macos-intel -name "*.app.tar.gz" 2>/dev/null | head -1 | xargs -I{} cp {} upload/DevCouncil-macOS-Intel.app.tar.gz
           # Windows
-          find artifacts/desktop-windows -name "*-setup.exe" 2>/dev/null | head -1 | xargs -I{} cp {} upload/DevPrism-Windows-setup.exe
-          find artifacts/desktop-windows -name "*.msi" 2>/dev/null | head -1 | xargs -I{} cp {} upload/DevPrism-Windows.msi
+          find artifacts/desktop-windows -name "*-setup.exe" 2>/dev/null | head -1 | xargs -I{} cp {} upload/DevCouncil-Windows-setup.exe
+          find artifacts/desktop-windows -name "*.msi" 2>/dev/null | head -1 | xargs -I{} cp {} upload/DevCouncil-Windows.msi
           # Linux
-          find artifacts/desktop-linux -name "*.deb" 2>/dev/null | head -1 | xargs -I{} cp {} upload/DevPrism-Linux.deb
-          find artifacts/desktop-linux -name "*.rpm" 2>/dev/null | head -1 | xargs -I{} cp {} upload/DevPrism-Linux.rpm
-          find artifacts/desktop-linux -name "*.AppImage" 2>/dev/null | head -1 | xargs -I{} cp {} upload/DevPrism-Linux.AppImage
+          find artifacts/desktop-linux -name "*.deb" 2>/dev/null | head -1 | xargs -I{} cp {} upload/DevCouncil-Linux.deb
+          find artifacts/desktop-linux -name "*.rpm" 2>/dev/null | head -1 | xargs -I{} cp {} upload/DevCouncil-Linux.rpm
+          find artifacts/desktop-linux -name "*.AppImage" 2>/dev/null | head -1 | xargs -I{} cp {} upload/DevCouncil-Linux.AppImage
 
           cp latest.json upload/
 

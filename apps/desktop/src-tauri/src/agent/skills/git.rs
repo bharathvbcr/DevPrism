@@ -210,7 +210,7 @@ impl Tool for GitCommitTool {
         let tree = repo.find_tree(oid).map_err(|e| e.to_string())?;
 
         let signature = repo.signature().unwrap_or_else(|_| {
-            Signature::now("DevPrism Agent", "agent@devprism.local").unwrap()
+            Signature::now("DevCouncil Agent", "agent@devcouncil.local").unwrap()
         });
 
         let parent_commit = match repo.head() {

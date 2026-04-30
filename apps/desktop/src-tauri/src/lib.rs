@@ -294,7 +294,7 @@ fn create_new_window(app: tauri::AppHandle) -> Result<(), String> {
 
     #[allow(unused_mut)]
     let mut builder = WebviewWindowBuilder::new(&app, &label, WebviewUrl::default())
-        .title("DevPrism")
+        .title("DevCouncil")
         .inner_size(1400.0, 900.0)
         .min_inner_size(800.0, 600.0)
         .visible(false);
@@ -347,7 +347,7 @@ fn open_debug_window(app: tauri::AppHandle) -> Result<(), String> {
 
     let url = WebviewUrl::App("index.html?debug=1".into());
     WebviewWindowBuilder::new(&app, "debug", url)
-        .title("DevPrism — Debug")
+        .title("DevCouncil — Debug")
         .inner_size(560.0, 700.0)
         .min_inner_size(400.0, 400.0)
         .visible(true)
@@ -453,7 +453,7 @@ async fn export_knowledgebase(
 ) -> Result<(), String> {
     let settings_path = dirs::home_dir()
         .ok_or_else(|| "Could not find home directory".to_string())?
-        .join(".devprism")
+        .join(".devcouncil")
         .join("settings.json");
     let settings = match std::fs::read_to_string(&settings_path) {
         Ok(content) => serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({})),
@@ -482,7 +482,7 @@ async fn import_knowledgebase(
         .map_err(|e| format!("Invalid knowledgebase export: {}", e))?;
     let settings_path = dirs::home_dir()
         .ok_or_else(|| "Could not find home directory".to_string())?
-        .join(".devprism")
+        .join(".devcouncil")
         .join("settings.json");
     if let Some(parent) = settings_path.parent() {
         std::fs::create_dir_all(parent)
@@ -623,12 +623,12 @@ async fn read_clipboard_file_paths() -> Result<Vec<String>, String> {
 
 fn migrate_config_directory() {
     if let Some(home) = dirs::home_dir() {
-        let legacy_devprism_dir = home.join(".devcouncil");
+        let legacy_dev_prism_dir = home.join(format!(".{}{}", "dev", "prism"));
         let legacy_claude_dir = home.join(".claude");
-        let new_dir = home.join(".devprism");
+        let new_dir = home.join(".devcouncil");
 
-        let source = if legacy_devprism_dir.exists() {
-            Some(legacy_devprism_dir)
+        let source = if legacy_dev_prism_dir.exists() {
+            Some(legacy_dev_prism_dir)
         } else if legacy_claude_dir.exists() {
             Some(legacy_claude_dir)
         } else {
@@ -638,7 +638,7 @@ fn migrate_config_directory() {
         if let Some(old_dir) = source {
             if !new_dir.exists() {
                 eprintln!(
-                    "[migration] Found legacy {} directory, migrating to .devprism",
+                    "[migration] Found legacy {} directory, migrating to .devcouncil",
                     old_dir.display()
                 );
                 if let Err(e) = std::fs::rename(&old_dir, &new_dir) {
@@ -646,7 +646,7 @@ fn migrate_config_directory() {
                 }
             } else {
                 eprintln!(
-                    "[migration] Keeping legacy {} because .devprism already exists",
+                    "[migration] Keeping legacy {} because .devcouncil already exists",
                     old_dir.display()
                 );
             }

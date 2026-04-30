@@ -20,7 +20,6 @@ import {
   TerminalIcon,
   LayersIcon,
   PaperclipIcon,
-  RabbitIcon,
   RefreshCwIcon,
   SparklesIcon,
   SquareIcon,
@@ -190,15 +189,16 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                 }
               : {
                   ...agentProviderSettings,
-                  provider,
-                  backendMode: "claude" as const,
-                  model: "sonnet",
+                  provider: "gemini-cli" as const,
+                  backendMode: "cli" as const,
+                  model:
+                    agentProviderSettings.geminiCliModel ?? "gemini-1.5-pro",
                 };
       setTabProviderSettings(activeTabId, next);
       if (provider === "ollama") setSelectedModel("ollama");
       else if (provider === "gemini-cli") setSelectedModel("gemini-cli");
       else if (provider === "gemini-api") setSelectedModel("gemini-1.5-pro");
-      else setSelectedModel("sonnet");
+      else setSelectedModel("gemini-cli");
       setModelPickerOpen(false);
     },
     [
@@ -796,12 +796,6 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                   desc: agentProviderSettings.ollamaModel,
                   icon: <LayersIcon className="size-3.5" />,
                 },
-                {
-                  id: "claude" as const,
-                  name: "Claude fallback",
-                  desc: "Legacy CLI compatibility",
-                  icon: <RabbitIcon className="size-3.5" />,
-                },
               ].map((m) => (
                 <button
                   key={m.id}
@@ -994,7 +988,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                     ? "Gemini CLI"
                     : agentProviderSettings.provider === "ollama"
                       ? "Ollama"
-                      : "Claude"}
+                      : "Gemini CLI"}
               </span>
               <span className="text-muted-foreground/60">
                 {effortLevel === "low"

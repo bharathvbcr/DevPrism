@@ -1,24 +1,14 @@
-import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
+import { create } from "zustand";
+import { useSettingsStore, type AgentProviderSettings } from "./settings-store";
 
-// ─── Types ───
-
-interface DevEngineStatus {
-  installed: boolean;
-  authenticated: boolean;
-  binary_path: string | null;
-  version: string | null;
-  account_email: string | null;
-  missing_git: boolean;
+interface ProviderHealth {
+  ok: boolean;
+  message: string;
+  models: string[];
 }
 
-type SetupStatus =
-  | "checking"
-  | "missing-git"
-  | "not-installed"
-  | "not-authenticated"
-  | "ready"
-  | "error";
+type SetupStatus = "checking" | "ready" | "error";
 
 type StepStatus = "pending" | "active" | "complete" | "error";
 
@@ -35,22 +25,14 @@ interface DevEngineSetupState {
   error: string | null;
   version: string | null;
   accountEmail: string | null;
-
-  // Install progress
   installSteps: StepInfo[];
   installLogs: string[];
   installLogsVisible: boolean;
-
-  // Login progress
   loginSteps: StepInfo[];
-
-  // Actions
   checkStatus: () => Promise<void>;
   install: () => Promise<void>;
   login: () => Promise<void>;
   toggleInstallLogs: () => void;
-
-  // Internal helpers
   _appendInstallLog: (line: string) => void;
   _advanceInstallStep: (stepId: string) => void;
   _failCurrentStep: (error: string) => void;
@@ -60,48 +42,51 @@ interface DevEngineSetupState {
   _finishLogin: (success: boolean) => void;
 }
 
-// ─── Constants ───
-
-const INSTALL_STEPS: StepInfo[] = [
-  { id: "downloading", label: "Downloading Dev Engine", status: "pending" },
-  { id: "installing", label: "Installing CLI", status: "pending" },
-  { id: "verifying", label: "Verifying installation", status: "pending" },
-  { id: "complete", label: "Ready to use", status: "pending" },
-];
-
-const LOGIN_STEPS: StepInfo[] = [
-  { id: "opening-browser", label: "Opening browser", status: "pending" },
-  { id: "waiting-auth", label: "Waiting for sign-in", status: "pending" },
-  { id: "complete", label: "Authenticated", status: "pending" },
-];
-
-const STEP_ORDER_INSTALL = [
-  "downloading",
-  "installing",
-  "verifying",
-  "complete",
-];
-const STEP_ORDER_LOGIN = ["opening-browser", "waiting-auth", "complete"];
-
-function advanceSteps(
-  steps: StepInfo[],
-  targetId: string,
-  order: string[],
-): StepInfo[] {
-  const targetIdx = order.indexOf(targetId);
-  return steps.map((s) => {
-    const thisIdx = order.indexOf(s.id);
-    if (thisIdx < targetIdx && s.status !== "error") {
-      return { ...s, status: "complete" as const };
-    }
-    if (s.id === targetId) {
-      return { ...s, status: "active" as const };
-    }
-    return s;
-  });
+async function checkProvider(
+  settings: AgentProviderSettings,
+  provider: AgentProviderSettings["provider"],
+): Promise<{ providerLabel: string; health: ProviderHealth }> {
+  if (provider === "gemini-cli") {
+    return {
+      providerLabel: "Gemini CLI",
+      health: await invoke<ProviderHealth>("check_gemini_cli_status"),
+    };
+  }
+  if (provider === "ollama") {
+    return {
+      providerLabel: "Ollama",
+      health: await invoke<ProviderHealth>("check_ollama_status", {
+        baseUrl: settings.ollamaBaseUrl,
+        model: settings.ollamaModel,
+      }),
+    };
+  }
+  if (provider === "gemini-api") {
+    return {
+      providerLabel: "Gemini API",
+      health: await invoke<ProviderHealth>("check_gemini_api_status", {
+        apiKey: settings.geminiApiKey,
+      }),
+    };
+  }
+  return {
+    providerLabel: "Configured provider",
+    health: {
+      ok: false,
+      message: "Select Gemini CLI, Gemini API, or Ollama in Settings.",
+      models: [],
+    },
+  };
 }
 
-// ─── Store ───
+function firstLine(value: string): string {
+  return (
+    value
+      .split(/\r?\n/)
+      .find((line) => line.trim())
+      ?.trim() ?? ""
+  );
+}
 
 export const useDevEngineSetupStore = create<DevEngineSetupState>(
   (set, get) => ({
@@ -111,195 +96,89 @@ export const useDevEngineSetupStore = create<DevEngineSetupState>(
     error: null,
     version: null,
     accountEmail: null,
-
     installSteps: [],
     installLogs: [],
     installLogsVisible: false,
-
     loginSteps: [],
 
     checkStatus: async () => {
       set({ status: "checking", error: null });
       try {
-        const result = await invoke<DevEngineStatus>("check_claude_status");
+        await useSettingsStore.getState().loadFromBackend();
+        const settings = useSettingsStore.getState().agentProviderSettings;
+        const configuredProvider =
+          settings.provider === "claude" ? "gemini-cli" : settings.provider;
+        const providers = Array.from(
+          new Set([
+            configuredProvider,
+            "gemini-cli",
+            "ollama",
+            "gemini-api",
+          ] as AgentProviderSettings["provider"][]),
+        );
+        const failures: string[] = [];
 
-        // On Windows, Git for Windows is required before anything else
-        if (result.missing_git) {
-          set({ status: "missing-git", version: null, accountEmail: null });
-          return;
+        for (const provider of providers) {
+          const { providerLabel, health } = await checkProvider(
+            settings,
+            provider,
+          );
+          if (health.ok) {
+            set({
+              status: "ready",
+              version: providerLabel,
+              accountEmail: firstLine(health.message),
+              error: null,
+            });
+            return;
+          }
+          failures.push(`${providerLabel}: ${firstLine(health.message)}`);
         }
 
-        if (!result.installed) {
-          set({ status: "not-installed", version: null, accountEmail: null });
-          return;
-        }
-
-        if (!result.authenticated) {
-          set({
-            status: "not-authenticated",
-            version: result.version,
-            accountEmail: null,
-          });
-          return;
-        }
-
-        set({
-          status: "ready",
-          version: result.version,
-          accountEmail: result.account_email,
-        });
-      } catch (err: any) {
         set({
           status: "error",
-          error: err?.message || String(err),
+          version: null,
+          accountEmail: null,
+          error: failures.join("\n"),
         });
+      } catch (err: any) {
+        set({ status: "error", error: err?.message || String(err) });
       }
     },
 
     install: async () => {
-      const initialSteps = INSTALL_STEPS.map((s, i) => ({
-        ...s,
-        status: (i === 0 ? "active" : "pending") as StepStatus,
-      }));
-
       set({
-        isInstalling: true,
-        error: null,
-        installSteps: initialSteps,
-        installLogs: [],
-        installLogsVisible: false,
+        status: "error",
+        error:
+          "DevCouncil uses Gemini CLI, Gemini API, or Ollama as the primary Dev Engine. Configure one in Settings.",
       });
-
-      try {
-        // Fire-and-forget — events drive the rest
-        await invoke("install_claude_cli");
-      } catch (err: any) {
-        set({
-          isInstalling: false,
-          status: "error",
-          error: err?.message || String(err),
-        });
-      }
     },
 
     login: async () => {
-      const initialSteps = LOGIN_STEPS.map((s, i) => ({
-        ...s,
-        status: (i === 0 ? "active" : "pending") as StepStatus,
-      }));
-
       set({
-        isLoggingIn: true,
-        error: null,
-        loginSteps: initialSteps,
+        status: "error",
+        error:
+          "Sign in through Gemini CLI (`gemini auth login`) or start Ollama locally, then retry.",
       });
-
-      try {
-        await invoke("login_claude");
-      } catch (err: any) {
-        set({
-          isLoggingIn: false,
-          status: "error",
-          error: err?.message || String(err),
-        });
-      }
     },
 
     toggleInstallLogs: () => {
       set((state) => ({ installLogsVisible: !state.installLogsVisible }));
     },
-
     _appendInstallLog: (line: string) => {
       set((state) => ({
         installLogs: [...state.installLogs, line].slice(-200),
       }));
     },
-
-    _advanceInstallStep: (stepId: string) => {
-      set((state) => ({
-        installSteps: advanceSteps(
-          state.installSteps,
-          stepId,
-          STEP_ORDER_INSTALL,
-        ),
-      }));
+    _advanceInstallStep: () => {},
+    _failCurrentStep: (error: string) => set({ error }),
+    _advanceLoginStep: () => {},
+    _failCurrentLoginStep: (error: string) => set({ error }),
+    _finishInstall: () => {
+      get().checkStatus();
     },
-
-    _failCurrentStep: (error: string) => {
-      set((state) => ({
-        installSteps: state.installSteps.map((s) =>
-          s.status === "active" ? { ...s, status: "error" as const } : s,
-        ),
-        error,
-      }));
-    },
-
-    _advanceLoginStep: (stepId: string) => {
-      set((state) => ({
-        loginSteps: advanceSteps(state.loginSteps, stepId, STEP_ORDER_LOGIN),
-      }));
-    },
-
-    _failCurrentLoginStep: (error: string) => {
-      set((state) => ({
-        loginSteps: state.loginSteps.map((s) =>
-          s.status === "active" ? { ...s, status: "error" as const } : s,
-        ),
-        error,
-      }));
-    },
-
-    _finishInstall: (success: boolean) => {
-      if (success) {
-        const store = get();
-        store._advanceInstallStep("verifying");
-
-        setTimeout(() => {
-          const s = get();
-          // Mark verifying complete, then complete step active
-          s._advanceInstallStep("complete");
-
-          setTimeout(() => {
-            // Mark all complete
-            set((state) => ({
-              isInstalling: false,
-              installSteps: state.installSteps.map((step) => ({
-                ...step,
-                status: "complete" as const,
-              })),
-            }));
-            get().checkStatus();
-          }, 500);
-        }, 800);
-      } else {
-        const store = get();
-        store._failCurrentStep("Installation failed. Check logs for details.");
-        set({ isInstalling: false, status: "error", installLogsVisible: true });
-      }
-    },
-
-    _finishLogin: (success: boolean) => {
-      if (success) {
-        const store = get();
-        store._advanceLoginStep("complete");
-
-        setTimeout(() => {
-          set((state) => ({
-            isLoggingIn: false,
-            loginSteps: state.loginSteps.map((step) => ({
-              ...step,
-              status: "complete" as const,
-            })),
-          }));
-          get().checkStatus();
-        }, 500);
-      } else {
-        const store = get();
-        store._failCurrentLoginStep(
-          "Authentication failed. If the browser didn't open, please run 'claude auth login' in your terminal instead.",
-        );
-        set({ isLoggingIn: false, status: "error" });
-      }
+    _finishLogin: () => {
+      get().checkStatus();
     },
   }),
 );

@@ -1,11 +1,11 @@
-# DevPrism Architecture
+# DevCouncil Architecture
 
-DevPrism is a local-first desktop application for scientific LaTeX authoring. The app is packaged with Tauri 2 and keeps documents, project history, skills, settings, and generated artifacts on the user's machine.
+DevCouncil is a local-first desktop application for scientific LaTeX authoring. The app is packaged with Tauri 2 and keeps documents, project history, skills, settings, and generated artifacts on the user's machine.
 
 ## Runtime Layout
 
 ```
-devprism/
+devcouncil/
 ├── apps/desktop/                 # Desktop app workspace
 │   ├── src/                      # React, TypeScript, Zustand, CodeMirror UI
 │   ├── public/examples/          # Bundled LaTeX starter projects
@@ -14,7 +14,7 @@ devprism/
 │       ├── src/main.rs           # GUI entrypoint plus hidden CLI modes
 │       ├── src/latex.rs          # Tectonic compilation and SyncTeX support
 │       ├── src/history.rs        # Per-project Git history snapshots
-│       ├── src/claude.rs         # Agent CLI process integration and settings
+│       ├── src/claude.rs         # Legacy-compatible agent process integration and settings
 │       ├── src/skills.rs         # Scientific skill installation
 │       ├── src/slash_commands.rs # Project/global slash command discovery
 │       ├── src/uv.rs             # uv install and virtualenv orchestration
@@ -35,13 +35,13 @@ The UI talks to the Rust host through Tauri commands. Browser storage is only us
 The Tauri host owns native capabilities and filesystem access:
 
 - LaTeX compilation through Tectonic, including a subprocess mode for isolated compiler runs.
-- Local Git history in `.devprism/history.git`.
-- Project and global skills under `.devprism/skills`.
-- Agent settings and linked-project knowledge under `~/.devprism`.
+- Local Git history in `.devcouncil/history.git`.
+- Project and global skills under `.devcouncil/skills`.
+- Agent settings and linked-project knowledge under `~/.devcouncil`.
 - uv installation and project virtualenv orchestration.
 - Zotero OAuth and bibliography access.
 
-On startup, DevPrism migrates legacy local config directories into `~/.devprism` when needed.
+On startup, DevCouncil migrates legacy local config directories into `~/.devcouncil` when needed.
 
 ## Build And Release
 
@@ -50,8 +50,8 @@ Local compile:
 ```bash
 pnpm install --frozen-lockfile
 pnpm lint
-pnpm --filter @devprism/desktop test
-pnpm --filter @devprism/desktop build
+pnpm --filter @devcouncil/desktop test
+pnpm --filter @devcouncil/desktop build
 ```
 
 Native desktop build:

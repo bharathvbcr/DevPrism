@@ -1,4 +1,4 @@
-# Contributing to DevPrism
+# Contributing to DevCouncil
 
 Contributions are welcome! This guide covers the development environment, workflow, and testing.
 
@@ -37,8 +37,8 @@ vcpkg install harfbuzz[graphite2]:x64-windows freetype:x64-windows icu:x64-windo
 ### Setup
 
 ```bash
-git clone https://github.com/bharathvbcr/DevPrism.git
-cd DevPrism
+git clone https://github.com/bharathvbcr/DevCouncil.git
+cd DevCouncil
 pnpm install
 ```
 
@@ -57,7 +57,7 @@ pnpm build
 ## Project Structure
 
 ```
-devprism/
+devcouncil/
 ├── apps/
 │   └── desktop/              # Tauri desktop app
 │       ├── src/              # React frontend (TypeScript)

@@ -1,8 +1,8 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicegui-unofficial/nicegui-tauri-template/main/src-tauri/tauri.conf-v2-schema.json",
-  "identifier": "com.devprism.desktop",
-  "productName": "DevPrism",
-  "version": "0.0.1",
+  "identifier": "com.devcouncil.desktop",
+  "productName": "DevCouncil",
+  "version": "0.0.2",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "beforeBuildCommand": "pnpm build",
@@ -13,7 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "DevPrism",
+        "title": "DevCouncil",
         "fullscreen": false,
         "maximized": true,
         "width": 1400,

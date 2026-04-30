@@ -189,7 +189,7 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
     if (agentProviderSettings.provider === "gemini-api") return "Gemini API";
     if (agentProviderSettings.provider === "gemini-cli") return "Gemini CLI";
     if (agentProviderSettings.provider === "ollama") return "Ollama";
-    return "Claude fallback";
+    return "Gemini CLI";
   }, [agentProviderSettings.provider]);
 
   const saveKnowledge = async () => {
@@ -207,14 +207,12 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
           ? "api"
           : provider === "gemini-cli"
             ? "cli"
-            : provider === "ollama"
-              ? "local"
-              : "claude",
+            : "local",
       model:
         provider === "ollama"
           ? agentProviderSettings.ollamaModel
-          : provider === "claude"
-            ? "sonnet"
+          : provider === "gemini-cli"
+            ? agentProviderSettings.geminiCliModel || "gemini-1.5-pro"
             : agentProviderSettings.model,
     });
   };
@@ -247,8 +245,8 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
       return;
     }
     setHealth({
-      ok: true,
-      message: "Claude fallback uses the existing Dev Engine CLI path.",
+      ok: false,
+      message: "Select Gemini CLI, Gemini API, or Ollama.",
       models: [],
     });
   };
@@ -310,7 +308,7 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
 
   const exportKnowledgebase = async () => {
     const selected = await saveDialog({
-      defaultPath: "devprism-knowledgebase.json",
+      defaultPath: "devcouncil-knowledgebase.json",
       filters: [{ name: "JSON", extensions: ["json"] }],
     });
     if (!selected) return;
@@ -444,7 +442,6 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
                       <SelectItem value="gemini-api">Gemini API</SelectItem>
                       <SelectItem value="gemini-cli">Gemini CLI</SelectItem>
                       <SelectItem value="ollama">Ollama</SelectItem>
-                      <SelectItem value="claude">Claude fallback</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>

@@ -77,7 +77,7 @@ describe("useProjectStore", () => {
 
       await useProjectStore
         .getState()
-        .addLinkedProject("DevPrism", "/repo/devprism", [], {
+        .addLinkedProject("DevCouncil", "/repo/devcouncil", [], {
           tags: ["agent", "desktop"],
           role: "Owner",
           description: "Native provider integration",
@@ -86,8 +86,8 @@ describe("useProjectStore", () => {
       expect(invoke).toHaveBeenCalledWith(
         "add_linked_project",
         expect.objectContaining({
-          name: "DevPrism",
-          path: "/repo/devprism",
+          name: "DevCouncil",
+          path: "/repo/devcouncil",
           tags: ["agent", "desktop"],
           role: "Owner",
           description: "Native provider integration",

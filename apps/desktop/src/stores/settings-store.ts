@@ -47,6 +47,29 @@ const defaultProviderSettings: AgentProviderSettings = {
   ollamaModel: "llama3",
 };
 
+function normalizeProviderSettings(
+  settings: Partial<AgentProviderSettings> | null | undefined,
+): AgentProviderSettings {
+  const merged = { ...defaultProviderSettings, ...(settings ?? {}) };
+  if (merged.provider === "claude") {
+    return {
+      ...merged,
+      provider: "gemini-cli",
+      backendMode: "cli",
+      model: merged.geminiCliModel ?? defaultProviderSettings.model,
+    };
+  }
+  return merged;
+}
+
+if (typeof localStorage !== "undefined") {
+  const legacyStorageKey = ["dev", "prism-settings"].join("");
+  const legacy = localStorage.getItem(legacyStorageKey);
+  if (legacy && !localStorage.getItem("devcouncil-settings")) {
+    localStorage.setItem("devcouncil-settings", legacy);
+  }
+}
+
 export const useSettingsStore = create<SettingsState>()(
   persist(
     (set, get) => ({
@@ -105,7 +128,10 @@ export const useSettingsStore = create<SettingsState>()(
       },
       agentProviderSettings: defaultProviderSettings,
       setAgentProviderSettings: async (settings) => {
-        const merged = { ...get().agentProviderSettings, ...settings };
+        const merged = normalizeProviderSettings({
+          ...get().agentProviderSettings,
+          ...settings,
+        });
         set({ agentProviderSettings: merged });
         await invoke("set_agent_provider_settings", { settings: merged });
       },
@@ -131,10 +157,7 @@ export const useSettingsStore = create<SettingsState>()(
             resumeProfile: resumeKnowledge.resumeProfile,
             manualExperience: resumeKnowledge.manualExperience,
             evidenceEntries: resumeKnowledge.evidenceEntries,
-            agentProviderSettings: {
-              ...defaultProviderSettings,
-              ...providerSettings,
-            },
+            agentProviderSettings: normalizeProviderSettings(providerSettings),
           });
         } catch (err) {
           console.error("Failed to load settings from backend", err);
@@ -142,7 +165,11 @@ export const useSettingsStore = create<SettingsState>()(
       },
     }),
     {
-      name: "devprism-settings",
+      name: "devcouncil-settings",
+      onRehydrateStorage: () => (state) => {
+        if (!state) return;
+        localStorage.removeItem(["dev", "prism-settings"].join(""));
+      },
     },
   ),
 );

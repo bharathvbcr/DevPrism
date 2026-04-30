@@ -193,7 +193,7 @@ fn find_markdown_files(dir: &Path, files: &mut Vec<PathBuf>) {
     }
 }
 
-/// Load skills from a `.devprism/skills/` directory.
+/// Load skills from a `.devcouncil/skills/` directory.
 /// Each skill is a subdirectory containing a `SKILL.md` file.
 fn load_skills_from_dir(dir: &Path, scope: &str) -> Vec<SlashCommand> {
     if !dir.exists() {
@@ -390,7 +390,7 @@ pub async fn slash_commands_list(
     // Load project commands
     if let Some(ref proj_path) = project_path {
         let project_commands_dir = PathBuf::from(proj_path)
-            .join(".devprism")
+            .join(".devcouncil")
             .join("commands");
         if project_commands_dir.exists() {
             let mut md_files = Vec::new();
@@ -407,7 +407,7 @@ pub async fn slash_commands_list(
 
     // Load user commands
     if let Some(home_dir) = dirs::home_dir() {
-        let user_commands_dir = home_dir.join(".devprism").join("commands");
+        let user_commands_dir = home_dir.join(".devcouncil").join("commands");
         if user_commands_dir.exists() {
             let mut md_files = Vec::new();
             find_markdown_files(&user_commands_dir, &mut md_files);
@@ -421,11 +421,11 @@ pub async fn slash_commands_list(
 
     // Load installed skills (project-level first, then global)
     if let Some(proj_path) = &project_path {
-        let project_skills_dir = PathBuf::from(proj_path).join(".devprism").join("skills");
+        let project_skills_dir = PathBuf::from(proj_path).join(".devcouncil").join("skills");
         commands.extend(load_skills_from_dir(&project_skills_dir, "skill"));
     }
     if let Some(home_dir) = dirs::home_dir() {
-        let global_skills_dir = home_dir.join(".devprism").join("skills");
+        let global_skills_dir = home_dir.join(".devcouncil").join("skills");
         // Avoid duplicates if project and global have same skill
         let existing_ids: std::collections::HashSet<String> =
             commands.iter().map(|c| c.id.clone()).collect();
@@ -499,7 +499,7 @@ pub async fn slash_command_save(
     let base_dir = if scope == "project" {
         if let Some(proj_path) = project_path {
             PathBuf::from(proj_path)
-                .join(".devprism")
+                .join(".devcouncil")
                 .join("commands")
         } else {
             return Err("Project path required for project scope".to_string());
@@ -507,7 +507,7 @@ pub async fn slash_command_save(
     } else {
         dirs::home_dir()
             .ok_or_else(|| "Could not find home directory".to_string())?
-            .join(".devprism")
+            .join(".devcouncil")
             .join("commands")
     };
 
@@ -591,12 +591,12 @@ pub async fn manual_skill_save(
             .clone()
             .ok_or_else(|| "Project path required for project skill".to_string())?;
         PathBuf::from(project_path)
-            .join(".devprism")
+            .join(".devcouncil")
             .join("skills")
     } else {
         dirs::home_dir()
             .ok_or_else(|| "Could not find home directory".to_string())?
-            .join(".devprism")
+            .join(".devcouncil")
             .join("skills")
     };
     let skill_dir = base_dir.join(&folder);
@@ -641,8 +641,8 @@ pub async fn manual_skill_delete(
 ) -> Result<String, String> {
     let project_skills_dir = project_path
         .as_ref()
-        .map(|path| PathBuf::from(path).join(".devprism").join("skills"));
-    let global_skills_dir = dirs::home_dir().map(|home| home.join(".devprism").join("skills"));
+        .map(|path| PathBuf::from(path).join(".devcouncil").join("skills"));
+    let global_skills_dir = dirs::home_dir().map(|home| home.join(".devcouncil").join("skills"));
 
     let commands = slash_commands_list(project_path.clone()).await?;
     let command = commands
@@ -919,7 +919,7 @@ mod tests {
     #[test]
     fn test_real_skills_dir() {
         // Test against actual installed skills if available
-        let skills_dir = dirs::home_dir().unwrap().join(".devprism").join("skills");
+        let skills_dir = dirs::home_dir().unwrap().join(".devcouncil").join("skills");
         if !skills_dir.exists() {
             eprintln!("SKIP: no skills installed at {:?}", skills_dir);
             return;
@@ -1168,7 +1168,7 @@ mod tests {
         // Verify file was created
         let file = dir
             .path()
-            .join(".devprism")
+            .join(".devcouncil")
             .join("commands")
             .join("test-cmd.md");
         assert!(file.exists());
@@ -1198,7 +1198,7 @@ mod tests {
         // Verify frontmatter in file
         let file = dir
             .path()
-            .join(".devprism")
+            .join(".devcouncil")
             .join("commands")
             .join("lint.md");
         let content = fs::read_to_string(&file).unwrap();
@@ -1231,7 +1231,7 @@ mod tests {
         // Verify nested directory structure
         let file = dir
             .path()
-            .join(".devprism")
+            .join(".devcouncil")
             .join("commands")
             .join("tools")
             .join("rust")

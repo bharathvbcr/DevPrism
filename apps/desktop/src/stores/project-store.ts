@@ -126,7 +126,7 @@ export const useProjectStore = create<ProjectState>()(
       },
     }),
     {
-      name: "devprism-projects",
+      name: "devcouncil-projects",
     },
   ),
 );

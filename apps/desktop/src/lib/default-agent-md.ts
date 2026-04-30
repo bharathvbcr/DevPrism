@@ -1,13 +1,13 @@
-export const DEFAULT_AGENT_MD = `# DevPrism LaTeX Project
+export const DEFAULT_AGENT_MD = `# DevCouncil LaTeX Project
 
-Academic writing workspace powered by DevPrism. You are assisting with a LaTeX document project.
+Academic writing workspace powered by DevCouncil. You are assisting with a LaTeX document project.
 
 ## Environment
 
 - **LaTeX Engine**: Tectonic (handles packages and fonts automatically — no manual \`tlmgr\` needed)
 - **Python**: Available via \`uv\` with project-local \`.venv/\`. Use \`uv pip install <pkg>\` to add packages, \`uv run <script>\` to execute.
 - **Build Directory**: \`.prism/build/\` (persistent, do not modify directly)
-- **Version History**: \`.devprism/\` (automatic snapshots, do not modify)
+- **Version History**: \`.devcouncil/\` (automatic snapshots, do not modify)
 
 ## Project Structure
 
@@ -27,12 +27,12 @@ Academic writing workspace powered by DevPrism. You are assisting with a LaTeX d
 uv pip install numpy matplotlib pandas scipy     # Install packages
 uv run python script.py                          # Run a script
 
-# LaTeX is compiled automatically by DevPrism — no manual build commands needed.
+# LaTeX is compiled automatically by DevCouncil — no manual build commands needed.
 \`\`\`
 
 ## Writing Guidelines
 
-- Edit \`.tex\` files directly. DevPrism auto-compiles and shows a live PDF preview.
+- Edit \`.tex\` files directly. DevCouncil auto-compiles and shows a live PDF preview.
 - Use \`\\input{filename}\` or \`\\include{filename}\` to split large documents into multiple files.
 - Place images in a \`figures/\` directory and reference with \`\\includegraphics{figures/name}\`.
 - For bibliography, add entries to \`references.bib\` and cite with \`\\cite{key}\`.
@@ -57,7 +57,7 @@ When generating figures with Python, always:
 ## Gotchas
 
 - Tectonic compiles with pdfTeX by default. For Unicode-heavy documents, add \`% !TEX program = xelatex\` or \`lualatex\` at the top of \`main.tex\`.
-- Do NOT create or modify files in \`.prism/\`, \`.devprism/\`, or \`.venv/\` — these are managed automatically.
+- Do NOT create or modify files in \`.prism/\`, \`.devcouncil/\`, or \`.venv/\` — these are managed automatically.
 - When modifying LaTeX, ensure matching \`\\begin{}\` / \`\\end{}\` pairs — mismatches cause hard-to-debug compile errors.
 - Large tables and figures should use \`\\begin{table}[htbp]\` / \`\\begin{figure}[htbp]\` for proper float placement.
 - If the user provides reference files in \`attachments/\`, review them before writing — they contain key context.

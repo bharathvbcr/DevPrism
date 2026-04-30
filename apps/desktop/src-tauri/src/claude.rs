@@ -349,7 +349,7 @@ fn find_claude_binary() -> Result<String, String> {
         let user_paths = unix_claude_candidate_paths(&home, std::env::var_os("PNPM_HOME"));
         #[cfg(target_os = "windows")]
         let user_paths = vec![
-            home.join(".devprism").join("local").join("claude.exe"),
+            home.join(".devcouncil").join("local").join("claude.exe"),
             home.join("AppData")
                 .join("Local")
                 .join("Programs")
@@ -389,7 +389,7 @@ fn find_gemini_binary() -> Result<String, String> {
 
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
     let mut candidates = vec![
-        home.join(".devprism").join("local").join("gemini"),
+        home.join(".devcouncil").join("local").join("gemini"),
         home.join(".local").join("bin").join("gemini"),
         home.join(".npm-global").join("bin").join("gemini"),
     ];
@@ -442,7 +442,7 @@ fn unix_claude_candidate_paths(
             .join("pnpm")
             .join("claude"),
         home.join(".pnpm").join("claude"),
-        home.join(".devprism").join("local").join("claude"),
+        home.join(".devcouncil").join("local").join("claude"),
         home.join(".npm-global").join("bin").join("claude"),
         home.join(".yarn").join("bin").join("claude"),
         home.join(".bun").join("bin").join("claude"),
@@ -1269,7 +1269,7 @@ fn claude_required_dirs(home: &std::path::Path) -> Vec<PathBuf> {
         home.join(".local").join("bin"),
         home.join(".local").join("share").join("claude"),
         home.join(".local").join("state").join("claude"),
-        home.join(".devprism"),
+        home.join(".devcouncil"),
     ]
 }
 
@@ -1324,7 +1324,7 @@ fn build_elevation_script(dirs: &[PathBuf], user: &str, local_dir: &std::path::P
     )
 }
 
-/// Ensure ~/.local/{bin,share/claude,state/claude} and ~/.devprism exist and are writable.
+/// Ensure ~/.local/{bin,share/claude,state/claude} and ~/.devcouncil exist and are writable.
 /// If creation fails (e.g. ~/.local is owned by root), prompt for admin password via osascript.
 #[cfg(not(target_os = "windows"))]
 async fn ensure_local_dirs(window: &WebviewWindow) -> Result<(), String> {
@@ -1603,7 +1603,7 @@ fn common_claude_args() -> Vec<String> {
             "and structure intact. Only add or modify what is needed for the current step.\n",
             "5. LaTeX BEST PRACTICES: Use proper sectioning (\\chapter, \\section, \\subsection), ",
             "citations (\\cite), cross-references (\\label, \\ref), and BibTeX for bibliographies.\n",
-            "6. SKILLS: If scientific skills are installed in .devprism/skills/, follow their guidelines ",
+            "6. SKILLS: If scientific skills are installed in .devcouncil/skills/, follow their guidelines ",
             "for domain-specific tasks. Use skill-provided LaTeX packages (.sty) and code patterns.\n",
             "7. PYTHON: If a .venv/ exists in the project, it is already activated. ",
             "Use `uv pip install` to add packages and `python` to run scripts."
@@ -2043,7 +2043,7 @@ fn get_sessions_dir(project_path: &str) -> Result<PathBuf, String> {
         project_path, encoded
     );
 
-    Ok(home.join(".devprism").join("projects").join(&encoded))
+    Ok(home.join(".devcouncil").join("projects").join(&encoded))
 }
 
 /// Clean raw user message text into a display title.
@@ -2294,7 +2294,7 @@ pub async fn run_shell_command(command: String, cwd: String) -> Result<ShellComm
 
 fn get_claude_settings_path() -> Result<std::path::PathBuf, String> {
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    Ok(home.join(".devprism").join("settings.json"))
+    Ok(home.join(".devcouncil").join("settings.json"))
 }
 
 fn read_settings_value() -> Result<serde_json::Value, String> {
@@ -3081,7 +3081,7 @@ mod tests {
         assert!(dirs.contains(&home.join(".local").join("bin")));
         assert!(dirs.contains(&home.join(".local").join("share").join("claude")));
         assert!(dirs.contains(&home.join(".local").join("state").join("claude")));
-        assert!(dirs.contains(&home.join(".devprism")));
+        assert!(dirs.contains(&home.join(".devcouncil")));
     }
 
     #[test]
@@ -3099,7 +3099,7 @@ mod tests {
                 .join("claude")
         ));
         assert!(paths.contains(&home.join(".pnpm").join("claude")));
-        assert!(paths.contains(&home.join(".devprism").join("local").join("claude")));
+        assert!(paths.contains(&home.join(".devcouncil").join("local").join("claude")));
     }
 
     #[test]
@@ -3226,7 +3226,7 @@ mod tests {
     fn test_build_elevation_script_format() {
         let dirs = vec![
             PathBuf::from("/Users/test/.local/bin"),
-            PathBuf::from("/Users/test/.devprism"),
+            PathBuf::from("/Users/test/.devcouncil"),
         ];
         let script = build_elevation_script(
             &dirs,
@@ -3235,7 +3235,7 @@ mod tests {
         );
         assert!(script.contains("mkdir -p"));
         assert!(script.contains("'/Users/test/.local/bin'"));
-        assert!(script.contains("'/Users/test/.devprism'"));
+        assert!(script.contains("'/Users/test/.devcouncil'"));
         assert!(script.contains("chown -R testuser"));
         assert!(script.contains("'/Users/test/.local'"));
     }

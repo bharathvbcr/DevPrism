@@ -133,7 +133,7 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
       setProjectFolder(lastProjectFolder);
     } else {
       homeDir()
-        .then((home) => join(home, "Documents", "DevPrism"))
+        .then((home) => join(home, "Documents", "DevCouncil"))
         .then(async (dir) => {
           await mkdir(dir, { recursive: true }).catch(() => {});
           setProjectFolder(dir);

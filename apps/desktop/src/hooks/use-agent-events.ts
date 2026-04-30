@@ -467,7 +467,7 @@ export function useAgentEvents() {
             approved = await ask(
               `The agent wants to run a protected action:\n\n${action}\n\nAllow this action?`,
               {
-                title: "DevPrism Safe Mode",
+                title: "DevCouncil Safe Mode",
                 kind: "warning",
                 okLabel: "Allow",
                 cancelLabel: "Deny",

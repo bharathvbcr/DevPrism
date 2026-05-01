@@ -48,7 +48,7 @@ export function SessionSelector() {
     setIsLoading(true);
     log.debug(`loading sessions for projectRoot: ${projectRoot}`);
     try {
-      const result = await invoke<AgentSessionInfo[]>("list_claude_sessions", {
+      const result = await invoke<AgentSessionInfo[]>("list_agent_sessions", {
         projectPath: projectRoot,
       });
       log.debug("loaded sessions", { count: result.length });

@@ -24,7 +24,7 @@ import {
 } from "@/stores/document-store";
 import { useHistoryStore } from "@/stores/history-store";
 import { useAgentChatStore } from "@/stores/agent-chat-store";
-import { useSettingsStore } from "@/stores/settings-store";
+import { isWindowsRuntime, useSettingsStore } from "@/stores/settings-store";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -89,6 +89,7 @@ const ZOOM_OPTIONS = [
 export function PdfPreview() {
   const compilerBackend = useSettingsStore((s) => s.compilerBackend);
   const setCompilerBackend = useSettingsStore((s) => s.setCompilerBackend);
+  const isWindows = isWindowsRuntime();
   const pdfRevision = useDocumentStore((s) => s.pdfRevision);
   const compileError = useDocumentStore((s) => s.compileError);
   const isCompiling = useDocumentStore((s) => s.isCompiling);
@@ -812,7 +813,7 @@ export function PdfPreview() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="tectonic">Tectonic</SelectItem>
+              {!isWindows && <SelectItem value="tectonic">Tectonic</SelectItem>}
               <SelectItem value="texlive">TeXLive</SelectItem>
             </SelectContent>
           </Select>

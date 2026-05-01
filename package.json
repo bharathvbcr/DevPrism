@@ -1,7 +1,7 @@
 {
-  "name": "devcouncil",
+  "name": "devprism",
   "description": "Open-Source AI LaTeX writing workspace",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "repository": {
     "type": "git",
     "url": "https://github.com/bharathvbcr/DevPrism"
@@ -12,8 +12,8 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "pnpm --filter=@devcouncil/desktop tauri dev",
-    "build": "pnpm --filter=@devcouncil/desktop tauri build",
+    "dev": "pnpm --filter=@devprism/desktop tauri dev",
+    "build": "pnpm --filter=@devprism/desktop tauri build",
     "lint": "pnpm exec biome check",
     "lint:fix": "pnpm exec biome check --fix",
     "release": "echo 'To release: git tag v<version> && git push origin v<version>'",

@@ -14,7 +14,7 @@ pub async fn run_repl(model: Option<String>) -> Result<(), String> {
 
     let mut rl = DefaultEditor::new().map_err(|e| e.to_string())?;
 
-    println!("{}", "DevCouncil Agent REPL".bold().bright_green());
+    println!("{}", "DevPrism Agent REPL".bold().bright_green());
     println!("Type 'exit' or 'quit' to leave.");
 
     loop {

@@ -45,6 +45,7 @@ import { cn } from "@/lib/utils";
 interface SettingsDialogProps {
   open: boolean;
   onClose: () => void;
+  initialTab?: Tab;
 }
 
 interface ProviderHealth {
@@ -60,6 +61,13 @@ interface SlashCommand {
   full_command: string;
   description?: string | null;
   content: string;
+  is_manual_skill?: boolean;
+}
+
+function manualSkillsOnly(items: SlashCommand[]) {
+  return items.filter(
+    (item) => item.scope === "skill" && item.is_manual_skill === true,
+  );
 }
 
 interface ProjectSummary {
@@ -104,7 +112,11 @@ function Toggle({
   );
 }
 
-export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
+export function SettingsDialog({
+  open,
+  onClose,
+  initialTab = "providers",
+}: SettingsDialogProps) {
   const {
     personalBio,
     setPersonalBio,
@@ -157,6 +169,11 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
 
   useEffect(() => {
     if (!open) return;
+    setActiveTab(initialTab);
+  }, [initialTab, open]);
+
+  useEffect(() => {
+    if (!open) return;
     setBioInput(personalBio);
     setResumeInput(resumeProfile);
     setExperienceInput(manualExperience);
@@ -168,9 +185,7 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
     invoke<SlashCommand[]>("slash_commands_list", {
       projectPath: projectRoot ?? undefined,
     })
-      .then((items) =>
-        setSkills(items.filter((item) => item.scope === "skill")),
-      )
+      .then((items) => setSkills(manualSkillsOnly(items)))
       .catch(() => setSkills([]));
     invoke<ProjectSummary[]>("list_project_summaries")
       .then(setProjectSummaries)
@@ -188,6 +203,7 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
   const providerLabel = useMemo(() => {
     if (agentProviderSettings.provider === "gemini-api") return "Gemini API";
     if (agentProviderSettings.provider === "gemini-cli") return "Gemini CLI";
+    if (agentProviderSettings.provider === "codex-cli") return "Codex CLI";
     if (agentProviderSettings.provider === "ollama") return "Ollama";
     return "Gemini CLI";
   }, [agentProviderSettings.provider]);
@@ -205,15 +221,17 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
       backendMode:
         provider === "gemini-api"
           ? "api"
-          : provider === "gemini-cli"
+          : provider === "gemini-cli" || provider === "codex-cli"
             ? "cli"
             : "local",
       model:
         provider === "ollama"
           ? agentProviderSettings.ollamaModel
-          : provider === "gemini-cli"
-            ? agentProviderSettings.geminiCliModel || "gemini-1.5-pro"
-            : agentProviderSettings.model,
+          : provider === "codex-cli"
+            ? agentProviderSettings.codexCliModel || "gpt-5.2"
+            : provider === "gemini-cli"
+              ? agentProviderSettings.geminiCliModel || "gemini-1.5-pro"
+              : agentProviderSettings.model,
     });
   };
 
@@ -236,6 +254,10 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
       setHealth(await invoke<ProviderHealth>("check_gemini_cli_status"));
       return;
     }
+    if (agentProviderSettings.provider === "codex-cli") {
+      setHealth(await invoke<ProviderHealth>("check_codex_cli_status"));
+      return;
+    }
     if (agentProviderSettings.provider === "gemini-api") {
       setHealth(
         await invoke<ProviderHealth>("check_gemini_api_status", {
@@ -246,7 +268,7 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
     }
     setHealth({
       ok: false,
-      message: "Select Gemini CLI, Gemini API, or Ollama.",
+      message: "Select Gemini CLI, Codex CLI, Gemini API, or Ollama.",
       models: [],
     });
   };
@@ -308,7 +330,7 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
 
   const exportKnowledgebase = async () => {
     const selected = await saveDialog({
-      defaultPath: "devcouncil-knowledgebase.json",
+      defaultPath: "devprism-knowledgebase.json",
       filters: [{ name: "JSON", extensions: ["json"] }],
     });
     if (!selected) return;
@@ -356,7 +378,7 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
     const updated = await invoke<SlashCommand[]>("slash_commands_list", {
       projectPath: projectRoot ?? undefined,
     });
-    setSkills(updated.filter((item) => item.scope === "skill"));
+    setSkills(manualSkillsOnly(updated));
   };
 
   const deleteSkill = async (skillId: string) => {
@@ -367,7 +389,7 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
     const updated = await invoke<SlashCommand[]>("slash_commands_list", {
       projectPath: projectRoot ?? undefined,
     });
-    setSkills(updated.filter((item) => item.scope === "skill"));
+    setSkills(manualSkillsOnly(updated));
   };
 
   const tabs: { id: Tab; label: string; icon: ReactNode }[] = [
@@ -441,6 +463,7 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
                     <SelectContent>
                       <SelectItem value="gemini-api">Gemini API</SelectItem>
                       <SelectItem value="gemini-cli">Gemini CLI</SelectItem>
+                      <SelectItem value="codex-cli">Codex CLI</SelectItem>
                       <SelectItem value="ollama">Ollama</SelectItem>
                     </SelectContent>
                   </Select>
@@ -476,6 +499,17 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
                       onChange={(event) =>
                         setAgentProviderSettings({
                           geminiCliModel: event.target.value,
+                        })
+                      }
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Codex CLI model</Label>
+                    <Input
+                      value={agentProviderSettings.codexCliModel ?? ""}
+                      onChange={(event) =>
+                        setAgentProviderSettings({
+                          codexCliModel: event.target.value,
                         })
                       }
                     />

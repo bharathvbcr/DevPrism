@@ -18,7 +18,7 @@ import {
 } from "@/lib/latex-compiler";
 import { createLogger } from "@/lib/debug/logger";
 
-const log = createLogger("claude-event");
+const log = createLogger("agent-event");
 
 /** Backend event payload shapes (include tab_id for routing) */
 interface AgentOutputPayload {
@@ -285,7 +285,7 @@ export function useAgentEvents() {
             `[${tabId}] ${elapsed(tabId)} AskUserQuestion detected — cancelling process for user input`,
           );
           cancelledForAskRef.current.set(tabId, true);
-          invoke("cancel_claude_execution", { tabId }).catch(() => {});
+          invoke("cancel_agent_execution", { tabId }).catch(() => {});
         }
       }
     }
@@ -396,7 +396,7 @@ export function useAgentEvents() {
     let cancelled = false;
     (async () => {
       const unlistenOutput = await listen<AgentOutputPayload>(
-        "claude-output",
+        "agent-output",
         (event) => {
           if (!cancelled) handleStreamMessage(event.payload);
         },
@@ -408,7 +408,7 @@ export function useAgentEvents() {
       listenersRef.current.push(unlistenOutput);
 
       const unlistenComplete = await listen<AgentCompletePayload>(
-        "claude-complete",
+        "agent-complete",
         (event) => {
           if (!cancelled) handleComplete(event.payload);
         },
@@ -420,7 +420,7 @@ export function useAgentEvents() {
       listenersRef.current.push(unlistenComplete);
 
       const unlistenError = await listen<AgentErrorPayload>(
-        "claude-error",
+        "agent-error",
         (event) => {
           if (!cancelled) {
             const { tab_id: tabId, data: payload } = event.payload;
@@ -458,7 +458,7 @@ export function useAgentEvents() {
       listenersRef.current.push(unlistenError);
 
       const unlistenApproval = await listen<AgentApprovalPayload>(
-        "claude-request-approval",
+        "agent-request-approval",
         async (event) => {
           if (cancelled) return;
           const { action_id: actionId, action } = event.payload;
@@ -467,7 +467,7 @@ export function useAgentEvents() {
             approved = await ask(
               `The agent wants to run a protected action:\n\n${action}\n\nAllow this action?`,
               {
-                title: "DevCouncil Safe Mode",
+                title: "DevPrism Safe Mode",
                 kind: "warning",
                 okLabel: "Allow",
                 cancelLabel: "Deny",

@@ -23,7 +23,7 @@ export function SafeModeDialog() {
 
   useEffect(() => {
     const unlisten = listen<ApprovalRequest>(
-      "claude-request-approval",
+      "agent-request-approval",
       (event) => {
         setRequests((prev) => [...prev, event.payload]);
       },

@@ -98,7 +98,7 @@ DevCouncil には、高速な Python パッケージマネージャである [uv
 エディタ上でアシスタントと直接チャットできます。Gemini と Ollama のモデルを切り替えられます。セッションは保持され、ツール呼び出し（ファイル編集、bash、検索）や、拡張可能なスラッシュコマンドにも対応しています。
 
 <p align="center">
-  <img src="./assets/demo/claudecommand.webp" alt="AI アシスタント & スラッシュコマンド" width="600" />
+  <img src="./assets/demo/dev-engine-command.webp" alt="AI アシスタント & スラッシュコマンド" width="600" />
 </p>
 
 ### 履歴 & 変更提案のレビュー

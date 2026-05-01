@@ -28,6 +28,16 @@ function setInputValue(
   element.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
+async function waitForBodyText(text: string) {
+  for (let i = 0; i < 10; i++) {
+    await act(async () => {
+      await Promise.resolve();
+    });
+    if (document.body.textContent?.includes(text)) return;
+  }
+  expect(document.body.textContent).toContain(text);
+}
+
 describe("SettingsDialog knowledgebase and skills controls", () => {
   let host: HTMLDivElement;
   let root: Root;
@@ -134,6 +144,153 @@ describe("SettingsDialog knowledgebase and skills controls", () => {
         name: "Review Skill",
         content: "# Review\nCheck risks.",
       }),
+    );
+  });
+
+  it("only lists manually managed skills in the Skills tab", async () => {
+    act(() => root.unmount());
+    root = createRoot(host);
+    vi.mocked(invoke).mockImplementation(async (command: string) => {
+      if (command === "slash_commands_list") {
+        return [
+          {
+            id: "skill-manual-review",
+            name: "manual-review",
+            scope: "skill",
+            full_command: "/manual-review",
+            description: "Manual review helper",
+            content: "# Manual",
+            is_manual_skill: true,
+          },
+          {
+            id: "skill-installed-science",
+            name: "installed-science",
+            scope: "skill",
+            full_command: "/installed-science",
+            description: "Installed scientific pack",
+            content: "# Installed",
+            is_manual_skill: false,
+          },
+        ];
+      }
+      if (command === "list_authorized_paths") return [];
+      if (command === "list_project_summaries") return [];
+      if (command === "list_linked_projects") return [];
+      return null;
+    });
+
+    await act(async () => {
+      root.render(
+        <SettingsDialog open={true} onClose={() => {}} initialTab="skills" />,
+      );
+    });
+    await act(async () => {});
+
+    expect(document.body.textContent).toContain("/manual-review");
+    expect(document.body.textContent).not.toContain("/installed-science");
+  });
+
+  it("keeps installed skills hidden after saving a manual skill", async () => {
+    act(() => root.unmount());
+    root = createRoot(host);
+    let listCount = 0;
+    vi.mocked(invoke).mockImplementation(async (command: string) => {
+      if (command === "manual_skill_save") return null;
+      if (command === "slash_commands_list") {
+        listCount += 1;
+        return listCount === 1
+          ? []
+          : [
+              {
+                id: "skill-saved-review",
+                name: "saved-review",
+                scope: "skill",
+                full_command: "/saved-review",
+                description: "Saved helper",
+                content: "# Saved",
+                is_manual_skill: true,
+              },
+              {
+                id: "skill-installed-science",
+                name: "installed-science",
+                scope: "skill",
+                full_command: "/installed-science",
+                description: "Installed scientific pack",
+                content: "# Installed",
+                is_manual_skill: false,
+              },
+            ];
+      }
+      if (command === "list_authorized_paths") return [];
+      if (command === "list_project_summaries") return [];
+      if (command === "list_linked_projects") return [];
+      return null;
+    });
+
+    await act(async () => {
+      root.render(
+        <SettingsDialog open={true} onClose={() => {}} initialTab="skills" />,
+      );
+    });
+    await act(async () => {});
+
+    const nameInput = document.body.querySelector(
+      'input[placeholder="Skill name"]',
+    ) as HTMLInputElement;
+    await act(async () => {
+      setInputValue(nameInput, "Saved Review");
+      const textarea = document.body.querySelector("textarea")!;
+      setInputValue(textarea, "# Saved\nCheck risks.");
+    });
+    clickByText("Save Manual Skill");
+    await waitForBodyText("/saved-review");
+
+    expect(document.body.textContent).toContain("/saved-review");
+    expect(document.body.textContent).not.toContain("/installed-science");
+  });
+
+  it("opens directly to the requested settings tab", async () => {
+    await act(async () => {
+      root.render(
+        <SettingsDialog
+          open={true}
+          onClose={() => {}}
+          initialTab="knowledge"
+        />,
+      );
+    });
+
+    expect(document.body.textContent).toContain("Knowledgebase portability");
+    expect(document.body.textContent).toContain("Link Project");
+    expect(document.body.textContent).not.toContain("Active provider");
+  });
+
+  it("does not reset to the launch tab when settings refresh", async () => {
+    await act(async () => {
+      root.render(
+        <SettingsDialog
+          open={true}
+          onClose={() => {}}
+          initialTab="knowledge"
+        />,
+      );
+    });
+
+    clickByText("Skills");
+    await act(async () => {
+      root.render(
+        <SettingsDialog
+          open={true}
+          onClose={() => {}}
+          initialTab="knowledge"
+        />,
+      );
+      useSettingsStore.setState({ resumeProfile: "Updated target" });
+    });
+
+    expect(document.body.textContent).toContain("Save Manual Skill");
+    expect(document.body.textContent).not.toContain(
+      "Knowledgebase portability",
     );
   });
 });

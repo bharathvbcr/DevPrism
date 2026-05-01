@@ -79,7 +79,7 @@ impl Tool for ListLinkedProjectsTool {
     }
 
     fn description(&self) -> &str {
-        "Lists all projects linked to DevCouncil, including their names and tech stacks."
+        "Lists all projects linked to DevPrism, including their names and tech stacks."
     }
 
     fn parameters(&self) -> Value {

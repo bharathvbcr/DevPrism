@@ -1,20 +1,20 @@
-# DevCouncil Architecture
+# DevPrism Architecture
 
-DevCouncil is a local-first desktop application for scientific LaTeX authoring. The app is packaged with Tauri 2 and keeps documents, project history, skills, settings, and generated artifacts on the user's machine.
+DevPrism is a local-first desktop application for scientific LaTeX authoring. The app is packaged with Tauri 2 and keeps documents, project history, skills, settings, and generated artifacts on the user's machine.
 
 ## Runtime Layout
 
 ```
-devcouncil/
+devprism/
 ├── apps/desktop/                 # Desktop app workspace
 │   ├── src/                      # React, TypeScript, Zustand, CodeMirror UI
 │   ├── public/examples/          # Bundled LaTeX starter projects
 │   └── src-tauri/                # Rust/Tauri host runtime
 │       ├── src/lib.rs            # Tauri app bootstrap and command registration
 │       ├── src/main.rs           # GUI entrypoint plus hidden CLI modes
-│       ├── src/latex.rs          # Tectonic compilation and SyncTeX support
+│       ├── src/latex.rs          # LaTeX compilation and SyncTeX support
 │       ├── src/history.rs        # Per-project Git history snapshots
-│       ├── src/claude.rs         # Legacy-compatible agent process integration and settings
+│       ├── src/agent_runtime.rs  # Legacy-compatible agent process integration and settings
 │       ├── src/skills.rs         # Scientific skill installation
 │       ├── src/slash_commands.rs # Project/global slash command discovery
 │       ├── src/uv.rs             # uv install and virtualenv orchestration
@@ -34,14 +34,14 @@ The UI talks to the Rust host through Tauri commands. Browser storage is only us
 
 The Tauri host owns native capabilities and filesystem access:
 
-- LaTeX compilation through Tectonic, including a subprocess mode for isolated compiler runs.
+- LaTeX compilation through TeXLive or embedded Tectonic when that feature is enabled, including a subprocess mode for isolated Tectonic runs.
 - Local Git history in `.devcouncil/history.git`.
 - Project and global skills under `.devcouncil/skills`.
 - Agent settings and linked-project knowledge under `~/.devcouncil`.
 - uv installation and project virtualenv orchestration.
 - Zotero OAuth and bibliography access.
 
-On startup, DevCouncil migrates legacy local config directories into `~/.devcouncil` when needed.
+On startup, DevPrism migrates legacy local config directories into `~/.devcouncil` when needed. The `.devcouncil` storage path remains for compatibility with existing projects and global skill installs.
 
 ## Build And Release
 
@@ -50,8 +50,8 @@ Local compile:
 ```bash
 pnpm install --frozen-lockfile
 pnpm lint
-pnpm --filter @devcouncil/desktop test
-pnpm --filter @devcouncil/desktop build
+pnpm --filter @devprism/desktop test
+pnpm --filter @devprism/desktop build
 ```
 
 Native desktop build:

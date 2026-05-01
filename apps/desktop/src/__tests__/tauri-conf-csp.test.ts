@@ -38,3 +38,40 @@ describe("tauri.conf.json CSP configuration", () => {
     expect(fontSrc).toContain("data:");
   });
 });
+
+describe("Tauri default capabilities", () => {
+  const capabilityPath = resolve(
+    __dirname,
+    "../../src-tauri/capabilities/default.json",
+  );
+  const capability = JSON.parse(readFileSync(capabilityPath, "utf-8"));
+  const permissions = capability.permissions as Array<
+    string | { allow?: unknown[] }
+  >;
+
+  it("does not grant broad renderer filesystem access to the full home directory", () => {
+    const serialized = JSON.stringify(permissions);
+    expect(serialized).not.toContain('"$HOME/**"');
+  });
+
+  it("does not allow arbitrary renderer shell process control", () => {
+    expect(permissions).not.toContain("shell:allow-spawn");
+    expect(permissions).not.toContain("shell:allow-stdin-write");
+    expect(permissions).not.toContain("shell:allow-kill");
+  });
+});
+
+describe("Tauri command registration", () => {
+  const libPath = resolve(__dirname, "../../src-tauri/src/lib.rs");
+  const libSource = readFileSync(libPath, "utf-8");
+  const invokeBlock = libSource.match(
+    /\.invoke_handler\(tauri::generate_handler!\[\s*([\s\S]*?)\s*\]\)/,
+  )?.[1];
+
+  it("does not expose the retired legacy agent CLI installer commands", () => {
+    expect(invokeBlock).toBeTruthy();
+    expect(invokeBlock).not.toContain("check_agent_cli_status");
+    expect(invokeBlock).not.toContain("install_agent_cli");
+    expect(invokeBlock).not.toContain("login_agent_cli");
+  });
+});

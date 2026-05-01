@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { SearchIcon, XIcon } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { useTemplateStore } from "@/stores/template-store";
@@ -15,14 +15,32 @@ export function TemplateGallery() {
   const setSearchQuery = useTemplateStore((s) => s.setSearchQuery);
   const selectedCategory = useTemplateStore((s) => s.selectedCategory);
   const filteredTemplates = useTemplateStore((s) => s.filteredTemplates);
+  const selectedTemplateId = useTemplateStore((s) => s.selectedTemplateId);
+  const selectTemplate = useTemplateStore((s) => s.selectTemplate);
+  const openPreview = useTemplateStore((s) => s.openPreview);
+  const previewTemplateId = useTemplateStore((s) => s.previewTemplateId);
   const reset = useTemplateStore((s) => s.reset);
 
   const searchRef = useRef<HTMLInputElement>(null);
+  const selectedIndex = useMemo(
+    () => filteredTemplates.findIndex((t) => t.id === selectedTemplateId),
+    [filteredTemplates, selectedTemplateId],
+  );
 
   // Reset store when gallery mounts
   useEffect(() => {
     reset();
   }, [reset]);
+
+  useEffect(() => {
+    if (filteredTemplates.length === 0) {
+      selectTemplate(null);
+      return;
+    }
+    if (!selectedTemplateId || selectedIndex < 0) {
+      selectTemplate(filteredTemplates[0].id);
+    }
+  }, [filteredTemplates, selectTemplate, selectedIndex, selectedTemplateId]);
 
   // Focus search on Cmd/Ctrl+K
   useEffect(() => {
@@ -40,6 +58,59 @@ export function TemplateGallery() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [setSearchQuery]);
+
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (previewTemplateId || filteredTemplates.length === 0) return;
+      if (
+        document.activeElement instanceof HTMLInputElement ||
+        document.activeElement instanceof HTMLTextAreaElement ||
+        document.activeElement instanceof HTMLSelectElement
+      ) {
+        return;
+      }
+
+      const columnCount = window.matchMedia("(min-width: 1024px)").matches
+        ? 4
+        : window.matchMedia("(min-width: 640px)").matches
+          ? 3
+          : 2;
+      const currentIndex = selectedIndex >= 0 ? selectedIndex : 0;
+      let nextIndex = currentIndex;
+
+      if (e.key === "ArrowRight") nextIndex = currentIndex + 1;
+      else if (e.key === "ArrowLeft") nextIndex = currentIndex - 1;
+      else if (e.key === "ArrowDown") nextIndex = currentIndex + columnCount;
+      else if (e.key === "ArrowUp") nextIndex = currentIndex - columnCount;
+      else if (e.key === "Enter") {
+        e.preventDefault();
+        openPreview(filteredTemplates[currentIndex].id);
+        return;
+      } else {
+        return;
+      }
+
+      e.preventDefault();
+      const clamped = Math.max(
+        0,
+        Math.min(filteredTemplates.length - 1, nextIndex),
+      );
+      const nextId = filteredTemplates[clamped].id;
+      selectTemplate(nextId);
+      document
+        .querySelector<HTMLButtonElement>(`[data-template-id="${nextId}"]`)
+        ?.focus();
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [
+    filteredTemplates,
+    openPreview,
+    previewTemplateId,
+    selectTemplate,
+    selectedIndex,
+  ]);
 
   // Group templates by category when showing all
   const showGrouped = !selectedCategory && !searchQuery;
@@ -102,7 +173,12 @@ export function TemplateGallery() {
               </h2>
               <div className="grid grid-cols-2 gap-5 sm:grid-cols-3 lg:grid-cols-4">
                 {filteredTemplates.map((t) => (
-                  <TemplateCard key={t.id} template={t} />
+                  <TemplateCard
+                    key={t.id}
+                    template={t}
+                    selected={t.id === selectedTemplateId}
+                    onFocusTemplate={selectTemplate}
+                  />
                 ))}
               </div>
             </>
@@ -120,6 +196,8 @@ export function TemplateGallery() {
 
 function GroupedGrid() {
   const filteredTemplates = useTemplateStore((s) => s.filteredTemplates);
+  const selectedTemplateId = useTemplateStore((s) => s.selectedTemplateId);
+  const selectTemplate = useTemplateStore((s) => s.selectTemplate);
 
   // Group by category preserving order
   const categories: TemplateCategory[] = [
@@ -144,7 +222,12 @@ function GroupedGrid() {
           </h2>
           <div className="grid grid-cols-2 gap-5 sm:grid-cols-3 lg:grid-cols-4">
             {group.templates.map((t) => (
-              <TemplateCard key={t.id} template={t} />
+              <TemplateCard
+                key={t.id}
+                template={t}
+                selected={t.id === selectedTemplateId}
+                onFocusTemplate={selectTemplate}
+              />
             ))}
           </div>
         </div>

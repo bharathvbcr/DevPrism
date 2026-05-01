@@ -230,7 +230,7 @@ pub async fn install_uv(window: WebviewWindow) -> Result<(), String> {
 
     // Inherit essential environment variables (shared helper handles case-insensitive matching)
     for (key, value) in std::env::vars() {
-        if key.eq_ignore_ascii_case("PATH") || crate::claude::is_essential_env_var(&key) {
+        if key.eq_ignore_ascii_case("PATH") || crate::agent_runtime::is_essential_env_var(&key) {
             cmd.env(&key, &value);
         }
     }

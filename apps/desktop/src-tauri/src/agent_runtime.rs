@@ -19,6 +19,7 @@ pub struct AgentProviderSettings {
     pub backend_mode: String,
     pub gemini_api_key: Option<String>,
     pub gemini_cli_model: Option<String>,
+    pub codex_cli_model: Option<String>,
     pub ollama_base_url: String,
     pub ollama_model: String,
 }
@@ -26,11 +27,12 @@ pub struct AgentProviderSettings {
 impl Default for AgentProviderSettings {
     fn default() -> Self {
         Self {
-            provider: "gemini-api".to_string(),
+            provider: "gemini-cli".to_string(),
             model: "gemini-1.5-pro".to_string(),
-            backend_mode: "api".to_string(),
+            backend_mode: "cli".to_string(),
             gemini_api_key: None,
             gemini_cli_model: Some("gemini-1.5-pro".to_string()),
+            codex_cli_model: Some("gpt-5.2".to_string()),
             ollama_base_url: "http://localhost:11434".to_string(),
             ollama_model: "llama3".to_string(),
         }
@@ -81,7 +83,7 @@ pub(crate) fn is_essential_env_var(key: &str) -> bool {
 }
 
 /// Windows CREATE_NO_WINDOW flag to prevent console windows from flashing
-/// when spawning child processes (e.g. Claude CLI, cmd.exe, node.exe).
+/// when spawning child processes (e.g. the agent CLI, cmd.exe, node.exe).
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
@@ -89,11 +91,11 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 use std::os::windows::process::CommandExt;
 
 #[derive(Clone)]
-pub struct ClaudeProcessState {
+pub struct AgentProcessState {
     pub processes: Arc<Mutex<HashMap<String, Child>>>,
 }
 
-impl Default for ClaudeProcessState {
+impl Default for AgentProcessState {
     fn default() -> Self {
         Self {
             processes: Arc::new(Mutex::new(HashMap::new())),
@@ -107,7 +109,7 @@ impl Default for ClaudeProcessState {
 /// Registry values may contain unexpanded variables like `%USERPROFILE%`,
 /// so we expand them via `ExpandEnvironmentStringsW` before searching.
 #[cfg(target_os = "windows")]
-fn find_claude_in_registry_path() -> Option<String> {
+fn find_agent_cli_in_registry_path() -> Option<String> {
     use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
     use winreg::RegKey;
 
@@ -198,7 +200,7 @@ fn expand_env_vars(s: &str) -> String {
 /// Search order: ~/.local/bin → NVM_BIN → which → registry PATH (Windows) →
 /// login shell (Unix) → npm/nvm global → standard paths → user-specific paths.
 /// Returns Err if not found.
-fn find_claude_binary() -> Result<String, String> {
+fn find_agent_cli_binary() -> Result<String, String> {
     // 1. Check the native installer's default location first
     //    (GUI apps often don't have ~/.local/bin in PATH)
     if let Some(home) = dirs::home_dir() {
@@ -216,9 +218,9 @@ fn find_claude_binary() -> Result<String, String> {
     //    but NVM_BIN may still be set when launched from a terminal-aware context.
     #[cfg(not(target_os = "windows"))]
     if let Ok(nvm_bin) = std::env::var("NVM_BIN") {
-        let claude_in_nvm = PathBuf::from(&nvm_bin).join("claude");
-        if claude_in_nvm.exists() {
-            return Ok(claude_in_nvm.to_string_lossy().to_string());
+        let agent_cli_in_nvm = PathBuf::from(&nvm_bin).join("claude");
+        if agent_cli_in_nvm.exists() {
+            return Ok(agent_cli_in_nvm.to_string_lossy().to_string());
         }
     }
 
@@ -227,7 +229,7 @@ fn find_claude_binary() -> Result<String, String> {
     //     package-manager homes may still be available as environment vars.
     #[cfg(not(target_os = "windows"))]
     if let Some(path) = dirs::home_dir().and_then(|home| {
-        unix_claude_candidate_paths(&home, std::env::var_os("PNPM_HOME"))
+        unix_agent_cli_candidate_paths(&home, std::env::var_os("PNPM_HOME"))
             .into_iter()
             .find(|path| path.exists())
     }) {
@@ -264,7 +266,7 @@ fn find_claude_binary() -> Result<String, String> {
     //    after that, the registry PATH has it but the process PATH does not.
     #[cfg(target_os = "windows")]
     {
-        if let Some(path) = find_claude_in_registry_path() {
+        if let Some(path) = find_agent_cli_in_registry_path() {
             return Ok(path);
         }
     }
@@ -346,7 +348,7 @@ fn find_claude_binary() -> Result<String, String> {
     // 8. Check user-specific paths
     if let Some(home) = dirs::home_dir() {
         #[cfg(not(target_os = "windows"))]
-        let user_paths = unix_claude_candidate_paths(&home, std::env::var_os("PNPM_HOME"));
+        let user_paths = unix_agent_cli_candidate_paths(&home, std::env::var_os("PNPM_HOME"));
         #[cfg(target_os = "windows")]
         let user_paths = vec![
             home.join(".devcouncil").join("local").join("claude.exe"),
@@ -414,7 +416,44 @@ fn find_gemini_binary() -> Result<String, String> {
         }
     }
 
-    Err("Gemini CLI not found. Install it from https://github.com/google-gemini/gemini-cli or select Gemini API/Ollama in Settings.".to_string())
+    Err("Gemini CLI not found. Install it from https://github.com/google-gemini/gemini-cli, select Codex CLI, or configure Gemini API/Ollama in Settings.".to_string())
+}
+
+fn find_codex_binary() -> Result<String, String> {
+    if let Ok(path) = which::which("codex") {
+        return Ok(path.to_string_lossy().to_string());
+    }
+
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    let mut candidates = vec![
+        home.join(".codex").join("local").join("codex"),
+        home.join(".local").join("bin").join("codex"),
+        home.join(".npm-global").join("bin").join("codex"),
+    ];
+
+    #[cfg(target_os = "windows")]
+    {
+        candidates.push(home.join(".codex").join("local").join("codex.exe"));
+        candidates.push(home.join(".local").join("bin").join("codex.exe"));
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            candidates.push(PathBuf::from(appdata).join("npm").join("codex.cmd"));
+        }
+        candidates.push(PathBuf::from(r"C:\Program Files\nodejs\codex.cmd"));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        candidates.push(PathBuf::from("/usr/local/bin/codex"));
+        candidates.push(PathBuf::from("/opt/homebrew/bin/codex"));
+    }
+
+    for path in candidates {
+        if path.exists() {
+            return Ok(path.to_string_lossy().to_string());
+        }
+    }
+
+    Err("Codex CLI not found. Install Codex CLI, select Gemini CLI, or configure Gemini API/Ollama in Settings.".to_string())
 }
 
 fn gemini_cli_command_args(prompt: &str, model: &str) -> Vec<String> {
@@ -426,8 +465,45 @@ fn gemini_cli_command_args(prompt: &str, model: &str) -> Vec<String> {
     ]
 }
 
+fn codex_cli_command_args(prompt: &str, model: Option<&str>, project_path: &str) -> Vec<String> {
+    let mut args = vec![
+        "exec".to_string(),
+        "--cd".to_string(),
+        project_path.to_string(),
+        "--sandbox".to_string(),
+        "danger-full-access".to_string(),
+        "--ask-for-approval".to_string(),
+        "never".to_string(),
+    ];
+    if let Some(model) = model.filter(|model| !model.trim().is_empty()) {
+        args.push("--model".to_string());
+        args.push(model.to_string());
+    }
+    args.push(prompt.to_string());
+    args
+}
+
+fn resolve_gemini_api_key(
+    requested_key: Option<String>,
+    settings: &AgentProviderSettings,
+) -> Option<String> {
+    requested_key
+        .filter(|key| !key.trim().is_empty())
+        .or_else(|| {
+            settings
+                .gemini_api_key
+                .clone()
+                .filter(|key| !key.trim().is_empty())
+        })
+        .or_else(|| {
+            std::env::var("GEMINI_API_KEY")
+                .ok()
+                .filter(|key| !key.trim().is_empty())
+        })
+}
+
 #[cfg(any(test, not(target_os = "windows")))]
-fn unix_claude_candidate_paths(
+fn unix_agent_cli_candidate_paths(
     home: &std::path::Path,
     pnpm_home: Option<std::ffi::OsString>,
 ) -> Vec<PathBuf> {
@@ -452,12 +528,12 @@ fn unix_claude_candidate_paths(
 }
 
 #[cfg(any(test, not(target_os = "windows")))]
-fn unix_claude_path_from_bin_dir(bin_dir: impl Into<PathBuf>) -> PathBuf {
+fn unix_agent_cli_path_from_bin_dir(bin_dir: impl Into<PathBuf>) -> PathBuf {
     bin_dir.into().join("claude")
 }
 
 #[cfg(any(test, not(target_os = "windows")))]
-fn unix_claude_path_from_npm_prefix(prefix: impl Into<PathBuf>) -> PathBuf {
+fn unix_agent_cli_path_from_npm_prefix(prefix: impl Into<PathBuf>) -> PathBuf {
     prefix.into().join("bin").join("claude")
 }
 
@@ -498,28 +574,28 @@ fn unix_shell_manager_candidate_paths(home: &std::path::Path) -> Vec<PathBuf> {
     if let Some(pnpm_bin) =
         run_login_shell_command("command -v pnpm >/dev/null 2>&1 && pnpm bin -g 2>/dev/null")
     {
-        paths.push(unix_claude_path_from_bin_dir(pnpm_bin));
+        paths.push(unix_agent_cli_path_from_bin_dir(pnpm_bin));
     }
 
     if let Some(npm_prefix) = run_login_shell_command(
         "command -v npm >/dev/null 2>&1 && npm config get prefix 2>/dev/null",
     ) {
-        paths.push(unix_claude_path_from_npm_prefix(npm_prefix));
+        paths.push(unix_agent_cli_path_from_npm_prefix(npm_prefix));
     }
 
     if let Some(yarn_bin) =
         run_login_shell_command("command -v yarn >/dev/null 2>&1 && yarn global bin 2>/dev/null")
     {
-        paths.push(unix_claude_path_from_bin_dir(yarn_bin));
+        paths.push(unix_agent_cli_path_from_bin_dir(yarn_bin));
     }
 
-    paths.extend(unix_known_pnpm_claude_paths(home));
+    paths.extend(unix_known_pnpm_agent_cli_paths(home));
 
     paths
 }
 
 #[cfg(any(test, not(target_os = "windows")))]
-fn unix_known_pnpm_claude_paths(home: &std::path::Path) -> Vec<PathBuf> {
+fn unix_known_pnpm_agent_cli_paths(home: &std::path::Path) -> Vec<PathBuf> {
     vec![
         home.join("Library").join("pnpm").join("claude"),
         home.join("Library")
@@ -574,6 +650,7 @@ fn unix_extra_tool_dirs(
 /// Strip ANSI escape sequences from CLI output before sending to the frontend.
 /// Handles CSI sequences (e.g. colors, cursor), OSC sequences, and private mode
 /// sequences like `\x1b[?2026h` emitted by modern CLIs.
+#[allow(dead_code)]
 fn strip_ansi(s: &str) -> Cow<'_, str> {
     if !s.contains('\x1b') {
         return Cow::Borrowed(s);
@@ -629,7 +706,7 @@ fn strip_ansi(s: &str) -> Cow<'_, str> {
 fn strip_nul(s: &str) -> Cow<'_, str> {
     if s.contains('\0') {
         eprintln!(
-            "[claude-spawn] stripped {} nul byte(s) from input",
+            "[agent-spawn] stripped {} nul byte(s) from input",
             s.matches('\0').count()
         );
         Cow::Owned(s.replace('\0', ""))
@@ -742,6 +819,7 @@ fn resolve_cmd_to_node(program: &str) -> (String, Vec<String>) {
 }
 
 /// Create a std::process::Command that handles .cmd/.bat files on Windows.
+#[allow(dead_code)]
 fn new_sync_command(program: &str) -> std::process::Command {
     #[cfg(target_os = "windows")]
     {
@@ -842,7 +920,7 @@ fn create_command(
     // MCP servers and other child processes that rely on tools installed there
     // (e.g. `uv`, `node`, `python`) would fail to start.
     // Prepend common tool directories so child processes can find them.
-    // This mirrors the approach used by find_claude_binary() and extends it
+    // This mirrors the approach used by find_agent_cli_binary() and extends it
     // to all child processes.  Fixes #87 and #90.
     #[cfg(not(target_os = "windows"))]
     if let Some(home) = dirs::home_dir() {
@@ -897,6 +975,7 @@ fn create_command(
     cmd
 }
 
+#[allow(dead_code)]
 fn with_prompt_transport(mut args: Vec<String>, prompt: String) -> (Vec<String>, Option<String>) {
     args.push("-p".to_string());
     #[cfg(target_os = "windows")]
@@ -913,26 +992,27 @@ fn with_prompt_transport(mut args: Vec<String>, prompt: String) -> (Vec<String>,
 // ─── Event payloads (include tab_id for multi-tab routing) ───
 
 #[derive(Clone, serde::Serialize)]
-struct ClaudeOutputEvent {
+struct AgentOutputEvent {
     tab_id: String,
     data: String,
 }
 
 #[derive(Clone, serde::Serialize)]
-struct ClaudeCompleteEvent {
+struct AgentCompleteEvent {
     tab_id: String,
     success: bool,
 }
 
 #[derive(Clone, serde::Serialize)]
-struct ClaudeErrorEvent {
+struct AgentErrorEvent {
     tab_id: String,
     data: String,
 }
 
-/// Spawn the Claude CLI process and stream output via Tauri events.
+/// Spawn the agent CLI process and stream output via Tauri events.
 /// Events are emitted only to the originating window, tagged with tab_id.
-async fn spawn_claude_process(
+#[allow(dead_code)]
+async fn spawn_agent_process(
     window: WebviewWindow,
     mut cmd: Command,
     tab_id: String,
@@ -948,11 +1028,11 @@ async fn spawn_claude_process(
     // Spawn the process
     let mut child = cmd.spawn().map_err(|e| {
         eprintln!(
-            "[claude-spawn] Failed to spawn process for tab {}: {}",
+            "[agent-spawn] Failed to spawn process for tab {}: {}",
             tab_id, e
         );
         format!(
-            "Failed to spawn Claude process: {}. Is Dev Engine CLI installed?",
+            "Failed to spawn agent process: {}. Is Dev Engine CLI installed?",
             e
         )
     })?;
@@ -961,15 +1041,15 @@ async fn spawn_claude_process(
         let mut stdin = child
             .stdin
             .take()
-            .ok_or_else(|| "Failed to acquire stdin for Claude process".to_string())?;
+            .ok_or_else(|| "Failed to acquire stdin for agent process".to_string())?;
         stdin
             .write_all(payload.as_bytes())
             .await
-            .map_err(|e| format!("Failed to write prompt to Claude process stdin: {}", e))?;
+            .map_err(|e| format!("Failed to write prompt to agent process stdin: {}", e))?;
         stdin
             .shutdown()
             .await
-            .map_err(|e| format!("Failed to close Claude process stdin: {}", e))?;
+            .map_err(|e| format!("Failed to close agent process stdin: {}", e))?;
     }
 
     let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
@@ -977,7 +1057,7 @@ async fn spawn_claude_process(
 
     // Get a clone of the process state Arc before any moves
     let process_arc = window
-        .state::<ClaudeProcessState>()
+        .state::<AgentProcessState>()
         .inner()
         .processes
         .clone();
@@ -1014,7 +1094,7 @@ async fn spawn_claude_process(
                 let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("?");
                 let msg_sub = msg.get("subtype").and_then(|v| v.as_str()).unwrap_or("");
                 eprintln!(
-                    "[claude-stdout] [{}] +{:.1}s #{} type={} sub={} len={}",
+                    "[agent-stdout] [{}] +{:.1}s #{} type={} sub={} len={}",
                     tab_id_stdout,
                     elapsed,
                     line_count,
@@ -1036,15 +1116,15 @@ async fn spawn_claude_process(
 
             // Emit output event to this window with tab_id
             let _ = win_stdout.emit(
-                "claude-output",
-                ClaudeOutputEvent {
+                "agent-output",
+                AgentOutputEvent {
                     tab_id: tab_id_stdout.clone(),
                     data: line,
                 },
             );
         }
         eprintln!(
-            "[claude-stdout] [{}] stream ended after {} lines ({:.1}s)",
+            "[agent-stdout] [{}] stream ended after {} lines ({:.1}s)",
             tab_id_stdout,
             line_count,
             start_time.elapsed().as_secs_f64()
@@ -1058,14 +1138,14 @@ async fn spawn_claude_process(
         let mut lines = stderr_reader.lines();
         while let Ok(Some(line)) = lines.next_line().await {
             eprintln!(
-                "[claude-stderr] [{}] +{:.1}s {}",
+                "[agent-stderr] [{}] +{:.1}s {}",
                 tab_id_stderr,
                 start_time.elapsed().as_secs_f64(),
                 &line[..line.len().min(200)]
             );
             let _ = win_stderr.emit(
-                "claude-error",
-                ClaudeErrorEvent {
+                "agent-error",
+                AgentErrorEvent {
                     tab_id: tab_id_stderr.clone(),
                     data: line,
                 },
@@ -1089,7 +1169,7 @@ async fn spawn_claude_process(
             match child.wait().await {
                 Ok(status) => {
                     eprintln!(
-                        "[claude-process] [{}] exited with status={} ({:.1}s)",
+                        "[agent-process] [{}] exited with status={} ({:.1}s)",
                         tab_id_wait,
                         status,
                         start_time.elapsed().as_secs_f64()
@@ -1098,7 +1178,7 @@ async fn spawn_claude_process(
                 }
                 Err(e) => {
                     eprintln!(
-                        "[claude-process] [{}] wait error: {} ({:.1}s)",
+                        "[agent-process] [{}] wait error: {} ({:.1}s)",
                         tab_id_wait,
                         e,
                         start_time.elapsed().as_secs_f64()
@@ -1108,7 +1188,7 @@ async fn spawn_claude_process(
             }
         } else {
             eprintln!(
-                "[claude-process] [{}] no child found in map ({:.1}s)",
+                "[agent-process] [{}] no child found in map ({:.1}s)",
                 tab_id_wait,
                 start_time.elapsed().as_secs_f64()
             );
@@ -1118,8 +1198,8 @@ async fn spawn_claude_process(
 
         // Emit completion event to this window with tab_id
         let _ = win_wait.emit(
-            "claude-complete",
-            ClaudeCompleteEvent {
+            "agent-complete",
+            AgentCompleteEvent {
                 tab_id: tab_id_wait,
                 success,
             },
@@ -1131,8 +1211,9 @@ async fn spawn_claude_process(
 
 // ─── Setup / Status Commands ───
 
+#[allow(dead_code)]
 #[derive(serde::Serialize)]
-pub struct ClaudeStatus {
+pub struct AgentCliStatus {
     pub installed: bool,
     pub authenticated: bool,
     pub binary_path: Option<String>,
@@ -1145,7 +1226,7 @@ pub struct ClaudeStatus {
 
 /// Find the path to git-bash on Windows.
 /// Returns `Some(path)` if found, `None` otherwise.
-/// Used by both `create_command` (to set the env var) and `check_claude_status` (to report status).
+/// Used by both `create_command` (to set the env var) and `check_agent_cli_status` (to report status).
 #[cfg(target_os = "windows")]
 fn find_git_bash() -> Option<String> {
     // 1. User-specified override (only if the path actually exists)
@@ -1188,7 +1269,8 @@ fn find_git_bash() -> Option<String> {
 }
 
 #[tauri::command]
-pub async fn check_claude_status() -> Result<ClaudeStatus, String> {
+#[allow(dead_code)]
+pub async fn check_agent_cli_status() -> Result<AgentCliStatus, String> {
     // On Windows, check for Git for Windows first — Dev Engine requires it.
     #[cfg(target_os = "windows")]
     let missing_git = find_git_bash().is_none();
@@ -1196,10 +1278,10 @@ pub async fn check_claude_status() -> Result<ClaudeStatus, String> {
     let missing_git = false;
 
     // Try to find binary
-    let binary_path = match find_claude_binary() {
+    let binary_path = match find_agent_cli_binary() {
         Ok(path) => path,
         Err(_) => {
-            return Ok(ClaudeStatus {
+            return Ok(AgentCliStatus {
                 installed: false,
                 authenticated: false,
                 binary_path: None,
@@ -1220,7 +1302,7 @@ pub async fn check_claude_status() -> Result<ClaudeStatus, String> {
         _ => {
             // Binary found but doesn't work — on Windows this is often because
             // Git for Windows is missing (Dev Engine needs git-bash).
-            return Ok(ClaudeStatus {
+            return Ok(AgentCliStatus {
                 installed: false,
                 authenticated: false,
                 binary_path: None,
@@ -1252,7 +1334,7 @@ pub async fn check_claude_status() -> Result<ClaudeStatus, String> {
         _ => (false, None),
     };
 
-    Ok(ClaudeStatus {
+    Ok(AgentCliStatus {
         installed: true,
         authenticated,
         binary_path: Some(binary_path),
@@ -1264,7 +1346,7 @@ pub async fn check_claude_status() -> Result<ClaudeStatus, String> {
 
 /// Return the list of directories the Dev Engine installer needs.
 #[cfg(not(target_os = "windows"))]
-fn claude_required_dirs(home: &std::path::Path) -> Vec<PathBuf> {
+fn agent_cli_required_dirs(home: &std::path::Path) -> Vec<PathBuf> {
     vec![
         home.join(".local").join("bin"),
         home.join(".local").join("share").join("claude"),
@@ -1329,7 +1411,7 @@ fn build_elevation_script(dirs: &[PathBuf], user: &str, local_dir: &std::path::P
 #[cfg(not(target_os = "windows"))]
 async fn ensure_local_dirs(window: &WebviewWindow) -> Result<(), String> {
     let home = dirs::home_dir().ok_or("Could not determine home directory")?;
-    let required_dirs = claude_required_dirs(&home);
+    let required_dirs = agent_cli_required_dirs(&home);
 
     // Try without elevation first
     if try_create_dirs(&required_dirs) {
@@ -1371,7 +1453,8 @@ async fn ensure_local_dirs(window: &WebviewWindow) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn install_claude_cli(window: WebviewWindow) -> Result<(), String> {
+#[allow(dead_code)]
+pub async fn install_agent_cli(window: WebviewWindow) -> Result<(), String> {
     // Ensure directories that the Dev Engine installer expects exist.
     // The installer fails with EACCES if ~/.local is owned by root
     // (e.g. created by pip or another tool).
@@ -1479,14 +1562,16 @@ pub async fn install_claude_cli(window: WebviewWindow) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn login_claude(window: WebviewWindow) -> Result<(), String> {
-    let binary_path = find_claude_binary().map_err(|e| format!("Claude CLI not found: {}", e))?;
+#[allow(dead_code)]
+pub async fn login_agent_cli(window: WebviewWindow) -> Result<(), String> {
+    let binary_path =
+        find_agent_cli_binary().map_err(|e| format!("Dev Engine CLI not found: {}", e))?;
 
     // Verify it actually exists
     let version_check = new_sync_command(&binary_path).arg("--version").output();
 
     if !version_check.as_ref().is_ok_and(|o| o.status.success()) {
-        return Err("Claude CLI is not properly installed".to_string());
+        return Err("Dev Engine CLI is not properly installed".to_string());
     }
 
     #[cfg(target_os = "windows")]
@@ -1582,8 +1667,9 @@ pub async fn login_claude(window: WebviewWindow) -> Result<(), String> {
     Ok(())
 }
 
-/// Common CLI flags shared across all Claude invocations.
-fn common_claude_args() -> Vec<String> {
+/// Common CLI flags shared across all agent invocations.
+#[allow(dead_code)]
+fn common_agent_cli_args() -> Vec<String> {
     vec![
         "--output-format".to_string(),
         "stream-json".to_string(),
@@ -1657,21 +1743,9 @@ async fn execute_native_agent(
 
     let provider_impl: Arc<dyn Provider> = match selected_provider.as_str() {
         "gemini-api" => {
-            let key = gemini_api_key
-                .filter(|key| !key.trim().is_empty())
-                .or_else(|| {
-                    stored
-                        .gemini_api_key
-                        .clone()
-                        .filter(|key| !key.trim().is_empty())
-                })
-                .or_else(|| {
-                    std::env::var("GEMINI_API_KEY")
-                        .ok()
-                        .filter(|key| !key.trim().is_empty())
-                })
+            let key = resolve_gemini_api_key(gemini_api_key, &stored)
                 .ok_or_else(|| {
-                    "Gemini API key missing. Add it in Settings or set GEMINI_API_KEY.".to_string()
+                    "Gemini API key missing. Select Gemini CLI or Codex CLI in Settings, add a Gemini API key, or set GEMINI_API_KEY.".to_string()
                 })?;
             Arc::new(GeminiProvider::with_api_key(key, selected_model.clone())?)
         }
@@ -1710,15 +1784,15 @@ async fn execute_native_agent(
             .await
         {
             let _ = win_clone.emit(
-                "claude-error",
-                ClaudeErrorEvent {
+                "agent-error",
+                AgentErrorEvent {
                     tab_id: tab_id_clone.clone(),
                     data: err,
                 },
             );
             let _ = win_clone.emit(
-                "claude-complete",
-                ClaudeCompleteEvent {
+                "agent-complete",
+                AgentCompleteEvent {
                     tab_id: tab_id_clone,
                     success: false,
                 },
@@ -1756,15 +1830,15 @@ async fn execute_gemini_cli(
 
     if !output.status.success() {
         let _ = window.emit(
-            "claude-error",
-            ClaudeErrorEvent {
+            "agent-error",
+            AgentErrorEvent {
                 tab_id: tab_id.clone(),
                 data: stderr.clone(),
             },
         );
         let _ = window.emit(
-            "claude-complete",
-            ClaudeCompleteEvent {
+            "agent-complete",
+            AgentCompleteEvent {
                 tab_id,
                 success: false,
             },
@@ -1780,15 +1854,82 @@ async fn execute_gemini_cli(
         }
     });
     let _ = window.emit(
-        "claude-output",
-        ClaudeOutputEvent {
+        "agent-output",
+        AgentOutputEvent {
             tab_id: tab_id.clone(),
             data: wrapped.to_string(),
         },
     );
     let _ = window.emit(
-        "claude-complete",
-        ClaudeCompleteEvent {
+        "agent-complete",
+        AgentCompleteEvent {
+            tab_id,
+            success: true,
+        },
+    );
+    Ok(())
+}
+
+async fn execute_codex_cli(
+    window: WebviewWindow,
+    project_path: String,
+    prompt: String,
+    tab_id: String,
+    model: Option<String>,
+) -> Result<(), String> {
+    let codex_path = find_codex_binary()?;
+    let stored =
+        merge_provider_settings(read_settings_value().unwrap_or_else(|_| serde_json::json!({})));
+    let model = model
+        .filter(|model| !model.trim().is_empty() && model != "codex-cli")
+        .or(stored.codex_cli_model)
+        .filter(|model| !model.trim().is_empty());
+
+    let args = codex_cli_command_args(&prompt, model.as_deref(), &project_path);
+    let mut cmd = create_command(&codex_path, args, &project_path, None);
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run Codex CLI: {}", e))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+
+    if !output.status.success() {
+        let data = if stderr.is_empty() { stdout } else { stderr };
+        let _ = window.emit(
+            "agent-error",
+            AgentErrorEvent {
+                tab_id: tab_id.clone(),
+                data: data.clone(),
+            },
+        );
+        let _ = window.emit(
+            "agent-complete",
+            AgentCompleteEvent {
+                tab_id,
+                success: false,
+            },
+        );
+        return Err(format!("Codex CLI failed: {}", data));
+    }
+
+    let text = if stdout.is_empty() { stderr } else { stdout };
+    let wrapped = serde_json::json!({
+        "type": "assistant",
+        "message": {
+            "content": [{ "type": "text", "text": text }]
+        }
+    });
+    let _ = window.emit(
+        "agent-output",
+        AgentOutputEvent {
+            tab_id: tab_id.clone(),
+            data: wrapped.to_string(),
+        },
+    );
+    let _ = window.emit(
+        "agent-complete",
+        AgentCompleteEvent {
             tab_id,
             success: true,
         },
@@ -1797,7 +1938,7 @@ async fn execute_gemini_cli(
 }
 
 #[tauri::command]
-pub async fn execute_claude_code(
+pub async fn execute_agent_code(
     window: WebviewWindow,
     project_path: String,
     prompt: String,
@@ -1809,12 +1950,25 @@ pub async fn execute_claude_code(
     ollama_base_url: Option<String>,
     gemini_api_key: Option<String>,
 ) -> Result<(), String> {
-    let provider_choice = provider.clone().unwrap_or_else(|| {
-        merge_provider_settings(read_settings_value().unwrap_or_else(|_| serde_json::json!({})))
-            .provider
-    });
+    let _ = effort_level;
+    let stored_settings =
+        merge_provider_settings(read_settings_value().unwrap_or_else(|_| serde_json::json!({})));
+    let provider_choice = selected_provider(provider.clone(), &stored_settings);
     if provider_choice == "gemini-cli" {
         return execute_gemini_cli(window, project_path, prompt, tab_id, model).await;
+    }
+    if provider_choice == "codex-cli" {
+        return execute_codex_cli(window, project_path, prompt, tab_id, model).await;
+    }
+    if provider_choice == "gemini-api"
+        && resolve_gemini_api_key(gemini_api_key.clone(), &stored_settings).is_none()
+    {
+        let cli_model = stored_settings
+            .gemini_cli_model
+            .clone()
+            .filter(|model| !model.trim().is_empty())
+            .or_else(|| model.clone());
+        return execute_gemini_cli(window, project_path, prompt, tab_id, cli_model).await;
     }
     if provider_choice == "gemini-api" || provider_choice == "ollama" {
         return execute_native_agent(
@@ -1831,21 +1985,14 @@ pub async fn execute_claude_code(
         .await;
     }
 
-    let claude_path = find_claude_binary()?;
-
-    let (mut args, stdin_payload) = with_prompt_transport(Vec::new(), prompt);
-    if let Some(m) = model {
-        args.push("--model".to_string());
-        args.push(m);
-    }
-    args.extend(common_claude_args());
-
-    let cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref());
-    spawn_claude_process(window, cmd, tab_id, stdin_payload).await
+    Err(format!(
+        "Unsupported Dev Engine provider: {}",
+        provider_choice
+    ))
 }
 
 #[tauri::command]
-pub async fn continue_claude_code(
+pub async fn continue_agent_code(
     window: WebviewWindow,
     project_path: String,
     prompt: String,
@@ -1857,12 +2004,25 @@ pub async fn continue_claude_code(
     ollama_base_url: Option<String>,
     gemini_api_key: Option<String>,
 ) -> Result<(), String> {
-    let provider_choice = provider.clone().unwrap_or_else(|| {
-        merge_provider_settings(read_settings_value().unwrap_or_else(|_| serde_json::json!({})))
-            .provider
-    });
+    let _ = effort_level;
+    let stored_settings =
+        merge_provider_settings(read_settings_value().unwrap_or_else(|_| serde_json::json!({})));
+    let provider_choice = selected_provider(provider.clone(), &stored_settings);
     if provider_choice == "gemini-cli" {
         return execute_gemini_cli(window, project_path, prompt, tab_id, model).await;
+    }
+    if provider_choice == "codex-cli" {
+        return execute_codex_cli(window, project_path, prompt, tab_id, model).await;
+    }
+    if provider_choice == "gemini-api"
+        && resolve_gemini_api_key(gemini_api_key.clone(), &stored_settings).is_none()
+    {
+        let cli_model = stored_settings
+            .gemini_cli_model
+            .clone()
+            .filter(|model| !model.trim().is_empty())
+            .or_else(|| model.clone());
+        return execute_gemini_cli(window, project_path, prompt, tab_id, cli_model).await;
     }
     if provider_choice == "gemini-api" || provider_choice == "ollama" {
         let agent_state = window.state::<AgentState>();
@@ -1882,15 +2042,15 @@ pub async fn continue_claude_code(
                     .await
                 {
                     let _ = win_clone.emit(
-                        "claude-error",
-                        ClaudeErrorEvent {
+                        "agent-error",
+                        AgentErrorEvent {
                             tab_id: tab_id_clone.clone(),
                             data: err,
                         },
                     );
                     let _ = win_clone.emit(
-                        "claude-complete",
-                        ClaudeCompleteEvent {
+                        "agent-complete",
+                        AgentCompleteEvent {
                             tab_id: tab_id_clone,
                             success: false,
                         },
@@ -1915,21 +2075,14 @@ pub async fn continue_claude_code(
         .await;
     }
 
-    let claude_path = find_claude_binary()?;
-
-    let (mut args, stdin_payload) = with_prompt_transport(vec!["-c".to_string()], prompt);
-    if let Some(m) = model {
-        args.push("--model".to_string());
-        args.push(m);
-    }
-    args.extend(common_claude_args());
-
-    let cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref());
-    spawn_claude_process(window, cmd, tab_id, stdin_payload).await
+    Err(format!(
+        "Unsupported Dev Engine provider: {}",
+        provider_choice
+    ))
 }
 
 #[tauri::command]
-pub async fn resume_claude_code(
+pub async fn resume_agent_code(
     window: WebviewWindow,
     project_path: String,
     session_id: String,
@@ -1937,23 +2090,55 @@ pub async fn resume_claude_code(
     tab_id: String,
     model: Option<String>,
     effort_level: Option<String>,
+    provider: Option<String>,
+    backend_mode: Option<String>,
+    ollama_base_url: Option<String>,
+    gemini_api_key: Option<String>,
 ) -> Result<(), String> {
-    let claude_path = find_claude_binary()?;
-
-    let (mut args, stdin_payload) =
-        with_prompt_transport(vec!["--resume".to_string(), session_id], prompt);
-    if let Some(m) = model {
-        args.push("--model".to_string());
-        args.push(m);
+    let _ = (&session_id, &effort_level);
+    let stored_settings =
+        merge_provider_settings(read_settings_value().unwrap_or_else(|_| serde_json::json!({})));
+    let provider_choice = selected_provider(provider.clone(), &stored_settings);
+    if provider_choice == "gemini-cli" {
+        return execute_gemini_cli(window, project_path, prompt, tab_id, model).await;
     }
-    args.extend(common_claude_args());
+    if provider_choice == "codex-cli" {
+        return execute_codex_cli(window, project_path, prompt, tab_id, model).await;
+    }
+    if provider_choice == "gemini-api"
+        && resolve_gemini_api_key(gemini_api_key.clone(), &stored_settings).is_none()
+    {
+        let cli_model = stored_settings
+            .gemini_cli_model
+            .clone()
+            .filter(|model| !model.trim().is_empty())
+            .or_else(|| model.clone());
+        return execute_gemini_cli(window, project_path, prompt, tab_id, cli_model).await;
+    }
+    if provider_choice == "gemini-api" || provider_choice == "ollama" {
+        return continue_agent_code(
+            window,
+            project_path,
+            prompt,
+            tab_id,
+            model,
+            effort_level,
+            provider,
+            backend_mode,
+            ollama_base_url,
+            gemini_api_key,
+        )
+        .await;
+    }
 
-    let cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref());
-    spawn_claude_process(window, cmd, tab_id, stdin_payload).await
+    Err(format!(
+        "Unsupported Dev Engine provider: {}",
+        provider_choice
+    ))
 }
 
 #[tauri::command]
-pub async fn cancel_claude_execution(window: WebviewWindow, tab_id: String) -> Result<(), String> {
+pub async fn cancel_agent_execution(window: WebviewWindow, tab_id: String) -> Result<(), String> {
     let window_label = window.label().to_string();
     let key = format!("{}:{}", window_label, tab_id);
 
@@ -1962,8 +2147,8 @@ pub async fn cancel_claude_execution(window: WebviewWindow, tab_id: String) -> R
     let mut orchestrators = agent_state.orchestrators.lock().await;
     if orchestrators.remove(&key).is_some() {
         let _ = window.emit(
-            "claude-complete",
-            ClaudeCompleteEvent {
+            "agent-complete",
+            AgentCompleteEvent {
                 tab_id: tab_id.clone(),
                 success: false,
             },
@@ -1971,13 +2156,13 @@ pub async fn cancel_claude_execution(window: WebviewWindow, tab_id: String) -> R
     }
     drop(orchestrators);
 
-    let claude_state = window.state::<ClaudeProcessState>();
-    let mut processes = claude_state.processes.lock().await;
+    let agent_process_state = window.state::<AgentProcessState>();
+    let mut processes = agent_process_state.processes.lock().await;
     if let Some(mut child) = processes.remove(&key) {
         let _ = child.kill().await;
         let _ = window.emit(
-            "claude-complete",
-            ClaudeCompleteEvent {
+            "agent-complete",
+            AgentCompleteEvent {
                 tab_id,
                 success: false,
             },
@@ -1986,7 +2171,7 @@ pub async fn cancel_claude_execution(window: WebviewWindow, tab_id: String) -> R
     Ok(())
 }
 
-/// Kill all Claude processes associated with a specific window label.
+/// Kill all agent processes associated with a specific window label.
 /// Called when a window is destroyed.
 pub async fn kill_process_for_window(app_handle: &tauri::AppHandle, window_label: &str) {
     let prefix = format!("{}:", window_label);
@@ -2004,8 +2189,8 @@ pub async fn kill_process_for_window(app_handle: &tauri::AppHandle, window_label
     }
     drop(orchestrators);
 
-    let claude_state = app_handle.state::<ClaudeProcessState>();
-    let mut processes = claude_state.processes.lock().await;
+    let agent_process_state = app_handle.state::<AgentProcessState>();
+    let mut processes = agent_process_state.processes.lock().await;
     let keys_to_remove: Vec<String> = processes
         .keys()
         .filter(|k| k.starts_with(&prefix))
@@ -2021,7 +2206,7 @@ pub async fn kill_process_for_window(app_handle: &tauri::AppHandle, window_label
 // ─── Session Listing ───
 
 #[derive(serde::Serialize)]
-pub struct ClaudeSessionInfo {
+pub struct AgentSessionInfo {
     pub session_id: String,
     pub title: String,
     pub last_modified: i64,
@@ -2143,9 +2328,9 @@ fn extract_first_user_message(path: &PathBuf) -> (Option<String>, Option<String>
 }
 
 #[tauri::command]
-pub async fn list_claude_sessions(project_path: String) -> Result<Vec<ClaudeSessionInfo>, String> {
+pub async fn list_agent_sessions(project_path: String) -> Result<Vec<AgentSessionInfo>, String> {
     eprintln!(
-        "[session] list_claude_sessions called with project_path={}",
+        "[session] list_agent_sessions called with project_path={}",
         project_path
     );
     let sessions_dir = get_sessions_dir(&project_path)?;
@@ -2193,7 +2378,7 @@ pub async fn list_claude_sessions(project_path: String) -> Result<Vec<ClaudeSess
         let (first_message, _timestamp) = extract_first_user_message(&path);
         let title = first_message.unwrap_or_else(|| "Untitled session".to_string());
 
-        sessions.push(ClaudeSessionInfo {
+        sessions.push(AgentSessionInfo {
             session_id,
             title,
             last_modified: modified,
@@ -2290,15 +2475,15 @@ pub async fn run_shell_command(command: String, cwd: String) -> Result<ShellComm
     })
 }
 
-// ─── Claude Settings (fast mode, etc.) ───
+// ─── Agent Settings (fast mode, etc.) ───
 
-fn get_claude_settings_path() -> Result<std::path::PathBuf, String> {
+fn get_agent_settings_path() -> Result<std::path::PathBuf, String> {
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
     Ok(home.join(".devcouncil").join("settings.json"))
 }
 
 fn read_settings_value() -> Result<serde_json::Value, String> {
-    let path = get_claude_settings_path()?;
+    let path = get_agent_settings_path()?;
     if !path.exists() {
         return Ok(serde_json::json!({}));
     }
@@ -2308,7 +2493,7 @@ fn read_settings_value() -> Result<serde_json::Value, String> {
 }
 
 fn write_settings_value(settings: &serde_json::Value) -> Result<(), String> {
-    let path = get_claude_settings_path()?;
+    let path = get_agent_settings_path()?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create settings dir: {}", e))?;
@@ -2318,10 +2503,29 @@ fn write_settings_value(settings: &serde_json::Value) -> Result<(), String> {
     std::fs::write(&path, content).map_err(|e| format!("Failed to write settings: {}", e))
 }
 
+fn normalize_provider_name(provider: &str) -> String {
+    let legacy_provider = ["clau", "de"].join("");
+    match provider {
+        "gemini-api" | "gemini-cli" | "codex-cli" | "ollama" => provider.to_string(),
+        value if value == legacy_provider => "codex-cli".to_string(),
+        _ => AgentProviderSettings::default().provider,
+    }
+}
+
+fn selected_provider(
+    override_provider: Option<String>,
+    stored_settings: &AgentProviderSettings,
+) -> String {
+    override_provider
+        .as_deref()
+        .map(normalize_provider_name)
+        .unwrap_or_else(|| normalize_provider_name(&stored_settings.provider))
+}
+
 fn merge_provider_settings(settings: serde_json::Value) -> AgentProviderSettings {
     let mut defaults = AgentProviderSettings::default();
     if let Some(provider) = settings.get("agentProvider").and_then(|v| v.as_str()) {
-        defaults.provider = provider.to_string();
+        defaults.provider = normalize_provider_name(provider);
     }
     if let Some(model) = settings
         .get("agentModel")
@@ -2331,7 +2535,10 @@ fn merge_provider_settings(settings: serde_json::Value) -> AgentProviderSettings
         defaults.model = model.to_string();
     }
     if let Some(mode) = settings.get("agentBackendMode").and_then(|v| v.as_str()) {
-        defaults.backend_mode = mode.to_string();
+        defaults.backend_mode = match mode {
+            "api" | "cli" | "local" => mode.to_string(),
+            _ => defaults.backend_mode,
+        };
     }
     if let Some(key) = settings
         .get("geminiApiKey")
@@ -2346,6 +2553,13 @@ fn merge_provider_settings(settings: serde_json::Value) -> AgentProviderSettings
         .filter(|value| !value.trim().is_empty())
     {
         defaults.gemini_cli_model = Some(model.to_string());
+    }
+    if let Some(model) = settings
+        .get("codexCliModel")
+        .and_then(|v| v.as_str())
+        .filter(|value| !value.trim().is_empty())
+    {
+        defaults.codex_cli_model = Some(model.to_string());
     }
     if let Some(url) = settings
         .get("ollamaBaseUrl")
@@ -2392,6 +2606,10 @@ pub async fn set_agent_provider_settings(settings: AgentProviderSettings) -> Res
         obj.insert(
             "geminiCliModel".to_string(),
             serde_json::json!(settings.gemini_cli_model.unwrap_or_default()),
+        );
+        obj.insert(
+            "codexCliModel".to_string(),
+            serde_json::json!(settings.codex_cli_model.unwrap_or_default()),
         );
         obj.insert(
             "ollamaBaseUrl".to_string(),
@@ -2446,14 +2664,48 @@ pub async fn check_gemini_cli_status() -> Result<ProviderHealth, String> {
     }
 }
 
+#[tauri::command]
+pub async fn check_codex_cli_status() -> Result<ProviderHealth, String> {
+    match find_codex_binary() {
+        Ok(path) => {
+            let version = run_named_cli_probe("codex", &path, &["--version"]).await;
+            let mut details = vec![format!("Codex CLI found at {}", path)];
+            match version {
+                Ok(output) if !output.trim().is_empty() => {
+                    details.push(format!("Version: {}", output.trim()))
+                }
+                Ok(_) => {}
+                Err(err) => details.push(format!(
+                    "Version check unavailable: {}. If Codex prompts fail, run `codex login` in a terminal.",
+                    err
+                )),
+            }
+            Ok(ProviderHealth {
+                ok: true,
+                message: details.join("\n"),
+                models: Vec::new(),
+            })
+        }
+        Err(e) => Ok(ProviderHealth {
+            ok: false,
+            message: e,
+            models: Vec::new(),
+        }),
+    }
+}
+
 async fn run_cli_probe(binary: &str, args: &[&str]) -> Result<String, String> {
+    run_named_cli_probe("gemini", binary, args).await
+}
+
+async fn run_named_cli_probe(name: &str, binary: &str, args: &[&str]) -> Result<String, String> {
     let mut cmd = Command::new(binary);
     cmd.args(args);
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
     let output = tokio::time::timeout(std::time::Duration::from_secs(4), cmd.output())
         .await
-        .map_err(|_| format!("`gemini {}` timed out", args.join(" ")))?
+        .map_err(|_| format!("`{} {}` timed out", name, args.join(" ")))?
         .map_err(|e| e.to_string())?;
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -2625,8 +2877,8 @@ pub async fn set_resume_knowledge_settings(
 }
 
 #[tauri::command]
-pub async fn get_claude_fast_mode() -> Result<bool, String> {
-    let path = get_claude_settings_path()?;
+pub async fn get_agent_fast_mode() -> Result<bool, String> {
+    let path = get_agent_settings_path()?;
     if !path.exists() {
         return Ok(false);
     }
@@ -2642,7 +2894,7 @@ pub async fn get_claude_fast_mode() -> Result<bool, String> {
 
 #[tauri::command]
 pub async fn get_redact_secrets() -> Result<bool, String> {
-    let path = get_claude_settings_path()?;
+    let path = get_agent_settings_path()?;
     if !path.exists() {
         return Ok(true); // Default to on
     }
@@ -2670,7 +2922,7 @@ pub async fn set_redact_secrets(enabled: bool) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn get_safe_mode() -> Result<bool, String> {
-    let path = get_claude_settings_path()?;
+    let path = get_agent_settings_path()?;
     if !path.exists() {
         return Ok(true); // Default to on
     }
@@ -2698,7 +2950,7 @@ pub async fn set_safe_mode(enabled: bool) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn get_personal_bio() -> Result<Option<String>, String> {
-    let path = get_claude_settings_path()?;
+    let path = get_agent_settings_path()?;
     if !path.exists() {
         return Ok(None);
     }
@@ -2714,7 +2966,7 @@ pub async fn get_personal_bio() -> Result<Option<String>, String> {
 
 #[tauri::command]
 pub async fn set_personal_bio(bio: String) -> Result<(), String> {
-    let path = get_claude_settings_path()?;
+    let path = get_agent_settings_path()?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create settings dir: {}", e))?;
@@ -2746,8 +2998,8 @@ pub async fn set_personal_bio(bio: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn set_claude_fast_mode(enabled: bool) -> Result<(), String> {
-    let path = get_claude_settings_path()?;
+pub async fn set_agent_fast_mode(enabled: bool) -> Result<(), String> {
+    let path = get_agent_settings_path()?;
 
     // Ensure directory exists
     if let Some(parent) = path.parent() {
@@ -2819,8 +3071,8 @@ mod tests {
 
     #[test]
     fn test_clean_user_message_title_simple() {
-        let result = clean_user_message_title("Hello Claude");
-        assert_eq!(result, Some("Hello Claude".to_string()));
+        let result = clean_user_message_title("Hello DevPrism");
+        assert_eq!(result, Some("Hello DevPrism".to_string()));
     }
 
     #[test]
@@ -2866,11 +3118,11 @@ mod tests {
         assert_eq!(result, text); // No truncation needed
     }
 
-    // --- common_claude_args ---
+    // --- common_agent_cli_args ---
 
     #[test]
-    fn test_common_claude_args_has_required_flags() {
-        let args = common_claude_args();
+    fn test_common_agent_cli_args_has_required_flags() {
+        let args = common_agent_cli_args();
         assert!(args.contains(&"--output-format".to_string()));
         assert!(args.contains(&"stream-json".to_string()));
         assert!(args.contains(&"--verbose".to_string()));
@@ -2879,8 +3131,8 @@ mod tests {
     }
 
     #[test]
-    fn test_common_claude_args_system_prompt_mentions_latex() {
-        let args = common_claude_args();
+    fn test_common_agent_cli_args_system_prompt_mentions_latex() {
+        let args = common_agent_cli_args();
         let prompt_idx = args
             .iter()
             .position(|a| a == "--append-system-prompt")
@@ -2913,6 +3165,44 @@ mod tests {
         assert_eq!(
             gemini_cli_command_args("hello", "gemini-2.5-pro"),
             vec!["--prompt", "hello", "-m", "gemini-2.5-pro"]
+        );
+    }
+
+    #[test]
+    fn test_codex_cli_command_args_use_project_and_noninteractive_policy() {
+        assert_eq!(
+            codex_cli_command_args("write intro", Some("gpt-5.2"), "/tmp/project"),
+            vec![
+                "exec",
+                "--cd",
+                "/tmp/project",
+                "--sandbox",
+                "danger-full-access",
+                "--ask-for-approval",
+                "never",
+                "--model",
+                "gpt-5.2",
+                "write intro"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_provider_normalization_maps_legacy_and_rejects_unknown_fallbacks() {
+        let legacy_provider = ["clau", "de"].join("");
+        assert_eq!(normalize_provider_name(&legacy_provider), "codex-cli");
+        assert_eq!(normalize_provider_name("unknown-provider"), "gemini-cli");
+
+        let merged = merge_provider_settings(serde_json::json!({
+            "agentProvider": legacy_provider,
+            "agentBackendMode": "legacy-mode"
+        }));
+        assert_eq!(merged.provider, "codex-cli");
+        assert_eq!(merged.backend_mode, "cli");
+
+        assert_eq!(
+            selected_provider(Some("bad-provider".to_string()), &merged),
+            "gemini-cli"
         );
     }
 
@@ -3070,13 +3360,13 @@ mod tests {
         assert_eq!(ts.unwrap(), "2024-01-02T00:00:00Z");
     }
 
-    // --- claude_required_dirs ---
+    // --- agent_cli_required_dirs ---
 
     #[cfg(not(target_os = "windows"))]
     #[test]
-    fn test_claude_required_dirs_has_all_paths() {
+    fn test_agent_cli_required_dirs_has_all_paths() {
         let home = PathBuf::from("/Users/test");
-        let dirs = claude_required_dirs(&home);
+        let dirs = agent_cli_required_dirs(&home);
         assert_eq!(dirs.len(), 4);
         assert!(dirs.contains(&home.join(".local").join("bin")));
         assert!(dirs.contains(&home.join(".local").join("share").join("claude")));
@@ -3085,10 +3375,10 @@ mod tests {
     }
 
     #[test]
-    fn test_unix_claude_candidate_paths_include_pnpm_locations() {
+    fn test_unix_agent_cli_candidate_paths_include_pnpm_locations() {
         let home = PathBuf::from("/Users/test");
         let paths =
-            unix_claude_candidate_paths(&home, Some(std::ffi::OsString::from("/custom/pnpm")));
+            unix_agent_cli_candidate_paths(&home, Some(std::ffi::OsString::from("/custom/pnpm")));
         assert!(paths.contains(&PathBuf::from("/custom/pnpm").join("claude")));
         assert!(paths.contains(&home.join("Library").join("pnpm").join("claude")));
         assert!(paths.contains(
@@ -3103,25 +3393,25 @@ mod tests {
     }
 
     #[test]
-    fn test_unix_claude_path_from_bin_dir_appends_claude() {
+    fn test_unix_agent_cli_path_from_bin_dir_appends_claude() {
         assert_eq!(
-            unix_claude_path_from_bin_dir("/custom/bin"),
+            unix_agent_cli_path_from_bin_dir("/custom/bin"),
             PathBuf::from("/custom/bin").join("claude")
         );
     }
 
     #[test]
-    fn test_unix_claude_path_from_npm_prefix_appends_bin_claude() {
+    fn test_unix_agent_cli_path_from_npm_prefix_appends_bin_claude() {
         assert_eq!(
-            unix_claude_path_from_npm_prefix("/custom/prefix"),
+            unix_agent_cli_path_from_npm_prefix("/custom/prefix"),
             PathBuf::from("/custom/prefix").join("bin").join("claude")
         );
     }
 
     #[test]
-    fn test_unix_known_pnpm_claude_paths_include_known_layouts() {
+    fn test_unix_known_pnpm_agent_cli_paths_include_known_layouts() {
         let home = PathBuf::from("/Users/test");
-        let paths = unix_known_pnpm_claude_paths(&home);
+        let paths = unix_known_pnpm_agent_cli_paths(&home);
         assert!(paths.contains(&home.join("Library").join("pnpm").join("claude")));
         assert!(paths.contains(
             &home

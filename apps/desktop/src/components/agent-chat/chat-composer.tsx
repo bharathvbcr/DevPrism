@@ -180,23 +180,31 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                 backendMode: "cli" as const,
                 model: agentProviderSettings.geminiCliModel ?? "gemini-1.5-pro",
               }
-            : provider === "ollama"
+            : provider === "codex-cli"
               ? {
                   ...agentProviderSettings,
                   provider,
-                  backendMode: "local" as const,
-                  model: agentProviderSettings.ollamaModel,
-                }
-              : {
-                  ...agentProviderSettings,
-                  provider: "gemini-cli" as const,
                   backendMode: "cli" as const,
-                  model:
-                    agentProviderSettings.geminiCliModel ?? "gemini-1.5-pro",
-                };
+                  model: agentProviderSettings.codexCliModel ?? "gpt-5.2",
+                }
+              : provider === "ollama"
+                ? {
+                    ...agentProviderSettings,
+                    provider,
+                    backendMode: "local" as const,
+                    model: agentProviderSettings.ollamaModel,
+                  }
+                : {
+                    ...agentProviderSettings,
+                    provider: "gemini-cli" as const,
+                    backendMode: "cli" as const,
+                    model:
+                      agentProviderSettings.geminiCliModel ?? "gemini-1.5-pro",
+                  };
       setTabProviderSettings(activeTabId, next);
       if (provider === "ollama") setSelectedModel("ollama");
       else if (provider === "gemini-cli") setSelectedModel("gemini-cli");
+      else if (provider === "codex-cli") setSelectedModel("codex-cli");
       else if (provider === "gemini-api") setSelectedModel("gemini-1.5-pro");
       else setSelectedModel("gemini-cli");
       setModelPickerOpen(false);
@@ -791,6 +799,12 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                   icon: <TerminalIcon className="size-3.5" />,
                 },
                 {
+                  id: "codex-cli" as const,
+                  name: "Codex CLI",
+                  desc: agentProviderSettings.codexCliModel ?? "codex",
+                  icon: <TerminalIcon className="size-3.5" />,
+                },
+                {
                   id: "ollama" as const,
                   name: "Ollama (Local)",
                   desc: agentProviderSettings.ollamaModel,
@@ -986,9 +1000,11 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                   ? "Gemini API"
                   : agentProviderSettings.provider === "gemini-cli"
                     ? "Gemini CLI"
-                    : agentProviderSettings.provider === "ollama"
-                      ? "Ollama"
-                      : "Gemini CLI"}
+                    : agentProviderSettings.provider === "codex-cli"
+                      ? "Codex CLI"
+                      : agentProviderSettings.provider === "ollama"
+                        ? "Ollama"
+                        : "Gemini CLI"}
               </span>
               <span className="text-muted-foreground/60">
                 {effortLevel === "low"

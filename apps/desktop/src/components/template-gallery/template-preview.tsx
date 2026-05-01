@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { mkdir, writeTextFile } from "@tauri-apps/plugin-fs";
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { homeDir } from "@tauri-apps/api/path";
 import { toast } from "sonner";
@@ -161,7 +162,7 @@ export function TemplatePreview() {
       setProjectFolder(lastProjectFolder);
     } else {
       homeDir()
-        .then((home) => join(home, "Documents", "DevCouncil"))
+        .then((home) => join(home, "Documents", "DevPrism"))
         .then(async (dir) => {
           await mkdir(dir, { recursive: true }).catch(() => {});
           setProjectFolder(dir);
@@ -395,6 +396,7 @@ export function TemplatePreview() {
       title: "Choose Location for New Project",
     });
     if (selected) {
+      await invoke("allow_project_directory", { rootPath: selected });
       setProjectFolder(selected);
       setLastProjectFolder(selected);
     }
@@ -407,6 +409,7 @@ export function TemplatePreview() {
 
     try {
       const projectPath = await join(projectFolder, projectName.trim());
+      await invoke("allow_project_directory", { rootPath: projectFolder });
       await mkdir(projectPath, { recursive: true });
 
       const mainTexPath = await join(projectPath, template.mainFileName);

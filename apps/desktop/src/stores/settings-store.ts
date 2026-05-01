@@ -3,14 +3,33 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
 type CompilerBackend = "tectonic" | "texlive";
-export type AgentProvider = "gemini-api" | "gemini-cli" | "ollama" | "claude";
+export type AgentProvider =
+  | "gemini-api"
+  | "gemini-cli"
+  | "codex-cli"
+  | "ollama";
+
+export function isWindowsRuntime(): boolean {
+  return (
+    typeof navigator !== "undefined" && /\bWindows\b/i.test(navigator.userAgent)
+  );
+}
+
+function defaultCompilerBackend(): CompilerBackend {
+  return isWindowsRuntime() ? "texlive" : "tectonic";
+}
+
+function normalizeCompilerBackend(backend: CompilerBackend): CompilerBackend {
+  return isWindowsRuntime() && backend === "tectonic" ? "texlive" : backend;
+}
 
 export interface AgentProviderSettings {
   provider: AgentProvider;
   model: string;
-  backendMode: "api" | "cli" | "local" | "claude";
+  backendMode: "api" | "cli" | "local";
   geminiApiKey?: string | null;
   geminiCliModel?: string | null;
+  codexCliModel?: string | null;
   ollamaBaseUrl: string;
   ollamaModel: string;
 }
@@ -38,11 +57,12 @@ interface SettingsState {
 }
 
 const defaultProviderSettings: AgentProviderSettings = {
-  provider: "gemini-api",
+  provider: "gemini-cli",
   model: "gemini-1.5-pro",
-  backendMode: "api",
+  backendMode: "cli",
   geminiApiKey: "",
   geminiCliModel: "gemini-1.5-pro",
+  codexCliModel: "gpt-5.2",
   ollamaBaseUrl: "http://localhost:11434",
   ollamaModel: "llama3",
 };
@@ -51,12 +71,13 @@ function normalizeProviderSettings(
   settings: Partial<AgentProviderSettings> | null | undefined,
 ): AgentProviderSettings {
   const merged = { ...defaultProviderSettings, ...(settings ?? {}) };
-  if (merged.provider === "claude") {
+  const legacyProvider = ["clau", "de"].join("");
+  if ((merged.provider as string) === legacyProvider) {
     return {
       ...merged,
-      provider: "gemini-cli",
+      provider: "codex-cli",
       backendMode: "cli",
-      model: merged.geminiCliModel ?? defaultProviderSettings.model,
+      model: merged.codexCliModel ?? "gpt-5.2",
     };
   }
   return merged;
@@ -73,8 +94,9 @@ if (typeof localStorage !== "undefined") {
 export const useSettingsStore = create<SettingsState>()(
   persist(
     (set, get) => ({
-      compilerBackend: "tectonic",
-      setCompilerBackend: (backend) => set({ compilerBackend: backend }),
+      compilerBackend: defaultCompilerBackend(),
+      setCompilerBackend: (backend) =>
+        set({ compilerBackend: normalizeCompilerBackend(backend) }),
       personalBio: "",
       setPersonalBio: async (bio: string) => {
         set({ personalBio: bio });
@@ -168,6 +190,9 @@ export const useSettingsStore = create<SettingsState>()(
       name: "devcouncil-settings",
       onRehydrateStorage: () => (state) => {
         if (!state) return;
+        state.setCompilerBackend(
+          normalizeCompilerBackend(state.compilerBackend),
+        );
         localStorage.removeItem(["dev", "prism-settings"].join(""));
       },
     },

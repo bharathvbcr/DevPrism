@@ -43,8 +43,8 @@ function WorkspaceWithAssistant() {
   }, []);
   useEffect(() => {
     if (projectRoot) {
-      const name = projectRoot.split(/[/\\]/).pop() || "DevCouncil";
-      getCurrentWindow().setTitle(`${name} - DevCouncil`);
+      const name = projectRoot.split(/[/\\]/).pop() || "DevPrism";
+      getCurrentWindow().setTitle(`${name} - DevPrism`);
     }
   }, [projectRoot]);
 

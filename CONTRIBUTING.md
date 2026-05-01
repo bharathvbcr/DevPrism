@@ -66,7 +66,7 @@ devcouncil/
 │           │   ├── lib.rs           # Tauri plugin registration
 │           │   ├── history.rs       # Git-based version history
 │           │   ├── latex.rs         # Tectonic compilation & SyncTeX
-│           │   ├── claude.rs        # Claude CLI integration & sessions
+│           │   ├── agent_runtime.rs # Agent CLI integration & sessions
 │           │   ├── skills.rs        # Scientific skill installation
 │           │   ├── slash_commands.rs # Slash command discovery & CRUD
 │           │   ├── uv.rs            # uv and project virtualenv orchestration

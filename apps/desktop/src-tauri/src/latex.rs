@@ -443,6 +443,10 @@ fn compile_with_tectonic_subprocess(_work_dir: &Path, _main_file: &str) -> Resul
     Err("Tectonic compilation is not enabled in this build. Install TeXLive or build with the 'latex-tectonic' feature.".to_string())
 }
 
+fn tectonic_enabled_in_this_build() -> bool {
+    cfg!(all(not(target_os = "windows"), feature = "latex-tectonic"))
+}
+
 // --- TeXLive Compilation ---
 
 /// Build a PATH that includes the TeXLive bin directory so that xelatex
@@ -836,7 +840,8 @@ pub async fn compile_latex(
     let _project_guard = project_lock.lock().await;
 
     let t0 = std::time::Instant::now();
-    let use_texlive = use_texlive.unwrap_or(false);
+    let requested_texlive = use_texlive.unwrap_or(false);
+    let use_texlive = requested_texlive || !tectonic_enabled_in_this_build();
 
     let main_file_name = Path::new(&main_file)
         .file_stem()
@@ -907,11 +912,18 @@ pub async fn compile_latex(
         "Tectonic".to_string()
     };
 
+    if !requested_texlive && use_texlive {
+        eprintln!(
+            "[latex] Tectonic is not enabled in this build; using TeXLive/{}",
+            engine_name_for_label
+        );
+    }
+
     if !use_texlive {
         if let Some(TexEngine::LuaLaTeX) = engine {
             return Err(
                 "Compilation failed\n\nThis document requires LuaLaTeX (% !TEX program = lualatex), \
-                 which is not supported. DevCouncil uses a XeTeX-based engine (Tectonic). \
+                 which is not supported. DevPrism uses a XeTeX-based engine (Tectonic). \
                  Please switch to XeLaTeX or remove the magic comment."
                     .to_string(),
             );

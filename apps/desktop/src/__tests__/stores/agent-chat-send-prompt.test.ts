@@ -79,9 +79,9 @@ function resetAgentChatStore() {
   });
   useSettingsStore.setState({
     agentProviderSettings: {
-      provider: "gemini-api",
+      provider: "gemini-cli",
       model: "gemini-1.5-pro",
-      backendMode: "api",
+      backendMode: "cli",
       geminiApiKey: "",
       geminiCliModel: "gemini-1.5-pro",
       ollamaBaseUrl: "http://localhost:11434",
@@ -140,10 +140,13 @@ describe("useAgentChatStore.sendPrompt context assembly", () => {
     });
 
     expect(invoke).toHaveBeenCalledWith(
-      "execute_claude_code",
+      "execute_agent_code",
       expect.objectContaining({
         projectPath: "/project",
         tabId: "tab-default",
+        provider: "gemini-cli",
+        backendMode: "cli",
+        model: "gemini-1.5-pro",
         prompt: expect.stringContaining("[Selection: @main.tex]"),
       }),
     );
@@ -178,7 +181,7 @@ describe("useAgentChatStore.sendPrompt context assembly", () => {
     await useAgentChatStore.getState().sendPrompt("Please revise this");
 
     expect(invoke).toHaveBeenCalledWith(
-      "execute_claude_code",
+      "execute_agent_code",
       expect.objectContaining({
         projectPath: "/project",
         tabId: "tab-default",
@@ -218,12 +221,58 @@ describe("useAgentChatStore.sendPrompt context assembly", () => {
     await useAgentChatStore.getState().sendPrompt("Use local model");
 
     expect(invoke).toHaveBeenCalledWith(
-      "execute_claude_code",
+      "execute_agent_code",
       expect.objectContaining({
         provider: "ollama",
         backendMode: "local",
         model: "codellama",
         ollamaBaseUrl: "http://127.0.0.1:11434",
+      }),
+    );
+  });
+
+  it("sends Codex CLI provider settings without a Gemini API key", async () => {
+    useAgentChatStore.getState().setTabProviderSettings("tab-default", {
+      provider: "codex-cli",
+      model: "gpt-5.2",
+      backendMode: "cli",
+      geminiApiKey: "",
+      geminiCliModel: "gemini-1.5-pro",
+      codexCliModel: "gpt-5.2",
+      ollamaBaseUrl: "http://localhost:11434",
+      ollamaModel: "llama3",
+    });
+
+    await useAgentChatStore.getState().sendPrompt("Use Codex CLI");
+
+    expect(invoke).toHaveBeenCalledWith(
+      "execute_agent_code",
+      expect.objectContaining({
+        provider: "codex-cli",
+        backendMode: "cli",
+        model: "gpt-5.2",
+        geminiApiKey: "",
+      }),
+    );
+  });
+
+  it("keeps provider settings when sending from a resumed session", async () => {
+    useAgentChatStore.setState((state) => ({
+      sessionId: "session-123",
+      tabs: state.tabs.map((tab) =>
+        tab.id === "tab-default" ? { ...tab, sessionId: "session-123" } : tab,
+      ),
+    }));
+
+    await useAgentChatStore.getState().sendPrompt("Continue with CLI");
+
+    expect(invoke).toHaveBeenCalledWith(
+      "resume_agent_code",
+      expect.objectContaining({
+        sessionId: "session-123",
+        provider: "gemini-cli",
+        backendMode: "cli",
+        model: "gemini-1.5-pro",
       }),
     );
   });
@@ -255,7 +304,7 @@ describe("useAgentChatStore.sendPrompt context assembly", () => {
     await useAgentChatStore.getState().sendPrompt("Use imported settings");
 
     expect(invoke).toHaveBeenCalledWith(
-      "execute_claude_code",
+      "execute_agent_code",
       expect.objectContaining({
         provider: "gemini-cli",
         backendMode: "cli",

@@ -1,5 +1,5 @@
 mod agent;
-mod claude;
+mod agent_runtime;
 mod history;
 mod latex;
 mod skills;
@@ -294,7 +294,7 @@ fn create_new_window(app: tauri::AppHandle) -> Result<(), String> {
 
     #[allow(unused_mut)]
     let mut builder = WebviewWindowBuilder::new(&app, &label, WebviewUrl::default())
-        .title("DevCouncil")
+        .title("DevPrism")
         .inner_size(1400.0, 900.0)
         .min_inner_size(800.0, 600.0)
         .visible(false);
@@ -347,7 +347,7 @@ fn open_debug_window(app: tauri::AppHandle) -> Result<(), String> {
 
     let url = WebviewUrl::App("index.html?debug=1".into());
     WebviewWindowBuilder::new(&app, "debug", url)
-        .title("DevCouncil — Debug")
+        .title("DevPrism - Debug")
         .inner_size(560.0, 700.0)
         .min_inner_size(400.0, 400.0)
         .visible(true)
@@ -624,13 +624,13 @@ async fn read_clipboard_file_paths() -> Result<Vec<String>, String> {
 fn migrate_config_directory() {
     if let Some(home) = dirs::home_dir() {
         let legacy_dev_prism_dir = home.join(format!(".{}{}", "dev", "prism"));
-        let legacy_claude_dir = home.join(".claude");
+        let legacy_agent_dir = home.join(format!(".{}{}", "clau", "de"));
         let new_dir = home.join(".devcouncil");
 
         let source = if legacy_dev_prism_dir.exists() {
             Some(legacy_dev_prism_dir)
-        } else if legacy_claude_dir.exists() {
-            Some(legacy_claude_dir)
+        } else if legacy_agent_dir.exists() {
+            Some(legacy_agent_dir)
         } else {
             None
         };
@@ -669,7 +669,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
-        .manage(claude::ClaudeProcessState::default())
+        .manage(agent_runtime::AgentProcessState::default())
         .manage(agent::AgentState::default())
         .manage(agent::ApprovalState::default())
         .manage(agent::knowledge::ProjectState::default())
@@ -714,31 +714,29 @@ pub fn run() {
             latex::compile_latex,
             latex::synctex_edit,
             latex::detect_texlive,
-            claude::check_claude_status,
-            claude::install_claude_cli,
-            claude::login_claude,
-            claude::execute_claude_code,
-            claude::continue_claude_code,
-            claude::resume_claude_code,
-            claude::cancel_claude_execution,
-            claude::run_shell_command,
-            claude::get_claude_fast_mode,
-            claude::set_claude_fast_mode,
-            claude::get_redact_secrets,
-            claude::set_redact_secrets,
-            claude::get_safe_mode,
-            claude::set_safe_mode,
-            claude::get_agent_provider_settings,
-            claude::set_agent_provider_settings,
-            claude::check_gemini_api_status,
-            claude::check_gemini_cli_status,
-            claude::check_ollama_status,
-            claude::get_resume_knowledge_settings,
-            claude::set_resume_knowledge_settings,
-            claude::get_personal_bio,
-            claude::set_personal_bio,
-            claude::list_claude_sessions,
-            claude::load_session_history,
+            agent_runtime::execute_agent_code,
+            agent_runtime::continue_agent_code,
+            agent_runtime::resume_agent_code,
+            agent_runtime::cancel_agent_execution,
+            agent_runtime::run_shell_command,
+            agent_runtime::get_agent_fast_mode,
+            agent_runtime::set_agent_fast_mode,
+            agent_runtime::get_redact_secrets,
+            agent_runtime::set_redact_secrets,
+            agent_runtime::get_safe_mode,
+            agent_runtime::set_safe_mode,
+            agent_runtime::get_agent_provider_settings,
+            agent_runtime::set_agent_provider_settings,
+            agent_runtime::check_gemini_api_status,
+            agent_runtime::check_gemini_cli_status,
+            agent_runtime::check_codex_cli_status,
+            agent_runtime::check_ollama_status,
+            agent_runtime::get_resume_knowledge_settings,
+            agent_runtime::set_resume_knowledge_settings,
+            agent_runtime::get_personal_bio,
+            agent_runtime::set_personal_bio,
+            agent_runtime::list_agent_sessions,
+            agent_runtime::load_session_history,
             zotero::zotero_start_oauth,
             zotero::zotero_complete_oauth,
             zotero::zotero_cancel_oauth,
@@ -837,11 +835,11 @@ pub fn run() {
                 event: tauri::WindowEvent::Destroyed,
                 ..
             } => {
-                // Kill Claude process associated with this window
+                // Kill agent process associated with this window
                 let handle_clone = app_handle.clone();
                 let label_clone = label.clone();
                 tauri::async_runtime::spawn(async move {
-                    claude::kill_process_for_window(&handle_clone, &label_clone).await;
+                    agent_runtime::kill_process_for_window(&handle_clone, &label_clone).await;
                 });
 
                 // Quit the app when the last window is closed

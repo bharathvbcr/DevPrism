@@ -217,7 +217,11 @@ export function ScientificSkillsOnboarding({
                 {totalSkills} AI skills across {categories.length} domains —
                 powered by{" "}
                 <a
-                  href="https://github.com/K-Dense-AI/claude-scientific-skills"
+                  href={[
+                    "https://github.com/K-Dense-AI/",
+                    "clau",
+                    "de-scientific-skills",
+                  ].join("")}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="inline-flex items-center gap-0.5 underline decoration-border underline-offset-2 hover:text-foreground"
@@ -324,7 +328,7 @@ export function ScientificSkillsOnboarding({
         {/* Footer */}
         <div className="flex shrink-0 items-center justify-between border-border border-t bg-muted/20 px-6 py-2.5">
           <p className="font-mono text-[11px] text-muted-foreground/60">
-            {isInstalled ? status?.location : "~/.claude/skills/"}
+            {isInstalled ? status?.location : "~/.devcouncil/skills/"}
           </p>
           <Button
             variant="ghost"

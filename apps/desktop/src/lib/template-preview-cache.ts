@@ -58,10 +58,13 @@ export async function generateThumbnail(
 
       const client = getMupdfClient();
       const docId = await client.openDocument(buffer);
-
-      const targetWidth = 300;
-      const pngBuffer = await client.renderThumbnail(docId, 0, targetWidth);
-      await client.closeDocument(docId);
+      let pngBuffer: ArrayBuffer;
+      try {
+        const targetWidth = 300;
+        pngBuffer = await client.renderThumbnail(docId, 0, targetWidth);
+      } finally {
+        await client.closeDocument(docId).catch(() => {});
+      }
 
       const blob = new Blob([pngBuffer], { type: "image/png" });
       const dataUrl = URL.createObjectURL(blob);

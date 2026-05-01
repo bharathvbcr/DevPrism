@@ -4,8 +4,8 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "devcouncil")]
-#[command(about = "DevCouncil Agent CLI", long_about = None)]
+#[command(name = "devprism")]
+#[command(about = "DevPrism Agent CLI", long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,

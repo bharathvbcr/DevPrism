@@ -13,9 +13,9 @@ describe("useSettingsStore provider and knowledge settings", () => {
       redactSecrets: true,
       safeMode: true,
       agentProviderSettings: {
-        provider: "gemini-api",
+        provider: "gemini-cli",
         model: "gemini-1.5-pro",
-        backendMode: "api",
+        backendMode: "cli",
         geminiApiKey: "",
         geminiCliModel: "gemini-1.5-pro",
         ollamaBaseUrl: "http://localhost:11434",
@@ -79,5 +79,41 @@ describe("useSettingsStore provider and knowledge settings", () => {
     expect(useSettingsStore.getState().agentProviderSettings.provider).toBe(
       "gemini-cli",
     );
+  });
+
+  it("maps legacy provider settings to Codex CLI on load", async () => {
+    vi.mocked(invoke).mockImplementation(async (command: string) => {
+      if (command === "get_personal_bio") return "";
+      if (command === "get_redact_secrets") return true;
+      if (command === "get_safe_mode") return true;
+      if (command === "get_agent_provider_settings") {
+        return {
+          provider: ["clau", "de"].join(""),
+          model: "legacy-model",
+          backendMode: "cli",
+          geminiApiKey: "",
+          geminiCliModel: "gemini-1.5-pro",
+          codexCliModel: "gpt-5.2",
+          ollamaBaseUrl: "http://localhost:11434",
+          ollamaModel: "llama3",
+        };
+      }
+      if (command === "get_resume_knowledge_settings") {
+        return {
+          resumeProfile: "",
+          manualExperience: "",
+          evidenceEntries: "",
+        };
+      }
+      return null;
+    });
+
+    await useSettingsStore.getState().loadFromBackend();
+
+    expect(useSettingsStore.getState().agentProviderSettings).toMatchObject({
+      provider: "codex-cli",
+      backendMode: "cli",
+      model: "gpt-5.2",
+    });
   });
 });

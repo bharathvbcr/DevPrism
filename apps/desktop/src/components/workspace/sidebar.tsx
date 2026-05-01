@@ -24,7 +24,10 @@ import {
   FileSpreadsheetIcon,
   AppWindowIcon,
   FlaskConicalIcon,
+  LinkIcon,
   TerminalIcon,
+  UserCircleIcon,
+  WrenchIcon,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -623,7 +626,7 @@ export function Sidebar() {
       {/* Header — padded top for macOS overlay titlebar */}
       <div className="relative flex h-[calc(48px+var(--titlebar-height))] items-center justify-center border-sidebar-border border-b px-3 pt-[var(--titlebar-height)]">
         <div className="flex flex-col items-center">
-          <span className="font-semibold text-sm">DevCouncil</span>
+          <span className="font-semibold text-sm">DevPrism</span>
           <span className="text-muted-foreground text-xs">
             {projectRoot?.split(/[/\\]/).pop() || "Desktop"}
           </span>
@@ -812,11 +815,11 @@ export function Sidebar() {
 
       {/* Footer */}
       <div className="flex items-center justify-between border-sidebar-border border-t px-3 py-2 text-muted-foreground text-xs">
-        <span className="truncate">DevCouncil v{appVersion}</span>
+        <span className="truncate">DevPrism v{appVersion}</span>
         <div className="flex shrink-0 items-center gap-1">
           <Button variant="ghost" size="icon" className="size-6" asChild>
             <a
-              href="https://github.com/bharathvbcr/DevCouncil"
+              href="https://github.com/bharathvbcr/DevPrism"
               target="_blank"
               rel="noopener noreferrer"
               title="GitHub"
@@ -1192,6 +1195,9 @@ function EnvironmentSection({ projectPath }: { projectPath: string | null }) {
   const uvStatus = useUvSetupStore((s) => s.status);
   const [showUvDialog, setShowUvDialog] = useState(false);
   const [showSettingsDialog, setShowSettingsDialog] = useState(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState<
+    "providers" | "general" | "knowledge" | "skills" | "security"
+  >("providers");
 
   // ── Scientific Skills ──
   const [skillsStatus, setSkillsStatus] = useState<SkillsStatus | null>(null);
@@ -1255,6 +1261,12 @@ function EnvironmentSection({ projectPath }: { projectPath: string | null }) {
   const skillsLabel = skillsStatus?.installed
     ? `${skillsStatus.skill_count} skills`
     : "Not installed";
+  const openSettings = (
+    tab: "providers" | "general" | "knowledge" | "skills" | "security",
+  ) => {
+    setSettingsInitialTab(tab);
+    setShowSettingsDialog(true);
+  };
 
   return (
     <>
@@ -1310,6 +1322,40 @@ function EnvironmentSection({ projectPath }: { projectPath: string | null }) {
               {skillsLabel}
             </span>
           </button>
+          <button
+            className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left text-sm transition-colors hover:bg-sidebar-accent/50"
+            onClick={() => openSettings("general")}
+          >
+            <UserCircleIcon className="size-3.5 shrink-0 text-muted-foreground" />
+            <span className="min-w-0 flex-1 truncate text-xs">Resume</span>
+            <span className="shrink-0 text-muted-foreground text-xs">
+              Profile
+            </span>
+          </button>
+          <button
+            className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left text-sm transition-colors hover:bg-sidebar-accent/50"
+            onClick={() => openSettings("knowledge")}
+          >
+            <LinkIcon className="size-3.5 shrink-0 text-muted-foreground" />
+            <span className="min-w-0 flex-1 truncate text-xs">
+              Knowledgebase
+            </span>
+            <span className="shrink-0 text-muted-foreground text-xs">
+              Projects
+            </span>
+          </button>
+          <button
+            className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left text-sm transition-colors hover:bg-sidebar-accent/50"
+            onClick={() => openSettings("skills")}
+          >
+            <WrenchIcon className="size-3.5 shrink-0 text-muted-foreground" />
+            <span className="min-w-0 flex-1 truncate text-xs">
+              Manual Skills
+            </span>
+            <span className="shrink-0 text-muted-foreground text-xs">
+              Add/edit
+            </span>
+          </button>
         </div>
       </div>
 
@@ -1330,6 +1376,7 @@ function EnvironmentSection({ projectPath }: { projectPath: string | null }) {
       <SettingsDialog
         open={showSettingsDialog}
         onClose={() => setShowSettingsDialog(false)}
+        initialTab={settingsInitialTab}
       />
     </>
   );

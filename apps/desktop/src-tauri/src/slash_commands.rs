@@ -16,6 +16,7 @@ pub struct SlashCommand {
     pub has_bash_commands: bool,
     pub has_file_references: bool,
     pub accepts_arguments: bool,
+    pub is_manual_skill: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -159,6 +160,7 @@ fn load_command_from_file(file_path: &Path, base_path: &Path, scope: &str) -> Op
         has_bash_commands,
         has_file_references,
         accepts_arguments,
+        is_manual_skill: false,
     })
 }
 
@@ -262,6 +264,7 @@ fn load_skills_from_dir(dir: &Path, scope: &str) -> Vec<SlashCommand> {
             has_bash_commands: false,
             has_file_references: false,
             accepts_arguments: true,
+            is_manual_skill: false,
         });
     }
 
@@ -284,6 +287,7 @@ fn create_default_commands() -> Vec<SlashCommand> {
             has_bash_commands: false,
             has_file_references: false,
             accepts_arguments: false,
+            is_manual_skill: false,
         },
         SlashCommand {
             id: "default-init".to_string(),
@@ -292,12 +296,13 @@ fn create_default_commands() -> Vec<SlashCommand> {
             scope: "default".to_string(),
             namespace: None,
             file_path: String::new(),
-            content: "Initialize project with CLAUDE.md guide".to_string(),
-            description: Some("Initialize project with CLAUDE.md guide".to_string()),
+            content: "Initialize project with AGENTS.md guide".to_string(),
+            description: Some("Initialize project with AGENTS.md guide".to_string()),
             allowed_tools: vec![],
             has_bash_commands: false,
             has_file_references: false,
             accepts_arguments: false,
+            is_manual_skill: false,
         },
         SlashCommand {
             id: "default-review".to_string(),
@@ -312,6 +317,7 @@ fn create_default_commands() -> Vec<SlashCommand> {
             has_bash_commands: false,
             has_file_references: false,
             accepts_arguments: false,
+            is_manual_skill: false,
         },
         SlashCommand {
             id: "default-resume".to_string(),
@@ -337,6 +343,7 @@ fn create_default_commands() -> Vec<SlashCommand> {
             has_bash_commands: false,
             has_file_references: false,
             accepts_arguments: false,
+            is_manual_skill: false,
         },
         SlashCommand {
             id: "default-resume-bullets".to_string(),
@@ -356,6 +363,7 @@ fn create_default_commands() -> Vec<SlashCommand> {
             has_bash_commands: false,
             has_file_references: false,
             accepts_arguments: false,
+            is_manual_skill: false,
         },
         SlashCommand {
             id: "default-compare-projects".to_string(),
@@ -375,6 +383,7 @@ fn create_default_commands() -> Vec<SlashCommand> {
             has_bash_commands: false,
             has_file_references: false,
             accepts_arguments: false,
+            is_manual_skill: false,
         },
     ]
 }
@@ -436,32 +445,51 @@ pub async fn slash_commands_list(
             }
         }
     }
-    let existing_ids: std::collections::HashSet<String> =
-        commands.iter().map(|c| c.id.clone()).collect();
     if let Ok(db_skills) =
         crate::agent::knowledge::cache::list_manual_skills_from_db(project_path.as_deref())
     {
         for skill in db_skills {
             let id = format!("skill-{}", sanitize_name(&skill.name));
-            if existing_ids.contains(&id) {
+            if let Some(command) = commands.iter_mut().find(|cmd| cmd.id == id) {
+                command.is_manual_skill = true;
                 continue;
             }
+            let skill_md = if skill.scope == "project" {
+                skill
+                    .project_path
+                    .as_ref()
+                    .map(|path| {
+                        PathBuf::from(path)
+                            .join(".devcouncil")
+                            .join("skills")
+                            .join(sanitize_name(&skill.name))
+                            .join("SKILL.md")
+                    })
+                    .unwrap_or_else(|| PathBuf::from("sqlite:manual_skills"))
+            } else {
+                dirs::home_dir()
+                    .map(|home| {
+                        home.join(".devcouncil")
+                            .join("skills")
+                            .join(sanitize_name(&skill.name))
+                            .join("SKILL.md")
+                    })
+                    .unwrap_or_else(|| PathBuf::from("sqlite:manual_skills"))
+            };
             commands.push(SlashCommand {
                 id,
                 name: skill.name.clone(),
                 full_command: format!("/{}", sanitize_name(&skill.name)),
                 scope: "skill".to_string(),
                 namespace: None,
-                file_path: skill
-                    .project_path
-                    .clone()
-                    .unwrap_or_else(|| "sqlite:manual_skills".to_string()),
+                file_path: skill_md.to_string_lossy().to_string(),
                 content: skill.content,
                 description: skill.description,
                 allowed_tools: vec![],
                 has_bash_commands: false,
                 has_file_references: false,
                 accepts_arguments: true,
+                is_manual_skill: true,
             });
         }
     }
@@ -616,7 +644,7 @@ pub async fn manual_skill_save(
     }
 
     fs::write(&skill_md, full_content).map_err(|e| format!("Failed to write skill: {}", e))?;
-    let _ = crate::agent::knowledge::cache::sync_manual_skill(
+    crate::agent::knowledge::cache::sync_manual_skill(
         &scope,
         &folder,
         description.as_deref(),
@@ -626,11 +654,16 @@ pub async fn manual_skill_save(
         } else {
             None
         },
-    );
+    )
+    .map_err(|e| format!("Failed to sync manual skill metadata: {}", e))?;
     let skill_file = skill_md.to_string_lossy().to_string();
     load_skills_from_dir(&base_dir, "skill")
         .into_iter()
         .find(|cmd| cmd.file_path == skill_file)
+        .map(|mut cmd| {
+            cmd.is_manual_skill = true;
+            cmd
+        })
         .ok_or_else(|| "Failed to load saved skill".to_string())
 }
 
@@ -649,6 +682,9 @@ pub async fn manual_skill_delete(
         .into_iter()
         .find(|cmd| cmd.id == skill_id && cmd.scope == "skill")
         .ok_or_else(|| format!("Skill not found: {}", skill_id))?;
+    if !command.is_manual_skill {
+        return Err("Refusing to delete an installed skill from Manual Skills.".to_string());
+    }
 
     let skill_path = PathBuf::from(&command.file_path);
     let skill_dir = skill_path
@@ -684,7 +720,7 @@ pub async fn manual_skill_delete(
         "global"
     };
     fs::remove_dir_all(skill_dir).map_err(|e| format!("Failed to delete skill: {}", e))?;
-    let _ = crate::agent::knowledge::cache::delete_manual_skill(
+    crate::agent::knowledge::cache::delete_manual_skill(
         db_scope,
         &skill_name,
         if db_scope == "project" {
@@ -692,7 +728,8 @@ pub async fn manual_skill_delete(
         } else {
             None
         },
-    );
+    )
+    .map_err(|e| format!("Failed to delete manual skill metadata: {}", e))?;
     Ok(format!("Deleted skill: {}", command.full_command))
 }
 

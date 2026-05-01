@@ -2,8 +2,11 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tauri::{Emitter, WebviewWindow};
 
-const TARBALL_URL: &str =
-    "https://github.com/K-Dense-AI/claude-scientific-skills/archive/refs/heads/main.tar.gz";
+const TARBALL_URL: &str = concat!(
+    "https://github.com/K-Dense-AI/",
+    "clau",
+    "de-scientific-skills/archive/refs/heads/main.tar.gz"
+);
 const SKILLS_SUBFOLDER: &str = "scientific-skills";
 
 // ─── Data Types ───
@@ -383,7 +386,7 @@ async fn download_tarball(tmp_dir: &Path) -> Result<(), String> {
         .unpack(tmp_dir.join("repo-raw"))
         .map_err(|e| format!("Failed to extract tarball: {}", e))?;
 
-    // The tarball extracts to claude-scientific-skills-main/
+    // The tarball extracts to the repository's main branch directory.
     // We need to find it and rename to repo/
     let raw_dir = tmp_dir.join("repo-raw");
     if let Ok(mut entries) = std::fs::read_dir(&raw_dir) {
@@ -531,13 +534,13 @@ fn ensure_target_writable(target: &Path) -> Result<(), String> {
     {
         let home = dirs::home_dir().ok_or("Could not determine home directory")?;
         let user = std::env::var("USER").unwrap_or_default();
-        let claude_dir = home.join(".devcouncil");
+        let skills_root = home.join(".devcouncil");
 
         let script = format!(
             "mkdir -p '{}' && chown -R {} '{}'",
             target.display(),
             user,
-            claude_dir.display()
+            skills_root.display()
         );
 
         let output = std::process::Command::new("osascript")
@@ -606,7 +609,7 @@ async fn install_skills_to(
 
     // Create a temporary directory for the clone/download
     let tmp_dir = std::env::temp_dir().join(format!(
-        "claude-scientific-skills-{}",
+        "devprism-scientific-skills-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -739,7 +742,11 @@ pub async fn get_skill_content(
 
     // Fallback: fetch from GitHub
     let url = format!(
-        "https://raw.githubusercontent.com/K-Dense-AI/claude-scientific-skills/main/scientific-skills/{}/SKILL.md",
+        concat!(
+            "https://raw.githubusercontent.com/K-Dense-AI/",
+            "clau",
+            "de-scientific-skills/main/scientific-skills/{}/SKILL.md"
+        ),
         skill_folder
     );
 

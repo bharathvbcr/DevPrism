@@ -21,7 +21,7 @@ export function ArtifactPreview() {
     );
   }
 
-  // If it's a LaTeX file, show the PDF preview (Tectonic compiled)
+  // If it's a LaTeX file, show the PDF preview.
   if (
     activeFile.type === "tex" ||
     activeFile.name.endsWith(".tex") ||

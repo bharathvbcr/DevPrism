@@ -6,7 +6,7 @@ import { useProjectStore } from "./project-store";
 import { useSettingsStore, type AgentProviderSettings } from "./settings-store";
 import { createLogger } from "@/lib/debug/logger";
 
-const log = createLogger("claude");
+const log = createLogger("agent");
 
 /** Convert a character offset to 1-based line:col */
 export function offsetToLineCol(
@@ -191,6 +191,7 @@ interface AgentChatState {
     | "gemini-1.5-pro"
     | "gemini-1.5-flash"
     | "gemini-cli"
+    | "codex-cli"
     | "ollama";
   setSelectedModel: (
     model:
@@ -201,6 +202,7 @@ interface AgentChatState {
       | "gemini-1.5-pro"
       | "gemini-1.5-flash"
       | "gemini-cli"
+      | "codex-cli"
       | "ollama",
   ) => void;
 
@@ -312,9 +314,11 @@ export const useAgentChatStore = create<AgentChatState>()((set, get) => ({
         ? providerSettings.ollamaModel
         : provider === "gemini-cli"
           ? (providerSettings.geminiCliModel ?? "gemini-1.5-pro")
-          : provider === "gemini-api"
-            ? providerSettings.model
-            : selectedModel;
+          : provider === "codex-cli"
+            ? (providerSettings.codexCliModel ?? "gpt-5.2")
+            : provider === "gemini-api"
+              ? providerSettings.model
+              : selectedModel;
 
     const sendStart = performance.now();
     log.info("sendPrompt start", {
@@ -457,7 +461,7 @@ export const useAgentChatStore = create<AgentChatState>()((set, get) => ({
     try {
       if (sessionId) {
         // Resume existing session
-        await invoke("resume_claude_code", {
+        await invoke("resume_agent_code", {
           projectPath,
           sessionId,
           prompt,
@@ -471,7 +475,7 @@ export const useAgentChatStore = create<AgentChatState>()((set, get) => ({
         });
       } else {
         // New session
-        await invoke("execute_claude_code", {
+        await invoke("execute_agent_code", {
           projectPath,
           prompt,
           tabId: activeTabId,
@@ -504,7 +508,7 @@ export const useAgentChatStore = create<AgentChatState>()((set, get) => ({
     const { activeTabId } = get();
     set({ _cancelledByUser: true });
     try {
-      await invoke("cancel_claude_execution", { tabId: activeTabId });
+      await invoke("cancel_agent_execution", { tabId: activeTabId });
     } catch {
       // ignore
     }

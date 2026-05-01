@@ -347,6 +347,17 @@ export function DevEngineSetup() {
             size="sm"
             className="gap-2 text-muted-foreground"
             onClick={() => {
+              shellOpen("https://github.com/openai/codex");
+            }}
+          >
+            <ExternalLinkIcon className="size-3.5" />
+            Codex CLI
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="gap-2 text-muted-foreground"
+            onClick={() => {
               shellOpen("https://github.com/google-gemini/gemini-cli");
             }}
           >

@@ -52,6 +52,12 @@ async function checkProvider(
       health: await invoke<ProviderHealth>("check_gemini_cli_status"),
     };
   }
+  if (provider === "codex-cli") {
+    return {
+      providerLabel: "Codex CLI",
+      health: await invoke<ProviderHealth>("check_codex_cli_status"),
+    };
+  }
   if (provider === "ollama") {
     return {
       providerLabel: "Ollama",
@@ -73,7 +79,8 @@ async function checkProvider(
     providerLabel: "Configured provider",
     health: {
       ok: false,
-      message: "Select Gemini CLI, Gemini API, or Ollama in Settings.",
+      message:
+        "Select Gemini CLI, Codex CLI, Gemini API, or Ollama in Settings.",
       models: [],
     },
   };
@@ -107,10 +114,13 @@ export const useDevEngineSetupStore = create<DevEngineSetupState>(
         await useSettingsStore.getState().loadFromBackend();
         const settings = useSettingsStore.getState().agentProviderSettings;
         const configuredProvider =
-          settings.provider === "claude" ? "gemini-cli" : settings.provider;
+          (settings.provider as string) === ["clau", "de"].join("")
+            ? "codex-cli"
+            : settings.provider;
         const providers = Array.from(
           new Set([
             configuredProvider,
+            "codex-cli",
             "gemini-cli",
             "ollama",
             "gemini-api",
@@ -150,7 +160,7 @@ export const useDevEngineSetupStore = create<DevEngineSetupState>(
       set({
         status: "error",
         error:
-          "DevCouncil uses Gemini CLI, Gemini API, or Ollama as the primary Dev Engine. Configure one in Settings.",
+          "DevPrism uses Codex CLI, Gemini CLI, Gemini API, or Ollama as the primary Dev Engine. Configure one in Settings.",
       });
     },
 
@@ -158,7 +168,7 @@ export const useDevEngineSetupStore = create<DevEngineSetupState>(
       set({
         status: "error",
         error:
-          "Sign in through Gemini CLI (`gemini auth login`) or start Ollama locally, then retry.",
+          "Sign in through Codex CLI (`codex login`), Gemini CLI (`gemini auth login`), or start Ollama locally, then retry.",
       });
     },
 

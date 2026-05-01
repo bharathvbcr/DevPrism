@@ -1,10 +1,10 @@
-export const DEFAULT_AGENT_MD = `# DevCouncil LaTeX Project
+export const DEFAULT_AGENT_MD = `# DevPrism LaTeX Project
 
-Academic writing workspace powered by DevCouncil. You are assisting with a LaTeX document project.
+Academic writing workspace powered by DevPrism. You are assisting with a LaTeX document project.
 
 ## Environment
 
-- **LaTeX Engine**: Tectonic (handles packages and fonts automatically — no manual \`tlmgr\` needed)
+- **LaTeX Engine**: DevPrism's selected compiler backend. Windows builds use TeXLive; other builds may use embedded Tectonic when enabled.
 - **Python**: Available via \`uv\` with project-local \`.venv/\`. Use \`uv pip install <pkg>\` to add packages, \`uv run <script>\` to execute.
 - **Build Directory**: \`.prism/build/\` (persistent, do not modify directly)
 - **Version History**: \`.devcouncil/\` (automatic snapshots, do not modify)
@@ -27,20 +27,20 @@ Academic writing workspace powered by DevCouncil. You are assisting with a LaTeX
 uv pip install numpy matplotlib pandas scipy     # Install packages
 uv run python script.py                          # Run a script
 
-# LaTeX is compiled automatically by DevCouncil — no manual build commands needed.
+# LaTeX is compiled automatically by DevPrism - no manual build commands needed.
 \`\`\`
 
 ## Writing Guidelines
 
-- Edit \`.tex\` files directly. DevCouncil auto-compiles and shows a live PDF preview.
+- Edit \`.tex\` files directly. DevPrism auto-compiles and shows a live PDF preview.
 - Use \`\\input{filename}\` or \`\\include{filename}\` to split large documents into multiple files.
 - Place images in a \`figures/\` directory and reference with \`\\includegraphics{figures/name}\`.
 - For bibliography, add entries to \`references.bib\` and cite with \`\\cite{key}\`.
-- When adding new packages, add \`\\usepackage{pkg}\` to the preamble — Tectonic installs them automatically.
+- When adding new packages, add \`\\usepackage{pkg}\` to the preamble. If compilation reports a missing package under TeXLive, install it in the local TeX distribution instead of editing DevPrism internals.
 
 ## Scientific Skills
 
-If scientific skills are installed (\`~/.claude/skills/\` or \`.claude/skills/\`), you have access to 100+ domain-specific tools:
+If scientific skills are installed (\`~/.devcouncil/skills/\` or \`.devcouncil/skills/\`), you have access to 100+ domain-specific tools:
 
 - **Data Analysis**: pandas, numpy, scipy, statsmodels, scikit-learn, polars
 - **Visualization**: matplotlib, seaborn, plotly (save figures to \`figures/\` directory)
@@ -56,7 +56,7 @@ When generating figures with Python, always:
 
 ## Gotchas
 
-- Tectonic compiles with pdfTeX by default. For Unicode-heavy documents, add \`% !TEX program = xelatex\` or \`lualatex\` at the top of \`main.tex\`.
+- For Unicode-heavy documents, prefer \`% !TEX program = xelatex\` at the top of \`main.tex\`. Use \`lualatex\` only when the selected backend is TeXLive.
 - Do NOT create or modify files in \`.prism/\`, \`.devcouncil/\`, or \`.venv/\` — these are managed automatically.
 - When modifying LaTeX, ensure matching \`\\begin{}\` / \`\\end{}\` pairs — mismatches cause hard-to-debug compile errors.
 - Large tables and figures should use \`\\begin{table}[htbp]\` / \`\\begin{figure}[htbp]\` for proper float placement.

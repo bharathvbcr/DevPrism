@@ -34,7 +34,7 @@ Object.defineProperty(globalThis, "localStorage", {
 
 // Mock @tauri-apps/api/core
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(),
+  invoke: vi.fn(() => Promise.resolve(null)),
   convertFileSrc: vi.fn((path: string) => `asset://localhost/${path}`),
 }));
 
@@ -52,20 +52,22 @@ vi.mock("@tauri-apps/api/webview", () => ({
 // Mock @tauri-apps/api/path
 vi.mock("@tauri-apps/api/path", () => ({
   join: vi.fn((...args: string[]) => Promise.resolve(args.join("/"))),
+  homeDir: vi.fn(() => Promise.resolve("/home/test")),
 }));
 
 // Mock @tauri-apps/plugin-fs
 vi.mock("@tauri-apps/plugin-fs", () => ({
-  readTextFile: vi.fn(),
-  writeTextFile: vi.fn(),
-  readDir: vi.fn(),
-  stat: vi.fn(),
-  exists: vi.fn(),
-  mkdir: vi.fn(),
-  readFile: vi.fn(),
-  copyFile: vi.fn(),
-  remove: vi.fn(),
-  rename: vi.fn(),
+  readTextFile: vi.fn(() => Promise.resolve("")),
+  writeTextFile: vi.fn(() => Promise.resolve()),
+  writeFile: vi.fn(() => Promise.resolve()),
+  readDir: vi.fn(() => Promise.resolve([])),
+  stat: vi.fn(() => Promise.resolve({ size: 0 })),
+  exists: vi.fn(() => Promise.resolve(false)),
+  mkdir: vi.fn(() => Promise.resolve()),
+  readFile: vi.fn(() => Promise.resolve(new Uint8Array())),
+  copyFile: vi.fn(() => Promise.resolve()),
+  remove: vi.fn(() => Promise.resolve()),
+  rename: vi.fn(() => Promise.resolve()),
 }));
 
 // Mock @tauri-apps/plugin-shell

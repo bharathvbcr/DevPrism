@@ -117,7 +117,7 @@ impl AgentReporter for TauriReporter {
             }
         });
         let _ = self.app_handle.emit(
-            "claude-output",
+            "agent-output",
             AgentOutputEvent {
                 tab_id: self.tab_id.clone(),
                 data: wrapped.to_string(),
@@ -127,7 +127,7 @@ impl AgentReporter for TauriReporter {
 
     fn report_delta(&self, delta: String) {
         let _ = self.app_handle.emit(
-            "claude-delta",
+            "agent-delta",
             serde_json::json!({
                 "tab_id": self.tab_id,
                 "delta": delta,
@@ -137,7 +137,7 @@ impl AgentReporter for TauriReporter {
 
     fn report_complete(&self, success: bool) {
         let _ = self.app_handle.emit(
-            "claude-complete",
+            "agent-complete",
             AgentCompleteEvent {
                 tab_id: self.tab_id.clone(),
                 success,
@@ -154,7 +154,7 @@ impl AgentReporter for TauriReporter {
         state.pending.lock().await.insert(action_id.clone(), tx);
 
         let _ = self.app_handle.emit(
-            "claude-request-approval",
+            "agent-request-approval",
             serde_json::json!({
                 "tab_id": self.tab_id,
                 "action_id": action_id,

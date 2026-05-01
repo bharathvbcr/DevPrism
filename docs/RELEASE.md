@@ -1,6 +1,6 @@
 # Release And Deployment
 
-DevCouncil deploys through GitHub. Source pushes to `main` run lint. Version tags run the desktop packaging workflow.
+DevPrism deploys through GitHub. Source pushes to `main` run lint. Version tags run the desktop packaging workflow.
 
 ## Repository
 
@@ -16,8 +16,8 @@ git push -u origin main
 ```bash
 pnpm install --frozen-lockfile
 pnpm lint
-pnpm --filter @devcouncil/desktop test
-pnpm --filter @devcouncil/desktop build
+pnpm --filter @devprism/desktop test
+pnpm --filter @devprism/desktop build
 pnpm build
 ```
 
@@ -28,8 +28,8 @@ pnpm build
 Create and push a version tag:
 
 ```bash
-git tag v0.0.4
-git push origin v0.0.4
+git tag v0.0.5
+git push origin v0.0.5
 ```
 
 The `Build Desktop` workflow creates platform artifacts, uploads them to a draft GitHub Release, and generates `latest.json` for the Tauri updater.

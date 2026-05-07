@@ -231,7 +231,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
         if src_path.is_dir() {
-            // Skip hidden directories (.git, .devcouncil, etc.)
+            // Skip hidden directories (.git, .devprism, etc.)
             let name = entry.file_name();
             if name.to_string_lossy().starts_with('.') {
                 continue;
@@ -1624,10 +1624,10 @@ Postamble:
         let dst = tempfile::tempdir().unwrap();
 
         std::fs::create_dir_all(src.path().join("chapters")).unwrap();
-        std::fs::create_dir_all(src.path().join(".devcouncil")).unwrap();
+        std::fs::create_dir_all(src.path().join(".devprism")).unwrap();
         std::fs::write(src.path().join("chapters").join("ch1.tex"), "ch1").unwrap();
         std::fs::write(src.path().join("chapters").join("ch1.aux"), "aux").unwrap();
-        std::fs::write(src.path().join(".devcouncil").join("data"), "data").unwrap();
+        std::fs::write(src.path().join(".devprism").join("data"), "data").unwrap();
 
         sync_source_files(src.path(), dst.path()).unwrap();
 
@@ -1636,7 +1636,7 @@ Postamble:
             "ch1"
         );
         assert!(!dst.path().join("chapters").join("ch1.aux").exists());
-        assert!(!dst.path().join(".devcouncil").exists());
+        assert!(!dst.path().join(".devprism").exists());
     }
 
     // --- sync_source_files copies figure PDFs ---

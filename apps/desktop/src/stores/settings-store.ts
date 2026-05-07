@@ -86,8 +86,8 @@ function normalizeProviderSettings(
 if (typeof localStorage !== "undefined") {
   const legacyStorageKey = ["dev", "prism-settings"].join("");
   const legacy = localStorage.getItem(legacyStorageKey);
-  if (legacy && !localStorage.getItem("devcouncil-settings")) {
-    localStorage.setItem("devcouncil-settings", legacy);
+  if (legacy && !localStorage.getItem("devprism-settings")) {
+    localStorage.setItem("devprism-settings", legacy);
   }
 }
 
@@ -187,7 +187,7 @@ export const useSettingsStore = create<SettingsState>()(
       },
     }),
     {
-      name: "devcouncil-settings",
+      name: "devprism-settings",
       onRehydrateStorage: () => (state) => {
         if (!state) return;
         state.setCompilerBackend(

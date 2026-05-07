@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use git2::{BranchType, IndexAddOption, Repository, Signature};
 use serde_json::{json, Value};
 use std::path::Path;
+use tokio::process::Command;
 
 pub struct GitStatusTool;
 
@@ -250,23 +251,117 @@ impl Tool for GitPRTool {
     }
 
     fn description(&self) -> &str {
-        "Placeholder for PR generation. In a real environment, this would call GitHub/GitLab APIs or use 'gh pr create'."
+        "Creates a pull request for the current branch by invoking the GitHub CLI."
     }
 
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "title": { "type": "string" },
-                "body": { "type": "string" }
+                "path": {
+                    "type": "string",
+                    "description": "Absolute path to the Git repository."
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Pull request title."
+                },
+                "body": {
+                    "type": "string",
+                    "description": "Pull request body."
+                },
+                "base": {
+                    "type": "string",
+                    "description": "Optional base branch."
+                },
+                "head": {
+                    "type": "string",
+                    "description": "Optional head branch."
+                },
+                "draft": {
+                    "type": "boolean",
+                    "description": "Create the pull request as a draft."
+                },
+                "web": {
+                    "type": "boolean",
+                    "description": "Open the GitHub CLI web flow instead of creating directly."
+                }
             },
-            "required": ["title"]
+            "required": ["path", "title"]
         })
     }
 
-    async fn call(&self, _input: Value) -> Result<Value, String> {
-        Ok(
-            json!({ "status": "info", "message": "PR generation tool is currently a placeholder. Please use 'gh pr create' manually for now." }),
-        )
+    async fn call(&self, input: Value) -> Result<Value, String> {
+        let repo_path = input["path"]
+            .as_str()
+            .ok_or("Parameter 'path' is required")?;
+        let title = input["title"]
+            .as_str()
+            .ok_or("Parameter 'title' is required")?;
+        let body = input["body"].as_str().unwrap_or("");
+
+        if !Path::new(repo_path).exists() {
+            return Err(format!("Repository path does not exist: {}", repo_path));
+        }
+
+        let mut args = vec![
+            "pr".to_string(),
+            "create".to_string(),
+            "--title".to_string(),
+            title.to_string(),
+            "--body".to_string(),
+            body.to_string(),
+        ];
+
+        if input["draft"].as_bool().unwrap_or(false) {
+            args.push("--draft".to_string());
+        }
+        if input["web"].as_bool().unwrap_or(false) {
+            args.push("--web".to_string());
+        }
+        if let Some(base) = input["base"].as_str().filter(|value| !value.is_empty()) {
+            args.push("--base".to_string());
+            args.push(base.to_string());
+        }
+        if let Some(head) = input["head"].as_str().filter(|value| !value.is_empty()) {
+            args.push("--head".to_string());
+            args.push(head.to_string());
+        }
+
+        let output = Command::new("gh")
+            .args(&args)
+            .current_dir(repo_path)
+            .output()
+            .await
+            .map_err(|e| {
+                format!(
+                    "Failed to run GitHub CLI. Install and authenticate 'gh' before using git_pr_create: {}",
+                    e
+                )
+            })?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+
+        if !output.status.success() {
+            return Err(format!(
+                "gh pr create failed with exit code {:?}: {}{}{}",
+                output.status.code(),
+                stderr,
+                if stderr.is_empty() || stdout.is_empty() {
+                    ""
+                } else {
+                    "\n"
+                },
+                stdout
+            ));
+        }
+
+        Ok(json!({
+            "status": "success",
+            "url": stdout.lines().find(|line| line.starts_with("http")).unwrap_or(""),
+            "stdout": stdout,
+            "stderr": stderr,
+        }))
     }
 }

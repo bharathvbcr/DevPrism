@@ -27,7 +27,7 @@ pub struct FileDiff {
 
 fn history_path(project_root: &str) -> PathBuf {
     Path::new(project_root)
-        .join(".devcouncil")
+        .join(".devprism")
         .join("history.git")
 }
 
@@ -60,7 +60,7 @@ fn tag_map(repo: &Repository) -> HashMap<Oid, Vec<String>> {
 
 fn ensure_excludes(project_root: &str, repo: &Repository) {
     let excludes_path = Path::new(project_root)
-        .join(".devcouncil")
+        .join(".devprism")
         .join("history-exclude");
     let content = r#"# LaTeX build artifacts
 *.aux
@@ -91,7 +91,7 @@ Thumbs.db
 .git/
 
 # DevPrism internal
-.devcouncil/
+.devprism/
 .prism/
 "#;
     if !excludes_path.exists() {
@@ -124,10 +124,10 @@ pub fn history_init(project_root: String) -> Result<(), String> {
         return Ok(());
     }
 
-    // Create .devcouncil/ dir
-    let devcouncil_dir = Path::new(&project_root).join(".devcouncil");
-    fs::create_dir_all(&devcouncil_dir)
-        .map_err(|e| format!("Failed to create .devcouncil dir: {}", e))?;
+    // Create .devprism/ dir
+    let devprism_dir = Path::new(&project_root).join(".devprism");
+    fs::create_dir_all(&devprism_dir)
+        .map_err(|e| format!("Failed to create .devprism dir: {}", e))?;
 
     // Init a bare repo with workdir pointing to project root
     let mut opts = RepositoryInitOptions::new();
@@ -553,7 +553,7 @@ mod tests {
         let dir = setup_project(&[("main.tex", "\\documentclass{article}")]);
         history_init(root(&dir)).unwrap();
 
-        let git_dir = dir.path().join(".devcouncil").join("history.git");
+        let git_dir = dir.path().join(".devprism").join("history.git");
         assert!(git_dir.exists(), "history.git should be created");
 
         // Should have an initial commit
@@ -577,11 +577,11 @@ mod tests {
         let dir = setup_project(&[("main.tex", "doc")]);
         history_init(root(&dir)).unwrap();
 
-        let excludes = dir.path().join(".devcouncil").join("history-exclude");
+        let excludes = dir.path().join(".devprism").join("history-exclude");
         assert!(excludes.exists());
         let content = fs::read_to_string(&excludes).unwrap();
         assert!(content.contains("*.aux"));
-        assert!(content.contains(".devcouncil/"));
+        assert!(content.contains(".devprism/"));
         assert!(content.contains(".prism/"));
     }
 
@@ -841,8 +841,8 @@ mod tests {
         history_init(r.clone()).unwrap();
 
         // Write an excludes file WITHOUT .prism/
-        let excludes_path = dir.path().join(".devcouncil").join("history-exclude");
-        fs::write(&excludes_path, "*.aux\n*.log\n.devcouncil/\n").unwrap();
+        let excludes_path = dir.path().join(".devprism").join("history-exclude");
+        fs::write(&excludes_path, "*.aux\n*.log\n.devprism/\n").unwrap();
 
         let repo = open_repo(&r).unwrap();
         ensure_excludes(&r, &repo);

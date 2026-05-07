@@ -1,7 +1,7 @@
 {
   "name": "devprism",
   "description": "Open-Source AI LaTeX writing workspace",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "repository": {
     "type": "git",
     "url": "https://github.com/bharathvbcr/DevPrism"
@@ -16,6 +16,11 @@
     "build": "pnpm --filter=@devprism/desktop tauri build",
     "lint": "pnpm exec biome check",
     "lint:fix": "pnpm exec biome check --fix",
+    "agents:verify": "node scripts/verify-agent-instructions.js",
+    "agents:verify:all": "node scripts/verify-agent-instructions.js --all",
+    "gitnexus:status": "npx --yes gitnexus status",
+    "gitnexus:analyze": "npx --yes gitnexus analyze --skip-git --skills",
+    "gitnexus:refresh": "npx --yes gitnexus analyze --skip-git --skills --force",
     "release": "echo 'To release: git tag v<version> && git push origin v<version>'",
     "prepare": "husky"
   },

@@ -98,8 +98,8 @@ describe("SettingsDialog knowledgebase and skills controls", () => {
   });
 
   it("exports and imports the knowledgebase through backend commands", async () => {
-    vi.mocked(save).mockResolvedValue("C:/tmp/devcouncil-knowledgebase.json");
-    vi.mocked(open).mockResolvedValue("C:/tmp/devcouncil-knowledgebase.json");
+    vi.mocked(save).mockResolvedValue("C:/tmp/devprism-knowledgebase.json");
+    vi.mocked(open).mockResolvedValue("C:/tmp/devprism-knowledgebase.json");
 
     clickByText("Knowledgebase");
     await act(async () => {});
@@ -107,13 +107,13 @@ describe("SettingsDialog knowledgebase and skills controls", () => {
     clickByText("Export");
     await act(async () => {});
     expect(invoke).toHaveBeenCalledWith("export_knowledgebase", {
-      path: "C:/tmp/devcouncil-knowledgebase.json",
+      path: "C:/tmp/devprism-knowledgebase.json",
     });
 
     clickByText("Import");
     await act(async () => {});
     expect(invoke).toHaveBeenCalledWith("import_knowledgebase", {
-      path: "C:/tmp/devcouncil-knowledgebase.json",
+      path: "C:/tmp/devprism-knowledgebase.json",
     });
   });
 

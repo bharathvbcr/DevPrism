@@ -352,10 +352,10 @@ fn skill_categories() -> Vec<SkillCategory> {
 /// Resolve the target skills directory.
 fn skills_dir(project_path: Option<&str>) -> PathBuf {
     match project_path {
-        Some(p) => PathBuf::from(p).join(".devcouncil").join("skills"),
+        Some(p) => PathBuf::from(p).join(".devprism").join("skills"),
         None => dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join(".devcouncil")
+            .join(".devprism")
             .join("skills"),
     }
 }
@@ -523,7 +523,7 @@ pub async fn install_scientific_skills_global(
 }
 
 /// Ensure the target directory is creatable and writable.
-/// If creation fails (e.g. ~/.devcouncil is owned by root), prompt for admin password via osascript.
+/// If creation fails (e.g. ~/.devprism is owned by root), prompt for admin password via osascript.
 fn ensure_target_writable(target: &Path) -> Result<(), String> {
     // Try without elevation first
     if std::fs::create_dir_all(target).is_ok() {
@@ -534,7 +534,7 @@ fn ensure_target_writable(target: &Path) -> Result<(), String> {
     {
         let home = dirs::home_dir().ok_or("Could not determine home directory")?;
         let user = std::env::var("USER").unwrap_or_default();
-        let skills_root = home.join(".devcouncil");
+        let skills_root = home.join(".devprism");
 
         let script = format!(
             "mkdir -p '{}' && chown -R {} '{}'",
@@ -558,7 +558,7 @@ fn ensure_target_writable(target: &Path) -> Result<(), String> {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(format!(
                 "Failed to fix directory permissions. Error: {}. \
-                 You can fix this manually by running: sudo chown -R $(whoami) ~/.devcouncil",
+                 You can fix this manually by running: sudo chown -R $(whoami) ~/.devprism",
                 stderr.trim()
             ));
         }
@@ -777,14 +777,14 @@ mod tests {
     #[test]
     fn test_skills_dir_global() {
         let dir = skills_dir(None);
-        assert!(dir.to_string_lossy().contains(".devcouncil"));
+        assert!(dir.to_string_lossy().contains(".devprism"));
         assert!(dir.to_string_lossy().ends_with("skills"));
     }
 
     #[test]
     fn test_skills_dir_project() {
         let dir = skills_dir(Some("/tmp/my-project"));
-        assert_eq!(dir, PathBuf::from("/tmp/my-project/.devcouncil/skills"));
+        assert_eq!(dir, PathBuf::from("/tmp/my-project/.devprism/skills"));
     }
 
     #[test]

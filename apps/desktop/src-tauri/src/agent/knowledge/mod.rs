@@ -34,7 +34,7 @@ pub struct LinkedProject {
 
 pub fn get_knowledge_dir() -> PathBuf {
     let mut path = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    path.push(".devcouncil");
+    path.push(".devprism");
     if !path.exists() {
         let _ = fs::create_dir_all(&path);
     }

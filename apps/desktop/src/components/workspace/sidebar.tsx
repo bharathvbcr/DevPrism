@@ -46,6 +46,7 @@ import { useTheme } from "next-themes";
 import { useDocumentStore, type ProjectFile } from "@/stores/document-store";
 import { useHistoryStore } from "@/stores/history-store";
 import { cn } from "@/lib/utils";
+import { DevPrismLogo } from "@/components/devprism-logo";
 import { ZoteroPanel, ZoteroHeader } from "@/components/workspace/zotero-panel";
 import { Button } from "@/components/ui/button";
 import {
@@ -625,11 +626,14 @@ export function Sidebar() {
     <div className="flex h-full flex-col bg-sidebar text-sidebar-foreground">
       {/* Header — padded top for macOS overlay titlebar */}
       <div className="relative flex h-[calc(48px+var(--titlebar-height))] items-center justify-center border-sidebar-border border-b px-3 pt-[var(--titlebar-height)]">
-        <div className="flex flex-col items-center">
-          <span className="font-semibold text-sm">DevPrism</span>
-          <span className="text-muted-foreground text-xs">
-            {projectRoot?.split(/[/\\]/).pop() || "Desktop"}
-          </span>
+        <div className="flex min-w-0 items-center gap-2">
+          <DevPrismLogo imageClassName="size-6" />
+          <div className="flex min-w-0 flex-col">
+            <span className="truncate font-semibold text-sm">DevPrism</span>
+            <span className="truncate text-muted-foreground text-xs">
+              {projectRoot?.split(/[/\\]/).pop() || "Desktop"}
+            </span>
+          </div>
         </div>
         <div className="absolute right-3 flex items-center gap-0.5">
           <Button
@@ -815,7 +819,13 @@ export function Sidebar() {
 
       {/* Footer */}
       <div className="flex items-center justify-between border-sidebar-border border-t px-3 py-2 text-muted-foreground text-xs">
-        <span className="truncate">DevPrism v{appVersion}</span>
+        <DevPrismLogo
+          className="min-w-0 gap-1.5"
+          imageClassName="size-4"
+          withWordmark
+          wordmarkClassName="truncate font-medium text-xs"
+        />
+        <span className="mx-2 min-w-0 flex-1 truncate">v{appVersion}</span>
         <div className="flex shrink-0 items-center gap-1">
           <Button variant="ghost" size="icon" className="size-6" asChild>
             <a

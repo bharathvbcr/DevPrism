@@ -300,7 +300,7 @@ impl Tool for GenerateResumeBulletsTool {
 }
 
 fn read_resume_knowledge() -> Result<Value, String> {
-    let mut settings = read_devcouncil_settings()?;
+    let mut settings = read_devprism_settings()?;
     let db_value =
         crate::agent::knowledge::cache::get_resume_knowledge().unwrap_or_else(|_| json!({}));
 
@@ -329,9 +329,9 @@ fn read_resume_knowledge() -> Result<Value, String> {
     Ok(settings)
 }
 
-fn read_devcouncil_settings() -> Result<Value, String> {
+fn read_devprism_settings() -> Result<Value, String> {
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let path = home.join(".devcouncil").join("settings.json");
+    let path = home.join(".devprism").join("settings.json");
     if !path.exists() {
         return Ok(json!({}));
     }

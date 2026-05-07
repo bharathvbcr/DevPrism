@@ -111,7 +111,7 @@ Install domain-specific skills globally or per project. Skills can provide focus
 
 ### History & Review
 
-Each save can be captured into `.devcouncil/history.git/`. You can label checkpoints, inspect diffs, restore previous states, and review assistant-generated edits before applying them.
+Each save can be captured into `.devprism/history.git/`. You can label checkpoints, inspect diffs, restore previous states, and review assistant-generated edits before applying them.
 
 <p align="center">
   <img src="./assets/demo/history.webp" alt="History and proposed changes" width="700" />
@@ -131,9 +131,9 @@ DevPrism is local-first, not magic-air-gapped. Files are stored and compiled loc
 
 Runtime paths:
 
-- Project history: `.devcouncil/history.git/`
-- Project skills: `.devcouncil/skills/`
-- User settings and global skills: `~/.devcouncil/`
+- Project history: `.devprism/history.git/`
+- Project skills: `.devprism/skills/`
+- User settings and global skills: `~/.devprism/`
 - Project Python environment: `.venv/`
 
 ## Installation

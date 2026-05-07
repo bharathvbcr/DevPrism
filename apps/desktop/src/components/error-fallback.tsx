@@ -1,9 +1,11 @@
 import type { FallbackProps } from "react-error-boundary";
+import { DevPrismLogo } from "@/components/devprism-logo";
 
 export function ErrorFallback({ error, resetErrorBoundary }: FallbackProps) {
   return (
     <div className="flex h-screen w-screen items-center justify-center bg-background p-8">
       <div className="w-full max-w-2xl space-y-4">
+        <DevPrismLogo imageClassName="size-10" />
         <h1 className="font-bold text-2xl text-destructive">
           Something went wrong
         </h1>

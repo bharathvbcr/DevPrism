@@ -35,7 +35,7 @@ fn main() {
     if args.len() >= 4 && args[1] == "--tectonic-compile" {
         let work_dir = std::path::Path::new(&args[2]);
         let main_file = &args[3];
-        match dev_council_desktop_lib::tectonic_compile_subprocess(work_dir, main_file) {
+        match dev_prism_desktop_lib::tectonic_compile_subprocess(work_dir, main_file) {
             Ok(()) => std::process::exit(0),
             Err(e) => {
                 eprintln!("{}", e);
@@ -57,13 +57,13 @@ fn main() {
             rt.block_on(async {
                 match command {
                     Commands::Repl { model } => {
-                        if let Err(e) = dev_council_desktop_lib::run_repl(model).await {
+                        if let Err(e) = dev_prism_desktop_lib::run_repl(model).await {
                             eprintln!("Error: {}", e);
                             std::process::exit(1);
                         }
                     }
                     Commands::Chat { prompt, model } => {
-                        if let Err(e) = dev_council_desktop_lib::run_chat(prompt, model).await {
+                        if let Err(e) = dev_prism_desktop_lib::run_chat(prompt, model).await {
                             eprintln!("Error: {}", e);
                             std::process::exit(1);
                         }
@@ -74,5 +74,5 @@ fn main() {
         }
     }
 
-    dev_council_desktop_lib::run()
+    dev_prism_desktop_lib::run()
 }

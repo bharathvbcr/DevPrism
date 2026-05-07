@@ -328,7 +328,7 @@ export function ScientificSkillsOnboarding({
         {/* Footer */}
         <div className="flex shrink-0 items-center justify-between border-border border-t bg-muted/20 px-6 py-2.5">
           <p className="font-mono text-[11px] text-muted-foreground/60">
-            {isInstalled ? status?.location : "~/.devcouncil/skills/"}
+            {isInstalled ? status?.location : "~/.devprism/skills/"}
           </p>
           <Button
             variant="ghost"

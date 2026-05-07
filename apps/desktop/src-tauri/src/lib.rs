@@ -335,28 +335,6 @@ fn js_log(msg: String) {
     eprintln!("[js] {}", msg);
 }
 
-// --- Debug window ---
-
-#[tauri::command]
-fn open_debug_window(app: tauri::AppHandle) -> Result<(), String> {
-    // If a debug window already exists, just focus it
-    if let Some(win) = app.get_webview_window("debug") {
-        win.set_focus().map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-
-    let url = WebviewUrl::App("index.html?debug=1".into());
-    WebviewWindowBuilder::new(&app, "debug", url)
-        .title("DevPrism - Debug")
-        .inner_size(560.0, 700.0)
-        .min_inner_size(400.0, 400.0)
-        .visible(true)
-        .build()
-        .map_err(|e| format!("Failed to create debug window: {}", e))?;
-
-    Ok(())
-}
-
 // --- System info for debug panel & bug reports ---
 
 #[derive(serde::Serialize)]
@@ -453,7 +431,7 @@ async fn export_knowledgebase(
 ) -> Result<(), String> {
     let settings_path = dirs::home_dir()
         .ok_or_else(|| "Could not find home directory".to_string())?
-        .join(".devcouncil")
+        .join(".devprism")
         .join("settings.json");
     let settings = match std::fs::read_to_string(&settings_path) {
         Ok(content) => serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({})),
@@ -482,7 +460,7 @@ async fn import_knowledgebase(
         .map_err(|e| format!("Invalid knowledgebase export: {}", e))?;
     let settings_path = dirs::home_dir()
         .ok_or_else(|| "Could not find home directory".to_string())?
-        .join(".devcouncil")
+        .join(".devprism")
         .join("settings.json");
     if let Some(parent) = settings_path.parent() {
         std::fs::create_dir_all(parent)
@@ -625,7 +603,7 @@ fn migrate_config_directory() {
     if let Some(home) = dirs::home_dir() {
         let legacy_dev_prism_dir = home.join(format!(".{}{}", "dev", "prism"));
         let legacy_agent_dir = home.join(format!(".{}{}", "clau", "de"));
-        let new_dir = home.join(".devcouncil");
+        let new_dir = home.join(".devprism");
 
         let source = if legacy_dev_prism_dir.exists() {
             Some(legacy_dev_prism_dir)
@@ -638,7 +616,7 @@ fn migrate_config_directory() {
         if let Some(old_dir) = source {
             if !new_dir.exists() {
                 eprintln!(
-                    "[migration] Found legacy {} directory, migrating to .devcouncil",
+                    "[migration] Found legacy {} directory, migrating to .devprism",
                     old_dir.display()
                 );
                 if let Err(e) = std::fs::rename(&old_dir, &new_dir) {
@@ -646,7 +624,7 @@ fn migrate_config_directory() {
                 }
             } else {
                 eprintln!(
-                    "[migration] Keeping legacy {} because .devcouncil already exists",
+                    "[migration] Keeping legacy {} because .devprism already exists",
                     old_dir.display()
                 );
             }
@@ -715,12 +693,9 @@ pub fn run() {
             latex::synctex_edit,
             latex::detect_texlive,
             agent_runtime::execute_agent_code,
-            agent_runtime::continue_agent_code,
             agent_runtime::resume_agent_code,
             agent_runtime::cancel_agent_execution,
             agent_runtime::run_shell_command,
-            agent_runtime::get_agent_fast_mode,
-            agent_runtime::set_agent_fast_mode,
             agent_runtime::get_redact_secrets,
             agent_runtime::set_redact_secrets,
             agent_runtime::get_safe_mode,
@@ -780,7 +755,6 @@ pub fn run() {
             remove_authorized_path,
             list_authorized_paths,
             get_system_info,
-            open_debug_window,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

@@ -20,5 +20,8 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Agent instruction audit
+        run: pnpm agents:verify:all
+
       - name: Biome CI
         run: pnpm exec biome ci

@@ -8,6 +8,8 @@ node_modules/**
 **/node_modules/**
 apps/desktop/dist/
 apps/desktop/public/
+!apps/desktop/public/
+!apps/desktop/public/devprism-logo.svg
 apps/desktop/src-tauri/icons/
 apps/desktop/src-tauri/gen/
 **/dist

@@ -1,5 +1,7 @@
 import { cn } from "@/lib/utils";
 
+export const DEVPRISM_LOGO_SRC = "/devprism-logo.svg";
+
 type DevPrismLogoProps = {
   className?: string;
   imageClassName?: string;
@@ -16,7 +18,7 @@ export function DevPrismLogo({
   return (
     <div className={cn("flex min-w-0 items-center gap-2", className)}>
       <img
-        src="/icon-192.png"
+        src={DEVPRISM_LOGO_SRC}
         alt="DevPrism"
         className={cn("size-7 shrink-0", imageClassName)}
         draggable={false}

@@ -7,7 +7,7 @@ Academic writing workspace powered by DevPrism. You are assisting with a LaTeX d
 - **LaTeX Engine**: DevPrism's selected compiler backend. Windows builds use TeXLive; other builds may use embedded Tectonic when enabled.
 - **Python**: Available via \`uv\` with project-local \`.venv/\`. Use \`uv pip install <pkg>\` to add packages, \`uv run <script>\` to execute.
 - **Build Directory**: \`.prism/build/\` (persistent, do not modify directly)
-- **Version History**: \`.devcouncil/\` (automatic snapshots, do not modify)
+- **Version History**: \`.devprism/\` (automatic snapshots, do not modify)
 
 ## Project Structure
 
@@ -40,7 +40,7 @@ uv run python script.py                          # Run a script
 
 ## Scientific Skills
 
-If scientific skills are installed (\`~/.devcouncil/skills/\` or \`.devcouncil/skills/\`), you have access to 100+ domain-specific tools:
+If scientific skills are installed (\`~/.devprism/skills/\` or \`.devprism/skills/\`), you have access to 100+ domain-specific tools:
 
 - **Data Analysis**: pandas, numpy, scipy, statsmodels, scikit-learn, polars
 - **Visualization**: matplotlib, seaborn, plotly (save figures to \`figures/\` directory)
@@ -57,7 +57,7 @@ When generating figures with Python, always:
 ## Gotchas
 
 - For Unicode-heavy documents, prefer \`% !TEX program = xelatex\` at the top of \`main.tex\`. Use \`lualatex\` only when the selected backend is TeXLive.
-- Do NOT create or modify files in \`.prism/\`, \`.devcouncil/\`, or \`.venv/\` — these are managed automatically.
+- Do NOT create or modify files in \`.prism/\`, \`.devprism/\`, or \`.venv/\` — these are managed automatically.
 - When modifying LaTeX, ensure matching \`\\begin{}\` / \`\\end{}\` pairs — mismatches cause hard-to-debug compile errors.
 - Large tables and figures should use \`\\begin{table}[htbp]\` / \`\\begin{figure}[htbp]\` for proper float placement.
 - If the user provides reference files in \`attachments/\`, review them before writing — they contain key context.

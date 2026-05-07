@@ -410,7 +410,7 @@ export const useZoteroStore = create<ZoteroState>()(
       },
     }),
     {
-      name: "devcouncil-zotero",
+      name: "devprism-zotero",
       partialize: (state) => ({
         apiKey: state.apiKey,
         userID: state.userID,

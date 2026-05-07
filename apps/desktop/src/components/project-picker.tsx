@@ -33,6 +33,7 @@ import {
 import { ProjectWizard, type CreationMode } from "./project-wizard";
 import { DevEngineSetup } from "./dev-engine-setup";
 import { cn } from "@/lib/utils";
+import { DevPrismLogo } from "@/components/devprism-logo";
 
 export function ProjectPicker() {
   const [showModeDialog, setShowModeDialog] = useState(false);
@@ -86,8 +87,12 @@ export function ProjectPicker() {
     <div className="flex h-full items-center justify-center bg-background">
       <div className="flex w-full max-w-md flex-col items-center gap-8 px-8">
         <div className="flex flex-col items-center gap-2">
-          <img src="/icon-192.png" alt="DevPrism" className="size-16" />
-          <h1 className="font-bold text-2xl">DevPrism</h1>
+          <DevPrismLogo
+            className="flex-col gap-2"
+            imageClassName="size-16"
+            withWordmark
+            wordmarkClassName="font-bold text-2xl"
+          />
           <VersionBadge
             version={appVersion}
             updateStatus={updateStatus}

@@ -3,13 +3,15 @@ import { Sidebar } from "./sidebar";
 import { LatexEditor } from "./editor/latex-editor";
 import { ArtifactPreview } from "./preview/artifact-preview";
 import { useDocumentStore } from "@/stores/document-store";
+import { DevPrismLogo } from "@/components/devprism-logo";
 
 export function WorkspaceLayout() {
   const initialized = useDocumentStore((s) => s.initialized);
 
   if (!initialized) {
     return (
-      <div className="flex h-full items-center justify-center">
+      <div className="flex h-full flex-col items-center justify-center gap-3">
+        <DevPrismLogo imageClassName="size-12" />
         <div className="text-muted-foreground">Loading project...</div>
       </div>
     );

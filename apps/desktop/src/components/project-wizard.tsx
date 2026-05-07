@@ -31,6 +31,7 @@ import {
 } from "@/lib/template-registry";
 import { TemplateGallery } from "@/components/template-gallery";
 import { DEFAULT_AGENT_MD } from "@/lib/default-agent-md";
+import { DevPrismLogo } from "@/components/devprism-logo";
 
 // ─── Helpers ───
 
@@ -89,6 +90,7 @@ export function ProjectWizard({ mode, onBack }: ProjectWizardProps) {
           >
             <ArrowLeftIcon className="size-4" />
           </Button>
+          <DevPrismLogo imageClassName="size-5" />
           <span className="font-semibold text-sm">Choose a Template</span>
         </div>
         <div className="flex-1 overflow-hidden">
@@ -331,6 +333,7 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
         >
           <ArrowLeftIcon className="size-4" />
         </Button>
+        <DevPrismLogo imageClassName="size-5" />
         <span className="font-semibold text-sm">New Document</span>
       </div>
 

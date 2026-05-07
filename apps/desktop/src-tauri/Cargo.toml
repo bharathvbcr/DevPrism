@@ -1,11 +1,11 @@
 [package]
 name = "devprism"
-version = "0.0.5"
+version = "0.0.6"
 description = "AI-powered LaTeX writing workspace"
 edition = "2021"
 
 [lib]
-name = "dev_council_desktop_lib"
+name = "dev_prism_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

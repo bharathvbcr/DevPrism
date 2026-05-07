@@ -21,14 +21,14 @@ TARGET="x86_64-unknown-linux-gnu"
 VERSION=$(node -p "require('./package.json').version")
 TAG="v${VERSION}"
 
-echo "==> Building DevCouncil $TAG for Linux ($TARGET)"
+echo "==> Building DevPrism $TAG for Linux ($TARGET)"
 
 # Build
 export TECTONIC_DEP_BACKEND=pkg-config
 export CXXFLAGS="-std=c++17"
 export CFLAGS=""
 
-pnpm --filter @devcouncil/desktop tauri build --target "$TARGET" --config src-tauri/tauri.release.conf.json
+pnpm --filter @devprism/desktop tauri build --target "$TARGET" --config src-tauri/tauri.release.conf.json
 
 BUNDLE_DIR="apps/desktop/src-tauri/target/$TARGET/release/bundle"
 
@@ -66,7 +66,7 @@ if [ -n "$APPIMAGE_PATH" ] && [ -n "$APPIMAGE_SIG" ]; then
       const data = JSON.parse(fs.readFileSync('$LATEST_JSON', 'utf8'));
       data.platforms['linux-x86_64'] = {
         signature: \`$SIGNATURE\`,
-        url: 'https://github.com/bharathvbcr/DevCouncil/releases/download/$TAG/DevCouncil-Linux.AppImage'
+        url: 'https://github.com/bharathvbcr/DevPrism/releases/download/$TAG/DevPrism-Linux.AppImage'
       };
       fs.writeFileSync('$LATEST_JSON', JSON.stringify(data, null, 2));
     "
@@ -74,12 +74,12 @@ if [ -n "$APPIMAGE_PATH" ] && [ -n "$APPIMAGE_SIG" ]; then
     cat > "$LATEST_JSON" <<EOF
 {
   "version": "$VERSION",
-  "notes": "DevCouncil $TAG",
+  "notes": "DevPrism $TAG",
   "pub_date": "$PUB_DATE",
   "platforms": {
     "linux-x86_64": {
       "signature": "$SIGNATURE",
-      "url": "https://github.com/bharathvbcr/DevCouncil/releases/download/$TAG/DevCouncil-Linux.AppImage"
+      "url": "https://github.com/bharathvbcr/DevPrism/releases/download/$TAG/DevPrism-Linux.AppImage"
     }
   }
 }
@@ -93,11 +93,11 @@ fi
 
 # Upload to GitHub Release
 echo "==> Uploading to GitHub Release $TAG"
-gh release view "$TAG" --repo bharathvbcr/DevCouncil >/dev/null 2>&1 || \
-  gh release create "$TAG" --repo bharathvbcr/DevCouncil --title "DevCouncil $TAG" --generate-notes
+gh release view "$TAG" --repo bharathvbcr/DevPrism >/dev/null 2>&1 || \
+  gh release create "$TAG" --repo bharathvbcr/DevPrism --title "DevPrism $TAG" --generate-notes
 
 gh release upload "$TAG" \
-  --repo bharathvbcr/DevCouncil \
+  --repo bharathvbcr/DevPrism \
   --clobber \
   "${ASSETS[@]}"
 

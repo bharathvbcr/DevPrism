@@ -35,13 +35,13 @@ The UI talks to the Rust host through Tauri commands. Browser storage is only us
 The Tauri host owns native capabilities and filesystem access:
 
 - LaTeX compilation through TeXLive or embedded Tectonic when that feature is enabled, including a subprocess mode for isolated Tectonic runs.
-- Local Git history in `.devcouncil/history.git`.
-- Project and global skills under `.devcouncil/skills`.
-- Agent settings and linked-project knowledge under `~/.devcouncil`.
+- Local Git history in `.devprism/history.git`.
+- Project and global skills under `.devprism/skills`.
+- Agent settings and linked-project knowledge under `~/.devprism`.
 - uv installation and project virtualenv orchestration.
 - Zotero OAuth and bibliography access.
 
-On startup, DevPrism migrates legacy local config directories into `~/.devcouncil` when needed. The `.devcouncil` storage path remains for compatibility with existing projects and global skill installs.
+On startup, DevPrism migrates legacy local config directories into `~/.devprism` when needed. The `.devprism` storage path remains for compatibility with existing projects and global skill installs.
 
 ## Build And Release
 

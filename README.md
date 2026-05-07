@@ -149,6 +149,30 @@ Available release artifacts are expected for:
 
 ## Development
 
+DevPrism is a pnpm workspace with one main app package:
+
+- Root workspace: `devprism`
+- Desktop app: `apps/desktop`
+- Frontend runtime: React 19, TypeScript, Vite, Zustand, CodeMirror, MuPDF
+- Native host: Tauri 2 and Rust
+- Package manager: `pnpm@10.28.2`
+
+### Prerequisites
+
+Install these before running the repo locally:
+
+- Node.js with pnpm enabled
+- Rust stable toolchain
+- Tauri 2 system prerequisites for your OS
+- A LaTeX toolchain if you want document compilation in development
+  - Windows builds use TeXLive detection.
+  - Tectonic can be compiled through the optional Rust feature, but it needs native font/text shaping libraries.
+- Optional model/tooling runtimes:
+  - Gemini API key or Gemini CLI for hosted assistant workflows
+  - Ollama for local assistant workflows
+  - uv for project Python environments
+  - Zotero for bibliography workflows
+
 Install dependencies:
 
 ```bash
@@ -169,11 +193,184 @@ Run the desktop app in development:
 pnpm dev
 ```
 
+That root command delegates to:
+
+```bash
+pnpm --filter=@devprism/desktop tauri dev
+```
+
+For frontend-only iteration inside the desktop package:
+
+```bash
+pnpm --filter @devprism/desktop dev
+```
+
 Build native packages:
 
 ```bash
 pnpm build
 ```
+
+That root command delegates to:
+
+```bash
+pnpm --filter=@devprism/desktop tauri build
+```
+
+Useful package-local commands:
+
+```bash
+pnpm --filter @devprism/desktop test
+pnpm --filter @devprism/desktop test:watch
+pnpm --filter @devprism/desktop build
+pnpm --filter @devprism/desktop preview
+pnpm --filter @devprism/desktop generate-previews
+```
+
+Agent instruction checks:
+
+```bash
+pnpm agents:verify
+pnpm agents:verify:all
+```
+
+## How The Repo Runs
+
+The local development loop is a Tauri app: Vite serves the React UI, the Rust host registers privileged commands, and the UI calls those commands through Tauri `invoke()`.
+
+```mermaid
+flowchart LR
+  Dev["Developer"] --> Root["Root pnpm scripts"]
+  Root --> Desktop["@devprism/desktop"]
+  Desktop --> Tauri["tauri dev"]
+  Tauri --> Vite["Vite dev server"]
+  Tauri --> Rust["Rust Tauri host"]
+  Vite --> UI["React workspace UI"]
+  UI --> Invoke["Tauri invoke()"]
+  Invoke --> Commands["Rust command handlers"]
+  Commands --> Files["Project files"]
+  Commands --> History[".devprism/history.git"]
+  Commands --> Skills[".devprism/skills"]
+  Commands --> Settings["~/.devprism"]
+  Commands --> Tools["LaTeX, uv, Zotero, Gemini, Ollama"]
+```
+
+### Runtime Flow
+
+```mermaid
+sequenceDiagram
+  participant User
+  participant React as React UI
+  participant Store as Zustand stores
+  participant Tauri as Tauri bridge
+  participant Rust as Rust host
+  participant FS as Local filesystem/tools
+
+  User->>React: Open or create a project
+  React->>Store: Load project state
+  React->>Tauri: allow_project_directory()
+  Tauri->>Rust: Authorize project path
+  Rust->>FS: Grant scoped access
+  React->>Tauri: compile_latex(), history_snapshot(), execute_agent_code()
+  Tauri->>Rust: Run native command
+  Rust->>FS: Read/write files, run tools, store history
+  Rust-->>React: Return result or stream events
+  React-->>User: Update editor, preview, chat, history, or proposed changes
+```
+
+### Project Diagram
+
+```mermaid
+flowchart TD
+  Repo["devprism-main"]
+  Repo --> RootFiles["Root config\npackage.json, pnpm-workspace.yaml, turbo.json, biome.json"]
+  Repo --> DesktopApp["apps/desktop"]
+  Repo --> Docs["docs"]
+  Repo --> Scripts["scripts"]
+  Repo --> Assets["assets"]
+
+  DesktopApp --> Frontend["src\nReact UI, stores, hooks, tests"]
+  DesktopApp --> Native["src-tauri\nRust host, Tauri config, Cargo.toml"]
+  DesktopApp --> DesktopPkg["package.json\nVite, Vitest, Tauri CLI"]
+
+  Frontend --> Components["components\nworkspace, editor, assistant chat, settings, templates"]
+  Frontend --> Stores["stores\ndocument, history, settings, agent chat, uv, Zotero"]
+  Frontend --> Lib["lib\nLaTeX client helpers, MuPDF, templates, debug, Zotero API"]
+
+  Native --> Core["lib.rs\napp bootstrap and command registration"]
+  Native --> Latex["latex.rs\ncompile and SyncTeX"]
+  Native --> HistoryMod["history.rs\nlocal Git snapshots"]
+  Native --> Agent["agent/* and agent_runtime.rs\nassistant runtime, tools, providers, knowledge"]
+  Native --> SkillsMod["skills.rs and slash_commands.rs\nskills and slash commands"]
+  Native --> Uv["uv.rs\nuv install and venv setup"]
+  Native --> Zotero["zotero.rs\nOAuth and bibliography access"]
+```
+
+### Native Command Surface
+
+The frontend calls Rust through Tauri commands. The current command groups are:
+
+| Area | Rust owner | What it handles |
+| --- | --- | --- |
+| App/window | `src-tauri/src/lib.rs` | window creation, editor detection, scoped project access, debug logs, system info |
+| LaTeX | `src-tauri/src/latex.rs` | compile, TeXLive detection, SyncTeX navigation, build cleanup |
+| History | `src-tauri/src/history.rs` | initialize local Git history, snapshot, diff, restore, labels |
+| Assistant runtime | `src-tauri/src/agent_runtime.rs` and `src-tauri/src/agent` | code execution, resume/cancel, provider settings, safe mode, redaction, sessions, approvals |
+| Skills and slash commands | `src-tauri/src/skills.rs`, `src-tauri/src/slash_commands.rs` | scientific skill installs, global/project commands, manual skill editing |
+| Python tooling | `src-tauri/src/uv.rs` | uv install, project `.venv`, package install, command execution |
+| Zotero | `src-tauri/src/zotero.rs` | OAuth start/complete/cancel and citation access |
+| Knowledgebase | `src-tauri/src/agent/knowledge` plus `lib.rs` commands | linked projects, summaries, observations, import/export |
+
+### Storage Model
+
+```mermaid
+flowchart LR
+  Project["User project folder"] --> Source[".tex, .bib, images, generated files"]
+  Project --> ProjectMeta[".devprism/"]
+  ProjectMeta --> ProjectHistory["history.git\nlocal snapshots"]
+  ProjectMeta --> ProjectSkills["skills\nproject-specific skills"]
+  Project --> Venv[".venv\nproject Python environment"]
+
+  Home["User home"] --> Global["~/.devprism/"]
+  Global --> Settings["settings.json"]
+  Global --> GlobalSkills["global skills"]
+  Global --> Knowledge["knowledge cache and linked projects"]
+```
+
+### Run Modes
+
+```mermaid
+flowchart TB
+  Start["pnpm command"] --> Mode{"Mode"}
+  Mode -->|pnpm dev| TauriDev["Tauri dev\nRust host + Vite UI"]
+  Mode -->|desktop dev| ViteOnly["Vite only\nfrontend iteration"]
+  Mode -->|desktop build| FrontendBuild["tsc -b + vite build"]
+  Mode -->|pnpm build| NativeBuild["Tauri native package"]
+  Mode -->|desktop test| Vitest["Vitest unit/component tests"]
+  Mode -->|pnpm lint| Biome["Biome check"]
+```
+
+### Useful Paths
+
+| Path | Purpose |
+| --- | --- |
+| `apps/desktop/src/App.tsx` | Main React app shell and project-vs-workspace routing |
+| `apps/desktop/src/components/workspace` | Editor, preview, sidebar, history panel, and workspace layout |
+| `apps/desktop/src/components/agent-chat` | Assistant drawer, composer, session selector, tool widgets, proposed changes |
+| `apps/desktop/src/stores` | Zustand stores for document state, history, settings, chat, uv, templates, Zotero |
+| `apps/desktop/src-tauri/src/lib.rs` | Tauri bootstrap, plugins, managed state, command registration, app lifecycle |
+| `apps/desktop/src-tauri/src/agent` | Assistant providers, tools, skills, knowledge, CLI support |
+| `docs/ARCHITECTURE.md` | More compact architecture map |
+| `docs/RELEASE.md` | Release packaging notes |
+
+### Troubleshooting
+
+- If `pnpm dev` fails before the window opens, first check Node, pnpm, Rust, and the Tauri OS prerequisites.
+- If the UI starts but native actions fail, check the Tauri command name and the Rust command registration in `apps/desktop/src-tauri/src/lib.rs`.
+- If LaTeX compile fails, verify TeXLive/Tectonic availability and inspect the project build logs.
+- If assistant actions fail, check provider settings in the app, Gemini/Ollama availability, safe mode, and redaction settings.
+- If Python setup fails, verify uv is installed or use the app's uv installer, then retry project venv setup.
+- If Zotero integration fails, reconnect through the app settings and verify local Zotero access.
 
 ## Architecture
 

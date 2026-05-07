@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { invoke } from "@tauri-apps/api/core";
+import { legacyStorageKey, migrateLocalStorageKey } from "./settings-store";
 
 interface RecentProject {
   path: string;
@@ -48,6 +49,8 @@ interface ProjectState {
 }
 
 const MAX_RECENT = 10;
+
+migrateLocalStorageKey(legacyStorageKey("projects"), "devprism-projects");
 
 export const useProjectStore = create<ProjectState>()(
   persist(

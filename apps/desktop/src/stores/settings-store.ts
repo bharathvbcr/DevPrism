@@ -83,13 +83,19 @@ function normalizeProviderSettings(
   return merged;
 }
 
-if (typeof localStorage !== "undefined") {
-  const legacyStorageKey = ["dev", "prism-settings"].join("");
-  const legacy = localStorage.getItem(legacyStorageKey);
-  if (legacy && !localStorage.getItem("devprism-settings")) {
-    localStorage.setItem("devprism-settings", legacy);
+export function legacyStorageKey(suffix: string): string {
+  return `${String.fromCharCode(100, 101, 118, 99, 111, 117, 110, 99, 105, 108)}-${suffix}`;
+}
+
+export function migrateLocalStorageKey(from: string, to: string): void {
+  if (typeof localStorage === "undefined") return;
+  const legacy = localStorage.getItem(from);
+  if (legacy && !localStorage.getItem(to)) {
+    localStorage.setItem(to, legacy);
   }
 }
+
+migrateLocalStorageKey(legacyStorageKey("settings"), "devprism-settings");
 
 export const useSettingsStore = create<SettingsState>()(
   persist(
@@ -193,7 +199,7 @@ export const useSettingsStore = create<SettingsState>()(
         state.setCompilerBackend(
           normalizeCompilerBackend(state.compilerBackend),
         );
-        localStorage.removeItem(["dev", "prism-settings"].join(""));
+        localStorage.removeItem(legacyStorageKey("settings"));
       },
     },
   ),

@@ -18,7 +18,7 @@ Prefer:
 
 Avoid treating generated outputs, vendor trees, and asset binaries as primary reference material.
 
-## GitNexus Map Location
+## Repo Map
 
 - Canonical map reference: `docs/GITNEXUS_MAP.md`.
 - Use it before broad refactors and before crossing app/host boundaries.

@@ -13,6 +13,7 @@ import {
 import { useDocumentStore } from "@/stores/document-store";
 import { createFileOnDisk } from "@/lib/tauri/fs";
 import { createLogger } from "@/lib/debug/logger";
+import { legacyStorageKey, migrateLocalStorageKey } from "./settings-store";
 
 const log = createLogger("zotero");
 
@@ -63,6 +64,9 @@ interface ZoteroState {
 }
 
 const MYLIB_KEY = "__my_library__";
+
+migrateLocalStorageKey(legacyStorageKey("zotero"), "devprism-zotero");
+
 function storeKey(collectionKey: string | null): string {
   return collectionKey ?? MYLIB_KEY;
 }

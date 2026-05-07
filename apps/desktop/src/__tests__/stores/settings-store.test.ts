@@ -1,6 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { useSettingsStore } from "@/stores/settings-store";
+import {
+  legacyStorageKey,
+  migrateLocalStorageKey,
+  useSettingsStore,
+} from "@/stores/settings-store";
 
 describe("useSettingsStore provider and knowledge settings", () => {
   beforeEach(() => {
@@ -115,5 +119,20 @@ describe("useSettingsStore provider and knowledge settings", () => {
       backendMode: "cli",
       model: "gpt-5.2",
     });
+  });
+
+  it("migrates legacy local storage keys without overwriting new data", () => {
+    const legacyKey = legacyStorageKey("settings");
+    localStorage.removeItem(legacyKey);
+    localStorage.removeItem("devprism-settings");
+
+    localStorage.setItem(legacyKey, "legacy-value");
+    migrateLocalStorageKey(legacyKey, "devprism-settings");
+    expect(localStorage.getItem("devprism-settings")).toBe("legacy-value");
+
+    localStorage.setItem("devprism-settings", "current-value");
+    localStorage.setItem(legacyKey, "changed-legacy-value");
+    migrateLocalStorageKey(legacyKey, "devprism-settings");
+    expect(localStorage.getItem("devprism-settings")).toBe("current-value");
   });
 });

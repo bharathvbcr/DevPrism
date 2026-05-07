@@ -26,7 +26,7 @@ This repo is indexed with GitNexus. Use the index before doing broad file search
 - Do not spend time in `node_modules/`, `dist/`, `target/`, or generated binary assets when reasoning about the codebase.
 - Do not use the raw asset folders as the source of truth for code ownership.
 
-## GitNexus Map Location
+## Repo Map
 
 - Canonical repo map is at `docs/GITNEXUS_MAP.md`.
 - Use it before broad refactors and when crossing between frontend and Rust boundaries.

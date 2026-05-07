@@ -1,7 +1,7 @@
 {
   "name": "devprism",
   "description": "Open-Source AI LaTeX writing workspace",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "repository": {
     "type": "git",
     "url": "https://github.com/bharathvbcr/DevPrism"

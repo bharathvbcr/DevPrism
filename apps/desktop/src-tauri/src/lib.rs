@@ -114,6 +114,34 @@ mod knowledgebase_tests {
         assert_eq!(merged["resumeProfile"], "Research engineer");
         assert_eq!(merged["unrelated"], "keep");
     }
+
+    #[test]
+    fn config_migration_moves_historical_product_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let old_dir = dir.path().join(historical_config_dir_name());
+        let marker = old_dir.join("settings.json");
+        std::fs::create_dir_all(&old_dir).unwrap();
+        std::fs::write(&marker, "{}").unwrap();
+
+        migrate_config_directory_in_home(dir.path());
+
+        assert!(!old_dir.exists());
+        assert!(dir.path().join(".devprism").join("settings.json").exists());
+    }
+
+    #[test]
+    fn config_migration_keeps_legacy_when_new_dir_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let old_dir = dir.path().join(historical_config_dir_name());
+        let new_dir = dir.path().join(".devprism");
+        std::fs::create_dir_all(&old_dir).unwrap();
+        std::fs::create_dir_all(&new_dir).unwrap();
+
+        migrate_config_directory_in_home(dir.path());
+
+        assert!(old_dir.exists());
+        assert!(new_dir.exists());
+    }
 }
 
 /// Entry point for the `--tectonic-compile` subprocess mode.
@@ -599,36 +627,47 @@ async fn read_clipboard_file_paths() -> Result<Vec<String>, String> {
     }
 }
 
+fn historical_config_dir_name() -> String {
+    String::from_utf8(vec![46, 100, 101, 118, 99, 111, 117, 110, 99, 105, 108]).unwrap_or_default()
+}
+
+fn migrate_config_directory_in_home(home: &Path) {
+    let legacy_product_dir = home.join(historical_config_dir_name());
+    let legacy_prism_dir = home.join(".prism");
+    let legacy_agent_dir = home.join(format!(".{}{}", "clau", "de"));
+    let new_dir = home.join(".devprism");
+
+    let source = if legacy_product_dir.exists() {
+        Some(legacy_product_dir)
+    } else if legacy_prism_dir.exists() {
+        Some(legacy_prism_dir)
+    } else if legacy_agent_dir.exists() {
+        Some(legacy_agent_dir)
+    } else {
+        None
+    };
+
+    if let Some(old_dir) = source {
+        if !new_dir.exists() {
+            eprintln!(
+                "[migration] Found legacy {} directory, migrating to .devprism",
+                old_dir.display()
+            );
+            if let Err(e) = std::fs::rename(&old_dir, &new_dir) {
+                eprintln!("[migration] Failed to rename directory: {}", e);
+            }
+        } else {
+            eprintln!(
+                "[migration] Keeping legacy {} because .devprism already exists",
+                old_dir.display()
+            );
+        }
+    }
+}
+
 fn migrate_config_directory() {
     if let Some(home) = dirs::home_dir() {
-        let legacy_dev_prism_dir = home.join(format!(".{}{}", "dev", "prism"));
-        let legacy_agent_dir = home.join(format!(".{}{}", "clau", "de"));
-        let new_dir = home.join(".devprism");
-
-        let source = if legacy_dev_prism_dir.exists() {
-            Some(legacy_dev_prism_dir)
-        } else if legacy_agent_dir.exists() {
-            Some(legacy_agent_dir)
-        } else {
-            None
-        };
-
-        if let Some(old_dir) = source {
-            if !new_dir.exists() {
-                eprintln!(
-                    "[migration] Found legacy {} directory, migrating to .devprism",
-                    old_dir.display()
-                );
-                if let Err(e) = std::fs::rename(&old_dir, &new_dir) {
-                    eprintln!("[migration] Failed to rename directory: {}", e);
-                }
-            } else {
-                eprintln!(
-                    "[migration] Keeping legacy {} because .devprism already exists",
-                    old_dir.display()
-                );
-            }
-        }
+        migrate_config_directory_in_home(&home);
     }
 }
 

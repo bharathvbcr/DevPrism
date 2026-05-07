@@ -1,9 +1,10 @@
 
-
-# <h1 align="center">DevPrism</h1>
 <p align="center">
   <img src="./assets/logo-devprism.png" width="140" height="140" alt="DevPrism logo" />
 </p>
+
+# <h1 align="center">DevPrism</h1>
+
 <p align="center">
   A local-first desktop workspace for technical writing, LaTeX projects, research notes, and AI-assisted document work.
 </p>

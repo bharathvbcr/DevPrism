@@ -125,6 +125,102 @@ DevPrism includes Zotero integration for bibliography workflows and citation ins
   <img src="./assets/demo/zotero.webp" alt="Zotero integration" width="300" />
 </p>
 
+## Additional App Features
+
+### Project & File Management
+
+- Open existing folders or start a guided setup from the project picker.
+- Keep a recent-project list for fast reopening.
+- Create, rename, delete, move, and import project files from the sidebar.
+- Organize documents with nested folders and drag-and-drop file movement.
+- Import common project assets such as `.tex`, `.bib`, `.sty`, `.cls`, `.bst`, images, PDFs, Markdown, and text files.
+- Paste files from the OS clipboard into the project file tree on supported platforms.
+- Parse the active LaTeX document into a sidebar outline from `\part`, `\chapter`, `\section`, `\subsection`, and `\subsubsection` headings.
+- Switch between light, dark, and system themes.
+
+### Editor & Preview Details
+
+- Use toolbar actions for common LaTeX inserts: bold, italic, code, sections, subsections, list items, inline math, display math, and citations.
+- Preview PDFs with page rendering backed by MuPDF.
+- Preview image assets directly in the editor pane.
+- Zoom images from 50% to 400%.
+- Crop non-SVG images from the app UI.
+- Open the active project or file in external editors when installed: Cursor, VS Code, Zed, or Sublime Text.
+
+### Assistant Runtime
+
+- Run assistant sessions against Gemini API, Gemini CLI, Codex CLI, or Ollama.
+- Check provider health from Settings before relying on a model.
+- Keep persistent chat sessions and reload prior session history.
+- Resume or cancel long-running assistant work.
+- Display assistant tool activity with dedicated widgets for reads, writes, edits, shell commands, searches, todo updates, and user questions.
+- Stage assistant edits as proposed changes instead of silently overwriting project files.
+- Use slash commands from global skills, project skills, and manually authored skills.
+
+### Knowledgebase & Resume Context
+
+- Link external projects into the DevPrism knowledgebase with role, tags, description, and project metadata.
+- Analyze linked Git projects for commit history, change categories, top changed files, and detected tech stack.
+- Store durable project summaries and evidence observations in the local knowledge cache.
+- Maintain resume-oriented context: personal bio, target profile, manual experience, and evidence entries.
+- Import and export a portable knowledgebase JSON bundle for moving project context between machines.
+- Omit API keys from knowledgebase exports while preserving portable provider and security preferences.
+
+### Security & Control
+
+- Redact common secret patterns before hosted model calls when redaction is enabled.
+- Enable safe mode to require confirmation before shell commands or file edits.
+- Approve or reject pending assistant actions from the in-app safe-mode dialog.
+- Restrict assistant filesystem access to the current project plus explicitly authorized paths.
+- Add and remove extra authorized paths from Settings.
+- Keep hosted AI optional: Ollama can be used for local inference, while Gemini and Codex providers are opt-in runtime choices.
+
+### Python, Skills, and Automation
+
+- Detect uv and install it from the app when needed.
+- Auto-create a project `.venv` after opening a project when uv is ready.
+- Add Python packages to the project environment and run uv-backed commands.
+- Install scientific skills globally or per project.
+- Browse scientific skill categories and inspect installed skill content.
+- Add manual skills directly from Settings, scoped globally or to the current project.
+- Use project/global slash commands to turn repeatable research and writing workflows into reusable commands.
+
+### Updates, Diagnostics, and Reliability
+
+- Check for app updates from the project picker and install available updater releases.
+- Open multiple DevPrism windows with the global new-window shortcut.
+- Generate structured debug reports with system info, GPU/render state, visibility events, and recent app logs.
+- Toggle an in-app debug panel for troubleshooting render and runtime issues.
+- Recover from some native webview repaint issues by forcing focus-restore refresh behavior on macOS.
+- Clean up LaTeX build temp directories on app exit.
+
+## Keyboard Shortcuts
+
+| Shortcut | Action |
+| --- | --- |
+| `Cmd/Ctrl+S` | Save the current file |
+| `Cmd/Ctrl+Shift+N` | Open a new DevPrism window |
+| `Cmd/Ctrl+X` | Toggle Capture & Ask mode |
+| `Cmd/Ctrl+Shift+D` | Toggle the debug panel |
+| `Cmd/Ctrl++` | Zoom the app UI in |
+| `Cmd/Ctrl+-` | Zoom the app UI out |
+| `Cmd/Ctrl+0` | Reset app UI zoom |
+| `Cmd/Ctrl+V` in the file tree | Paste file paths from the OS clipboard when available |
+
+## Supported Integrations
+
+| Integration | Purpose |
+| --- | --- |
+| Gemini API | Hosted assistant provider and semantic-search embeddings |
+| Gemini CLI | CLI-backed hosted assistant workflow |
+| Codex CLI | CLI-backed coding and project assistant workflow |
+| Ollama | Local model provider |
+| uv | Python runtime setup, package install, and project command execution |
+| TeXLive | Local LaTeX compilation, especially on Windows builds |
+| Tectonic | Optional embedded LaTeX compiler feature for supported builds |
+| Zotero | OAuth-backed bibliography and citation access |
+| Cursor, VS Code, Zed, Sublime Text | External editor handoff from the active project/file |
+
 ## Privacy Model
 
 DevPrism is local-first, not magic-air-gapped. Files are stored and compiled locally by default. If you enable a hosted AI provider, prompts and relevant project context can be sent to that provider. For fully local inference, configure Ollama and keep hosted model providers disabled.
@@ -135,6 +231,15 @@ Runtime paths:
 - Project skills: `.devprism/skills/`
 - User settings and global skills: `~/.devprism/`
 - Project Python environment: `.venv/`
+- Knowledge cache, linked projects, and portable app context: `~/.devprism/`
+- App provider settings, safe-mode settings, resume context, and manual skills: `~/.devprism/`
+
+Security notes:
+
+- Knowledgebase export intentionally clears `geminiApiKey` instead of writing the key into the bundle.
+- Semantic search embeddings use Gemini's embedding API and require `GEMINI_API_KEY`, even when chat is configured for Gemini CLI, Codex CLI, or Ollama.
+- Hosted providers can receive prompts, selected context, and relevant project snippets. Keep hosted providers disabled when work must remain fully local.
+- Safe mode and authorized paths are runtime controls for assistant actions; they are not a substitute for reviewing proposed changes before applying them.
 
 ## Installation
 

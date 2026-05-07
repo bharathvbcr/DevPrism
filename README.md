@@ -1,6 +1,6 @@
 
 
-#<h1 align="center">DevPrism</h1>
+# <h1 align="center">DevPrism</h1>
 <p align="center">
   <img src="./assets/logo-devprism.png" width="140" height="140" alt="DevPrism logo" />
 </p>

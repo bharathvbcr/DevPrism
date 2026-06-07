@@ -9,6 +9,8 @@ interface ClaudeStatus {
   binary_path: string | null;
   version: string | null;
   account_email: string | null;
+  provider_model: string | null;
+  provider_base_url: string | null;
   missing_git: boolean;
 }
 
@@ -36,6 +38,8 @@ interface ClaudeSetupState {
   error: string | null;
   version: string | null;
   accountEmail: string | null;
+  providerModel: string | null;
+  providerBaseUrl: string | null;
 
   // Install progress
   installSteps: StepInfo[];
@@ -118,6 +122,8 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
   error: null,
   version: null,
   accountEmail: null,
+  providerModel: null,
+  providerBaseUrl: null,
 
   installSteps: [],
   installLogs: [],
@@ -132,12 +138,24 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
 
       // On Windows, Git for Windows is required before anything else
       if (result.missing_git) {
-        set({ status: "missing-git", version: null, accountEmail: null });
+        set({
+          status: "missing-git",
+          version: null,
+          accountEmail: null,
+          providerModel: null,
+          providerBaseUrl: null,
+        });
         return;
       }
 
       if (!result.installed) {
-        set({ status: "not-installed", version: null, accountEmail: null });
+        set({
+          status: "not-installed",
+          version: null,
+          accountEmail: null,
+          providerModel: null,
+          providerBaseUrl: null,
+        });
         return;
       }
 
@@ -146,6 +164,8 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
           status: "not-authenticated",
           version: result.version,
           accountEmail: null,
+          providerModel: null,
+          providerBaseUrl: null,
         });
         return;
       }
@@ -154,6 +174,8 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
         status: "ready",
         version: result.version,
         accountEmail: result.account_email,
+        providerModel: result.provider_model,
+        providerBaseUrl: result.provider_base_url,
       });
     } catch (err: any) {
       set({

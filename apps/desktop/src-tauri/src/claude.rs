@@ -1312,6 +1312,8 @@ pub struct ClaudeStatus {
     pub binary_path: Option<String>,
     pub version: Option<String>,
     pub account_email: Option<String>,
+    pub provider_model: Option<String>,
+    pub provider_base_url: Option<String>,
     /// Windows only: true when Git for Windows (git-bash) is not found.
     /// Claude Code requires git-bash to function on Windows.
     pub missing_git: bool,
@@ -1369,7 +1371,9 @@ pub async fn check_claude_status() -> Result<ClaudeStatus, String> {
             authenticated: true,
             binary_path: None,
             version: Some("OpenAI-compatible provider".to_string()),
-            account_email: Some(format!("{} · {}", credential.model, credential.base_url)),
+            account_email: None,
+            provider_model: Some(credential.model),
+            provider_base_url: Some(credential.base_url),
             missing_git: false,
         });
     }
@@ -1390,6 +1394,8 @@ pub async fn check_claude_status() -> Result<ClaudeStatus, String> {
                 binary_path: None,
                 version: None,
                 account_email: None,
+                provider_model: None,
+                provider_base_url: None,
                 missing_git,
             });
         }
@@ -1411,6 +1417,8 @@ pub async fn check_claude_status() -> Result<ClaudeStatus, String> {
                 binary_path: None,
                 version: None,
                 account_email: None,
+                provider_model: None,
+                provider_base_url: None,
                 missing_git,
             });
         }
@@ -1446,6 +1454,8 @@ pub async fn check_claude_status() -> Result<ClaudeStatus, String> {
         binary_path: Some(binary_path),
         version,
         account_email,
+        provider_model: None,
+        provider_base_url: None,
         missing_git,
     })
 }

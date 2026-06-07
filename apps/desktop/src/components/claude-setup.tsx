@@ -310,6 +310,8 @@ export function ClaudeSetup() {
   const error = useClaudeSetupStore((s) => s.error);
   const version = useClaudeSetupStore((s) => s.version);
   const accountEmail = useClaudeSetupStore((s) => s.accountEmail);
+  const providerModel = useClaudeSetupStore((s) => s.providerModel);
+  const providerBaseUrl = useClaudeSetupStore((s) => s.providerBaseUrl);
   const install = useClaudeSetupStore((s) => s.install);
   const login = useClaudeSetupStore((s) => s.login);
   const saveApiKey = useClaudeSetupStore((s) => s.saveApiKey);
@@ -356,6 +358,9 @@ export function ClaudeSetup() {
 
   if (status === "ready") {
     const isDirectProvider = version === "OpenAI-compatible provider";
+    const readyDetail = isDirectProvider
+      ? [version, providerModel, providerBaseUrl].filter(Boolean).join(" · ")
+      : [version, accountEmail].filter(Boolean).join(" · ");
     return (
       <div className="flex w-full items-center gap-3 rounded-xl border border-border bg-muted/30 px-5 py-4">
         <CheckCircle2Icon className="size-5 shrink-0 text-green-600" />
@@ -364,7 +369,7 @@ export function ClaudeSetup() {
             {isDirectProvider ? "AI Provider Ready" : "Claude Code Ready"}
           </p>
           <p className="truncate text-muted-foreground text-xs">
-            {[version, accountEmail].filter(Boolean).join(" · ")}
+            {readyDetail}
           </p>
         </div>
       </div>

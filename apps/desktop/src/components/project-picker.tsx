@@ -297,6 +297,12 @@ interface SkillsStatus {
 function EnvironmentStatus() {
   const claudeVersion = useClaudeSetupStore((s) => s.version);
   const claudeEmail = useClaudeSetupStore((s) => s.accountEmail);
+  const providerModel = useClaudeSetupStore((s) => s.providerModel);
+  const providerBaseUrl = useClaudeSetupStore((s) => s.providerBaseUrl);
+  const isDirectProvider = claudeVersion === "OpenAI-compatible provider";
+  const aiDetail = isDirectProvider
+    ? [claudeVersion, providerModel, providerBaseUrl].filter(Boolean).join(" · ")
+    : [claudeVersion, claudeEmail].filter(Boolean).join(" · ");
 
   const uvStatus = useUvSetupStore((s) => s.status);
   const uvVersion = useUvSetupStore((s) => s.version);
@@ -354,11 +360,11 @@ function EnvironmentStatus() {
   return (
     <>
       <div className="flex w-full flex-col gap-2 rounded-xl border border-border bg-muted/30 px-4 py-3">
-        {/* Claude Code — always ready here */}
+        {/* AI provider — always ready here */}
         <StatusRow
           ok={true}
-          label="Claude Code"
-          detail={[claudeVersion, claudeEmail].filter(Boolean).join(" · ")}
+          label={isDirectProvider ? "AI Provider" : "Claude Code"}
+          detail={aiDetail}
         />
 
         {/* Python (uv) */}

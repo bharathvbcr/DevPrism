@@ -322,8 +322,10 @@ export function ClaudeSetup() {
   useInstallEvents();
   useLoginEvents();
 
-  const handleSaveApiKey = async () => {
-    const success = await saveApiKey(apiKey, baseUrl, provider, model);
+  const handleSaveApiKey = async (
+    selectedProvider: "claude-code" | "openai-compatible" = provider,
+  ) => {
+    const success = await saveApiKey(apiKey, baseUrl, selectedProvider, model);
     if (success) {
       setApiKey("");
       setBaseUrl("");
@@ -345,6 +347,221 @@ export function ClaudeSetup() {
     setModel(preset.model);
   };
 
+  const renderApiKeyForm = ({
+    forceOpenAiCompatible = false,
+    allowBrowserSignIn = false,
+  }: {
+    forceOpenAiCompatible?: boolean;
+    allowBrowserSignIn?: boolean;
+  } = {}) => {
+    const selectedProvider = forceOpenAiCompatible
+      ? "openai-compatible"
+      : provider;
+
+    return (
+      <>
+        <form
+          className="space-y-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            handleSaveApiKey(selectedProvider);
+          }}
+        >
+          <div className="space-y-1.5">
+            <Label htmlFor="ai-provider" className="text-xs">
+              Provider
+            </Label>
+            {forceOpenAiCompatible ? (
+              <div
+                id="ai-provider"
+                className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+              >
+                OpenAI-compatible API
+              </div>
+            ) : (
+              <select
+                id="ai-provider"
+                value={provider}
+                onChange={(event) => {
+                  const nextProvider = event.target.value as
+                    | "claude-code"
+                    | "openai-compatible";
+                  setProvider(nextProvider);
+                  if (nextProvider === "claude-code") {
+                    setProviderPreset("custom");
+                  }
+                }}
+                disabled={isSavingApiKey}
+                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm outline-none transition-colors focus-visible:border-ring"
+              >
+                <option value="claude-code">Claude Code / Anthropic API</option>
+                <option value="openai-compatible">
+                  OpenAI-compatible API
+                </option>
+              </select>
+            )}
+            <p className="text-[11px] text-muted-foreground">
+              Use OpenAI-compatible for Qwen, DeepSeek, GLM, Gemini, and
+              compatible gateways.
+            </p>
+          </div>
+
+          {selectedProvider === "openai-compatible" && (
+            <div className="space-y-1.5">
+              <Label htmlFor="provider-preset" className="text-xs">
+                Provider Preset
+              </Label>
+              <select
+                id="provider-preset"
+                value={providerPreset}
+                onChange={(event) => applyProviderPreset(event.target.value)}
+                disabled={isSavingApiKey}
+                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm outline-none transition-colors focus-visible:border-ring"
+              >
+                <option value="custom">Custom endpoint</option>
+                {OPENAI_COMPATIBLE_PRESETS.map((preset) => (
+                  <option key={preset.id} value={preset.id}>
+                    {preset.label}
+                  </option>
+                ))}
+              </select>
+              {providerPreset !== "custom" && (
+                <p className="text-[11px] text-muted-foreground">
+                  {
+                    OPENAI_COMPATIBLE_PRESETS.find(
+                      (preset) => preset.id === providerPreset,
+                    )?.note
+                  }
+                </p>
+              )}
+            </div>
+          )}
+
+          <div className="space-y-1.5">
+            <Label htmlFor="anthropic-api-key" className="text-xs">
+              {selectedProvider === "openai-compatible"
+                ? "Provider API Key"
+                : "Anthropic API Key"}
+            </Label>
+            <Input
+              id="anthropic-api-key"
+              type="password"
+              placeholder={
+                selectedProvider === "openai-compatible"
+                  ? "sk-..."
+                  : "sk-ant-..."
+              }
+              value={apiKey}
+              onChange={(event) => setApiKey(event.target.value)}
+              disabled={isSavingApiKey}
+              autoComplete="off"
+            />
+            <p className="text-[11px] text-muted-foreground">
+              {selectedProvider === "openai-compatible"
+                ? "Use the API key from your model provider."
+                : "Anthropic Console keys start with sk-ant-. External Claude proxies need a Base URL."}
+            </p>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="anthropic-base-url" className="text-xs">
+              Base URL
+            </Label>
+            <Input
+              id="anthropic-base-url"
+              type="url"
+              placeholder={
+                selectedProvider === "openai-compatible"
+                  ? "https://api.deepseek.com or https://dashscope.aliyuncs.com/compatible-mode/v1"
+                  : "https://proxy.example.com/claude"
+              }
+              value={baseUrl}
+              onChange={(event) => {
+                setBaseUrl(event.target.value);
+                if (selectedProvider === "openai-compatible") {
+                  setProviderPreset("custom");
+                }
+              }}
+              disabled={isSavingApiKey}
+              autoComplete="off"
+            />
+            <p className="text-[11px] text-muted-foreground">
+              {selectedProvider === "openai-compatible"
+                ? "Use either the API root or a full /chat/completions URL."
+                : "Leave blank for Anthropic direct API."}
+            </p>
+          </div>
+
+          {selectedProvider === "openai-compatible" && (
+            <div className="space-y-1.5">
+              <Label htmlFor="provider-model" className="text-xs">
+                Model
+              </Label>
+              <Input
+                id="provider-model"
+                type="text"
+                placeholder="qwen3-coder-plus, deepseek-v4-pro, glm-5.1, ..."
+                value={model}
+                onChange={(event) => {
+                  setModel(event.target.value);
+                  setProviderPreset("custom");
+                }}
+                disabled={isSavingApiKey}
+                autoComplete="off"
+              />
+              <p className="text-[11px] text-muted-foreground">
+                This model is used directly and ignores the Claude model picker.
+              </p>
+            </div>
+          )}
+
+          {error && (
+            <p className="break-words text-destructive text-xs">{error}</p>
+          )}
+          <Button
+            type="submit"
+            size="sm"
+            className="w-full gap-2"
+            disabled={
+              !apiKey.trim() ||
+              isSavingApiKey ||
+              (selectedProvider === "openai-compatible" &&
+                (!baseUrl.trim() || !model.trim()))
+            }
+          >
+            {isSavingApiKey ? (
+              <LoaderIcon className="size-3.5 animate-spin" />
+            ) : (
+              <KeyRoundIcon className="size-3.5" />
+            )}
+            {isSavingApiKey ? "Saving..." : "Use API Key"}
+          </Button>
+        </form>
+
+        {allowBrowserSignIn && (
+          <>
+            <div className="flex items-center gap-2">
+              <div className="h-px flex-1 bg-border" />
+              <span className="text-[11px] text-muted-foreground">or</span>
+              <div className="h-px flex-1 bg-border" />
+            </div>
+
+            <Button
+              size="sm"
+              variant="outline"
+              className="w-full gap-2"
+              onClick={login}
+              disabled={isSavingApiKey}
+            >
+              <LogInIcon className="size-3.5" />
+              Sign in with Browser
+            </Button>
+          </>
+        )}
+      </>
+    );
+  };
+
   if (status === "checking") {
     return (
       <div className="flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-muted/30 px-5 py-4">
@@ -359,8 +576,8 @@ export function ClaudeSetup() {
   if (status === "ready") {
     const isDirectProvider = version === "OpenAI-compatible provider";
     const readyDetail = isDirectProvider
-      ? [version, providerModel, providerBaseUrl].filter(Boolean).join(" · ")
-      : [version, accountEmail].filter(Boolean).join(" · ");
+      ? [version, providerModel, providerBaseUrl].filter(Boolean).join(" / ")
+      : [version, accountEmail].filter(Boolean).join(" / ");
     return (
       <div className="flex w-full items-center gap-3 rounded-xl border border-border bg-muted/30 px-5 py-4">
         <CheckCircle2Icon className="size-5 shrink-0 text-green-600" />
@@ -480,12 +697,18 @@ export function ClaudeSetup() {
         <div className="flex items-center gap-2">
           <GitBranchIcon className="size-5 shrink-0 text-amber-600" />
           <div>
-            <p className="font-medium text-sm">Git for Windows Required</p>
+            <p className="font-medium text-sm">Connect AI Provider</p>
             <p className="text-muted-foreground text-xs">
-              Claude Code needs Git for Windows (git-bash) to work. Please
-              install it first, then click "I've installed Git".
+              OpenAI-compatible providers work without Git. Git for Windows is
+              only needed if you want Claude Code/browser sign-in.
             </p>
           </div>
+        </div>
+        {renderApiKeyForm({ forceOpenAiCompatible: true })}
+        <div className="flex items-center gap-2">
+          <div className="h-px flex-1 bg-border" />
+          <span className="text-[11px] text-muted-foreground">Claude Code</span>
+          <div className="h-px flex-1 bg-border" />
         </div>
         <Button
           size="sm"
@@ -515,15 +738,27 @@ export function ClaudeSetup() {
     return (
       <div className="flex w-full flex-col gap-3 rounded-xl border border-border bg-muted/30 px-5 py-4">
         <div className="flex items-center gap-2">
-          <TerminalIcon className="size-5 shrink-0 text-muted-foreground" />
+          <KeyRoundIcon className="size-5 shrink-0 text-muted-foreground" />
           <div>
-            <p className="font-medium text-sm">Claude Code Required</p>
+            <p className="font-medium text-sm">Connect AI Provider</p>
             <p className="text-muted-foreground text-xs">
-              ClaudePrism needs Claude Code CLI to power AI features.
+              Use Qwen, DeepSeek, GLM, Gemini, or another OpenAI-compatible
+              endpoint without installing Claude Code.
             </p>
           </div>
         </div>
-        <Button size="sm" className="w-full gap-2" onClick={install}>
+        {renderApiKeyForm({ forceOpenAiCompatible: true })}
+        <div className="flex items-center gap-2">
+          <div className="h-px flex-1 bg-border" />
+          <span className="text-[11px] text-muted-foreground">Claude Code</span>
+          <div className="h-px flex-1 bg-border" />
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          className="w-full gap-2"
+          onClick={install}
+        >
           <DownloadIcon className="size-3.5" />
           Install Claude Code
         </Button>
@@ -552,182 +787,7 @@ export function ClaudeSetup() {
           </p>
         )}
 
-        <form
-          className="space-y-2"
-          onSubmit={(event) => {
-            event.preventDefault();
-            handleSaveApiKey();
-          }}
-        >
-          <div className="space-y-1.5">
-            <Label htmlFor="ai-provider" className="text-xs">
-              Provider
-            </Label>
-            <select
-              id="ai-provider"
-              value={provider}
-              onChange={(event) => {
-                const nextProvider = event.target.value as
-                  | "claude-code"
-                  | "openai-compatible";
-                setProvider(nextProvider);
-                if (nextProvider === "claude-code") {
-                  setProviderPreset("custom");
-                }
-              }}
-              disabled={isSavingApiKey}
-              className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm outline-none transition-colors focus-visible:border-ring"
-            >
-              <option value="claude-code">Claude Code / Anthropic API</option>
-              <option value="openai-compatible">OpenAI-compatible API</option>
-            </select>
-            <p className="text-[11px] text-muted-foreground">
-              Use OpenAI-compatible for Qwen, DeepSeek, GLM, and compatible
-              gateways.
-            </p>
-          </div>
-          {provider === "openai-compatible" && (
-            <div className="space-y-1.5">
-              <Label htmlFor="provider-preset" className="text-xs">
-                Provider Preset
-              </Label>
-              <select
-                id="provider-preset"
-                value={providerPreset}
-                onChange={(event) => applyProviderPreset(event.target.value)}
-                disabled={isSavingApiKey}
-                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm outline-none transition-colors focus-visible:border-ring"
-              >
-                <option value="custom">Custom endpoint</option>
-                {OPENAI_COMPATIBLE_PRESETS.map((preset) => (
-                  <option key={preset.id} value={preset.id}>
-                    {preset.label}
-                  </option>
-                ))}
-              </select>
-              {providerPreset !== "custom" && (
-                <p className="text-[11px] text-muted-foreground">
-                  {
-                    OPENAI_COMPATIBLE_PRESETS.find(
-                      (preset) => preset.id === providerPreset,
-                    )?.note
-                  }
-                </p>
-              )}
-            </div>
-          )}
-          <div className="space-y-1.5">
-            <Label htmlFor="anthropic-api-key" className="text-xs">
-              {provider === "openai-compatible"
-                ? "Provider API Key"
-                : "Anthropic API Key"}
-            </Label>
-            <Input
-              id="anthropic-api-key"
-              type="password"
-              placeholder={
-                provider === "openai-compatible" ? "sk-..." : "sk-ant-..."
-              }
-              value={apiKey}
-              onChange={(event) => setApiKey(event.target.value)}
-              disabled={isSavingApiKey}
-              autoComplete="off"
-            />
-            <p className="text-[11px] text-muted-foreground">
-              {provider === "openai-compatible"
-                ? "Use the API key from your model provider."
-                : "Anthropic Console keys start with sk-ant-. External Claude proxies need a Base URL."}
-            </p>
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="anthropic-base-url" className="text-xs">
-              Base URL
-            </Label>
-            <Input
-              id="anthropic-base-url"
-              type="url"
-              placeholder={
-                provider === "openai-compatible"
-                  ? "https://api.deepseek.com or https://dashscope.aliyuncs.com/compatible-mode/v1"
-                  : "https://proxy.example.com/claude"
-              }
-              value={baseUrl}
-              onChange={(event) => {
-                setBaseUrl(event.target.value);
-                if (provider === "openai-compatible") {
-                  setProviderPreset("custom");
-                }
-              }}
-              disabled={isSavingApiKey}
-              autoComplete="off"
-            />
-            <p className="text-[11px] text-muted-foreground">
-              {provider === "openai-compatible"
-                ? "Use either the API root or a full /chat/completions URL."
-                : "Leave blank for Anthropic direct API."}
-            </p>
-          </div>
-          {provider === "openai-compatible" && (
-            <div className="space-y-1.5">
-              <Label htmlFor="provider-model" className="text-xs">
-                Model
-              </Label>
-              <Input
-                id="provider-model"
-                type="text"
-                placeholder="qwen3-coder-plus, deepseek-v4-pro, glm-5.1, ..."
-                value={model}
-                onChange={(event) => {
-                  setModel(event.target.value);
-                  setProviderPreset("custom");
-                }}
-                disabled={isSavingApiKey}
-                autoComplete="off"
-              />
-              <p className="text-[11px] text-muted-foreground">
-                This model is used directly and ignores the Claude model picker.
-              </p>
-            </div>
-          )}
-          {error && (
-            <p className="break-words text-destructive text-xs">{error}</p>
-          )}
-          <Button
-            type="submit"
-            size="sm"
-            className="w-full gap-2"
-            disabled={
-              !apiKey.trim() ||
-              isSavingApiKey ||
-              (provider === "openai-compatible" &&
-                (!baseUrl.trim() || !model.trim()))
-            }
-          >
-            {isSavingApiKey ? (
-              <LoaderIcon className="size-3.5 animate-spin" />
-            ) : (
-              <KeyRoundIcon className="size-3.5" />
-            )}
-            {isSavingApiKey ? "Saving..." : "Use API Key"}
-          </Button>
-        </form>
-
-        <div className="flex items-center gap-2">
-          <div className="h-px flex-1 bg-border" />
-          <span className="text-[11px] text-muted-foreground">or</span>
-          <div className="h-px flex-1 bg-border" />
-        </div>
-
-        <Button
-          size="sm"
-          variant="outline"
-          className="w-full gap-2"
-          onClick={login}
-          disabled={isSavingApiKey}
-        >
-          <LogInIcon className="size-3.5" />
-          Sign in with Browser
-        </Button>
+        {renderApiKeyForm({ allowBrowserSignIn: true })}
       </div>
     );
   }

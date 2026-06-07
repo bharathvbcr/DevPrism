@@ -1,7 +1,9 @@
 use serde_json::json;
 use std::borrow::Cow;
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use tauri::{Emitter, Manager, WebviewWindow};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -29,12 +31,6 @@ struct StoredOpenAiCompatibleCredential {
     api_key: String,
     base_url: String,
     model: String,
-}
-
-#[derive(Clone, serde::Deserialize, serde::Serialize)]
-struct DirectProviderMessage {
-    role: String,
-    content: String,
 }
 
 const PROVIDER_CLAUDE_CODE: &str = "claude-code";
@@ -297,7 +293,8 @@ use std::os::windows::process::CommandExt;
 #[derive(Clone)]
 pub struct ClaudeProcessState {
     pub processes: Arc<Mutex<HashMap<String, Child>>>,
-    direct_sessions: Arc<Mutex<HashMap<String, Vec<DirectProviderMessage>>>>,
+    direct_sessions: Arc<Mutex<HashMap<String, Vec<serde_json::Value>>>>,
+    direct_cancellations: Arc<Mutex<HashSet<String>>>,
 }
 
 impl Default for ClaudeProcessState {
@@ -305,6 +302,7 @@ impl Default for ClaudeProcessState {
         Self {
             processes: Arc::new(Mutex::new(HashMap::new())),
             direct_sessions: Arc::new(Mutex::new(HashMap::new())),
+            direct_cancellations: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 }
@@ -1811,9 +1809,138 @@ fn direct_provider_system_prompt() -> String {
         "Help the user write, revise, and reason about academic documents.",
         "Preserve existing LaTeX structure unless the user asks for a rewrite.",
         "Use proper LaTeX sectioning, citations, labels, references, and bibliography conventions.",
-        "In direct provider mode you may not have Claude Code tool execution yet. If you cannot directly edit files, provide precise patches or replacement snippets.",
+        "You can inspect and edit files through the provided tools. Prefer relative paths inside the current project.",
+        "Use Read before non-trivial edits, use Edit for precise replacements, and use Write only when creating or fully replacing a file.",
+        "Do not claim a file was changed unless a tool result confirms it.",
     ]
     .join("\n")
+}
+
+fn direct_provider_tools() -> serde_json::Value {
+    json!([
+        {
+            "type": "function",
+            "function": {
+                "name": "Read",
+                "description": "Read a UTF-8 text file from the current project.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": { "type": "string", "description": "Project-relative or absolute file path." },
+                        "offset": { "type": "integer", "description": "Optional 1-based line offset." },
+                        "limit": { "type": "integer", "description": "Optional maximum number of lines to return." }
+                    },
+                    "required": ["file_path"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "Write",
+                "description": "Create or replace a UTF-8 text file in the current project.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": { "type": "string", "description": "Project-relative or absolute file path." },
+                        "content": { "type": "string", "description": "Complete file contents to write." }
+                    },
+                    "required": ["file_path", "content"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "Edit",
+                "description": "Replace an exact string in a UTF-8 text file.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": { "type": "string", "description": "Project-relative or absolute file path." },
+                        "old_string": { "type": "string", "description": "Exact text to replace." },
+                        "new_string": { "type": "string", "description": "Replacement text." },
+                        "replace_all": { "type": "boolean", "description": "Replace all matches instead of requiring a single match." }
+                    },
+                    "required": ["file_path", "old_string", "new_string"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "MultiEdit",
+                "description": "Apply multiple exact string replacements to one UTF-8 text file.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": { "type": "string", "description": "Project-relative or absolute file path." },
+                        "edits": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "old_string": { "type": "string" },
+                                    "new_string": { "type": "string" },
+                                    "replace_all": { "type": "boolean" }
+                                },
+                                "required": ["old_string", "new_string"]
+                            }
+                        }
+                    },
+                    "required": ["file_path", "edits"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "Glob",
+                "description": "List project files matching a simple wildcard pattern such as *.tex or chapters/*.tex.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": { "type": "string", "description": "Wildcard pattern. * and ? are supported." },
+                        "path": { "type": "string", "description": "Optional project-relative directory to search." }
+                    },
+                    "required": ["pattern"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "Grep",
+                "description": "Search UTF-8 project files for a literal substring.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": { "type": "string", "description": "Literal text to search for." },
+                        "path": { "type": "string", "description": "Optional project-relative file or directory to search." },
+                        "glob": { "type": "string", "description": "Optional wildcard filter, for example *.tex." },
+                        "case_sensitive": { "type": "boolean", "description": "Whether matching is case-sensitive. Defaults to false." }
+                    },
+                    "required": ["pattern"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "Bash",
+                "description": "Run a shell command in the current project directory. Use concise commands and prefer read-only commands before edits.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": { "type": "string", "description": "Shell command to run in the project directory." },
+                        "description": { "type": "string", "description": "Short description of why the command is needed." },
+                        "timeout_ms": { "type": "integer", "description": "Optional timeout in milliseconds. Defaults to 120000." }
+                    },
+                    "required": ["command"]
+                }
+            }
+        }
+    ])
 }
 
 fn openai_chat_completions_url(base_url: &str) -> String {
@@ -1842,6 +1969,860 @@ fn json_usage(value: &serde_json::Value) -> serde_json::Value {
     })
 }
 
+#[derive(Clone)]
+struct DirectToolCall {
+    id: String,
+    name: String,
+    input: serde_json::Value,
+}
+
+struct DirectToolOutput {
+    content: String,
+    is_error: bool,
+}
+
+fn emit_direct_output(window: &WebviewWindow, tab_id: &str, event: &serde_json::Value) {
+    let _ = window.emit(
+        "claude-output",
+        ClaudeOutputEvent {
+            tab_id: tab_id.to_string(),
+            data: event.to_string(),
+        },
+    );
+}
+
+fn emit_direct_error(window: &WebviewWindow, tab_id: &str, message: impl Into<String>) {
+    let _ = window.emit(
+        "claude-error",
+        ClaudeErrorEvent {
+            tab_id: tab_id.to_string(),
+            data: message.into(),
+        },
+    );
+}
+
+fn emit_direct_complete(window: &WebviewWindow, tab_id: &str, success: bool) {
+    let _ = window.emit(
+        "claude-complete",
+        ClaudeCompleteEvent {
+            tab_id: tab_id.to_string(),
+            success,
+        },
+    );
+}
+
+fn session_event_with_timestamp(event: &serde_json::Value) -> serde_json::Value {
+    let mut event = event.clone();
+    if let Some(object) = event.as_object_mut() {
+        object
+            .entry("timestamp".to_string())
+            .or_insert_with(|| json!(chrono::Utc::now().to_rfc3339()));
+    }
+    event
+}
+
+fn valid_session_id(session_id: &str) -> bool {
+    !session_id.is_empty()
+        && session_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+fn append_direct_session_event(
+    project_path: &str,
+    session_id: &str,
+    event: &serde_json::Value,
+) -> Result<(), String> {
+    if !valid_session_id(session_id) {
+        return Err("Invalid session id".to_string());
+    }
+
+    let sessions_dir = get_sessions_dir(project_path)?;
+    std::fs::create_dir_all(&sessions_dir)
+        .map_err(|e| format!("Failed to create sessions directory: {}", e))?;
+    let session_path = sessions_dir.join(format!("{}.jsonl", session_id));
+    let event = session_event_with_timestamp(event);
+    let line = serde_json::to_string(&event)
+        .map_err(|e| format!("Failed to serialize session event: {}", e))?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&session_path)
+        .map_err(|e| format!("Failed to open session file: {}", e))?;
+    writeln!(file, "{}", line).map_err(|e| format!("Failed to write session event: {}", e))
+}
+
+fn emit_and_persist_direct_output(
+    window: &WebviewWindow,
+    project_path: &str,
+    session_id: &str,
+    tab_id: &str,
+    event: &serde_json::Value,
+) {
+    emit_direct_output(window, tab_id, event);
+    if let Err(err) = append_direct_session_event(project_path, session_id, event) {
+        eprintln!("[direct-provider] failed to persist session event: {}", err);
+    }
+}
+
+async fn direct_provider_cancelled(state: &ClaudeProcessState, process_key: &str) -> bool {
+    state
+        .direct_cancellations
+        .lock()
+        .await
+        .contains(process_key)
+}
+
+async fn clear_direct_provider_cancelled(state: &ClaudeProcessState, process_key: &str) {
+    state.direct_cancellations.lock().await.remove(process_key);
+}
+
+fn claude_text_from_content_blocks(content: &serde_json::Value) -> Option<String> {
+    if let Some(text) = content.as_str() {
+        return Some(text.to_string());
+    }
+
+    let blocks = content.as_array()?;
+    let text = blocks
+        .iter()
+        .filter(|block| block.get("type").and_then(|v| v.as_str()) == Some("text"))
+        .filter_map(|block| block.get("text").and_then(|v| v.as_str()))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if text.trim().is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+fn load_direct_provider_messages(
+    project_path: &str,
+    session_id: &str,
+) -> Result<Vec<serde_json::Value>, String> {
+    if !valid_session_id(session_id) {
+        return Ok(Vec::new());
+    }
+
+    let sessions_dir = get_sessions_dir(project_path)?;
+    let session_path = sessions_dir.join(format!("{}.jsonl", session_id));
+    if !session_path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let file = std::fs::File::open(&session_path)
+        .map_err(|e| format!("Failed to open session file: {}", e))?;
+    let reader = std::io::BufReader::new(file);
+    use std::io::BufRead;
+
+    let mut messages = Vec::new();
+    for line in reader.lines().map_while(Result::ok) {
+        let Ok(entry) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        match entry.get("type").and_then(|v| v.as_str()) {
+            Some("user") => {
+                let Some(content) = entry.pointer("/message/content") else {
+                    continue;
+                };
+                if let Some(blocks) = content.as_array() {
+                    let tool_results: Vec<serde_json::Value> = blocks
+                        .iter()
+                        .filter(|block| {
+                            block.get("type").and_then(|v| v.as_str()) == Some("tool_result")
+                        })
+                        .filter_map(|block| {
+                            let tool_call_id = block.get("tool_use_id")?.as_str()?;
+                            let content = block
+                                .get("content")
+                                .and_then(|v| v.as_str())
+                                .map(|v| v.to_string())
+                                .unwrap_or_else(|| {
+                                    block
+                                        .get("content")
+                                        .map(|v| v.to_string())
+                                        .unwrap_or_default()
+                                });
+                            Some(json!({
+                                "role": "tool",
+                                "tool_call_id": tool_call_id,
+                                "content": content,
+                            }))
+                        })
+                        .collect();
+                    if !tool_results.is_empty() {
+                        messages.extend(tool_results);
+                        continue;
+                    }
+                }
+
+                if let Some(text) = claude_text_from_content_blocks(content) {
+                    messages.push(json!({ "role": "user", "content": text }));
+                }
+            }
+            Some("assistant") => {
+                let Some(content) = entry.pointer("/message/content") else {
+                    continue;
+                };
+                let Some(blocks) = content.as_array() else {
+                    continue;
+                };
+
+                let text = blocks
+                    .iter()
+                    .filter(|block| block.get("type").and_then(|v| v.as_str()) == Some("text"))
+                    .filter_map(|block| block.get("text").and_then(|v| v.as_str()))
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+                let tool_calls: Vec<serde_json::Value> = blocks
+                    .iter()
+                    .filter(|block| block.get("type").and_then(|v| v.as_str()) == Some("tool_use"))
+                    .filter_map(|block| {
+                        let id = block.get("id")?.as_str()?;
+                        let name = block.get("name")?.as_str()?;
+                        let input = block.get("input").cloned().unwrap_or_else(|| json!({}));
+                        Some(json!({
+                            "id": id,
+                            "type": "function",
+                            "function": {
+                                "name": name,
+                                "arguments": input.to_string(),
+                            }
+                        }))
+                    })
+                    .collect();
+
+                if text.trim().is_empty() && tool_calls.is_empty() {
+                    continue;
+                }
+
+                let mut message = json!({
+                    "role": "assistant",
+                    "content": if text.trim().is_empty() { serde_json::Value::Null } else { json!(text) },
+                });
+                if !tool_calls.is_empty() {
+                    if let Some(object) = message.as_object_mut() {
+                        object.insert("tool_calls".to_string(), json!(tool_calls));
+                    }
+                }
+                messages.push(message);
+            }
+            _ => {}
+        }
+    }
+
+    Ok(messages)
+}
+
+fn lexical_normalize(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
+}
+
+fn canonical_project_root(project_path: &str) -> Result<PathBuf, String> {
+    let root = PathBuf::from(strip_nul(project_path).trim());
+    let root = root
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve project path: {}", e))?;
+    if !root.is_dir() {
+        return Err("Project path is not a directory".to_string());
+    }
+    Ok(root)
+}
+
+fn tool_path_value(input: &serde_json::Value) -> Result<String, String> {
+    for key in ["file_path", "path"] {
+        if let Some(value) = input.get(key).and_then(|v| v.as_str()) {
+            let clean = strip_nul(value).trim().to_string();
+            if !clean.is_empty() {
+                return Ok(clean);
+            }
+        }
+    }
+    Err("Missing file_path".to_string())
+}
+
+fn required_tool_string(input: &serde_json::Value, key: &str) -> Result<String, String> {
+    input
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(|value| strip_nul(value).into_owned())
+        .ok_or_else(|| format!("Missing {}", key))
+}
+
+fn optional_tool_string(input: &serde_json::Value, key: &str) -> Option<String> {
+    input
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(|value| strip_nul(value).trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn optional_tool_usize(input: &serde_json::Value, key: &str) -> Option<usize> {
+    input
+        .get(key)
+        .and_then(|v| v.as_u64())
+        .and_then(|value| usize::try_from(value).ok())
+}
+
+fn resolve_project_tool_path(project_root: &Path, requested: &str) -> Result<PathBuf, String> {
+    let clean = strip_nul(requested).trim().trim_matches('"').to_string();
+    if clean.is_empty() {
+        return Err("Path is empty".to_string());
+    }
+
+    let requested_path = PathBuf::from(&clean);
+    let candidate = if requested_path.is_absolute() {
+        requested_path
+    } else {
+        project_root.join(requested_path)
+    };
+    let normalized = lexical_normalize(&candidate);
+    if !normalized.starts_with(project_root) {
+        return Err("Refusing to access a path outside the project".to_string());
+    }
+    Ok(normalized)
+}
+
+fn ensure_existing_project_tool_path(
+    project_root: &Path,
+    requested: &str,
+) -> Result<PathBuf, String> {
+    let resolved = resolve_project_tool_path(project_root, requested)?;
+    let canonical = resolved
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve path: {}", e))?;
+    if !canonical.starts_with(project_root) {
+        return Err("Refusing to access a path outside the project".to_string());
+    }
+    Ok(canonical)
+}
+
+fn nearest_existing_parent(path: &Path) -> Option<PathBuf> {
+    let mut current = path.to_path_buf();
+    loop {
+        if current.exists() {
+            return Some(current);
+        }
+        if !current.pop() {
+            return None;
+        }
+    }
+}
+
+fn ensure_writable_project_tool_path(
+    project_root: &Path,
+    requested: &str,
+) -> Result<PathBuf, String> {
+    let resolved = resolve_project_tool_path(project_root, requested)?;
+    if resolved.exists() {
+        let canonical = resolved
+            .canonicalize()
+            .map_err(|e| format!("Failed to resolve path: {}", e))?;
+        if !canonical.starts_with(project_root) {
+            return Err("Refusing to write outside the project".to_string());
+        }
+        return Ok(canonical);
+    }
+
+    let parent = resolved
+        .parent()
+        .ok_or_else(|| "Path has no parent directory".to_string())?;
+    let existing_parent = nearest_existing_parent(parent)
+        .ok_or_else(|| "Could not resolve parent directory".to_string())?;
+    let canonical_parent = existing_parent
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve parent directory: {}", e))?;
+    if !canonical_parent.starts_with(project_root) {
+        return Err("Refusing to write outside the project".to_string());
+    }
+    Ok(resolved)
+}
+
+fn relative_project_path(project_root: &Path, path: &Path) -> String {
+    path.strip_prefix(project_root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn truncate_tool_content(content: String, max_chars: usize) -> String {
+    if content.chars().count() <= max_chars {
+        return content;
+    }
+    let truncated: String = content.chars().take(max_chars).collect();
+    format!("{}\n\n[Output truncated after {} characters]", truncated, max_chars)
+}
+
+fn apply_exact_edit(content: &str, old: &str, new: &str, replace_all: bool) -> Result<String, String> {
+    if old.is_empty() {
+        return Err("old_string cannot be empty".to_string());
+    }
+    let count = content.matches(old).count();
+    if count == 0 {
+        return Err("old_string was not found".to_string());
+    }
+    if count > 1 && !replace_all {
+        return Err(format!(
+            "old_string matched {} times; set replace_all=true or provide a more specific old_string",
+            count
+        ));
+    }
+    if replace_all {
+        Ok(content.replace(old, new))
+    } else {
+        Ok(content.replacen(old, new, 1))
+    }
+}
+
+fn skip_direct_provider_dir(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|v| v.to_str()) else {
+        return false;
+    };
+    matches!(
+        name,
+        ".git" | "node_modules" | "target" | "dist" | "build" | ".venv" | ".prism" | ".claudeprism"
+    )
+}
+
+fn collect_project_files(dir: &Path, files: &mut Vec<PathBuf>, max_files: usize) -> Result<(), String> {
+    if files.len() >= max_files {
+        return Ok(());
+    }
+    if skip_direct_provider_dir(dir) {
+        return Ok(());
+    }
+    let entries = std::fs::read_dir(dir)
+        .map_err(|e| format!("Failed to read directory {}: {}", dir.display(), e))?;
+    for entry in entries.flatten() {
+        if files.len() >= max_files {
+            break;
+        }
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            collect_project_files(&path, files, max_files)?;
+        } else if file_type.is_file() {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn wildcard_match(pattern: &str, text: &str) -> bool {
+    let pattern = pattern.as_bytes();
+    let text = text.as_bytes();
+    let mut dp = vec![vec![false; text.len() + 1]; pattern.len() + 1];
+    dp[0][0] = true;
+    for i in 1..=pattern.len() {
+        if pattern[i - 1] == b'*' {
+            dp[i][0] = dp[i - 1][0];
+        }
+    }
+    for i in 1..=pattern.len() {
+        for j in 1..=text.len() {
+            dp[i][j] = match pattern[i - 1] {
+                b'*' => dp[i - 1][j] || dp[i][j - 1],
+                b'?' => dp[i - 1][j - 1],
+                ch => ch == text[j - 1] && dp[i - 1][j - 1],
+            };
+        }
+    }
+    dp[pattern.len()][text.len()]
+}
+
+fn execute_direct_read(project_root: &Path, input: &serde_json::Value) -> Result<String, String> {
+    let file_path = tool_path_value(input)?;
+    let path = ensure_existing_project_tool_path(project_root, &file_path)?;
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("Failed to read {}: {}", file_path, e))?;
+    let offset = optional_tool_usize(input, "offset").unwrap_or(1).max(1);
+    let limit = optional_tool_usize(input, "limit");
+    let lines: Vec<&str> = content.lines().collect();
+    let selected = lines
+        .iter()
+        .skip(offset.saturating_sub(1))
+        .take(limit.unwrap_or(lines.len()))
+        .copied()
+        .collect::<Vec<_>>()
+        .join("\n");
+    let display_path = relative_project_path(project_root, &path);
+    let body = if offset > 1 || limit.is_some() {
+        format!(
+            "[{} lines {}-{}]\n{}",
+            display_path,
+            offset,
+            offset + selected.lines().count().saturating_sub(1),
+            selected
+        )
+    } else {
+        format!("[{}]\n{}", display_path, content)
+    };
+    Ok(truncate_tool_content(body, 20000))
+}
+
+fn execute_direct_write(project_root: &Path, input: &serde_json::Value) -> Result<String, String> {
+    let file_path = tool_path_value(input)?;
+    let content = required_tool_string(input, "content")?;
+    let path = ensure_writable_project_tool_path(project_root, &file_path)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create parent directory: {}", e))?;
+    }
+    std::fs::write(&path, content)
+        .map_err(|e| format!("Failed to write {}: {}", file_path, e))?;
+    Ok(format!("Wrote {}", relative_project_path(project_root, &path)))
+}
+
+fn execute_direct_edit(project_root: &Path, input: &serde_json::Value) -> Result<String, String> {
+    let file_path = tool_path_value(input)?;
+    let old = required_tool_string(input, "old_string")?;
+    let new = required_tool_string(input, "new_string")?;
+    let replace_all = input
+        .get("replace_all")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let path = ensure_existing_project_tool_path(project_root, &file_path)?;
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("Failed to read {}: {}", file_path, e))?;
+    let updated = apply_exact_edit(&content, &old, &new, replace_all)?;
+    std::fs::write(&path, updated)
+        .map_err(|e| format!("Failed to write {}: {}", file_path, e))?;
+    Ok(format!("Edited {}", relative_project_path(project_root, &path)))
+}
+
+fn execute_direct_multiedit(project_root: &Path, input: &serde_json::Value) -> Result<String, String> {
+    let file_path = tool_path_value(input)?;
+    let edits = input
+        .get("edits")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "Missing edits".to_string())?;
+    if edits.is_empty() {
+        return Err("edits cannot be empty".to_string());
+    }
+
+    let path = ensure_existing_project_tool_path(project_root, &file_path)?;
+    let mut content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("Failed to read {}: {}", file_path, e))?;
+    for (idx, edit) in edits.iter().enumerate() {
+        let old = required_tool_string(edit, "old_string")
+            .map_err(|e| format!("Edit {}: {}", idx + 1, e))?;
+        let new = required_tool_string(edit, "new_string")
+            .map_err(|e| format!("Edit {}: {}", idx + 1, e))?;
+        let replace_all = edit
+            .get("replace_all")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        content = apply_exact_edit(&content, &old, &new, replace_all)
+            .map_err(|e| format!("Edit {}: {}", idx + 1, e))?;
+    }
+    std::fs::write(&path, content)
+        .map_err(|e| format!("Failed to write {}: {}", file_path, e))?;
+    Ok(format!(
+        "Applied {} edits to {}",
+        edits.len(),
+        relative_project_path(project_root, &path)
+    ))
+}
+
+fn execute_direct_glob(project_root: &Path, input: &serde_json::Value) -> Result<String, String> {
+    let pattern = required_tool_string(input, "pattern")?;
+    let base = optional_tool_string(input, "path")
+        .map(|path| ensure_existing_project_tool_path(project_root, &path))
+        .transpose()?
+        .unwrap_or_else(|| project_root.to_path_buf());
+    if !base.is_dir() {
+        return Err("Glob path must be a directory".to_string());
+    }
+
+    let mut files = Vec::new();
+    collect_project_files(&base, &mut files, 2000)?;
+    let pattern = pattern.replace('\\', "/");
+    let mut matches = files
+        .into_iter()
+        .filter_map(|path| {
+            let rel = relative_project_path(project_root, &path);
+            let name = path.file_name()?.to_str()?;
+            if wildcard_match(&pattern, &rel) || wildcard_match(&pattern, name) {
+                Some(rel)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    matches.sort();
+    matches.truncate(200);
+    if matches.is_empty() {
+        Ok("No files matched".to_string())
+    } else {
+        Ok(matches.join("\n"))
+    }
+}
+
+fn looks_like_text_file(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|v| v.to_str()).unwrap_or("").to_ascii_lowercase().as_str(),
+        "tex"
+            | "bib"
+            | "sty"
+            | "cls"
+            | "md"
+            | "txt"
+            | "json"
+            | "yaml"
+            | "yml"
+            | "toml"
+            | "rs"
+            | "ts"
+            | "tsx"
+            | "js"
+            | "jsx"
+            | "py"
+            | "sh"
+            | "ps1"
+            | "html"
+            | "css"
+            | "csv"
+    )
+}
+
+fn execute_direct_grep(project_root: &Path, input: &serde_json::Value) -> Result<String, String> {
+    let pattern = required_tool_string(input, "pattern")?;
+    if pattern.is_empty() {
+        return Err("pattern cannot be empty".to_string());
+    }
+    let case_sensitive = input
+        .get("case_sensitive")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let glob_filter = optional_tool_string(input, "glob").map(|value| value.replace('\\', "/"));
+    let base = optional_tool_string(input, "path")
+        .map(|path| ensure_existing_project_tool_path(project_root, &path))
+        .transpose()?
+        .unwrap_or_else(|| project_root.to_path_buf());
+
+    let mut files = Vec::new();
+    if base.is_file() {
+        files.push(base);
+    } else {
+        collect_project_files(&base, &mut files, 4000)?;
+    }
+
+    let needle = if case_sensitive {
+        pattern.clone()
+    } else {
+        pattern.to_lowercase()
+    };
+    let mut results = Vec::new();
+    for path in files {
+        if results.len() >= 200 {
+            break;
+        }
+        if !looks_like_text_file(&path) {
+            continue;
+        }
+        let rel = relative_project_path(project_root, &path);
+        if let Some(glob) = &glob_filter {
+            let name = path.file_name().and_then(|v| v.to_str()).unwrap_or("");
+            if !wildcard_match(glob, &rel) && !wildcard_match(glob, name) {
+                continue;
+            }
+        }
+        let Ok(metadata) = std::fs::metadata(&path) else {
+            continue;
+        };
+        if metadata.len() > 2_000_000 {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for (idx, line) in content.lines().enumerate() {
+            let haystack = if case_sensitive {
+                line.to_string()
+            } else {
+                line.to_lowercase()
+            };
+            if haystack.contains(&needle) {
+                results.push(format!("{}:{}:{}", rel, idx + 1, line.trim_end()));
+                if results.len() >= 200 {
+                    break;
+                }
+            }
+        }
+    }
+
+    if results.is_empty() {
+        Ok("No matches found".to_string())
+    } else {
+        Ok(results.join("\n"))
+    }
+}
+
+async fn execute_direct_bash(project_root: &Path, input: &serde_json::Value) -> Result<String, String> {
+    let command = required_tool_string(input, "command")?;
+    if command.trim().is_empty() {
+        return Err("command cannot be empty".to_string());
+    }
+    let timeout_ms = input
+        .get("timeout_ms")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(120_000)
+        .clamp(1_000, 300_000);
+    #[cfg(not(target_os = "windows"))]
+    let (shell, args) = ("sh", vec!["-c".to_string(), command.clone()]);
+    #[cfg(target_os = "windows")]
+    let (shell, args) = ("cmd", vec!["/C".to_string(), command.clone()]);
+
+    let cwd = project_root.to_string_lossy().to_string();
+    let mut cmd = create_command(shell, args, &cwd, None);
+    cmd.kill_on_drop(true);
+    let output = tokio::time::timeout(
+        std::time::Duration::from_millis(timeout_ms),
+        cmd.output(),
+    )
+    .await
+    .map_err(|_| format!("Command timed out after {}ms", timeout_ms))?
+    .map_err(|e| format!("Failed to run command: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let exit_code = output.status.code().unwrap_or(-1);
+    Ok(truncate_tool_content(
+        format!(
+            "$ {}\nexit_code: {}\n\nstdout:\n{}\n\nstderr:\n{}",
+            command, exit_code, stdout, stderr
+        ),
+        30000,
+    ))
+}
+
+async fn execute_direct_provider_tool(
+    project_root: &Path,
+    name: &str,
+    input: &serde_json::Value,
+) -> DirectToolOutput {
+    let result = match name {
+        "Read" | "read" => execute_direct_read(project_root, input),
+        "Write" | "write" => execute_direct_write(project_root, input),
+        "Edit" | "edit" => execute_direct_edit(project_root, input),
+        "MultiEdit" | "multiedit" => execute_direct_multiedit(project_root, input),
+        "Glob" | "glob" => execute_direct_glob(project_root, input),
+        "Grep" | "grep" => execute_direct_grep(project_root, input),
+        "Bash" | "bash" => execute_direct_bash(project_root, input).await,
+        other => Err(format!("Unsupported tool: {}", other)),
+    };
+
+    match result {
+        Ok(content) => DirectToolOutput {
+            content,
+            is_error: false,
+        },
+        Err(content) => DirectToolOutput {
+            content,
+            is_error: true,
+        },
+    }
+}
+
+fn parse_direct_tool_calls(response: &serde_json::Value) -> Vec<DirectToolCall> {
+    response
+        .pointer("/choices/0/message/tool_calls")
+        .and_then(|v| v.as_array())
+        .map(|calls| {
+            calls
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, call)| {
+                    let name = call.pointer("/function/name")?.as_str()?.to_string();
+                    let id = call
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| format!("toolu_{}", idx + 1));
+                    let arguments = call
+                        .pointer("/function/arguments")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("{}");
+                    let input = serde_json::from_str::<serde_json::Value>(arguments)
+                        .unwrap_or_else(|_| json!({ "_raw_arguments": arguments }));
+                    Some(DirectToolCall { id, name, input })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn direct_assistant_content(response: &serde_json::Value) -> String {
+    let Some(content) = response.pointer("/choices/0/message/content") else {
+        return String::new();
+    };
+    if let Some(text) = content.as_str() {
+        return text.to_string();
+    }
+    if let Some(parts) = content.as_array() {
+        return parts
+            .iter()
+            .filter_map(|part| {
+                part.get("text")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| part.get("content").and_then(|v| v.as_str()))
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+    }
+    String::new()
+}
+
+async fn send_openai_compatible_chat_request(
+    client: &reqwest::Client,
+    credential: &StoredOpenAiCompatibleCredential,
+    messages: &[serde_json::Value],
+) -> Result<serde_json::Value, String> {
+    let mut request_body = json!({
+        "model": credential.model.clone(),
+        "messages": messages,
+        "stream": false,
+    });
+    if let Some(object) = request_body.as_object_mut() {
+        object.insert("tools".to_string(), direct_provider_tools());
+        object.insert("tool_choice".to_string(), json!("auto"));
+    }
+
+    let response = client
+        .post(openai_chat_completions_url(&credential.base_url))
+        .bearer_auth(&credential.api_key)
+        .header("Content-Type", "application/json")
+        .body(request_body.to_string())
+        .send()
+        .await
+        .map_err(|err| format!("Provider request failed: {}", err))?;
+
+    let status = response.status();
+    let response_text = response
+        .text()
+        .await
+        .map_err(|err| format!("Failed to read provider response: {}", err))?;
+
+    if !status.is_success() {
+        return Err(format!("Provider returned HTTP {}: {}", status, response_text));
+    }
+
+    serde_json::from_str(&response_text)
+        .map_err(|err| format!("Provider returned invalid JSON: {}", err))
+}
+
 async fn execute_openai_compatible_provider(
     window: WebviewWindow,
     project_path: String,
@@ -1852,176 +2833,199 @@ async fn execute_openai_compatible_provider(
 ) -> Result<(), String> {
     let started = std::time::Instant::now();
     let session_id = session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let process_key = format!("{}:{}", window.label(), tab_id);
+    let project_root = match canonical_project_root(&project_path) {
+        Ok(path) => path,
+        Err(err) => {
+            emit_direct_error(&window, &tab_id, err);
+            emit_direct_complete(&window, &tab_id, false);
+            return Ok(());
+        }
+    };
 
     let init = json!({
         "type": "system",
         "subtype": "init",
         "session_id": session_id,
         "model": credential.model.clone(),
-        "cwd": project_path,
-        "tools": [],
+        "cwd": project_path.clone(),
+        "tools": ["Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "Bash"],
     });
-    let _ = window.emit(
-        "claude-output",
-        ClaudeOutputEvent {
-            tab_id: tab_id.clone(),
-            data: init.to_string(),
-        },
-    );
-
     let state = window.state::<ClaudeProcessState>();
-    let prior_messages = {
+    clear_direct_provider_cancelled(&state, &process_key).await;
+    emit_and_persist_direct_output(&window, &project_path, &session_id, &tab_id, &init);
+
+    let mut messages = {
         let sessions = state.direct_sessions.lock().await;
         sessions.get(&session_id).cloned().unwrap_or_default()
     };
+    if messages.is_empty() {
+        messages = load_direct_provider_messages(&project_path, &session_id).unwrap_or_default();
+    }
 
-    let mut messages = vec![json!({
+    let mut request_messages = vec![json!({
         "role": "system",
         "content": direct_provider_system_prompt(),
     })];
-    for message in &prior_messages {
-        messages.push(json!({
-            "role": message.role,
-            "content": message.content,
-        }));
-    }
+    request_messages.extend(messages.clone());
+    request_messages.push(json!({ "role": "user", "content": prompt.clone() }));
     messages.push(json!({
         "role": "user",
-        "content": prompt,
+        "content": prompt.clone(),
     }));
-
-    let request_body = json!({
-        "model": credential.model.clone(),
-        "messages": messages,
-        "stream": false,
-    });
-
-    let client = reqwest::Client::new();
-    let url = openai_chat_completions_url(&credential.base_url);
-    let response = match client
-        .post(url)
-        .bearer_auth(&credential.api_key)
-        .header("Content-Type", "application/json")
-        .body(request_body.to_string())
-        .send()
-        .await
-    {
-        Ok(response) => response,
-        Err(err) => {
-            let _ = window.emit(
-                "claude-error",
-                ClaudeErrorEvent {
-                    tab_id: tab_id.clone(),
-                    data: format!("Provider request failed: {}", err),
-                },
-            );
-            let _ = window.emit(
-                "claude-complete",
-                ClaudeCompleteEvent {
-                    tab_id,
-                    success: false,
-                },
-            );
-            return Ok(());
-        }
-    };
-
-    let status = response.status();
-    let response_text = response
-        .text()
-        .await
-        .map_err(|err| format!("Failed to read provider response: {}", err))?;
-
-    if !status.is_success() {
-        let _ = window.emit(
-            "claude-error",
-            ClaudeErrorEvent {
-                tab_id: tab_id.clone(),
-                data: format!("Provider returned HTTP {}: {}", status, response_text),
-            },
-        );
-        let _ = window.emit(
-            "claude-complete",
-            ClaudeCompleteEvent {
-                tab_id,
-                success: false,
-            },
-        );
-        return Ok(());
-    }
-
-    let value: serde_json::Value = match serde_json::from_str(&response_text) {
-        Ok(value) => value,
-        Err(err) => {
-            let _ = window.emit(
-                "claude-error",
-                ClaudeErrorEvent {
-                    tab_id: tab_id.clone(),
-                    data: format!("Provider returned invalid JSON: {}", err),
-                },
-            );
-            let _ = window.emit(
-                "claude-complete",
-                ClaudeCompleteEvent {
-                    tab_id,
-                    success: false,
-                },
-            );
-            return Ok(());
-        }
-    };
-
-    let content = value
-        .pointer("/choices/0/message/content")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-
-    if content.trim().is_empty() {
-        let _ = window.emit(
-            "claude-error",
-            ClaudeErrorEvent {
-                tab_id: tab_id.clone(),
-                data: "Provider response did not include message content".to_string(),
-            },
-        );
-        let _ = window.emit(
-            "claude-complete",
-            ClaudeCompleteEvent {
-                tab_id,
-                success: false,
-            },
-        );
-        return Ok(());
-    }
-
-    let usage = json_usage(&value);
-    let assistant = json!({
-        "type": "assistant",
+    let user_event = json!({
+        "type": "user",
         "message": {
-            "content": [{ "type": "text", "text": content }],
-            "usage": usage,
+            "content": [{ "type": "text", "text": prompt.clone() }],
         },
     });
-    let _ = window.emit(
-        "claude-output",
-        ClaudeOutputEvent {
-            tab_id: tab_id.clone(),
-            data: assistant.to_string(),
-        },
-    );
+    if let Err(err) = append_direct_session_event(&project_path, &session_id, &user_event) {
+        eprintln!("[direct-provider] failed to persist user event: {}", err);
+    }
+
+    let final_content: String;
+    let mut final_usage = json!({ "input_tokens": 0, "output_tokens": 0 });
+    let mut turns = 0_u64;
+    let client = reqwest::Client::new();
+
+    loop {
+        turns += 1;
+        if turns > 12 {
+            let message = "Provider stopped because it used tools too many times without producing a final answer.";
+            emit_direct_error(&window, &tab_id, message);
+            let result = json!({
+                "type": "result",
+                "subtype": "error",
+                "is_error": true,
+                "result": message,
+                "duration_ms": started.elapsed().as_millis() as u64,
+                "duration_api_ms": started.elapsed().as_millis() as u64,
+                "num_turns": turns,
+                "usage": final_usage,
+            });
+            emit_and_persist_direct_output(&window, &project_path, &session_id, &tab_id, &result);
+            emit_direct_complete(&window, &tab_id, false);
+            return Ok(());
+        }
+
+        if direct_provider_cancelled(&state, &process_key).await {
+            return Ok(());
+        }
+
+        let response = match send_openai_compatible_chat_request(
+            &client,
+            &credential,
+            &request_messages,
+        )
+        .await
+        {
+            Ok(value) => value,
+            Err(err) => {
+                emit_direct_error(&window, &tab_id, err);
+                emit_direct_complete(&window, &tab_id, false);
+                return Ok(());
+            }
+        };
+
+        if direct_provider_cancelled(&state, &process_key).await {
+            return Ok(());
+        }
+
+        let content = direct_assistant_content(&response);
+        let tool_calls = parse_direct_tool_calls(&response);
+        let usage = json_usage(&response);
+        final_usage = usage.clone();
+
+        let mut content_blocks = Vec::new();
+        if !content.trim().is_empty() {
+            content_blocks.push(json!({ "type": "text", "text": content.clone() }));
+        }
+        for tool_call in &tool_calls {
+            content_blocks.push(json!({
+                "type": "tool_use",
+                "id": tool_call.id,
+                "name": tool_call.name,
+                "input": tool_call.input,
+            }));
+        }
+
+        if content_blocks.is_empty() {
+            let message = "Provider response did not include message content or tool calls";
+            emit_direct_error(&window, &tab_id, message);
+            emit_direct_complete(&window, &tab_id, false);
+            return Ok(());
+        }
+
+        let assistant_event = json!({
+            "type": "assistant",
+            "message": {
+                "content": content_blocks,
+                "usage": usage.clone(),
+            },
+        });
+        emit_and_persist_direct_output(
+            &window,
+            &project_path,
+            &session_id,
+            &tab_id,
+            &assistant_event,
+        );
+
+        let assistant_message = response
+            .pointer("/choices/0/message")
+            .cloned()
+            .unwrap_or_else(|| {
+                json!({
+                    "role": "assistant",
+                    "content": content.clone(),
+                })
+            });
+        request_messages.push(assistant_message.clone());
+        messages.push(assistant_message);
+
+        if tool_calls.is_empty() {
+            final_content = content;
+            break;
+        }
+
+        let mut tool_result_blocks = Vec::new();
+        for tool_call in &tool_calls {
+            let output =
+                execute_direct_provider_tool(&project_root, &tool_call.name, &tool_call.input)
+                    .await;
+            tool_result_blocks.push(json!({
+                "type": "tool_result",
+                "tool_use_id": tool_call.id,
+                "content": output.content,
+                "is_error": output.is_error,
+            }));
+            let tool_message = json!({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "content": output.content,
+            });
+            request_messages.push(tool_message.clone());
+            messages.push(tool_message);
+        }
+
+        let tool_result_event = json!({
+            "type": "user",
+            "message": {
+                "content": tool_result_blocks,
+            },
+        });
+        emit_and_persist_direct_output(
+            &window,
+            &project_path,
+            &session_id,
+            &tab_id,
+            &tool_result_event,
+        );
+    }
 
     {
         let mut sessions = state.direct_sessions.lock().await;
-        let history = sessions.entry(session_id.clone()).or_default();
-        history.push(DirectProviderMessage {
-            role: "user".to_string(),
-            content: prompt,
-        });
-        history.push(DirectProviderMessage {
-            role: "assistant".to_string(),
-            content: content.clone(),
-        });
+        sessions.insert(session_id.clone(), messages);
     }
 
     let elapsed_ms = started.elapsed().as_millis() as u64;
@@ -2029,26 +3033,15 @@ async fn execute_openai_compatible_provider(
         "type": "result",
         "subtype": "success",
         "is_error": false,
-        "result": content,
+        "result": final_content,
         "duration_ms": elapsed_ms,
         "duration_api_ms": elapsed_ms,
-        "num_turns": 1,
-        "usage": usage,
+        "num_turns": turns,
+        "usage": final_usage,
     });
-    let _ = window.emit(
-        "claude-output",
-        ClaudeOutputEvent {
-            tab_id: tab_id.clone(),
-            data: result.to_string(),
-        },
-    );
-    let _ = window.emit(
-        "claude-complete",
-        ClaudeCompleteEvent {
-            tab_id,
-            success: true,
-        },
-    );
+    emit_and_persist_direct_output(&window, &project_path, &session_id, &tab_id, &result);
+    clear_direct_provider_cancelled(&state, &process_key).await;
+    emit_direct_complete(&window, &tab_id, true);
 
     Ok(())
 }
@@ -2172,7 +3165,22 @@ pub async fn cancel_claude_execution(window: WebviewWindow, tab_id: String) -> R
                 success: false,
             },
         );
+        return Ok(());
     }
+
+    drop(processes);
+    claude_state
+        .direct_cancellations
+        .lock()
+        .await
+        .insert(process_key);
+    let _ = window.emit(
+        "claude-complete",
+        ClaudeCompleteEvent {
+            tab_id,
+            success: false,
+        },
+    );
     Ok(())
 }
 
@@ -2839,6 +3847,79 @@ mod tests {
         let (title, ts) = extract_first_user_message(&pb);
         assert_eq!(title.unwrap(), "Add a new section");
         assert_eq!(ts.unwrap(), "2024-01-02T00:00:00Z");
+    }
+
+    // --- direct provider tools ---
+
+    #[tokio::test]
+    async fn test_direct_provider_tools_read_edit_and_grep_project_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = canonical_project_root(dir.path().to_str().unwrap()).unwrap();
+        let main = root.join("main.tex");
+        std::fs::write(&main, "\\section{Old Title}\nBody text").unwrap();
+
+        let read = execute_direct_provider_tool(
+            &root,
+            "Read",
+            &json!({ "file_path": "main.tex", "limit": 1 }),
+        )
+        .await;
+        assert!(!read.is_error);
+        assert!(read.content.contains("\\section{Old Title}"));
+
+        let edit = execute_direct_provider_tool(
+            &root,
+            "Edit",
+            &json!({
+                "file_path": "main.tex",
+                "old_string": "Old Title",
+                "new_string": "New Title",
+            }),
+        )
+        .await;
+        assert!(!edit.is_error);
+        assert!(std::fs::read_to_string(&main).unwrap().contains("New Title"));
+
+        let grep = execute_direct_provider_tool(
+            &root,
+            "Grep",
+            &json!({ "pattern": "New Title", "glob": "*.tex" }),
+        )
+        .await;
+        assert!(!grep.is_error);
+        assert!(grep.content.contains("main.tex:1"));
+    }
+
+    #[tokio::test]
+    async fn test_direct_provider_tools_reject_paths_outside_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = canonical_project_root(dir.path().to_str().unwrap()).unwrap();
+
+        let write = execute_direct_provider_tool(
+            &root,
+            "Write",
+            &json!({ "file_path": "../outside.tex", "content": "nope" }),
+        )
+        .await;
+        assert!(write.is_error);
+        assert!(write.content.contains("outside the project"));
+    }
+
+    #[tokio::test]
+    async fn test_direct_provider_glob_lists_matching_project_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = canonical_project_root(dir.path().to_str().unwrap()).unwrap();
+        std::fs::create_dir_all(root.join("chapters")).unwrap();
+        std::fs::write(root.join("main.tex"), "main").unwrap();
+        std::fs::write(root.join("chapters").join("intro.tex"), "intro").unwrap();
+        std::fs::write(root.join("notes.md"), "notes").unwrap();
+
+        let glob = execute_direct_provider_tool(&root, "Glob", &json!({ "pattern": "*.tex" }))
+            .await;
+        assert!(!glob.is_error);
+        assert!(glob.content.contains("main.tex"));
+        assert!(glob.content.contains("chapters/intro.tex"));
+        assert!(!glob.content.contains("notes.md"));
     }
 
     // --- claude_required_dirs ---

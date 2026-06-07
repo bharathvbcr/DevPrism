@@ -1,4 +1,6 @@
-import { describe, it, expect } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { invoke } from "@tauri-apps/api/core";
+import { useClaudeSetupStore } from "@/stores/claude-setup-store";
 
 // advanceSteps is module-private — replicate for testing
 type StepStatus = "pending" | "active" | "complete" | "error";
@@ -93,5 +95,92 @@ describe("advanceSteps", () => {
     expect(result[0].status).toBe("complete");
     expect(result[1].status).toBe("active");
     expect(result[2].status).toBe("pending");
+  });
+});
+
+describe("useClaudeSetupStore.saveApiKey", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useClaudeSetupStore.setState({
+      status: "not-installed",
+      isInstalling: false,
+      isLoggingIn: false,
+      isSavingApiKey: false,
+      error: null,
+      version: null,
+      accountEmail: null,
+      providerModel: null,
+      providerBaseUrl: null,
+      installSteps: [],
+      installLogs: [],
+      installLogsVisible: false,
+      loginSteps: [],
+    });
+  });
+
+  it("verifies OpenAI-compatible credentials before saving them", async () => {
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "check_claude_status") {
+        return {
+          installed: true,
+          authenticated: true,
+          binary_path: null,
+          version: "OpenAI-compatible provider",
+          account_email: null,
+          provider_model: "deepseek-v4-pro",
+          provider_base_url: "https://api.deepseek.com",
+          missing_git: false,
+        };
+      }
+      return null;
+    });
+
+    const success = await useClaudeSetupStore
+      .getState()
+      .saveApiKey(
+        "sk-test",
+        "https://api.deepseek.com",
+        "openai-compatible",
+        "deepseek-v4-pro",
+      );
+
+    expect(success).toBe(true);
+    expect(invoke).toHaveBeenNthCalledWith(1, "verify_openai_compatible_api_key", {
+      apiKey: "sk-test",
+      baseUrl: "https://api.deepseek.com",
+      model: "deepseek-v4-pro",
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, "save_anthropic_api_key", {
+      apiKey: "sk-test",
+      baseUrl: "https://api.deepseek.com",
+      provider: "openai-compatible",
+      model: "deepseek-v4-pro",
+    });
+  });
+
+  it("does not save OpenAI-compatible credentials when verification fails", async () => {
+    vi.mocked(invoke).mockRejectedValueOnce(
+      new Error("Invalid provider API key"),
+    );
+
+    const success = await useClaudeSetupStore
+      .getState()
+      .saveApiKey(
+        "sk-test",
+        "https://api.deepseek.com",
+        "openai-compatible",
+        "deepseek-v4-pro",
+      );
+
+    expect(success).toBe(false);
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledWith("verify_openai_compatible_api_key", {
+      apiKey: "sk-test",
+      baseUrl: "https://api.deepseek.com",
+      model: "deepseek-v4-pro",
+    });
+    expect(useClaudeSetupStore.getState().error).toBe(
+      "Invalid provider API key",
+    );
   });
 });

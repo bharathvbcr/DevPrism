@@ -480,6 +480,7 @@ pub fn run() {
             claude::install_claude_cli,
             claude::login_claude,
             claude::save_anthropic_api_key,
+            claude::verify_openai_compatible_api_key,
             claude::clear_anthropic_api_key,
             claude::execute_claude_code,
             claude::continue_claude_code,

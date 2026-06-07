@@ -534,7 +534,13 @@ export function ClaudeSetup() {
             ) : (
               <KeyRoundIcon className="size-3.5" />
             )}
-            {isSavingApiKey ? "Saving..." : "Use API Key"}
+            {isSavingApiKey
+              ? selectedProvider === "openai-compatible"
+                ? "Verifying..."
+                : "Saving..."
+              : selectedProvider === "openai-compatible"
+                ? "Verify & Use API Key"
+                : "Use API Key"}
           </Button>
         </form>
 

@@ -1955,6 +1955,18 @@ fn direct_provider_tools() -> serde_json::Value {
     ])
 }
 
+fn direct_provider_functions() -> serde_json::Value {
+    let Some(tools) = direct_provider_tools().as_array().cloned() else {
+        return json!([]);
+    };
+    json!(
+        tools
+            .into_iter()
+            .filter_map(|tool| tool.get("function").cloned())
+            .collect::<Vec<_>>()
+    )
+}
+
 fn openai_chat_completions_url(base_url: &str) -> String {
     let clean = base_url.trim_end_matches('/');
     if clean.ends_with("/chat/completions") {
@@ -1986,6 +1998,7 @@ struct DirectToolCall {
     id: String,
     name: String,
     input: serde_json::Value,
+    legacy_function_call: bool,
 }
 
 struct DirectToolOutput {
@@ -2007,12 +2020,20 @@ struct DirectStreamingToolCall {
     id: Option<String>,
     name: String,
     arguments: String,
+    legacy_function_call: bool,
 }
 
 struct DirectStreamFailure {
     message: String,
     can_retry_non_streaming: bool,
     can_retry_without_tools: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DirectToolRequestMode {
+    Tools,
+    Functions,
+    None,
 }
 
 fn emit_direct_output(window: &WebviewWindow, tab_id: &str, event: &serde_json::Value) {
@@ -2782,7 +2803,7 @@ fn parse_direct_tool_arguments(arguments: &serde_json::Value) -> serde_json::Val
 }
 
 fn parse_direct_tool_calls(response: &serde_json::Value) -> Vec<DirectToolCall> {
-    response
+    let calls: Vec<DirectToolCall> = response
         .pointer("/choices/0/message/tool_calls")
         .and_then(|v| v.as_array())
         .map(|calls| {
@@ -2800,9 +2821,34 @@ fn parse_direct_tool_calls(response: &serde_json::Value) -> Vec<DirectToolCall> 
                         .pointer("/function/arguments")
                         .map(parse_direct_tool_arguments)
                         .unwrap_or_else(|| json!({}));
-                    Some(DirectToolCall { id, name, input })
+                    Some(DirectToolCall {
+                        id,
+                        name,
+                        input,
+                        legacy_function_call: false,
+                    })
                 })
                 .collect()
+        })
+        .unwrap_or_default();
+    if !calls.is_empty() {
+        return calls;
+    }
+
+    response
+        .pointer("/choices/0/message/function_call")
+        .and_then(|call| {
+            let name = call.get("name")?.as_str()?.to_string();
+            let input = call
+                .get("arguments")
+                .map(parse_direct_tool_arguments)
+                .unwrap_or_else(|| json!({}));
+            Some(vec![DirectToolCall {
+                id: "function_call_1".to_string(),
+                name,
+                input,
+                legacy_function_call: true,
+            }])
         })
         .unwrap_or_default()
 }
@@ -2975,6 +3021,7 @@ fn direct_tool_calls_from_stream(
                 id,
                 name: call.name,
                 input,
+                legacy_function_call: call.legacy_function_call,
             })
         })
         .collect()
@@ -2998,7 +3045,17 @@ fn direct_message_from_parts(
             object.insert("reasoning_content".to_string(), json!(reasoning));
         }
     }
-    if !tool_calls.is_empty() {
+    if let Some(tool_call) = tool_calls.iter().find(|tool_call| tool_call.legacy_function_call) {
+        if let Some(object) = message.as_object_mut() {
+            object.insert(
+                "function_call".to_string(),
+                json!({
+                    "name": tool_call.name,
+                    "arguments": tool_call.input.to_string(),
+                }),
+            );
+        }
+    } else if !tool_calls.is_empty() {
         if let Some(object) = message.as_object_mut() {
             object.insert(
                 "tool_calls".to_string(),
@@ -3038,21 +3095,112 @@ fn provider_error_allows_toolless_retry(status: reqwest::StatusCode, body: &str)
         || body.contains("unknown parameter")
 }
 
-fn add_direct_request_tooling(request_body: &mut serde_json::Value, use_tools: bool) {
-    if !use_tools {
+fn add_direct_request_tooling(request_body: &mut serde_json::Value, mode: DirectToolRequestMode) {
+    let Some(object) = request_body.as_object_mut() else {
         return;
+    };
+    match mode {
+        DirectToolRequestMode::Tools => {
+            object.insert("tools".to_string(), direct_provider_tools());
+            object.insert("tool_choice".to_string(), json!("auto"));
+        }
+        DirectToolRequestMode::Functions => {
+            object.insert("functions".to_string(), direct_provider_functions());
+            object.insert("function_call".to_string(), json!("auto"));
+        }
+        DirectToolRequestMode::None => {}
     }
-    if let Some(object) = request_body.as_object_mut() {
-        object.insert("tools".to_string(), direct_provider_tools());
-        object.insert("tool_choice".to_string(), json!("auto"));
+}
+
+fn direct_messages_for_legacy_functions(messages: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
+    let mut tool_names: HashMap<String, String> = HashMap::new();
+    let mut converted = Vec::new();
+
+    for mut message in messages {
+        match message.get("role").and_then(|v| v.as_str()) {
+            Some("assistant") => {
+                if let Some(tool_calls) = message.get("tool_calls").and_then(|v| v.as_array()) {
+                    for tool_call in tool_calls {
+                        if let (Some(id), Some(name)) = (
+                            tool_call.get("id").and_then(|v| v.as_str()),
+                            tool_call.pointer("/function/name").and_then(|v| v.as_str()),
+                        ) {
+                            tool_names.insert(id.to_string(), name.to_string());
+                        }
+                    }
+
+                    if let Some((name, arguments)) = tool_calls.first().map(|first| {
+                        let name = first
+                            .pointer("/function/name")
+                            .and_then(|v| v.as_str())
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|| "tool".to_string());
+                        let arguments = first
+                            .pointer("/function/arguments")
+                            .and_then(|v| v.as_str())
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|| {
+                                first
+                                    .pointer("/function/arguments")
+                                    .map(|v| v.to_string())
+                                    .unwrap_or_else(|| "{}".to_string())
+                            });
+                        (name, arguments)
+                    }) {
+                        if let Some(object) = message.as_object_mut() {
+                            object.remove("tool_calls");
+                            object.insert(
+                                "function_call".to_string(),
+                                json!({
+                                    "name": name,
+                                    "arguments": arguments,
+                                }),
+                            );
+                            if object.get("content").is_none() {
+                                object.insert("content".to_string(), serde_json::Value::Null);
+                            }
+                        }
+                    }
+                }
+                converted.push(message);
+            }
+            Some("tool") => {
+                let tool_call_id = message
+                    .get("tool_call_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let name = tool_names
+                    .get(tool_call_id)
+                    .cloned()
+                    .unwrap_or_else(|| "tool_result".to_string());
+                let content = message
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| {
+                        message
+                            .get("content")
+                            .map(|v| v.to_string())
+                            .unwrap_or_default()
+                    });
+                converted.push(json!({
+                    "role": "function",
+                    "name": name,
+                    "content": content,
+                }));
+            }
+            _ => converted.push(message),
+        }
     }
+
+    converted
 }
 
 fn direct_messages_for_tool_capability(
     messages: &[serde_json::Value],
-    use_tools: bool,
+    mode: DirectToolRequestMode,
 ) -> Vec<serde_json::Value> {
-    if use_tools {
+    if mode == DirectToolRequestMode::Tools {
         return messages.to_vec();
     }
 
@@ -3061,10 +3209,12 @@ fn direct_messages_for_tool_capability(
         let role = message.get("role").and_then(|v| v.as_str());
         if role == Some("system") {
             if let Some(object) = message.as_object_mut() {
-                object.insert(
-                    "content".to_string(),
-                    json!(direct_provider_no_tools_system_prompt()),
-                );
+                let prompt = if mode == DirectToolRequestMode::Functions {
+                    direct_provider_system_prompt()
+                } else {
+                    direct_provider_no_tools_system_prompt()
+                };
+                object.insert("content".to_string(), json!(prompt));
             }
             break;
         }
@@ -3078,9 +3228,17 @@ fn direct_messages_for_tool_capability(
             0,
             json!({
                 "role": "system",
-                "content": direct_provider_no_tools_system_prompt(),
+                "content": if mode == DirectToolRequestMode::Functions {
+                    direct_provider_system_prompt()
+                } else {
+                    direct_provider_no_tools_system_prompt()
+                },
             }),
         );
+    }
+
+    if mode == DirectToolRequestMode::Functions {
+        return direct_messages_for_legacy_functions(messages);
     }
 
     let mut sanitized = Vec::new();
@@ -3138,7 +3296,14 @@ async fn send_openai_compatible_chat_request(
     process_key: &str,
 ) -> Result<DirectChatResponse, String> {
     match send_openai_compatible_streaming_chat_request(
-        client, credential, messages, window, tab_id, state, process_key, true,
+        client,
+        credential,
+        messages,
+        window,
+        tab_id,
+        state,
+        process_key,
+        DirectToolRequestMode::Tools,
     )
     .await
     {
@@ -3149,14 +3314,80 @@ async fn send_openai_compatible_chat_request(
                 err.message
             );
             match send_openai_compatible_non_streaming_chat_request(
-                client, credential, messages, true,
+                client,
+                credential,
+                messages,
+                DirectToolRequestMode::Tools,
             )
             .await
             {
                 Ok(response) => Ok(response),
                 Err(err) if err.can_retry_without_tools => {
                     eprintln!(
-                        "[direct-provider] provider rejected tools, retrying without tools: {}",
+                        "[direct-provider] provider rejected modern tools, retrying legacy functions: {}",
+                        err.message
+                    );
+                    send_openai_compatible_with_legacy_functions(
+                        client, credential, messages, window, tab_id, state, process_key,
+                    )
+                    .await
+                }
+                Err(err) => Err(err.message),
+            }
+        }
+        Err(err) if err.can_retry_without_tools => {
+            eprintln!(
+                "[direct-provider] provider rejected streaming tools, retrying legacy functions: {}",
+                err.message
+            );
+            send_openai_compatible_with_legacy_functions(
+                client, credential, messages, window, tab_id, state, process_key,
+            )
+            .await
+        }
+        Err(err) => Err(err.message),
+    }
+}
+
+async fn send_openai_compatible_with_legacy_functions(
+    client: &reqwest::Client,
+    credential: &StoredOpenAiCompatibleCredential,
+    messages: &[serde_json::Value],
+    window: &WebviewWindow,
+    tab_id: &str,
+    state: &ClaudeProcessState,
+    process_key: &str,
+) -> Result<DirectChatResponse, String> {
+    match send_openai_compatible_streaming_chat_request(
+        client,
+        credential,
+        messages,
+        window,
+        tab_id,
+        state,
+        process_key,
+        DirectToolRequestMode::Functions,
+    )
+    .await
+    {
+        Ok(response) => Ok(response),
+        Err(err) if err.can_retry_non_streaming => {
+            eprintln!(
+                "[direct-provider] legacy function streaming failed, retrying non-streaming: {}",
+                err.message
+            );
+            match send_openai_compatible_non_streaming_chat_request(
+                client,
+                credential,
+                messages,
+                DirectToolRequestMode::Functions,
+            )
+            .await
+            {
+                Ok(response) => Ok(response),
+                Err(err) if err.can_retry_without_tools => {
+                    eprintln!(
+                        "[direct-provider] provider rejected legacy functions, retrying without tools: {}",
                         err.message
                     );
                     send_openai_compatible_without_tools(
@@ -3169,7 +3400,7 @@ async fn send_openai_compatible_chat_request(
         }
         Err(err) if err.can_retry_without_tools => {
             eprintln!(
-                "[direct-provider] provider rejected streaming tools, retrying without tools: {}",
+                "[direct-provider] provider rejected legacy function streaming, retrying without tools: {}",
                 err.message
             );
             send_openai_compatible_without_tools(
@@ -3191,15 +3422,27 @@ async fn send_openai_compatible_without_tools(
     process_key: &str,
 ) -> Result<DirectChatResponse, String> {
     match send_openai_compatible_streaming_chat_request(
-        client, credential, messages, window, tab_id, state, process_key, false,
+        client,
+        credential,
+        messages,
+        window,
+        tab_id,
+        state,
+        process_key,
+        DirectToolRequestMode::None,
     )
     .await
     {
         Ok(response) => Ok(response),
         Err(err) if err.can_retry_non_streaming => {
-            send_openai_compatible_non_streaming_chat_request(client, credential, messages, false)
-                .await
-                .map_err(|err| err.message)
+            send_openai_compatible_non_streaming_chat_request(
+                client,
+                credential,
+                messages,
+                DirectToolRequestMode::None,
+            )
+            .await
+            .map_err(|err| err.message)
         }
         Err(err) => Err(err.message),
     }
@@ -3214,15 +3457,15 @@ async fn send_openai_compatible_non_streaming_chat_request(
     client: &reqwest::Client,
     credential: &StoredOpenAiCompatibleCredential,
     messages: &[serde_json::Value],
-    use_tools: bool,
+    mode: DirectToolRequestMode,
 ) -> Result<DirectChatResponse, DirectProviderRequestFailure> {
-    let request_messages = direct_messages_for_tool_capability(messages, use_tools);
+    let request_messages = direct_messages_for_tool_capability(messages, mode);
     let mut request_body = json!({
         "model": credential.model.clone(),
         "messages": request_messages,
         "stream": false,
     });
-    add_direct_request_tooling(&mut request_body, use_tools);
+    add_direct_request_tooling(&mut request_body, mode);
 
     let response = client
         .post(openai_chat_completions_url(&credential.base_url))
@@ -3269,15 +3512,15 @@ async fn send_openai_compatible_streaming_chat_request(
     tab_id: &str,
     state: &ClaudeProcessState,
     process_key: &str,
-    use_tools: bool,
+    mode: DirectToolRequestMode,
 ) -> Result<DirectChatResponse, DirectStreamFailure> {
-    let request_messages = direct_messages_for_tool_capability(messages, use_tools);
+    let request_messages = direct_messages_for_tool_capability(messages, mode);
     let mut request_body = json!({
         "model": credential.model.clone(),
         "messages": request_messages,
         "stream": true,
     });
-    add_direct_request_tooling(&mut request_body, use_tools);
+    add_direct_request_tooling(&mut request_body, mode);
 
     let mut response = client
         .post(openai_chat_completions_url(&credential.base_url))
@@ -3389,6 +3632,21 @@ async fn send_openai_compatible_streaming_chat_request(
                     {
                         entry.arguments.push_str(arguments);
                     }
+                }
+            }
+            if let Some(function_call) = delta.get("function_call") {
+                let entry = tool_calls.entry(0).or_default();
+                entry.legacy_function_call = true;
+                if entry.id.is_none() {
+                    entry.id = Some("function_call_1".to_string());
+                }
+                if let Some(name) = function_call.get("name").and_then(|v| v.as_str()) {
+                    entry.name.push_str(name);
+                }
+                if let Some(arguments) =
+                    function_call.get("arguments").and_then(|v| v.as_str())
+                {
+                    entry.arguments.push_str(arguments);
                 }
             }
         }
@@ -3593,11 +3851,19 @@ async fn execute_openai_compatible_provider(
                 "content": output.content,
                 "is_error": output.is_error,
             }));
-            let tool_message = json!({
-                "role": "tool",
-                "tool_call_id": tool_call.id,
-                "content": output.content,
-            });
+            let tool_message = if tool_call.legacy_function_call {
+                json!({
+                    "role": "function",
+                    "name": tool_call.name,
+                    "content": output.content,
+                })
+            } else {
+                json!({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": output.content,
+                })
+            };
             request_messages.push(tool_message.clone());
             messages.push(tool_message);
         }
@@ -4552,6 +4818,30 @@ mod tests {
     }
 
     #[test]
+    fn test_direct_provider_parses_legacy_function_call() {
+        let response = json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "function_call": {
+                        "name": "Read",
+                        "arguments": "{\"file_path\":\"main.tex\"}"
+                    }
+                }
+            }]
+        });
+
+        let calls = parse_direct_tool_calls(&response);
+
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "function_call_1");
+        assert_eq!(calls[0].name, "Read");
+        assert_eq!(calls[0].input["file_path"], "main.tex");
+        assert!(calls[0].legacy_function_call);
+    }
+
+    #[test]
     fn test_direct_provider_reconstructs_streamed_tool_calls() {
         let mut calls = HashMap::new();
         calls.insert(
@@ -4560,6 +4850,7 @@ mod tests {
                 id: Some("call-1".to_string()),
                 name: "Read".to_string(),
                 arguments: "{\"file_path\":\"main.tex\"}".to_string(),
+                legacy_function_call: false,
             },
         );
 
@@ -4572,6 +4863,32 @@ mod tests {
         assert_eq!(message["content"], "Checking the file");
         assert_eq!(message["reasoning_content"], "Thinking aloud");
         assert_eq!(message["tool_calls"][0]["function"]["name"], "Read");
+    }
+
+    #[test]
+    fn test_direct_provider_reconstructs_streamed_legacy_function_call() {
+        let mut calls = HashMap::new();
+        calls.insert(
+            0,
+            DirectStreamingToolCall {
+                id: Some("function_call_1".to_string()),
+                name: "Read".to_string(),
+                arguments: "{\"file_path\":\"main.tex\"}".to_string(),
+                legacy_function_call: true,
+            },
+        );
+
+        let calls = direct_tool_calls_from_stream(calls);
+        let message = direct_message_from_parts("", "", &calls);
+
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].legacy_function_call);
+        assert!(message.get("tool_calls").is_none());
+        assert_eq!(message["function_call"]["name"], "Read");
+        assert_eq!(
+            message["function_call"]["arguments"],
+            "{\"file_path\":\"main.tex\"}"
+        );
     }
 
     #[test]
@@ -4627,7 +4944,7 @@ mod tests {
             json!({ "role": "user", "content": "Please edit main.tex" }),
         ];
 
-        let no_tools = direct_messages_for_tool_capability(&messages, false);
+        let no_tools = direct_messages_for_tool_capability(&messages, DirectToolRequestMode::None);
         let content = no_tools[0]["content"].as_str().unwrap();
 
         assert!(content.contains("does not support tool calls"));
@@ -4651,7 +4968,7 @@ mod tests {
             json!({ "role": "tool", "tool_call_id": "call-1", "content": "main.tex contents" }),
         ];
 
-        let no_tools = direct_messages_for_tool_capability(&messages, false);
+        let no_tools = direct_messages_for_tool_capability(&messages, DirectToolRequestMode::None);
 
         assert!(no_tools[1].get("tool_calls").is_none());
         assert_eq!(no_tools[1]["role"], "assistant");
@@ -4660,6 +4977,32 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Previous tool result call-1"));
+    }
+
+    #[test]
+    fn test_direct_provider_legacy_function_messages_convert_tool_history() {
+        let messages = vec![
+            json!({ "role": "system", "content": direct_provider_system_prompt() }),
+            json!({
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": "call-1",
+                    "type": "function",
+                    "function": { "name": "Read", "arguments": "{\"file_path\":\"main.tex\"}" }
+                }]
+            }),
+            json!({ "role": "tool", "tool_call_id": "call-1", "content": "main.tex contents" }),
+        ];
+
+        let function_messages =
+            direct_messages_for_tool_capability(&messages, DirectToolRequestMode::Functions);
+
+        assert!(function_messages[1].get("tool_calls").is_none());
+        assert_eq!(function_messages[1]["function_call"]["name"], "Read");
+        assert_eq!(function_messages[2]["role"], "function");
+        assert_eq!(function_messages[2]["name"], "Read");
+        assert_eq!(function_messages[2]["content"], "main.tex contents");
     }
 
     // --- claude_required_dirs ---

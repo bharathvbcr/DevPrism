@@ -2155,19 +2155,59 @@ fn direct_reasoning_history_mode(
     }
 }
 
+fn usage_u64(usage: &serde_json::Value, keys: &[&str]) -> Option<u64> {
+    keys.iter()
+        .find_map(|key| usage.get(*key).and_then(|v| v.as_u64()))
+}
+
 fn json_usage(value: &serde_json::Value) -> serde_json::Value {
-    let input_tokens = value
-        .pointer("/usage/prompt_tokens")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    let output_tokens = value
-        .pointer("/usage/completion_tokens")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
+    let usage = value.get("usage").filter(|usage| !usage.is_null()).unwrap_or(value);
+    let total_tokens = usage_u64(usage, &["total_tokens", "total_token_count"]);
+    let mut input_tokens = usage_u64(
+        usage,
+        &[
+            "prompt_tokens",
+            "input_tokens",
+            "prompt_token_count",
+            "input_token_count",
+        ],
+    );
+    let mut output_tokens = usage_u64(
+        usage,
+        &[
+            "completion_tokens",
+            "output_tokens",
+            "completion_token_count",
+            "output_token_count",
+        ],
+    );
+
+    if let (Some(total), Some(input), None) = (total_tokens, input_tokens, output_tokens) {
+        output_tokens = total.checked_sub(input);
+    }
+    if let (Some(total), None, Some(output)) = (total_tokens, input_tokens, output_tokens) {
+        input_tokens = total.checked_sub(output);
+    }
+
+    let input_tokens = input_tokens.unwrap_or(0);
+    let output_tokens = output_tokens.unwrap_or(0);
     json!({
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
     })
+}
+
+fn usage_has_tokens(usage: &serde_json::Value) -> bool {
+    usage
+        .get("input_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0)
+        > 0
+        || usage
+            .get("output_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+            > 0
 }
 
 #[derive(Clone)]
@@ -4400,7 +4440,10 @@ async fn send_openai_compatible_streaming_chat_request(
                 }
             })?;
             if value.get("usage").is_some() {
-                usage = json_usage(&value);
+                let next_usage = json_usage(&value);
+                if usage_has_tokens(&next_usage) {
+                    usage = next_usage;
+                }
             }
             let Some(delta) = value.pointer("/choices/0/delta") else {
                 continue;
@@ -5414,6 +5457,55 @@ mod tests {
             openai_chat_completions_url("https://openrouter.ai/api/v1"),
             "https://openrouter.ai/api/v1/chat/completions"
         );
+    }
+
+    #[test]
+    fn test_json_usage_reads_openai_standard_tokens() {
+        let usage = json_usage(&json!({
+            "usage": {
+                "prompt_tokens": 11,
+                "completion_tokens": 7,
+                "total_tokens": 18
+            }
+        }));
+
+        assert_eq!(usage["input_tokens"], 11);
+        assert_eq!(usage["output_tokens"], 7);
+    }
+
+    #[test]
+    fn test_json_usage_reads_compatible_input_output_aliases() {
+        let usage = json_usage(&json!({
+            "usage": {
+                "input_tokens": 13,
+                "output_tokens": 5
+            }
+        }));
+
+        assert_eq!(usage["input_tokens"], 13);
+        assert_eq!(usage["output_tokens"], 5);
+    }
+
+    #[test]
+    fn test_json_usage_derives_missing_side_from_total_tokens() {
+        let usage = json_usage(&json!({
+            "usage": {
+                "prompt_token_count": 9,
+                "total_token_count": 14
+            }
+        }));
+
+        assert_eq!(usage["input_tokens"], 9);
+        assert_eq!(usage["output_tokens"], 5);
+    }
+
+    #[test]
+    fn test_json_usage_ignores_null_stream_usage() {
+        let usage = json_usage(&json!({ "usage": null }));
+
+        assert_eq!(usage["input_tokens"], 0);
+        assert_eq!(usage["output_tokens"], 0);
+        assert!(!usage_has_tokens(&usage));
     }
 
     // --- create_command ---

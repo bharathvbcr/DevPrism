@@ -3553,6 +3553,31 @@ fn direct_assistant_reasoning(response: &serde_json::Value) -> String {
     String::new()
 }
 
+fn sanitize_direct_assistant_message_for_history(
+    mut message: serde_json::Value,
+) -> serde_json::Value {
+    let Some(object) = message.as_object_mut() else {
+        return message;
+    };
+
+    object.remove("reasoning_content");
+    object.remove("reasoning");
+    object.remove("reasoning_text");
+
+    if let Some(content) = object.get_mut("content") {
+        if let Some(parts) = content.as_array_mut() {
+            parts.retain(|part| {
+                !matches!(
+                    part.get("type").and_then(|v| v.as_str()),
+                    Some("reasoning") | Some("thinking") | Some("reasoning_text")
+                )
+            });
+        }
+    }
+
+    message
+}
+
 fn direct_chat_response_from_value(response: serde_json::Value) -> DirectChatResponse {
     let content = direct_assistant_content(&response);
     let reasoning = direct_assistant_reasoning(&response);
@@ -3562,6 +3587,7 @@ fn direct_chat_response_from_value(response: serde_json::Value) -> DirectChatRes
         .pointer("/choices/0/message")
         .cloned()
         .unwrap_or_else(|| json!({ "role": "assistant", "content": content.clone() }));
+    let message = sanitize_direct_assistant_message_for_history(message);
     DirectChatResponse {
         message,
         content,
@@ -3676,7 +3702,7 @@ fn direct_tool_calls_from_stream(
 
 fn direct_message_from_parts(
     content: &str,
-    reasoning: &str,
+    _reasoning: &str,
     tool_calls: &[DirectToolCall],
 ) -> serde_json::Value {
     let mut message = json!({
@@ -3687,11 +3713,6 @@ fn direct_message_from_parts(
             json!(content)
         },
     });
-    if !reasoning.trim().is_empty() {
-        if let Some(object) = message.as_object_mut() {
-            object.insert("reasoning_content".to_string(), json!(reasoning));
-        }
-    }
     if let Some(tool_call) = tool_calls.iter().find(|tool_call| tool_call.legacy_function_call) {
         if let Some(object) = message.as_object_mut() {
             object.insert(
@@ -5797,7 +5818,7 @@ mod tests {
         assert_eq!(calls[0].name, "Read");
         assert_eq!(calls[0].input["file_path"], "main.tex");
         assert_eq!(message["content"], "Checking the file");
-        assert_eq!(message["reasoning_content"], "Thinking aloud");
+        assert!(message.get("reasoning_content").is_none());
         assert_eq!(message["tool_calls"][0]["function"]["name"], "Read");
     }
 
@@ -5844,6 +5865,27 @@ mod tests {
             "First reason about structure."
         );
         assert_eq!(direct_assistant_content(&response), "Then answer.");
+    }
+
+    #[test]
+    fn test_direct_provider_strips_reasoning_from_request_history() {
+        let response = json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "reasoning_content": "Hidden chain.",
+                    "reasoning": "Alternate hidden chain.",
+                    "content": "Visible answer."
+                }
+            }]
+        });
+
+        let parsed = direct_chat_response_from_value(response);
+
+        assert_eq!(parsed.reasoning, "Hidden chain.");
+        assert_eq!(parsed.message["content"], "Visible answer.");
+        assert!(parsed.message.get("reasoning_content").is_none());
+        assert!(parsed.message.get("reasoning").is_none());
     }
 
     #[test]

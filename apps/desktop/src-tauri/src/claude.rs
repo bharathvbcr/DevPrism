@@ -256,7 +256,8 @@ pub async fn save_anthropic_api_key(
     let provider = normalize_provider(provider.as_deref())?;
     let model = normalize_model(model.as_deref())?;
 
-    let mut config = read_claude_prism_auth_config()?;
+    // Saving a new key should repair an empty/corrupt legacy auth file.
+    let mut config = read_claude_prism_auth_config().unwrap_or_default();
     config.provider = Some(provider.clone());
 
     if provider == PROVIDER_OPENAI_COMPATIBLE {
@@ -282,7 +283,8 @@ pub async fn save_anthropic_api_key(
 
 #[tauri::command]
 pub async fn clear_anthropic_api_key() -> Result<(), String> {
-    let mut config = read_claude_prism_auth_config()?;
+    // Clearing should also recover from an empty/corrupt legacy auth file.
+    let mut config = read_claude_prism_auth_config().unwrap_or_default();
     config.provider = Some(PROVIDER_CLAUDE_CODE.to_string());
     config.anthropic_api_key = None;
     config.anthropic_base_url = None;

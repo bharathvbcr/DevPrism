@@ -73,7 +73,7 @@ const OPENAI_COMPATIBLE_PRESETS: OpenAICompatiblePreset[] = [
     id: "gemini",
     label: "Gemini OpenAI",
     baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
-    model: "gemini-3.5-flash",
+    model: "gemini-2.5-flash",
     note: "Google Gemini OpenAI-compatible endpoint.",
   },
 ];

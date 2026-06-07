@@ -3,8 +3,12 @@ use std::path::{Path, PathBuf};
 use tauri::{Emitter, WebviewWindow};
 
 const TARBALL_URL: &str =
-    "https://github.com/K-Dense-AI/claude-scientific-skills/archive/refs/heads/main.tar.gz";
-const SKILLS_SUBFOLDER: &str = "scientific-skills";
+    "https://github.com/K-Dense-AI/scientific-agent-skills/archive/refs/heads/main.tar.gz";
+const RAW_SKILL_URLS: &[&str] = &[
+    "https://raw.githubusercontent.com/K-Dense-AI/scientific-agent-skills/main/skills",
+    "https://raw.githubusercontent.com/K-Dense-AI/claude-scientific-skills/main/scientific-skills",
+];
+const SKILLS_SUBFOLDERS: &[&str] = &["skills", "scientific-skills"];
 
 // ─── Data Types ───
 
@@ -383,7 +387,7 @@ async fn download_tarball(tmp_dir: &Path) -> Result<(), String> {
         .unpack(tmp_dir.join("repo-raw"))
         .map_err(|e| format!("Failed to extract tarball: {}", e))?;
 
-    // The tarball extracts to claude-scientific-skills-main/
+    // The tarball extracts to scientific-agent-skills-main/
     // We need to find it and rename to repo/
     let raw_dir = tmp_dir.join("repo-raw");
     if let Ok(mut entries) = std::fs::read_dir(&raw_dir) {
@@ -399,15 +403,47 @@ async fn download_tarball(tmp_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Copy the scientific-skills directory from the cloned repo to the target.
-fn copy_skills(repo_dir: &Path, target_dir: &Path) -> Result<usize, String> {
-    let src = repo_dir.join(SKILLS_SUBFOLDER);
-    if !src.exists() {
-        return Err(format!(
-            "scientific-skills directory not found in cloned repo at {}",
-            src.display()
-        ));
+fn contains_skill_dirs(path: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return false;
+    };
+
+    entries
+        .flatten()
+        .any(|entry| entry.path().is_dir() && entry.path().join("SKILL.md").exists())
+}
+
+fn find_skills_source(repo_dir: &Path) -> Option<PathBuf> {
+    for subfolder in SKILLS_SUBFOLDERS {
+        let candidate = repo_dir.join(subfolder);
+        if contains_skill_dirs(&candidate) {
+            return Some(candidate);
+        }
     }
+
+    if contains_skill_dirs(repo_dir) {
+        return Some(repo_dir.to_path_buf());
+    }
+
+    let entries = std::fs::read_dir(repo_dir).ok()?;
+    for entry in entries.flatten() {
+        let candidate = entry.path();
+        if candidate.is_dir() && contains_skill_dirs(&candidate) {
+            return Some(candidate);
+        }
+    }
+
+    None
+}
+
+/// Copy the skills directory from the downloaded repo to the target.
+fn copy_skills(repo_dir: &Path, target_dir: &Path) -> Result<usize, String> {
+    let src = find_skills_source(repo_dir).ok_or_else(|| {
+        format!(
+            "skills directory not found in downloaded repo at {}",
+            repo_dir.display()
+        )
+    })?;
 
     // Create target directory
     std::fs::create_dir_all(target_dir)
@@ -606,7 +642,7 @@ async fn install_skills_to(
 
     // Create a temporary directory for the clone/download
     let tmp_dir = std::env::temp_dir().join(format!(
-        "claude-scientific-skills-{}",
+        "scientific-agent-skills-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -737,28 +773,30 @@ pub async fn get_skill_content(
         }
     }
 
-    // Fallback: fetch from GitHub
-    let url = format!(
-        "https://raw.githubusercontent.com/K-Dense-AI/claude-scientific-skills/main/scientific-skills/{}/SKILL.md",
-        skill_folder
-    );
+    // Fallback: fetch from GitHub. The upstream project moved from
+    // claude-scientific-skills/scientific-skills to scientific-agent-skills/skills.
+    let mut last_status = None;
+    for base_url in RAW_SKILL_URLS {
+        let url = format!("{}/{}/SKILL.md", base_url, skill_folder);
+        let response = reqwest::get(&url)
+            .await
+            .map_err(|e| format!("Failed to fetch from GitHub: {}", e))?;
 
-    let response = reqwest::get(&url)
-        .await
-        .map_err(|e| format!("Failed to fetch from GitHub: {}", e))?;
+        if response.status().is_success() {
+            return response
+                .text()
+                .await
+                .map_err(|e| format!("Failed to read response: {}", e));
+        }
 
-    if !response.status().is_success() {
-        return Err(format!(
-            "Skill '{}' not found (HTTP {})",
-            skill_folder,
-            response.status()
-        ));
+        last_status = Some(response.status().to_string());
     }
 
-    response
-        .text()
-        .await
-        .map_err(|e| format!("Failed to read response: {}", e))
+    Err(format!(
+        "Skill '{}' not found (HTTP {})",
+        skill_folder,
+        last_status.unwrap_or_else(|| "unknown".to_string())
+    ))
 }
 
 // ─── Tests ───
@@ -790,6 +828,34 @@ mod tests {
         }
         let total: usize = cats.iter().map(|c| c.skill_count).sum();
         assert!(total >= 100);
+    }
+
+    #[test]
+    fn test_find_skills_source_new_repo_layout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skill_dir = tmp.path().join("skills").join("exploratory-data-analysis");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(skill_dir.join("SKILL.md"), "# Exploratory Data Analysis").unwrap();
+
+        let src = find_skills_source(tmp.path()).unwrap();
+        assert_eq!(src.file_name().and_then(|name| name.to_str()), Some("skills"));
+    }
+
+    #[test]
+    fn test_find_skills_source_legacy_repo_layout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skill_dir = tmp
+            .path()
+            .join("scientific-skills")
+            .join("exploratory-data-analysis");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(skill_dir.join("SKILL.md"), "# Exploratory Data Analysis").unwrap();
+
+        let src = find_skills_source(tmp.path()).unwrap();
+        assert_eq!(
+            src.file_name().and_then(|name| name.to_str()),
+            Some("scientific-skills")
+        );
     }
 
     #[test]

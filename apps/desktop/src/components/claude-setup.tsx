@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   DownloadIcon,
@@ -13,9 +13,12 @@ import {
   ChevronRightIcon,
   GitBranchIcon,
   ExternalLinkIcon,
+  KeyRoundIcon,
 } from "lucide-react";
 import { open as shellOpen } from "@tauri-apps/plugin-shell";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   useClaudeSetupStore,
   type StepInfo,
@@ -240,20 +243,32 @@ function InstallLogOutput() {
 // ─── Main Component ───
 
 export function ClaudeSetup() {
+  const [apiKey, setApiKey] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
   const status = useClaudeSetupStore((s) => s.status);
   const isInstalling = useClaudeSetupStore((s) => s.isInstalling);
   const isLoggingIn = useClaudeSetupStore((s) => s.isLoggingIn);
+  const isSavingApiKey = useClaudeSetupStore((s) => s.isSavingApiKey);
   const error = useClaudeSetupStore((s) => s.error);
   const version = useClaudeSetupStore((s) => s.version);
   const accountEmail = useClaudeSetupStore((s) => s.accountEmail);
   const install = useClaudeSetupStore((s) => s.install);
   const login = useClaudeSetupStore((s) => s.login);
+  const saveApiKey = useClaudeSetupStore((s) => s.saveApiKey);
   const checkStatus = useClaudeSetupStore((s) => s.checkStatus);
   const installSteps = useClaudeSetupStore((s) => s.installSteps);
   const loginSteps = useClaudeSetupStore((s) => s.loginSteps);
 
   useInstallEvents();
   useLoginEvents();
+
+  const handleSaveApiKey = async () => {
+    const success = await saveApiKey(apiKey, baseUrl);
+    if (success) {
+      setApiKey("");
+      setBaseUrl("");
+    }
+  };
 
   if (status === "checking") {
     return (
@@ -442,11 +457,11 @@ export function ClaudeSetup() {
     return (
       <div className="flex w-full flex-col gap-3 rounded-xl border border-border bg-muted/30 px-5 py-4">
         <div className="flex items-center gap-2">
-          <LogInIcon className="size-5 shrink-0 text-muted-foreground" />
+          <KeyRoundIcon className="size-5 shrink-0 text-muted-foreground" />
           <div>
-            <p className="font-medium text-sm">Sign in to Claude</p>
+            <p className="font-medium text-sm">Connect Claude</p>
             <p className="text-muted-foreground text-xs">
-              Authenticate with your Anthropic account to continue.
+              Use an Anthropic key, an external API proxy, or browser sign-in.
             </p>
           </div>
         </div>
@@ -455,7 +470,80 @@ export function ClaudeSetup() {
             Claude Code {version} installed
           </p>
         )}
-        <Button size="sm" className="w-full gap-2" onClick={login}>
+
+        <form
+          className="space-y-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            handleSaveApiKey();
+          }}
+        >
+          <div className="space-y-1.5">
+            <Label htmlFor="anthropic-api-key" className="text-xs">
+              Anthropic API Key
+            </Label>
+            <Input
+              id="anthropic-api-key"
+              type="password"
+              placeholder="sk-ant-..."
+              value={apiKey}
+              onChange={(event) => setApiKey(event.target.value)}
+              disabled={isSavingApiKey}
+              autoComplete="off"
+            />
+            <p className="text-muted-foreground text-[11px]">
+              Anthropic Console keys start with sk-ant-. External provider keys
+              need a Base URL.
+            </p>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="anthropic-base-url" className="text-xs">
+              Base URL
+            </Label>
+            <Input
+              id="anthropic-base-url"
+              type="url"
+              placeholder="https://proxy.example.com/claude"
+              value={baseUrl}
+              onChange={(event) => setBaseUrl(event.target.value)}
+              disabled={isSavingApiKey}
+              autoComplete="off"
+            />
+            <p className="text-muted-foreground text-[11px]">
+              Leave blank for Anthropic direct API.
+            </p>
+          </div>
+          {error && (
+            <p className="break-words text-destructive text-xs">{error}</p>
+          )}
+          <Button
+            type="submit"
+            size="sm"
+            className="w-full gap-2"
+            disabled={!apiKey.trim() || isSavingApiKey}
+          >
+            {isSavingApiKey ? (
+              <LoaderIcon className="size-3.5 animate-spin" />
+            ) : (
+              <KeyRoundIcon className="size-3.5" />
+            )}
+            {isSavingApiKey ? "Saving..." : "Use API Key"}
+          </Button>
+        </form>
+
+        <div className="flex items-center gap-2">
+          <div className="h-px flex-1 bg-border" />
+          <span className="text-muted-foreground text-[11px]">or</span>
+          <div className="h-px flex-1 bg-border" />
+        </div>
+
+        <Button
+          size="sm"
+          variant="outline"
+          className="w-full gap-2"
+          onClick={login}
+          disabled={isSavingApiKey}
+        >
           <LogInIcon className="size-3.5" />
           Sign in with Browser
         </Button>

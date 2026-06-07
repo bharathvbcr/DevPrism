@@ -1,6 +1,12 @@
 import { useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { HistoryIcon, PlusIcon, CheckIcon, Loader2Icon } from "lucide-react";
+import {
+  HistoryIcon,
+  PlusIcon,
+  CheckIcon,
+  Loader2Icon,
+  Trash2Icon,
+} from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -37,6 +43,7 @@ function formatRelativeTime(unixSeconds: number): string {
 export function SessionSelector() {
   const [sessions, setSessions] = useState<ClaudeSessionInfo[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const sessionId = useClaudeChatStore((s) => s.sessionId);
   const isStreaming = useClaudeChatStore((s) => s.isStreaming);
   const newSession = useClaudeChatStore((s) => s.newSession);
@@ -78,6 +85,36 @@ export function SessionSelector() {
       resumeSession(sid);
     },
     [isStreaming, sessionId, resumeSession],
+  );
+
+  const handleDeleteSession = useCallback(
+    async (sid: string) => {
+      if (isStreaming || deletingId || !projectRoot) return;
+
+      const session = sessions.find((item) => item.session_id === sid);
+      const sessionTitle = session?.title || "this session";
+      if (!window.confirm(`Delete "${sessionTitle}"?`)) return;
+
+      setDeletingId(sid);
+      try {
+        await invoke("delete_claude_session", {
+          projectPath: projectRoot,
+          sessionId: sid,
+        });
+        setSessions((prev) => prev.filter((item) => item.session_id !== sid));
+        if (sid === sessionId) {
+          newSession();
+        }
+      } catch (err) {
+        log.error("Failed to delete session", {
+          sessionId: sid,
+          error: String(err),
+        });
+      } finally {
+        setDeletingId((current) => (current === sid ? null : current));
+      }
+    },
+    [deletingId, isStreaming, newSession, projectRoot, sessionId, sessions],
   );
 
   const handleNewChat = useCallback(() => {
@@ -126,8 +163,8 @@ export function SessionSelector() {
             <DropdownMenuItem
               key={session.session_id}
               onSelect={() => handleSelectSession(session.session_id)}
-              disabled={isStreaming}
-              className="flex items-start gap-2"
+              disabled={isStreaming || deletingId === session.session_id}
+              className="group flex items-start gap-2"
             >
               <div className="flex min-w-0 flex-1 flex-col">
                 <span className="truncate text-sm">{session.title}</span>
@@ -135,9 +172,30 @@ export function SessionSelector() {
                   {formatRelativeTime(session.last_modified)}
                 </span>
               </div>
-              {session.session_id === sessionId && (
-                <CheckIcon className="size-4 shrink-0 text-primary" />
-              )}
+              <div className="flex shrink-0 items-center gap-1">
+                {session.session_id === sessionId && (
+                  <CheckIcon className="size-4 text-primary" />
+                )}
+                <button
+                  type="button"
+                  className="flex size-6 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  aria-label={`Delete ${session.title}`}
+                  title="Delete session"
+                  disabled={isStreaming || deletingId === session.session_id}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    void handleDeleteSession(session.session_id);
+                  }}
+                >
+                  {deletingId === session.session_id ? (
+                    <Loader2Icon className="size-3.5 animate-spin" />
+                  ) : (
+                    <Trash2Icon className="size-3.5" />
+                  )}
+                </button>
+              </div>
             </DropdownMenuItem>
           ))
         )}

@@ -7,6 +7,18 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
+#[derive(Default, serde::Deserialize, serde::Serialize)]
+#[serde(default)]
+struct ClaudePrismAuthConfig {
+    anthropic_api_key: Option<String>,
+    anthropic_base_url: Option<String>,
+}
+
+struct StoredClaudeCredential {
+    api_key: String,
+    base_url: Option<String>,
+}
+
 /// Check if an environment variable should be explicitly passed to child processes.
 ///
 /// NOTE: This is NOT a true whitelist — we do NOT call `env_clear()`, so the
@@ -22,6 +34,8 @@ pub(crate) fn is_essential_env_var(key: &str) -> bool {
         "HOME" | "USER" | "SHELL" | "LANG"
         | "HOMEBREW_PREFIX" | "HOMEBREW_CELLAR"
         | "HTTP_PROXY" | "HTTPS_PROXY" | "NO_PROXY" | "ALL_PROXY"
+        | "ANTHROPIC_API_KEY" | "ANTHROPIC_AUTH_TOKEN"
+        | "ANTHROPIC_BASE_URL"
     ) || k.starts_with("LC_")
     // Windows-specific
     || matches!(
@@ -33,6 +47,148 @@ pub(crate) fn is_essential_env_var(key: &str) -> bool {
         | "PROGRAMFILES" | "PROGRAMFILES(X86)" | "COMMONPROGRAMFILES"
         | "PATHEXT" | "PSMODULEPATH" | "WINDIR"
     )
+}
+
+fn get_claude_prism_auth_path() -> Result<PathBuf, String> {
+    let config_dir = dirs::config_dir()
+        .or_else(dirs::home_dir)
+        .ok_or("Could not find config directory")?;
+    Ok(config_dir
+        .join("ClaudePrism")
+        .join("anthropic-auth.json"))
+}
+
+fn read_claude_prism_auth_config() -> Result<ClaudePrismAuthConfig, String> {
+    let path = get_claude_prism_auth_path()?;
+    if !path.exists() {
+        return Ok(ClaudePrismAuthConfig::default());
+    }
+
+    let content =
+        std::fs::read_to_string(&path).map_err(|e| format!("Failed to read auth settings: {}", e))?;
+    let content = content.trim_start_matches('\u{feff}');
+    serde_json::from_str(content).map_err(|e| format!("Failed to parse auth settings: {}", e))
+}
+
+fn write_claude_prism_auth_config(config: &ClaudePrismAuthConfig) -> Result<(), String> {
+    let path = get_claude_prism_auth_path()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create auth settings dir: {}", e))?;
+    }
+
+    let content = serde_json::to_string_pretty(config)
+        .map_err(|e| format!("Failed to serialize auth settings: {}", e))?;
+    std::fs::write(&path, content).map_err(|e| format!("Failed to write auth settings: {}", e))
+}
+
+fn normalize_api_key(value: &str) -> Result<String, String> {
+    let clean = strip_nul(value).trim().to_string();
+    if clean.is_empty() {
+        return Err("API key is empty".to_string());
+    }
+
+    if clean.chars().any(char::is_whitespace) {
+        return Err("API key cannot contain spaces or line breaks".to_string());
+    }
+
+    Ok(clean)
+}
+
+fn normalize_base_url(value: Option<&str>) -> Result<Option<String>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+
+    let clean = strip_nul(value).trim().trim_end_matches('/').to_string();
+    if clean.is_empty() {
+        return Ok(None);
+    }
+
+    if clean.chars().any(char::is_whitespace) {
+        return Err("Base URL cannot contain spaces or line breaks".to_string());
+    }
+
+    if !(clean.starts_with("https://") || clean.starts_with("http://")) {
+        return Err("Base URL must start with http:// or https://".to_string());
+    }
+
+    Ok(Some(clean))
+}
+
+fn stored_claude_credential() -> Option<StoredClaudeCredential> {
+    let config = read_claude_prism_auth_config().ok()?;
+    let api_key = config
+        .anthropic_api_key
+        .and_then(|value| normalize_api_key(&value).ok())?;
+    let base_url = normalize_base_url(config.anthropic_base_url.as_deref()).ok()?;
+
+    if base_url.is_none() && !api_key.starts_with("sk-ant-") {
+        return None;
+    }
+
+    Some(StoredClaudeCredential { api_key, base_url })
+}
+
+fn claude_credential_label() -> Option<&'static str> {
+    if std::env::var("ANTHROPIC_API_KEY")
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+    {
+        if std::env::var("ANTHROPIC_BASE_URL")
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+        {
+            return Some("External API key");
+        }
+        return Some("Anthropic API key");
+    }
+
+    if std::env::var("ANTHROPIC_AUTH_TOKEN")
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+    {
+        return Some("Anthropic auth token");
+    }
+
+    if let Some(credential) = stored_claude_credential() {
+        return Some(if credential.base_url.is_some() {
+            "External API key"
+        } else {
+            "Anthropic API key"
+        });
+    }
+
+    None
+}
+
+#[tauri::command]
+pub async fn save_anthropic_api_key(
+    api_key: String,
+    base_url: Option<String>,
+) -> Result<(), String> {
+    let api_key = normalize_api_key(&api_key)?;
+    let base_url = normalize_base_url(base_url.as_deref())?;
+
+    if base_url.is_none() && !api_key.starts_with("sk-ant-") {
+        return Err(
+            "This looks like an external provider key. Set the provider Base URL, or use an Anthropic key that starts with sk-ant-."
+                .to_string(),
+        );
+    }
+
+    let mut config = read_claude_prism_auth_config()?;
+    config.anthropic_api_key = Some(api_key);
+    config.anthropic_base_url = base_url;
+    write_claude_prism_auth_config(&config)
+}
+
+#[tauri::command]
+pub async fn clear_anthropic_api_key() -> Result<(), String> {
+    let mut config = read_claude_prism_auth_config()?;
+    config.anthropic_api_key = None;
+    config.anthropic_base_url = None;
+    write_claude_prism_auth_config(&config)
 }
 
 /// Windows CREATE_NO_WINDOW flag to prevent console windows from flashing
@@ -698,6 +854,24 @@ fn create_command(
     // Set effort level (default: low for fast responses)
     cmd.env("CLAUDE_CODE_EFFORT_LEVEL", effort_level.unwrap_or("low"));
 
+    if let Some(credential) = stored_claude_credential() {
+        if std::env::var("ANTHROPIC_API_KEY")
+            .map(|value| value.trim().is_empty())
+            .unwrap_or(true)
+        {
+            cmd.env("ANTHROPIC_API_KEY", credential.api_key);
+        }
+
+        if let Some(base_url) = credential.base_url {
+            if std::env::var("ANTHROPIC_BASE_URL")
+                .map(|value| value.trim().is_empty())
+                .unwrap_or(true)
+            {
+                cmd.env("ANTHROPIC_BASE_URL", base_url);
+            }
+        }
+    }
+
     // On Windows, ensure CLAUDE_CODE_GIT_BASH_PATH is set.
     // Claude Code requires git-bash to run on Windows.
     // Uses find_git_bash() which also validates user-specified paths.
@@ -883,12 +1057,15 @@ async fn spawn_claude_process(
     let stderr_reader = BufReader::new(stderr);
     let session_id_holder: Arc<std::sync::Mutex<Option<String>>> =
         Arc::new(std::sync::Mutex::new(None));
+    let result_success_holder: Arc<std::sync::Mutex<Option<bool>>> =
+        Arc::new(std::sync::Mutex::new(None));
 
     let start_time = std::time::Instant::now();
 
     // Spawn stdout streaming task — emit only to the originating window
     let win_stdout = window.clone();
     let session_id_stdout = session_id_holder.clone();
+    let result_success_stdout = result_success_holder.clone();
     let tab_id_stdout = tab_id.clone();
     let stdout_task = tokio::spawn(async move {
         let mut lines = stdout_reader.lines();
@@ -918,6 +1095,14 @@ async fn spawn_claude_process(
                         if let Ok(mut guard) = session_id_stdout.lock() {
                             *guard = Some(sid.to_string());
                         }
+                    }
+                }
+
+                if msg.get("type").and_then(|v| v.as_str()) == Some("result") {
+                    let is_success =
+                        msg.get("subtype").and_then(|v| v.as_str()) == Some("success");
+                    if let Ok(mut guard) = result_success_stdout.lock() {
+                        *guard = Some(is_success);
                     }
                 }
             }
@@ -966,6 +1151,7 @@ async fn spawn_claude_process(
     let win_wait = window;
     let process_key_wait = process_key;
     let tab_id_wait = tab_id;
+    let result_success_wait = result_success_holder.clone();
     tokio::spawn(async move {
         // Wait for stdout/stderr to finish
         let _ = stdout_task.await;
@@ -976,13 +1162,18 @@ async fn spawn_claude_process(
         let success = if let Some(mut child) = processes.remove(&process_key_wait) {
             match child.wait().await {
                 Ok(status) => {
+                    let exit_success = status.success();
+                    let result_success = result_success_wait.lock().ok().and_then(|guard| *guard);
+                    let success = exit_success || result_success == Some(true);
                     eprintln!(
-                        "[claude-process] [{}] exited with status={} ({:.1}s)",
+                        "[claude-process] [{}] exited with status={} result_success={:?} final_success={} ({:.1}s)",
                         tab_id_wait,
                         status,
+                        result_success,
+                        success,
                         start_time.elapsed().as_secs_f64()
                     );
-                    status.success()
+                    success
                 }
                 Err(e) => {
                     eprintln!(
@@ -1137,7 +1328,10 @@ pub async fn check_claude_status() -> Result<ClaudeStatus, String> {
             });
             (true, email)
         }
-        _ => (false, None),
+        _ => match claude_credential_label() {
+            Some(label) => (true, Some(label.to_string())),
+            None => (false, None),
+        },
     };
 
     Ok(ClaudeStatus {
@@ -1847,6 +2041,44 @@ pub async fn load_session_history(
 }
 
 // ─── Shell Command Execution ───
+
+#[tauri::command]
+pub async fn delete_claude_session(project_path: String, session_id: String) -> Result<(), String> {
+    if session_id.is_empty()
+        || !session_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return Err("Invalid session id".to_string());
+    }
+
+    let sessions_dir = get_sessions_dir(&project_path)?;
+    let session_path = sessions_dir.join(format!("{}.jsonl", session_id));
+
+    if !session_path.exists() {
+        return Ok(());
+    }
+
+    let canonical_sessions_dir = sessions_dir
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve sessions directory: {}", e))?;
+    let canonical_session_path = session_path
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve session file: {}", e))?;
+
+    if !canonical_session_path.starts_with(&canonical_sessions_dir) {
+        return Err("Refusing to delete session outside project history".to_string());
+    }
+
+    if canonical_session_path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+        return Err("Refusing to delete non-session file".to_string());
+    }
+
+    std::fs::remove_file(&canonical_session_path)
+        .map_err(|e| format!("Failed to delete session: {}", e))?;
+
+    Ok(())
+}
 
 #[derive(serde::Serialize)]
 pub struct ShellCommandResult {

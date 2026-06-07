@@ -2232,6 +2232,33 @@ struct DirectChatResponse {
     streamed_text: bool,
 }
 
+fn direct_tool_result_values(
+    tool_call: &DirectToolCall,
+    content: String,
+    is_error: bool,
+) -> (serde_json::Value, serde_json::Value) {
+    let block = json!({
+        "type": "tool_result",
+        "tool_use_id": tool_call.id,
+        "content": content.clone(),
+        "is_error": is_error,
+    });
+    let message = if tool_call.legacy_function_call {
+        json!({
+            "role": "function",
+            "name": tool_call.name,
+            "content": content,
+        })
+    } else {
+        json!({
+            "role": "tool",
+            "tool_call_id": tool_call.id,
+            "content": content,
+        })
+    };
+    (block, message)
+}
+
 #[derive(Default)]
 struct DirectStreamingToolCall {
     id: Option<String>,
@@ -4777,7 +4804,46 @@ async fn execute_openai_compatible_provider(
         }
 
         let mut tool_result_blocks = Vec::new();
-        for tool_call in &tool_calls {
+        for (idx, tool_call) in tool_calls.iter().enumerate() {
+            if direct_provider_cancelled(&state, &process_key).await {
+                for remaining_tool_call in &tool_calls[idx..] {
+                    let (block, tool_message) = direct_tool_result_values(
+                        remaining_tool_call,
+                        "Tool execution cancelled by user.".to_string(),
+                        true,
+                    );
+                    tool_result_blocks.push(block);
+                    messages.push(tool_message);
+                }
+                let tool_result_event = json!({
+                    "type": "user",
+                    "message": {
+                        "content": tool_result_blocks,
+                    },
+                });
+                emit_and_persist_direct_output(
+                    &window,
+                    &project_path,
+                    &session_id,
+                    &tab_id,
+                    &tool_result_event,
+                );
+                finish_direct_provider_cancelled(
+                    &window,
+                    &project_path,
+                    &session_id,
+                    &tab_id,
+                    &state,
+                    &process_key,
+                    started,
+                    turns,
+                    &final_usage,
+                    &messages,
+                )
+                .await;
+                return Ok(());
+            }
+
             let output = execute_direct_provider_tool(
                 &state,
                 &session_id,
@@ -4789,25 +4855,9 @@ async fn execute_openai_compatible_provider(
             if !output.is_error && is_direct_task_mutation_tool(&tool_call.name) {
                 persist_direct_task_state(&state, &project_path, &session_id).await;
             }
-            tool_result_blocks.push(json!({
-                "type": "tool_result",
-                "tool_use_id": tool_call.id,
-                "content": output.content,
-                "is_error": output.is_error,
-            }));
-            let tool_message = if tool_call.legacy_function_call {
-                json!({
-                    "role": "function",
-                    "name": tool_call.name,
-                    "content": output.content,
-                })
-            } else {
-                json!({
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": output.content,
-                })
-            };
+            let (block, tool_message) =
+                direct_tool_result_values(tool_call, output.content, output.is_error);
+            tool_result_blocks.push(block);
             request_messages.push(tool_message.clone());
             messages.push(tool_message);
         }
@@ -6085,6 +6135,37 @@ mod tests {
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[0].input["file_path"], "main.tex");
         assert_eq!(calls[1].input["pattern"], "Intro");
+    }
+
+    #[test]
+    fn test_direct_provider_builds_tool_result_messages() {
+        let tool_call = DirectToolCall {
+            id: "call-1".to_string(),
+            name: "Read".to_string(),
+            input: json!({ "file_path": "main.tex" }),
+            legacy_function_call: false,
+        };
+        let (block, message) =
+            direct_tool_result_values(&tool_call, "main.tex contents".to_string(), false);
+
+        assert_eq!(block["tool_use_id"], "call-1");
+        assert_eq!(block["content"], "main.tex contents");
+        assert_eq!(block["is_error"], false);
+        assert_eq!(message["role"], "tool");
+        assert_eq!(message["tool_call_id"], "call-1");
+
+        let legacy_call = DirectToolCall {
+            id: "function_call_1".to_string(),
+            name: "Read".to_string(),
+            input: json!({ "file_path": "main.tex" }),
+            legacy_function_call: true,
+        };
+        let (_, legacy_message) =
+            direct_tool_result_values(&legacy_call, "cancelled".to_string(), true);
+
+        assert_eq!(legacy_message["role"], "function");
+        assert_eq!(legacy_message["name"], "Read");
+        assert_eq!(legacy_message["content"], "cancelled");
     }
 
     #[test]

@@ -1810,7 +1810,9 @@ fn direct_provider_system_prompt() -> String {
         "Preserve existing LaTeX structure unless the user asks for a rewrite.",
         "Use proper LaTeX sectioning, citations, labels, references, and bibliography conventions.",
         "You can inspect and edit files through the provided tools. Prefer relative paths inside the current project.",
+        "Use LS or Glob to understand the project layout before editing unfamiliar files.",
         "Use Read before non-trivial edits, use Edit for precise replacements, and use Write only when creating or fully replacing a file.",
+        "For multi-step writing or editing tasks, use TodoWrite to keep a short plan with at most one in_progress item.",
         "Do not claim a file was changed unless a tool result confirms it.",
     ]
     .join("\n")
@@ -1907,6 +1909,19 @@ fn direct_provider_tools() -> serde_json::Value {
         {
             "type": "function",
             "function": {
+                "name": "LS",
+                "description": "List files and directories in a project directory.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "Optional project-relative directory to list. Defaults to the project root." }
+                    }
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "Glob",
                 "description": "List project files matching a simple wildcard pattern such as *.tex or chapters/*.tex.",
                 "parameters": {
@@ -1933,6 +1948,35 @@ fn direct_provider_tools() -> serde_json::Value {
                         "case_sensitive": { "type": "boolean", "description": "Whether matching is case-sensitive. Defaults to false." }
                     },
                     "required": ["pattern"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "TodoWrite",
+                "description": "Update the current session todo list for multi-step work. Keep at most one item in_progress.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "todos": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "content": { "type": "string", "description": "Concise task description." },
+                                    "status": {
+                                        "type": "string",
+                                        "enum": ["pending", "in_progress", "completed"],
+                                        "description": "Current task status."
+                                    },
+                                    "activeForm": { "type": "string", "description": "Present-tense form used while the task is active." }
+                                },
+                                "required": ["content", "status"]
+                            }
+                        }
+                    },
+                    "required": ["todos"]
                 }
             }
         },
@@ -2613,6 +2657,44 @@ fn execute_direct_multiedit(project_root: &Path, input: &serde_json::Value) -> R
     ))
 }
 
+fn execute_direct_ls(project_root: &Path, input: &serde_json::Value) -> Result<String, String> {
+    let base = optional_tool_string(input, "path")
+        .or_else(|| optional_tool_string(input, "file_path"))
+        .map(|path| ensure_existing_project_tool_path(project_root, &path))
+        .transpose()?
+        .unwrap_or_else(|| project_root.to_path_buf());
+    if !base.is_dir() {
+        return Err("LS path must be a directory".to_string());
+    }
+
+    let mut entries = Vec::new();
+    let read_dir = std::fs::read_dir(&base)
+        .map_err(|e| format!("Failed to list {}: {}", base.display(), e))?;
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        if skip_direct_provider_dir(&path) {
+            continue;
+        }
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        let mut rel = relative_project_path(project_root, &path);
+        if file_type.is_dir() {
+            rel.push('/');
+        }
+        entries.push(rel);
+    }
+    entries.sort();
+    entries.truncate(200);
+
+    let display_path = relative_project_path(project_root, &base);
+    if entries.is_empty() {
+        Ok(format!("[{}]\nNo entries", display_path))
+    } else {
+        Ok(format!("[{}]\n{}", display_path, entries.join("\n")))
+    }
+}
+
 fn execute_direct_glob(project_root: &Path, input: &serde_json::Value) -> Result<String, String> {
     let pattern = required_tool_string(input, "pattern")?;
     let base = optional_tool_string(input, "path")
@@ -2747,6 +2829,45 @@ fn execute_direct_grep(project_root: &Path, input: &serde_json::Value) -> Result
     }
 }
 
+fn execute_direct_todowrite(input: &serde_json::Value) -> Result<String, String> {
+    let todos = input
+        .get("todos")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "Missing todos".to_string())?;
+    if todos.len() > 100 {
+        return Err("Todo list cannot exceed 100 items".to_string());
+    }
+
+    let mut in_progress_count = 0_usize;
+    let mut lines = Vec::new();
+    for (idx, todo) in todos.iter().enumerate() {
+        let content = required_tool_string(todo, "content")
+            .map_err(|e| format!("Todo {}: {}", idx + 1, e))?;
+        let status = required_tool_string(todo, "status")
+            .map_err(|e| format!("Todo {}: {}", idx + 1, e))?;
+        if !matches!(status.as_str(), "pending" | "in_progress" | "completed") {
+            return Err(format!(
+                "Todo {}: status must be pending, in_progress, or completed",
+                idx + 1
+            ));
+        }
+        if status == "in_progress" {
+            in_progress_count += 1;
+        }
+        lines.push(format!("{}. [{}] {}", idx + 1, status, content));
+    }
+
+    let mut output = if lines.is_empty() {
+        "Todo list cleared".to_string()
+    } else {
+        format!("Todo list updated ({} items).\n{}", todos.len(), lines.join("\n"))
+    };
+    if in_progress_count > 1 {
+        output.push_str("\n\nNote: Keep at most one todo in_progress at a time.");
+    }
+    Ok(output)
+}
+
 async fn execute_direct_bash(project_root: &Path, input: &serde_json::Value) -> Result<String, String> {
     let command = required_tool_string(input, "command")?;
     if command.trim().is_empty() {
@@ -2795,8 +2916,10 @@ async fn execute_direct_provider_tool(
         "Write" | "write" => execute_direct_write(project_root, input),
         "Edit" | "edit" => execute_direct_edit(project_root, input),
         "MultiEdit" | "multiedit" => execute_direct_multiedit(project_root, input),
+        "LS" | "ls" | "List" | "list" => execute_direct_ls(project_root, input),
         "Glob" | "glob" => execute_direct_glob(project_root, input),
         "Grep" | "grep" => execute_direct_grep(project_root, input),
+        "TodoWrite" | "todowrite" | "todo_write" => execute_direct_todowrite(input),
         "Bash" | "bash" => execute_direct_bash(project_root, input).await,
         other => Err(format!("Unsupported tool: {}", other)),
     };
@@ -4842,6 +4965,56 @@ mod tests {
         assert!(glob.content.contains("main.tex"));
         assert!(glob.content.contains("chapters/intro.tex"));
         assert!(!glob.content.contains("notes.md"));
+    }
+
+    #[tokio::test]
+    async fn test_direct_provider_ls_lists_project_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = canonical_project_root(dir.path().to_str().unwrap()).unwrap();
+        std::fs::create_dir_all(root.join("chapters")).unwrap();
+        std::fs::write(root.join("main.tex"), "main").unwrap();
+        std::fs::write(root.join("chapters").join("intro.tex"), "intro").unwrap();
+
+        let ls = execute_direct_provider_tool(&root, "LS", &json!({})).await;
+        assert!(!ls.is_error);
+        assert!(ls.content.contains("chapters/"));
+        assert!(ls.content.contains("main.tex"));
+
+        let nested = execute_direct_provider_tool(&root, "LS", &json!({ "path": "chapters" }))
+            .await;
+        assert!(!nested.is_error);
+        assert!(nested.content.contains("chapters/intro.tex"));
+    }
+
+    #[tokio::test]
+    async fn test_direct_provider_todowrite_tracks_plan_items() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = canonical_project_root(dir.path().to_str().unwrap()).unwrap();
+
+        let todos = execute_direct_provider_tool(
+            &root,
+            "TodoWrite",
+            &json!({
+                "todos": [
+                    { "content": "Inspect project", "status": "completed" },
+                    { "content": "Edit main.tex", "status": "in_progress" },
+                    { "content": "Verify build", "status": "pending" }
+                ]
+            }),
+        )
+        .await;
+        assert!(!todos.is_error);
+        assert!(todos.content.contains("Todo list updated (3 items)"));
+        assert!(todos.content.contains("[in_progress] Edit main.tex"));
+
+        let invalid = execute_direct_provider_tool(
+            &root,
+            "TodoWrite",
+            &json!({ "todos": [{ "content": "Oops", "status": "blocked" }] }),
+        )
+        .await;
+        assert!(invalid.is_error);
+        assert!(invalid.content.contains("status must be pending"));
     }
 
     #[test]

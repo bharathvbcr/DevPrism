@@ -78,12 +78,9 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
   const setEffortLevel = useClaudeChatStore((s) => s.setEffortLevel);
   const activeTabId = useClaudeChatStore((s) => s.activeTabId);
   const setupVersion = useClaudeSetupStore((s) => s.version);
-  const setupAccountEmail = useClaudeSetupStore((s) => s.accountEmail);
+  const providerModel = useClaudeSetupStore((s) => s.providerModel);
   const isDirectProvider = setupVersion === "OpenAI-compatible provider";
-  const directProviderModel = useMemo(() => {
-    const model = setupAccountEmail?.split(" \u00b7 ")[0]?.trim();
-    return model || "Provider";
-  }, [setupAccountEmail]);
+  const directProviderModel = providerModel || "Provider";
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 

@@ -103,6 +103,32 @@ function makeDefaultTab(id: string): TabState {
   };
 }
 
+function usageFromMessage(msg: ClaudeStreamMessage): {
+  input_tokens: number;
+  output_tokens: number;
+} {
+  const usage = msg.usage || msg.message?.usage;
+  return {
+    input_tokens: usage?.input_tokens || 0,
+    output_tokens: usage?.output_tokens || 0,
+  };
+}
+
+function usageTotalsForMessages(messages: ClaudeStreamMessage[]): {
+  inputTokens: number;
+  outputTokens: number;
+} {
+  return messages.reduce(
+    (totals, msg) => {
+      const usage = usageFromMessage(msg);
+      totals.inputTokens += usage.input_tokens;
+      totals.outputTokens += usage.output_tokens;
+      return totals;
+    },
+    { inputTokens: 0, outputTokens: 0 },
+  );
+}
+
 let tabCounter = 0;
 function nextTabId(): string {
   return `tab-${++tabCounter}`;
@@ -525,7 +551,14 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
           }
         }
 
-        set((s) => applyTabUpdate(s, activeTabId, { messages }));
+        const totals = usageTotalsForMessages(messages);
+        set((s) =>
+          applyTabUpdate(s, activeTabId, {
+            messages,
+            totalInputTokens: totals.inputTokens,
+            totalOutputTokens: totals.outputTokens,
+          }),
+        );
       } catch (err) {
         log.error("Failed to load session history", { error: String(err) });
       }
@@ -613,13 +646,8 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
 
   _appendMessage: (tabId: string, msg: ClaudeStreamMessage) => {
     set((state) => {
-      let inputDelta = 0;
-      let outputDelta = 0;
-      const usage = msg.usage || msg.message?.usage;
-      if (usage) {
-        inputDelta = usage.input_tokens || 0;
-        outputDelta = usage.output_tokens || 0;
-      }
+      const { input_tokens: inputDelta, output_tokens: outputDelta } =
+        usageFromMessage(msg);
 
       const tab = state.tabs.find((t) => t.id === tabId);
       if (!tab) return {};

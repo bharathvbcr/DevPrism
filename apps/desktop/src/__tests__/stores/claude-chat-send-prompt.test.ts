@@ -169,3 +169,45 @@ describe("useClaudeChatStore.sendPrompt context assembly", () => {
     );
   });
 });
+
+describe("useClaudeChatStore.resumeSession", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetClaudeChatStore();
+    setMockDocumentState();
+  });
+
+  it("restores token totals from loaded session history", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce([
+      {
+        type: "user",
+        message: { content: [{ type: "text", text: "hello" }] },
+      },
+      {
+        type: "assistant",
+        message: {
+          content: [{ type: "text", text: "hi" }],
+          usage: { input_tokens: 11, output_tokens: 7 },
+        },
+      },
+      {
+        type: "result",
+        subtype: "success",
+        usage: { input_tokens: 13, output_tokens: 5 },
+      },
+    ]);
+
+    await useClaudeChatStore.getState().resumeSession("session-123");
+
+    expect(invoke).toHaveBeenCalledWith("load_session_history", {
+      projectPath: "/project",
+      sessionId: "session-123",
+    });
+
+    const state = useClaudeChatStore.getState();
+    expect(state.sessionId).toBe("session-123");
+    expect(state.messages).toHaveLength(3);
+    expect(state.totalInputTokens).toBe(24);
+    expect(state.totalOutputTokens).toBe(12);
+  });
+});

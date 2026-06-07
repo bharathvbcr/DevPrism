@@ -33,6 +33,16 @@ struct StoredOpenAiCompatibleCredential {
     model: String,
 }
 
+#[derive(Clone, Debug)]
+struct DirectTask {
+    id: String,
+    subject: String,
+    description: String,
+    active_form: Option<String>,
+    status: String,
+    owner: Option<String>,
+}
+
 const PROVIDER_CLAUDE_CODE: &str = "claude-code";
 const PROVIDER_OPENAI_COMPATIBLE: &str = "openai-compatible";
 
@@ -295,6 +305,7 @@ pub struct ClaudeProcessState {
     pub processes: Arc<Mutex<HashMap<String, Child>>>,
     direct_sessions: Arc<Mutex<HashMap<String, Vec<serde_json::Value>>>>,
     direct_cancellations: Arc<Mutex<HashSet<String>>>,
+    direct_task_lists: Arc<Mutex<HashMap<String, Vec<DirectTask>>>>,
 }
 
 impl Default for ClaudeProcessState {
@@ -303,6 +314,7 @@ impl Default for ClaudeProcessState {
             processes: Arc::new(Mutex::new(HashMap::new())),
             direct_sessions: Arc::new(Mutex::new(HashMap::new())),
             direct_cancellations: Arc::new(Mutex::new(HashSet::new())),
+            direct_task_lists: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -1823,6 +1835,8 @@ fn direct_provider_system_prompt() -> String {
         "Use LS or Glob to understand the project layout before editing unfamiliar files.",
         "Use Read before non-trivial edits, use Edit for precise replacements, and use Write only when creating or fully replacing a file.",
         "For multi-step writing or editing tasks, use TodoWrite to keep a short plan with at most one in_progress item.",
+        "If you prefer Claude/Codex-style task tools, TaskCreate, TaskUpdate, and TaskList are available as a lightweight session task list.",
+        "ToolSearch can be used to inspect the currently available local tool names; it does not install external tools.",
         "Do not claim a file was changed unless a tool result confirms it.",
     ]
     .join("\n")
@@ -1987,6 +2001,78 @@ fn direct_provider_tools() -> serde_json::Value {
                         }
                     },
                     "required": ["todos"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "ToolSearch",
+                "description": "Inspect the local tool names available in this ClaudePrism direct-provider session. Supports queries like select:TaskCreate,TaskUpdate,TaskList.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "description": "Search text, or select:<comma-separated tool names> to check exact availability." }
+                    },
+                    "required": ["query"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "TaskCreate",
+                "description": "Create a lightweight task in the current direct-provider session task list.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "subject": { "type": "string", "description": "Brief task title." },
+                        "description": { "type": "string", "description": "What needs to be done." },
+                        "activeForm": { "type": "string", "description": "Present-tense form while the task is active." },
+                        "metadata": { "type": "object", "description": "Optional metadata; accepted for compatibility." }
+                    },
+                    "required": ["subject", "description"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "TaskUpdate",
+                "description": "Update a task in the current direct-provider session task list.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "taskId": { "type": "string", "description": "Task id returned by TaskCreate." },
+                        "task_id": { "type": "string", "description": "Alias for taskId." },
+                        "subject": { "type": "string", "description": "Updated task title." },
+                        "description": { "type": "string", "description": "Updated task description." },
+                        "activeForm": { "type": "string", "description": "Present-tense active form." },
+                        "status": {
+                            "type": "string",
+                            "enum": ["pending", "in_progress", "completed", "deleted"],
+                            "description": "Updated task status."
+                        },
+                        "owner": { "type": "string", "description": "Optional assignee name." }
+                    },
+                    "required": ["taskId"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "TaskList",
+                "description": "List lightweight tasks in the current direct-provider session.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "status": {
+                            "type": "string",
+                            "enum": ["pending", "in_progress", "completed"],
+                            "description": "Optional status filter."
+                        }
+                    }
                 }
             }
         },
@@ -2396,6 +2482,14 @@ fn optional_tool_string(input: &serde_json::Value, key: &str) -> Option<String> 
         .and_then(|v| v.as_str())
         .map(|value| strip_nul(value).trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn optional_tool_string_any(input: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| optional_tool_string(input, key))
+}
+
+fn required_tool_string_any(input: &serde_json::Value, keys: &[&str]) -> Result<String, String> {
+    optional_tool_string_any(input, keys).ok_or_else(|| format!("Missing {}", keys[0]))
 }
 
 fn optional_tool_usize(input: &serde_json::Value, key: &str) -> Option<usize> {
@@ -2878,6 +2972,258 @@ fn execute_direct_todowrite(input: &serde_json::Value) -> Result<String, String>
     Ok(output)
 }
 
+fn direct_tool_catalog() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("Read", "Read a UTF-8 text file from the current project."),
+        ("Write", "Create or replace a UTF-8 text file in the current project."),
+        ("Edit", "Replace an exact string in a UTF-8 text file."),
+        ("MultiEdit", "Apply multiple exact string replacements to one file."),
+        ("LS", "List files and directories in a project directory."),
+        ("Glob", "List project files matching a wildcard pattern."),
+        ("Grep", "Search project files for a literal substring."),
+        ("TodoWrite", "Update a concise multi-step plan."),
+        ("TaskCreate", "Create a lightweight session task."),
+        ("TaskUpdate", "Update a lightweight session task."),
+        ("TaskList", "List lightweight session tasks."),
+        ("ToolSearch", "Inspect available local tool names."),
+        ("Bash", "Run a shell command in the current project directory."),
+    ]
+}
+
+fn canonical_direct_tool_name(name: &str) -> Option<&'static str> {
+    let normalized = name
+        .trim()
+        .chars()
+        .filter(|c| *c != '_' && *c != '-' && !c.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    direct_tool_catalog()
+        .into_iter()
+        .find_map(|(tool_name, _)| {
+            let tool_normalized = tool_name.to_ascii_lowercase();
+            (tool_normalized == normalized).then_some(tool_name)
+        })
+}
+
+fn execute_direct_toolsearch(input: &serde_json::Value) -> Result<String, String> {
+    let query = required_tool_string(input, "query")?;
+    let trimmed = query.trim();
+    let catalog = direct_tool_catalog();
+
+    if trimmed.to_ascii_lowercase().starts_with("select:") {
+        let selection = &trimmed["select:".len()..];
+        let requested = selection
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
+        if requested.is_empty() {
+            return Err("select: query did not include any tool names".to_string());
+        }
+
+        let mut found = Vec::new();
+        let mut missing = Vec::new();
+        for tool_name in requested {
+            if let Some(canonical) = canonical_direct_tool_name(tool_name) {
+                found.push(canonical.to_string());
+            } else {
+                missing.push(tool_name.to_string());
+            }
+        }
+
+        let mut lines = Vec::new();
+        if !found.is_empty() {
+            lines.push(format!("Selected tools: {}", found.join(", ")));
+        }
+        if !missing.is_empty() {
+            lines.push(format!("Missing tools: {}", missing.join(", ")));
+        }
+        lines.push("Selected tools are already available in this direct-provider session; no installation step is needed.".to_string());
+        return Ok(lines.join("\n"));
+    }
+
+    let terms = trimmed
+        .to_ascii_lowercase()
+        .split_whitespace()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>();
+    let matches = catalog
+        .into_iter()
+        .filter(|(name, description)| {
+            if terms.is_empty() {
+                return true;
+            }
+            let haystack = format!("{} {}", name, description).to_ascii_lowercase();
+            terms.iter().all(|term| haystack.contains(term))
+        })
+        .map(|(name, description)| format!("- {}: {}", name, description))
+        .collect::<Vec<_>>();
+
+    if matches.is_empty() {
+        Ok("No matching local tools found. Available core tools include Read, Edit, TodoWrite, TaskCreate, TaskUpdate, TaskList, and Bash.".to_string())
+    } else {
+        Ok(format!("Available local tools:\n{}", matches.join("\n")))
+    }
+}
+
+fn normalize_direct_task_status(status: &str) -> Option<&'static str> {
+    match status.trim().to_ascii_lowercase().as_str() {
+        "pending" | "todo" | "open" => Some("pending"),
+        "in_progress" | "in-progress" | "in progress" | "active" | "working" => {
+            Some("in_progress")
+        }
+        "completed" | "complete" | "done" | "resolved" => Some("completed"),
+        "deleted" | "delete" | "remove" | "removed" => Some("deleted"),
+        _ => None,
+    }
+}
+
+fn next_direct_task_id(tasks: &[DirectTask]) -> String {
+    let next = tasks
+        .iter()
+        .filter_map(|task| task.id.strip_prefix("task-"))
+        .filter_map(|suffix| suffix.parse::<u64>().ok())
+        .max()
+        .unwrap_or(0)
+        + 1;
+    format!("task-{}", next)
+}
+
+fn format_direct_task(task: &DirectTask) -> String {
+    let mut parts = vec![format!(
+        "{} [{}] {} - {}",
+        task.id, task.status, task.subject, task.description
+    )];
+    if let Some(owner) = &task.owner {
+        parts.push(format!("owner: {}", owner));
+    }
+    if let Some(active_form) = &task.active_form {
+        parts.push(format!("activeForm: {}", active_form));
+    }
+    parts.join(" | ")
+}
+
+async fn execute_direct_task_create(
+    state: &ClaudeProcessState,
+    session_id: &str,
+    input: &serde_json::Value,
+) -> Result<String, String> {
+    let subject = required_tool_string(input, "subject")?.trim().to_string();
+    let description = required_tool_string(input, "description")?.trim().to_string();
+    if subject.is_empty() {
+        return Err("subject cannot be empty".to_string());
+    }
+    if description.is_empty() {
+        return Err("description cannot be empty".to_string());
+    }
+
+    let active_form = optional_tool_string_any(input, &["activeForm", "active_form"]);
+    let mut task_lists = state.direct_task_lists.lock().await;
+    let tasks = task_lists.entry(session_id.to_string()).or_default();
+    let id = next_direct_task_id(tasks);
+    let task = DirectTask {
+        id: id.clone(),
+        subject,
+        description,
+        active_form,
+        status: "pending".to_string(),
+        owner: None,
+    };
+    let line = format_direct_task(&task);
+    tasks.push(task);
+    Ok(format!(
+        "Task created: {}\nUse TaskUpdate to change status or TaskList to review the session task list.",
+        line
+    ))
+}
+
+async fn execute_direct_task_update(
+    state: &ClaudeProcessState,
+    session_id: &str,
+    input: &serde_json::Value,
+) -> Result<String, String> {
+    let task_id = required_tool_string_any(input, &["taskId", "task_id", "id"])?;
+    let mut task_lists = state.direct_task_lists.lock().await;
+    let tasks = task_lists.entry(session_id.to_string()).or_default();
+    let Some(index) = tasks.iter().position(|task| task.id == task_id) else {
+        return Err(format!(
+            "Task not found: {}. Use TaskList to see current tasks or TaskCreate to add one.",
+            task_id
+        ));
+    };
+
+    if let Some(status) = optional_tool_string(input, "status") {
+        let normalized = normalize_direct_task_status(&status)
+            .ok_or_else(|| "status must be pending, in_progress, completed, or deleted".to_string())?;
+        if normalized == "deleted" {
+            let task = tasks.remove(index);
+            return Ok(format!("Task deleted: {}", format_direct_task(&task)));
+        }
+        tasks[index].status = normalized.to_string();
+    }
+    if let Some(subject) = optional_tool_string(input, "subject") {
+        tasks[index].subject = subject;
+    }
+    if let Some(description) = optional_tool_string(input, "description") {
+        tasks[index].description = description;
+    }
+    if let Some(active_form) = optional_tool_string_any(input, &["activeForm", "active_form"]) {
+        tasks[index].active_form = Some(active_form);
+    }
+    if let Some(owner) = optional_tool_string(input, "owner") {
+        tasks[index].owner = Some(owner);
+    }
+
+    let in_progress_count = tasks
+        .iter()
+        .filter(|task| task.status == "in_progress")
+        .count();
+    let mut output = format!("Task updated: {}", format_direct_task(&tasks[index]));
+    if tasks[index].status == "completed" {
+        output.push_str("\nTask completed. Call TaskList to check remaining work.");
+    }
+    if in_progress_count > 1 {
+        output.push_str("\nNote: keep at most one task in_progress at a time.");
+    }
+    Ok(output)
+}
+
+async fn execute_direct_task_list(
+    state: &ClaudeProcessState,
+    session_id: &str,
+    input: &serde_json::Value,
+) -> Result<String, String> {
+    let status_filter = optional_tool_string(input, "status")
+        .map(|status| {
+            normalize_direct_task_status(&status)
+                .filter(|status| *status != "deleted")
+                .ok_or_else(|| "status must be pending, in_progress, or completed".to_string())
+        })
+        .transpose()?;
+    let task_lists = state.direct_task_lists.lock().await;
+    let tasks = task_lists.get(session_id).cloned().unwrap_or_default();
+    if tasks.is_empty() {
+        return Ok("No tasks in this direct-provider session. Use TodoWrite for a concise checklist or TaskCreate to add lightweight tasks.".to_string());
+    }
+
+    let lines = tasks
+        .iter()
+        .filter(|task| {
+            status_filter
+                .map(|status| task.status == status)
+                .unwrap_or(true)
+        })
+        .map(format_direct_task)
+        .collect::<Vec<_>>();
+
+    if lines.is_empty() {
+        let status = status_filter.unwrap_or("requested");
+        Ok(format!("No tasks match status: {}", status))
+    } else {
+        Ok(format!("Session tasks:\n{}", lines.join("\n")))
+    }
+}
+
 async fn execute_direct_bash(project_root: &Path, input: &serde_json::Value) -> Result<String, String> {
     let command = required_tool_string(input, "command")?;
     if command.trim().is_empty() {
@@ -2917,6 +3263,8 @@ async fn execute_direct_bash(project_root: &Path, input: &serde_json::Value) -> 
 }
 
 async fn execute_direct_provider_tool(
+    state: &ClaudeProcessState,
+    session_id: &str,
     project_root: &Path,
     name: &str,
     input: &serde_json::Value,
@@ -2930,6 +3278,16 @@ async fn execute_direct_provider_tool(
         "Glob" | "glob" => execute_direct_glob(project_root, input),
         "Grep" | "grep" => execute_direct_grep(project_root, input),
         "TodoWrite" | "todowrite" | "todo_write" => execute_direct_todowrite(input),
+        "ToolSearch" | "toolsearch" | "tool_search" => execute_direct_toolsearch(input),
+        "TaskCreate" | "taskcreate" | "task_create" => {
+            execute_direct_task_create(state, session_id, input).await
+        }
+        "TaskUpdate" | "taskupdate" | "task_update" => {
+            execute_direct_task_update(state, session_id, input).await
+        }
+        "TaskList" | "tasklist" | "task_list" => {
+            execute_direct_task_list(state, session_id, input).await
+        }
         "Bash" | "bash" => execute_direct_bash(project_root, input).await,
         other => Err(format!("Unsupported tool: {}", other)),
     };
@@ -3845,7 +4203,7 @@ async fn execute_openai_compatible_provider(
         "session_id": session_id,
         "model": credential.model.clone(),
         "cwd": project_path.clone(),
-        "tools": ["Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "Bash"],
+        "tools": ["Read", "Write", "Edit", "MultiEdit", "LS", "Glob", "Grep", "TodoWrite", "ToolSearch", "TaskCreate", "TaskUpdate", "TaskList", "Bash"],
     });
     let state = window.state::<ClaudeProcessState>();
     clear_direct_provider_cancelled(&state, &process_key).await;
@@ -3997,9 +4355,14 @@ async fn execute_openai_compatible_provider(
 
         let mut tool_result_blocks = Vec::new();
         for tool_call in &tool_calls {
-            let output =
-                execute_direct_provider_tool(&project_root, &tool_call.name, &tool_call.input)
-                    .await;
+            let output = execute_direct_provider_tool(
+                &state,
+                &session_id,
+                &project_root,
+                &tool_call.name,
+                &tool_call.input,
+            )
+            .await;
             tool_result_blocks.push(json!({
                 "type": "tool_result",
                 "tool_use_id": tool_call.id,
@@ -4906,6 +5269,15 @@ mod tests {
 
     // --- direct provider tools ---
 
+    async fn execute_test_direct_provider_tool(
+        project_root: &Path,
+        name: &str,
+        input: &serde_json::Value,
+    ) -> DirectToolOutput {
+        let state = ClaudeProcessState::default();
+        execute_direct_provider_tool(&state, "test-session", project_root, name, input).await
+    }
+
     #[tokio::test]
     async fn test_direct_provider_tools_read_edit_and_grep_project_files() {
         let dir = tempfile::tempdir().unwrap();
@@ -4913,7 +5285,7 @@ mod tests {
         let main = root.join("main.tex");
         std::fs::write(&main, "\\section{Old Title}\nBody text").unwrap();
 
-        let read = execute_direct_provider_tool(
+        let read = execute_test_direct_provider_tool(
             &root,
             "Read",
             &json!({ "file_path": "main.tex", "limit": 1 }),
@@ -4922,7 +5294,7 @@ mod tests {
         assert!(!read.is_error);
         assert!(read.content.contains("\\section{Old Title}"));
 
-        let edit = execute_direct_provider_tool(
+        let edit = execute_test_direct_provider_tool(
             &root,
             "Edit",
             &json!({
@@ -4935,7 +5307,7 @@ mod tests {
         assert!(!edit.is_error);
         assert!(std::fs::read_to_string(&main).unwrap().contains("New Title"));
 
-        let grep = execute_direct_provider_tool(
+        let grep = execute_test_direct_provider_tool(
             &root,
             "Grep",
             &json!({ "pattern": "New Title", "glob": "*.tex" }),
@@ -4950,7 +5322,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = canonical_project_root(dir.path().to_str().unwrap()).unwrap();
 
-        let write = execute_direct_provider_tool(
+        let write = execute_test_direct_provider_tool(
             &root,
             "Write",
             &json!({ "file_path": "../outside.tex", "content": "nope" }),
@@ -4969,7 +5341,7 @@ mod tests {
         std::fs::write(root.join("chapters").join("intro.tex"), "intro").unwrap();
         std::fs::write(root.join("notes.md"), "notes").unwrap();
 
-        let glob = execute_direct_provider_tool(&root, "Glob", &json!({ "pattern": "*.tex" }))
+        let glob = execute_test_direct_provider_tool(&root, "Glob", &json!({ "pattern": "*.tex" }))
             .await;
         assert!(!glob.is_error);
         assert!(glob.content.contains("main.tex"));
@@ -4985,12 +5357,12 @@ mod tests {
         std::fs::write(root.join("main.tex"), "main").unwrap();
         std::fs::write(root.join("chapters").join("intro.tex"), "intro").unwrap();
 
-        let ls = execute_direct_provider_tool(&root, "LS", &json!({})).await;
+        let ls = execute_test_direct_provider_tool(&root, "LS", &json!({})).await;
         assert!(!ls.is_error);
         assert!(ls.content.contains("chapters/"));
         assert!(ls.content.contains("main.tex"));
 
-        let nested = execute_direct_provider_tool(&root, "LS", &json!({ "path": "chapters" }))
+        let nested = execute_test_direct_provider_tool(&root, "LS", &json!({ "path": "chapters" }))
             .await;
         assert!(!nested.is_error);
         assert!(nested.content.contains("chapters/intro.tex"));
@@ -5001,7 +5373,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = canonical_project_root(dir.path().to_str().unwrap()).unwrap();
 
-        let todos = execute_direct_provider_tool(
+        let todos = execute_test_direct_provider_tool(
             &root,
             "TodoWrite",
             &json!({
@@ -5017,7 +5389,7 @@ mod tests {
         assert!(todos.content.contains("Todo list updated (3 items)"));
         assert!(todos.content.contains("[in_progress] Edit main.tex"));
 
-        let invalid = execute_direct_provider_tool(
+        let invalid = execute_test_direct_provider_tool(
             &root,
             "TodoWrite",
             &json!({ "todos": [{ "content": "Oops", "status": "blocked" }] }),
@@ -5025,6 +5397,75 @@ mod tests {
         .await;
         assert!(invalid.is_error);
         assert!(invalid.content.contains("status must be pending"));
+    }
+
+    #[tokio::test]
+    async fn test_direct_provider_toolsearch_selects_compat_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = canonical_project_root(dir.path().to_str().unwrap()).unwrap();
+
+        let result = execute_test_direct_provider_tool(
+            &root,
+            "ToolSearch",
+            &json!({ "query": "select:TaskCreate,TaskUpdate,TaskList" }),
+        )
+        .await;
+
+        assert!(!result.is_error);
+        assert!(result.content.contains("TaskCreate"));
+        assert!(result.content.contains("TaskUpdate"));
+        assert!(result.content.contains("TaskList"));
+        assert!(result.content.contains("already available"));
+    }
+
+    #[tokio::test]
+    async fn test_direct_provider_task_tools_track_lightweight_tasks() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = canonical_project_root(dir.path().to_str().unwrap()).unwrap();
+        let state = ClaudeProcessState::default();
+
+        let created = execute_direct_provider_tool(
+            &state,
+            "session-a",
+            &root,
+            "TaskCreate",
+            &json!({
+                "subject": "Inspect paper draft",
+                "description": "Read main.tex and identify missing citations",
+                "activeForm": "Inspecting paper draft"
+            }),
+        )
+        .await;
+        assert!(!created.is_error);
+        assert!(created.content.contains("task-1"));
+
+        let listed = execute_direct_provider_tool(&state, "session-a", &root, "TaskList", &json!({}))
+            .await;
+        assert!(!listed.is_error);
+        assert!(listed.content.contains("Inspect paper draft"));
+        assert!(listed.content.contains("[pending]"));
+
+        let updated = execute_direct_provider_tool(
+            &state,
+            "session-a",
+            &root,
+            "TaskUpdate",
+            &json!({ "taskId": "task-1", "status": "completed" }),
+        )
+        .await;
+        assert!(!updated.is_error);
+        assert!(updated.content.contains("Task completed"));
+
+        let completed = execute_direct_provider_tool(
+            &state,
+            "session-a",
+            &root,
+            "TaskList",
+            &json!({ "status": "completed" }),
+        )
+        .await;
+        assert!(!completed.is_error);
+        assert!(completed.content.contains("[completed]"));
     }
 
     #[test]

@@ -30,6 +30,10 @@ import {
 } from "@/lib/template-registry";
 import { TemplateGallery } from "@/components/template-gallery";
 import { DEFAULT_CLAUDE_MD } from "@/lib/default-claude-md";
+import {
+  buildReferenceFilesSection,
+  importReferenceFilesWithSidecars,
+} from "@/lib/project-attachments";
 
 // ─── Helpers ───
 
@@ -260,19 +264,13 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
         }
       }
 
-      if (attachments.length > 0) {
-        const attachmentsDir = await join(projectPath, "attachments");
-        await mkdir(attachmentsDir, { recursive: true });
-      }
+      const referenceFiles =
+        attachments.length > 0
+          ? await importReferenceFilesWithSidecars(projectPath, attachments)
+          : [];
 
       if (purpose.trim()) {
-        const attachmentNames = attachments
-          .map((p) => p.split(/[/\\]/).pop())
-          .filter(Boolean);
-        const attachmentSection =
-          attachmentNames.length > 0
-            ? `\n### Reference Files\n${attachmentNames.map((n) => `- \`${n}\``).join("\n")}\n\nPlease review them and incorporate relevant information.\n`
-            : "";
+        const attachmentSection = buildReferenceFilesSection(referenceFiles);
 
         const prompt = [
           `## New ${template.name} Project`,
@@ -298,12 +296,6 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
       setLastProjectFolder(projectFolder);
       addRecentProject(projectPath);
       await openProject(projectPath);
-
-      if (attachments.length > 0) {
-        await useDocumentStore
-          .getState()
-          .importFiles(attachments, "attachments");
-      }
     } catch (err) {
       console.error("Failed to create project:", err);
       toast.error("Failed to create project", {

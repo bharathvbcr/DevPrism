@@ -2148,7 +2148,7 @@ fn direct_reasoning_history_mode(
 ) -> DirectReasoningHistoryMode {
     let base_url = credential.base_url.to_ascii_lowercase();
     let model = credential.model.to_ascii_lowercase();
-    if base_url.contains("api.deepseek.com") || model.starts_with("deepseek-v4") {
+    if base_url.contains("api.deepseek.com") || model.contains("deepseek") {
         DirectReasoningHistoryMode::Preserve
     } else {
         DirectReasoningHistoryMode::Strip
@@ -2414,6 +2414,32 @@ fn claude_text_from_content_blocks(content: &serde_json::Value) -> Option<String
     }
 }
 
+fn claude_reasoning_from_content_blocks(content: &serde_json::Value) -> Option<String> {
+    let blocks = content.as_array()?;
+    let reasoning = blocks
+        .iter()
+        .filter(|block| {
+            matches!(
+                block.get("type").and_then(|v| v.as_str()),
+                Some("thinking") | Some("reasoning") | Some("reasoning_text")
+            )
+        })
+        .filter_map(|block| {
+            block
+                .get("thinking")
+                .and_then(|v| v.as_str())
+                .or_else(|| block.get("text").and_then(|v| v.as_str()))
+                .or_else(|| block.get("content").and_then(|v| v.as_str()))
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if reasoning.trim().is_empty() {
+        None
+    } else {
+        Some(reasoning)
+    }
+}
+
 fn load_direct_provider_messages(
     project_path: &str,
     session_id: &str,
@@ -2424,11 +2450,17 @@ fn load_direct_provider_messages(
 
     let sessions_dir = get_sessions_dir(project_path)?;
     let session_path = sessions_dir.join(format!("{}.jsonl", session_id));
+    load_direct_provider_messages_from_path(&session_path)
+}
+
+fn load_direct_provider_messages_from_path(
+    session_path: &Path,
+) -> Result<Vec<serde_json::Value>, String> {
     if !session_path.exists() {
         return Ok(Vec::new());
     }
 
-    let file = std::fs::File::open(&session_path)
+    let file = std::fs::File::open(session_path)
         .map_err(|e| format!("Failed to open session file: {}", e))?;
     let reader = std::io::BufReader::new(file);
     use std::io::BufRead;
@@ -2521,6 +2553,11 @@ fn load_direct_provider_messages(
                 if !tool_calls.is_empty() {
                     if let Some(object) = message.as_object_mut() {
                         object.insert("tool_calls".to_string(), json!(tool_calls));
+                    }
+                }
+                if let Some(reasoning) = claude_reasoning_from_content_blocks(content) {
+                    if let Some(object) = message.as_object_mut() {
+                        object.insert("reasoning_content".to_string(), json!(reasoning));
                     }
                 }
                 messages.push(message);
@@ -3575,7 +3612,6 @@ fn direct_assistant_reasoning(response: &serde_json::Value) -> String {
 
 fn sanitize_direct_assistant_message_for_history(
     mut message: serde_json::Value,
-    _tool_calls: &[DirectToolCall],
     reasoning: &str,
     reasoning_history_mode: DirectReasoningHistoryMode,
 ) -> serde_json::Value {
@@ -3611,6 +3647,42 @@ fn sanitize_direct_assistant_message_for_history(
     message
 }
 
+fn direct_reasoning_from_openai_message(message: &serde_json::Value) -> String {
+    for key in ["reasoning_content", "reasoning", "reasoning_text"] {
+        if let Some(text) = message.get(key).and_then(|v| v.as_str()) {
+            return text.to_string();
+        }
+    }
+
+    claude_reasoning_from_content_blocks(
+        message
+            .get("content")
+            .unwrap_or(&serde_json::Value::Null),
+    )
+    .unwrap_or_default()
+}
+
+fn sanitize_direct_messages_for_reasoning_history(
+    messages: &[serde_json::Value],
+    reasoning_history_mode: DirectReasoningHistoryMode,
+) -> Vec<serde_json::Value> {
+    messages
+        .iter()
+        .cloned()
+        .map(|message| {
+            if message.get("role").and_then(|v| v.as_str()) != Some("assistant") {
+                return message;
+            }
+            let reasoning = direct_reasoning_from_openai_message(&message);
+            sanitize_direct_assistant_message_for_history(
+                message,
+                &reasoning,
+                reasoning_history_mode,
+            )
+        })
+        .collect()
+}
+
 fn direct_chat_response_from_value(
     response: serde_json::Value,
     reasoning_history_mode: DirectReasoningHistoryMode,
@@ -3625,7 +3697,6 @@ fn direct_chat_response_from_value(
         .unwrap_or_else(|| json!({ "role": "assistant", "content": content.clone() }));
     let message = sanitize_direct_assistant_message_for_history(
         message,
-        &tool_calls,
         &reasoning,
         reasoning_history_mode,
     );
@@ -3916,12 +3987,15 @@ fn direct_messages_for_legacy_functions(messages: Vec<serde_json::Value>) -> Vec
 fn direct_messages_for_tool_capability(
     messages: &[serde_json::Value],
     mode: DirectToolRequestMode,
+    reasoning_history_mode: DirectReasoningHistoryMode,
 ) -> Vec<serde_json::Value> {
+    let messages = sanitize_direct_messages_for_reasoning_history(messages, reasoning_history_mode);
+
     if mode == DirectToolRequestMode::Tools {
-        return messages.to_vec();
+        return messages;
     }
 
-    let mut messages = messages.to_vec();
+    let mut messages = messages;
     for message in &mut messages {
         let role = message.get("role").and_then(|v| v.as_str());
         if role == Some("system") {
@@ -4176,7 +4250,11 @@ async fn send_openai_compatible_non_streaming_chat_request(
     messages: &[serde_json::Value],
     mode: DirectToolRequestMode,
 ) -> Result<DirectChatResponse, DirectProviderRequestFailure> {
-    let request_messages = direct_messages_for_tool_capability(messages, mode);
+    let request_messages = direct_messages_for_tool_capability(
+        messages,
+        mode,
+        direct_reasoning_history_mode(credential),
+    );
     let mut request_body = json!({
         "model": credential.model.clone(),
         "messages": request_messages,
@@ -4234,7 +4312,11 @@ async fn send_openai_compatible_streaming_chat_request(
     process_key: &str,
     mode: DirectToolRequestMode,
 ) -> Result<DirectChatResponse, DirectStreamFailure> {
-    let request_messages = direct_messages_for_tool_capability(messages, mode);
+    let request_messages = direct_messages_for_tool_capability(
+        messages,
+        mode,
+        direct_reasoning_history_mode(credential),
+    );
     let mut request_body = json!({
         "model": credential.model.clone(),
         "messages": request_messages,
@@ -6040,6 +6122,71 @@ mod tests {
     }
 
     #[test]
+    fn test_direct_provider_loads_reasoning_from_saved_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_path = dir.path().join("session-reasoning.jsonl");
+        let event = json!({
+            "type": "assistant",
+            "message": {
+                "content": [
+                    { "type": "thinking", "thinking": "Need to read main.tex first." },
+                    {
+                        "type": "tool_use",
+                        "id": "call-1",
+                        "name": "Read",
+                        "input": { "file_path": "main.tex" }
+                    }
+                ]
+            }
+        });
+        std::fs::write(
+            &session_path,
+            format!("{}\n", serde_json::to_string(&event).unwrap()),
+        )
+        .unwrap();
+
+        let messages = load_direct_provider_messages_from_path(&session_path).unwrap();
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["reasoning_content"], "Need to read main.tex first.");
+        assert_eq!(messages[0]["tool_calls"][0]["function"]["name"], "Read");
+    }
+
+    #[test]
+    fn test_direct_provider_request_history_sanitizes_reasoning_by_provider() {
+        let messages = vec![
+            json!({ "role": "system", "content": direct_provider_system_prompt() }),
+            json!({
+                "role": "assistant",
+                "reasoning_content": "Need to read main.tex first.",
+                "content": null,
+                "tool_calls": [{
+                    "id": "call-1",
+                    "type": "function",
+                    "function": { "name": "Read", "arguments": "{\"file_path\":\"main.tex\"}" }
+                }]
+            }),
+        ];
+
+        let qwen_messages = direct_messages_for_tool_capability(
+            &messages,
+            DirectToolRequestMode::Tools,
+            DirectReasoningHistoryMode::Strip,
+        );
+        let deepseek_messages = direct_messages_for_tool_capability(
+            &messages,
+            DirectToolRequestMode::Tools,
+            DirectReasoningHistoryMode::Preserve,
+        );
+
+        assert!(qwen_messages[1].get("reasoning_content").is_none());
+        assert_eq!(
+            deepseek_messages[1]["reasoning_content"],
+            "Need to read main.tex first."
+        );
+    }
+
+    #[test]
     fn test_direct_provider_extracts_stream_reasoning_delta() {
         let delta = json!({
             "reasoning_content": "Step one.",
@@ -6078,9 +6225,18 @@ mod tests {
             base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string(),
             model: "qwen3-coder-plus".to_string(),
         };
+        let proxied_deepseek = StoredOpenAiCompatibleCredential {
+            api_key: "sk-test".to_string(),
+            base_url: "https://openrouter.ai/api/v1".to_string(),
+            model: "deepseek/deepseek-v4-pro".to_string(),
+        };
 
         assert!(
             direct_reasoning_history_mode(&deepseek) == DirectReasoningHistoryMode::Preserve
+        );
+        assert!(
+            direct_reasoning_history_mode(&proxied_deepseek)
+                == DirectReasoningHistoryMode::Preserve
         );
         assert!(direct_reasoning_history_mode(&qwen) == DirectReasoningHistoryMode::Strip);
     }
@@ -6092,7 +6248,11 @@ mod tests {
             json!({ "role": "user", "content": "Please edit main.tex" }),
         ];
 
-        let no_tools = direct_messages_for_tool_capability(&messages, DirectToolRequestMode::None);
+        let no_tools = direct_messages_for_tool_capability(
+            &messages,
+            DirectToolRequestMode::None,
+            DirectReasoningHistoryMode::Strip,
+        );
         let content = no_tools[0]["content"].as_str().unwrap();
 
         assert!(content.contains("does not support tool calls"));
@@ -6116,7 +6276,11 @@ mod tests {
             json!({ "role": "tool", "tool_call_id": "call-1", "content": "main.tex contents" }),
         ];
 
-        let no_tools = direct_messages_for_tool_capability(&messages, DirectToolRequestMode::None);
+        let no_tools = direct_messages_for_tool_capability(
+            &messages,
+            DirectToolRequestMode::None,
+            DirectReasoningHistoryMode::Strip,
+        );
 
         assert!(no_tools[1].get("tool_calls").is_none());
         assert_eq!(no_tools[1]["role"], "assistant");
@@ -6144,7 +6308,11 @@ mod tests {
         ];
 
         let function_messages =
-            direct_messages_for_tool_capability(&messages, DirectToolRequestMode::Functions);
+            direct_messages_for_tool_capability(
+                &messages,
+                DirectToolRequestMode::Functions,
+                DirectReasoningHistoryMode::Strip,
+            );
 
         assert!(function_messages[1].get("tool_calls").is_none());
         assert_eq!(function_messages[1]["function_call"]["name"], "Read");

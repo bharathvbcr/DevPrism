@@ -243,8 +243,12 @@ function InstallLogOutput() {
 // ─── Main Component ───
 
 export function ClaudeSetup() {
+  const [provider, setProvider] = useState<"claude-code" | "openai-compatible">(
+    "claude-code",
+  );
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
+  const [model, setModel] = useState("");
   const status = useClaudeSetupStore((s) => s.status);
   const isInstalling = useClaudeSetupStore((s) => s.isInstalling);
   const isLoggingIn = useClaudeSetupStore((s) => s.isLoggingIn);
@@ -263,10 +267,11 @@ export function ClaudeSetup() {
   useLoginEvents();
 
   const handleSaveApiKey = async () => {
-    const success = await saveApiKey(apiKey, baseUrl);
+    const success = await saveApiKey(apiKey, baseUrl, provider, model);
     if (success) {
       setApiKey("");
       setBaseUrl("");
+      setModel("");
     }
   };
 
@@ -282,11 +287,14 @@ export function ClaudeSetup() {
   }
 
   if (status === "ready") {
+    const isDirectProvider = version === "OpenAI-compatible provider";
     return (
       <div className="flex w-full items-center gap-3 rounded-xl border border-border bg-muted/30 px-5 py-4">
         <CheckCircle2Icon className="size-5 shrink-0 text-green-600" />
         <div className="min-w-0 flex-1">
-          <p className="font-medium text-sm">Claude Code Ready</p>
+          <p className="font-medium text-sm">
+            {isDirectProvider ? "AI Provider Ready" : "Claude Code Ready"}
+          </p>
           <p className="truncate text-muted-foreground text-xs">
             {[version, accountEmail].filter(Boolean).join(" · ")}
           </p>
@@ -479,21 +487,49 @@ export function ClaudeSetup() {
           }}
         >
           <div className="space-y-1.5">
+            <Label htmlFor="ai-provider" className="text-xs">
+              Provider
+            </Label>
+            <select
+              id="ai-provider"
+              value={provider}
+              onChange={(event) =>
+                setProvider(
+                  event.target.value as "claude-code" | "openai-compatible",
+                )
+              }
+              disabled={isSavingApiKey}
+              className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm outline-none transition-colors focus-visible:border-ring"
+            >
+              <option value="claude-code">Claude Code / Anthropic API</option>
+              <option value="openai-compatible">OpenAI-compatible API</option>
+            </select>
+            <p className="text-[11px] text-muted-foreground">
+              Use OpenAI-compatible for Qwen, DeepSeek, GLM, and compatible
+              gateways.
+            </p>
+          </div>
+          <div className="space-y-1.5">
             <Label htmlFor="anthropic-api-key" className="text-xs">
-              Anthropic API Key
+              {provider === "openai-compatible"
+                ? "Provider API Key"
+                : "Anthropic API Key"}
             </Label>
             <Input
               id="anthropic-api-key"
               type="password"
-              placeholder="sk-ant-..."
+              placeholder={
+                provider === "openai-compatible" ? "sk-..." : "sk-ant-..."
+              }
               value={apiKey}
               onChange={(event) => setApiKey(event.target.value)}
               disabled={isSavingApiKey}
               autoComplete="off"
             />
-            <p className="text-muted-foreground text-[11px]">
-              Anthropic Console keys start with sk-ant-. External provider keys
-              need a Base URL.
+            <p className="text-[11px] text-muted-foreground">
+              {provider === "openai-compatible"
+                ? "Use the API key from your model provider."
+                : "Anthropic Console keys start with sk-ant-. External Claude proxies need a Base URL."}
             </p>
           </div>
           <div className="space-y-1.5">
@@ -503,16 +539,41 @@ export function ClaudeSetup() {
             <Input
               id="anthropic-base-url"
               type="url"
-              placeholder="https://proxy.example.com/claude"
+              placeholder={
+                provider === "openai-compatible"
+                  ? "https://api.deepseek.com or https://dashscope.aliyuncs.com/compatible-mode/v1"
+                  : "https://proxy.example.com/claude"
+              }
               value={baseUrl}
               onChange={(event) => setBaseUrl(event.target.value)}
               disabled={isSavingApiKey}
               autoComplete="off"
             />
-            <p className="text-muted-foreground text-[11px]">
-              Leave blank for Anthropic direct API.
+            <p className="text-[11px] text-muted-foreground">
+              {provider === "openai-compatible"
+                ? "Use either the API root or a full /chat/completions URL."
+                : "Leave blank for Anthropic direct API."}
             </p>
           </div>
+          {provider === "openai-compatible" && (
+            <div className="space-y-1.5">
+              <Label htmlFor="provider-model" className="text-xs">
+                Model
+              </Label>
+              <Input
+                id="provider-model"
+                type="text"
+                placeholder="deepseek-chat, qwen-plus, glm-4.5, ..."
+                value={model}
+                onChange={(event) => setModel(event.target.value)}
+                disabled={isSavingApiKey}
+                autoComplete="off"
+              />
+              <p className="text-[11px] text-muted-foreground">
+                This model is used directly and ignores the Claude model picker.
+              </p>
+            </div>
+          )}
           {error && (
             <p className="break-words text-destructive text-xs">{error}</p>
           )}
@@ -520,7 +581,12 @@ export function ClaudeSetup() {
             type="submit"
             size="sm"
             className="w-full gap-2"
-            disabled={!apiKey.trim() || isSavingApiKey}
+            disabled={
+              !apiKey.trim() ||
+              isSavingApiKey ||
+              (provider === "openai-compatible" &&
+                (!baseUrl.trim() || !model.trim()))
+            }
           >
             {isSavingApiKey ? (
               <LoaderIcon className="size-3.5 animate-spin" />
@@ -533,7 +599,7 @@ export function ClaudeSetup() {
 
         <div className="flex items-center gap-2">
           <div className="h-px flex-1 bg-border" />
-          <span className="text-muted-foreground text-[11px]">or</span>
+          <span className="text-[11px] text-muted-foreground">or</span>
           <div className="h-px flex-1 bg-border" />
         </div>
 

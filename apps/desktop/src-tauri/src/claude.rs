@@ -169,6 +169,25 @@ fn normalize_model(value: Option<&str>) -> Result<Option<String>, String> {
     Ok(Some(clean))
 }
 
+fn known_proxy_mismatch_error(provider: &str, base_url: Option<&str>) -> Option<String> {
+    let lower = base_url?.to_ascii_lowercase();
+    if lower.contains("/codex-proxy") {
+        return Some(
+            "ModelGate codex-proxy uses the OpenAI Responses API, not chat/completions or Claude Code. Use a chat/completions-compatible endpoint for OpenAI-compatible providers, or choose the ModelGate Claude proxy preset for Claude Code."
+                .to_string(),
+        );
+    }
+
+    if provider == PROVIDER_OPENAI_COMPATIBLE && lower.contains("/claude-proxy") {
+        return Some(
+            "This is a Claude-compatible proxy endpoint. Select Claude Code / Anthropic API and the ModelGate Claude preset instead of OpenAI-compatible API."
+                .to_string(),
+        );
+    }
+
+    None
+}
+
 fn stored_claude_credential() -> Option<StoredClaudeCredential> {
     let config = read_claude_prism_auth_config().ok()?;
     let provider = normalize_provider(config.provider.as_deref()).ok()?;
@@ -266,6 +285,9 @@ pub async fn save_anthropic_api_key(
     let base_url = normalize_base_url(base_url.as_deref())?;
     let provider = normalize_provider(provider.as_deref())?;
     let model = normalize_model(model.as_deref())?;
+    if let Some(message) = known_proxy_mismatch_error(&provider, base_url.as_deref()) {
+        return Err(message);
+    }
 
     // Saving a new key should repair an empty/corrupt legacy auth file.
     let mut config = read_claude_prism_auth_config().unwrap_or_default();
@@ -301,6 +323,11 @@ pub async fn verify_openai_compatible_api_key(
     let api_key = normalize_api_key(&api_key)?;
     let base_url = normalize_base_url(Some(base_url.as_str()))?
         .ok_or("OpenAI-compatible provider requires a Base URL")?;
+    if let Some(message) =
+        known_proxy_mismatch_error(PROVIDER_OPENAI_COMPATIBLE, Some(base_url.as_str()))
+    {
+        return Err(message);
+    }
     let model = normalize_model(Some(model.as_str()))?
         .ok_or("OpenAI-compatible provider requires a model")?;
     let credential = StoredOpenAiCompatibleCredential {
@@ -5683,6 +5710,40 @@ mod tests {
         assert!(values.contains(&("ANTHROPIC_API_KEY", "sk-ant-test".to_string())));
         assert!(!values.iter().any(|(key, _)| *key == "ANTHROPIC_AUTH_TOKEN"));
         assert!(!values.iter().any(|(key, _)| *key == "ANTHROPIC_BASE_URL"));
+    }
+
+    #[test]
+    fn test_known_proxy_mismatch_rejects_modelgate_codex_proxy() {
+        let error = known_proxy_mismatch_error(
+            PROVIDER_OPENAI_COMPATIBLE,
+            Some("https://mg.aid.pub/codex-proxy"),
+        )
+        .unwrap();
+
+        assert!(error.contains("codex-proxy"));
+        assert!(error.contains("Responses API"));
+        assert!(error.contains("chat/completions"));
+    }
+
+    #[test]
+    fn test_known_proxy_mismatch_rejects_claude_proxy_as_openai_compatible() {
+        let error = known_proxy_mismatch_error(
+            PROVIDER_OPENAI_COMPATIBLE,
+            Some("https://mg.aid.pub/claude-proxy"),
+        )
+        .unwrap();
+
+        assert!(error.contains("Claude-compatible proxy"));
+        assert!(error.contains("Claude Code / Anthropic API"));
+    }
+
+    #[test]
+    fn test_known_proxy_mismatch_allows_claude_proxy_for_claude_provider() {
+        assert!(known_proxy_mismatch_error(
+            PROVIDER_CLAUDE_CODE,
+            Some("https://mg.aid.pub/claude-proxy"),
+        )
+        .is_none());
     }
 
     #[test]

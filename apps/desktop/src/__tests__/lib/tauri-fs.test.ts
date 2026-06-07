@@ -52,8 +52,9 @@ describe("tauri fs helpers", () => {
 
   describe("scanProjectFolder", () => {
     it("does not recurse into generated cache directories", async () => {
-      vi.mocked(readDir).mockImplementation(async (dir: string) => {
-        if (dir === "/project") {
+      vi.mocked(readDir).mockImplementation(async (dir: string | URL) => {
+        const dirPath = String(dir);
+        if (dirPath === "/project") {
           return [
             { name: "__pycache__", isDirectory: true },
             { name: "node_modules", isDirectory: true },
@@ -62,11 +63,11 @@ describe("tauri fs helpers", () => {
           ] as any;
         }
 
-        if (dir === "/project/chapters") {
+        if (dirPath === "/project/chapters") {
           return [{ name: "intro.tex", isDirectory: false }] as any;
         }
 
-        throw new Error(`Unexpected readDir path: ${dir}`);
+        throw new Error(`Unexpected readDir path: ${dirPath}`);
       });
 
       const result = await scanProjectFolder("/project");

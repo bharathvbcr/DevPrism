@@ -123,8 +123,9 @@ describe("useDocumentStore", () => {
 
     it("skips Python cache directories and bytecode files during open", async () => {
       vi.mocked(invoke).mockResolvedValue(undefined as never);
-      vi.mocked(readDir).mockImplementation(async (dir: string) => {
-        if (dir === "/project") {
+      vi.mocked(readDir).mockImplementation(async (dir: string | URL) => {
+        const dirPath = String(dir);
+        if (dirPath === "/project") {
           return [
             { name: "__pycache__", isDirectory: true },
             { name: "main.tex", isDirectory: false },
@@ -133,17 +134,18 @@ describe("useDocumentStore", () => {
           ] as any;
         }
 
-        throw new Error(`Unexpected readDir path: ${dir}`);
+        throw new Error(`Unexpected readDir path: ${dirPath}`);
       });
       vi.mocked(stat).mockResolvedValue({ size: 32 } as any);
-      vi.mocked(readTextFile).mockImplementation(async (path: string) => {
-        if (path === "/project/main.tex") {
+      vi.mocked(readTextFile).mockImplementation(async (path: string | URL) => {
+        const filePath = String(path);
+        if (filePath === "/project/main.tex") {
           return "\\documentclass{article}";
         }
-        if (path === "/project/tool.py") {
+        if (filePath === "/project/tool.py") {
           return "print('hello')";
         }
-        throw new Error(`Unexpected readTextFile path: ${path}`);
+        throw new Error(`Unexpected readTextFile path: ${filePath}`);
       });
 
       await useDocumentStore.getState().openProject("/project");

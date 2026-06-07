@@ -1,6 +1,5 @@
 import { useEffect } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
-import { PanelRightCloseIcon, PanelRightOpenIcon } from "lucide-react";
 import { Sidebar } from "./sidebar";
 import { LatexEditor } from "./editor/latex-editor";
 import { PdfPreview } from "./preview/pdf-preview";
@@ -41,25 +40,7 @@ export function WorkspaceLayout() {
       <PanelResizeHandle className="w-px bg-border transition-colors hover:bg-ring" />
 
       <Panel defaultSize={previewVisible ? 42.5 : 85} minSize={25}>
-        <div className="relative h-full">
-          <LatexEditor />
-          <button
-            type="button"
-            onClick={togglePreview}
-            title={
-              previewVisible
-                ? "Hide PDF preview (Cmd+\\)"
-                : "Show PDF preview (Cmd+\\)"
-            }
-            className="absolute right-3 bottom-3 z-40 rounded-md border bg-background/85 p-1.5 text-muted-foreground shadow-sm backdrop-blur transition-colors hover:bg-muted hover:text-foreground"
-          >
-            {previewVisible ? (
-              <PanelRightCloseIcon className="size-4" />
-            ) : (
-              <PanelRightOpenIcon className="size-4" />
-            )}
-          </button>
-        </div>
+        <LatexEditor />
       </Panel>
 
       {previewVisible && (

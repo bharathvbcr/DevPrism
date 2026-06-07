@@ -32,6 +32,7 @@ interface ClaudeSetupState {
   status: SetupStatus;
   isInstalling: boolean;
   isLoggingIn: boolean;
+  isSavingApiKey: boolean;
   error: string | null;
   version: string | null;
   accountEmail: string | null;
@@ -48,6 +49,7 @@ interface ClaudeSetupState {
   checkStatus: () => Promise<void>;
   install: () => Promise<void>;
   login: () => Promise<void>;
+  saveApiKey: (apiKey: string, baseUrl?: string) => Promise<boolean>;
   toggleInstallLogs: () => void;
 
   // Internal helpers
@@ -107,6 +109,7 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
   status: "checking",
   isInstalling: false,
   isLoggingIn: false,
+  isSavingApiKey: false,
   error: null,
   version: null,
   accountEmail: null,
@@ -201,6 +204,50 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
         status: "error",
         error: err?.message || String(err),
       });
+    }
+  },
+
+  saveApiKey: async (apiKey: string, baseUrl?: string) => {
+    const key = apiKey.trim();
+    const url = baseUrl?.trim() ?? "";
+    if (!key) {
+      set({ error: "API key is empty" });
+      return false;
+    }
+
+    if (/\s/.test(key)) {
+      set({ error: "API key cannot contain spaces or line breaks" });
+      return false;
+    }
+
+    if (url && !/^https?:\/\//.test(url)) {
+      set({ error: "Base URL must start with http:// or https://" });
+      return false;
+    }
+
+    if (!url && !key.startsWith("sk-ant-")) {
+      set({
+        error:
+          "This looks like an external provider key. Set the provider Base URL, or use an Anthropic key that starts with sk-ant-.",
+      });
+      return false;
+    }
+
+    set({ isSavingApiKey: true, error: null });
+    try {
+      await invoke("save_anthropic_api_key", {
+        apiKey: key,
+        baseUrl: url || null,
+      });
+      set({ isSavingApiKey: false });
+      await get().checkStatus();
+      return true;
+    } catch (err: any) {
+      set({
+        isSavingApiKey: false,
+        error: err?.message || String(err),
+      });
+      return false;
     }
   },
 

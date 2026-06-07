@@ -71,22 +71,22 @@ export function UvSetupDialog({ open, onClose }: UvSetupDialogProps) {
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="w-[min(42rem,calc(100vw-2rem))] overflow-hidden sm:max-w-none">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <TerminalIcon className="size-5" />
-            Python Environment (uv)
+          <DialogTitle className="flex min-w-0 items-center gap-2 pr-8">
+            <TerminalIcon className="size-5 shrink-0" />
+            <span className="min-w-0 truncate">Python Environment (uv)</span>
           </DialogTitle>
           <DialogDescription>
             Manage the Python virtual environment for this project.
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4 py-2">
+        <div className="min-w-0 space-y-4 py-2">
           {/* uv status */}
-          <div className="flex items-center gap-3 rounded-lg border p-3">
+          <div className="flex min-w-0 items-center gap-3 overflow-hidden rounded-lg border p-3">
             <StatusIcon status={status} isInstalling={isInstalling} />
-            <div className="min-w-0 flex-1">
+            <div className="min-w-0 flex-1 overflow-hidden">
               <div className="font-medium text-sm">
                 {status === "checking"
                   ? "Checking uv..."
@@ -102,7 +102,9 @@ export function UvSetupDialog({ open, onClose }: UvSetupDialogProps) {
                 </div>
               )}
               {error && (
-                <div className="mt-1 text-destructive text-xs">{error}</div>
+                <div className="mt-1 break-words text-destructive text-xs">
+                  {error}
+                </div>
               )}
             </div>
             {status === "not-installed" && !isInstalling && (
@@ -121,10 +123,10 @@ export function UvSetupDialog({ open, onClose }: UvSetupDialogProps) {
 
           {/* venv status — only show when uv is ready */}
           {status === "ready" && (
-            <div className="flex items-center gap-3 rounded-lg border p-3">
+            <div className="flex min-w-0 items-center gap-3 overflow-hidden rounded-lg border p-3">
               <div
                 className={cn(
-                  "flex size-8 items-center justify-center rounded-full",
+                  "flex size-8 shrink-0 items-center justify-center rounded-full",
                   venvReady
                     ? "bg-accent text-accent-foreground"
                     : "bg-muted text-muted-foreground",
@@ -132,7 +134,7 @@ export function UvSetupDialog({ open, onClose }: UvSetupDialogProps) {
               >
                 <FolderIcon className="size-4" />
               </div>
-              <div className="min-w-0 flex-1">
+              <div className="min-w-0 flex-1 overflow-hidden">
                 <div className="font-medium text-sm">
                   {venvReady
                     ? "Virtual Environment Active"
@@ -140,7 +142,7 @@ export function UvSetupDialog({ open, onClose }: UvSetupDialogProps) {
                 </div>
                 {venvPath && (
                   <div
-                    className="truncate text-muted-foreground text-xs"
+                    className="max-w-full break-all text-muted-foreground text-xs leading-snug"
                     title={venvPath}
                   >
                     {venvPath}
@@ -165,7 +167,7 @@ export function UvSetupDialog({ open, onClose }: UvSetupDialogProps) {
 
           {/* Info text */}
           {status === "ready" && venvReady && (
-            <p className="text-muted-foreground text-xs leading-relaxed">
+            <p className="max-w-full break-words text-muted-foreground text-xs leading-relaxed">
               Claude Code will automatically use this environment when running
               Python code. Use{" "}
               <code className="text-foreground">uv pip install</code> to add
@@ -187,28 +189,28 @@ function StatusIcon({
 }) {
   if (isInstalling || status === "checking") {
     return (
-      <div className="flex size-8 items-center justify-center rounded-full bg-muted">
+      <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-muted">
         <Loader2Icon className="size-4 animate-spin text-muted-foreground" />
       </div>
     );
   }
   if (status === "ready") {
     return (
-      <div className="flex size-8 items-center justify-center rounded-full bg-accent text-accent-foreground">
+      <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-accent text-accent-foreground">
         <CheckCircle2Icon className="size-4" />
       </div>
     );
   }
   if (status === "error") {
     return (
-      <div className="flex size-8 items-center justify-center rounded-full bg-destructive/10 text-destructive">
+      <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-destructive/10 text-destructive">
         <AlertCircleIcon className="size-4" />
       </div>
     );
   }
   // not-installed
   return (
-    <div className="flex size-8 items-center justify-center rounded-full bg-muted text-muted-foreground">
+    <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
       <TerminalIcon className="size-4" />
     </div>
   );

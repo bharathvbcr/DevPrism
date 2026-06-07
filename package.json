@@ -13,7 +13,7 @@
   ],
   "scripts": {
     "dev:web": "pnpm turbo dev --filter=@claude-prism/web --filter=@claude-prism/latex-api",
-    "dev:desktop": "pnpm --filter=@claude-prism/desktop-sidecar dev & pnpm --filter=@claude-prism/desktop tauri dev",
+    "dev:desktop": "node scripts/dev-desktop.mjs",
     "build:desktop": "pnpm --filter=@claude-prism/desktop tauri build",
     "lint": "pnpm exec biome check",
     "lint:fix": "pnpm exec biome check --fix",

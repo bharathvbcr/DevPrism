@@ -217,7 +217,7 @@ export function ScientificSkillsOnboarding({
                 {totalSkills} AI skills across {categories.length} domains —
                 powered by{" "}
                 <a
-                  href="https://github.com/K-Dense-AI/claude-scientific-skills"
+                  href="https://github.com/K-Dense-AI/scientific-agent-skills"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="inline-flex items-center gap-0.5 underline decoration-border underline-offset-2 hover:text-foreground"

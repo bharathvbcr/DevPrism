@@ -214,6 +214,108 @@ fn allow_project_directory(app: tauri::AppHandle, root_path: String) -> Result<(
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+struct ProjectCandidate {
+    path: String,
+    name: String,
+    last_modified: u64,
+    has_main_tex: bool,
+}
+
+fn modified_ms(path: &Path) -> u64 {
+    std::fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn has_tex_file(dir: &Path) -> bool {
+    if dir.join("main.tex").is_file() || dir.join("document.tex").is_file() {
+        return true;
+    }
+
+    std::fs::read_dir(dir)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.flatten())
+        .any(|entry| {
+            let path = entry.path();
+            if !path.is_file() {
+                return false;
+            }
+            matches!(
+                path.extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(|ext| ext.to_ascii_lowercase())
+                    .as_deref(),
+                Some("tex" | "ltx")
+            )
+        })
+}
+
+fn project_modified_ms(dir: &Path) -> u64 {
+    let mut latest = modified_ms(dir);
+    for relative in [
+        "main.tex",
+        "document.tex",
+        ".prism/build/main.pdf",
+        ".claudeprism/history.git/.git/refs/heads/master",
+    ] {
+        latest = latest.max(modified_ms(&dir.join(relative)));
+    }
+
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                latest = latest.max(modified_ms(&path));
+            }
+        }
+    }
+
+    latest
+}
+
+#[tauri::command]
+fn list_default_projects() -> Result<Vec<ProjectCandidate>, String> {
+    let Some(home) = dirs::home_dir() else {
+        return Ok(Vec::new());
+    };
+
+    let base = home.join("Documents").join("ClaudePrism");
+    if !base.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut projects = Vec::new();
+    let entries = std::fs::read_dir(&base)
+        .map_err(|e| format!("Failed to read default project directory: {}", e))?;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') || !has_tex_file(&path) {
+            continue;
+        }
+
+        projects.push(ProjectCandidate {
+            path: path.to_string_lossy().to_string(),
+            name,
+            last_modified: project_modified_ms(&path),
+            has_main_tex: path.join("main.tex").is_file() || path.join("document.tex").is_file(),
+        });
+    }
+
+    projects.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
+    Ok(projects)
+}
+
 // --- Debug logging from JS (survives white-screen crashes) ---
 
 #[tauri::command]
@@ -366,6 +468,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             create_new_window,
             allow_project_directory,
+            list_default_projects,
             detect_editors,
             open_in_editor,
             js_log,
@@ -376,6 +479,8 @@ pub fn run() {
             claude::check_claude_status,
             claude::install_claude_cli,
             claude::login_claude,
+            claude::save_anthropic_api_key,
+            claude::clear_anthropic_api_key,
             claude::execute_claude_code,
             claude::continue_claude_code,
             claude::resume_claude_code,
@@ -385,6 +490,7 @@ pub fn run() {
             claude::set_claude_fast_mode,
             claude::list_claude_sessions,
             claude::load_session_history,
+            claude::delete_claude_session,
             zotero::zotero_start_oauth,
             zotero::zotero_complete_oauth,
             zotero::zotero_cancel_oauth,

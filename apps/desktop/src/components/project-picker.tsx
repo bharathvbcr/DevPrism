@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
@@ -34,10 +34,19 @@ import { ProjectWizard, type CreationMode } from "./project-wizard";
 import { ClaudeSetup } from "./claude-setup";
 import { cn } from "@/lib/utils";
 
+interface DefaultProject {
+  path: string;
+  name: string;
+  last_modified: number;
+  has_main_tex: boolean;
+}
+
 export function ProjectPicker() {
   const [showModeDialog, setShowModeDialog] = useState(false);
   const [wizardMode, setWizardMode] = useState<CreationMode | null>(null);
   const [appVersion, setAppVersion] = useState("");
+  const [isRestoringProject, setIsRestoringProject] = useState(false);
+  const recoveryAttemptedRef = useRef(false);
   const { status: updateStatus, checkForUpdate, installUpdate } = useUpdater();
 
   const recentProjects = useProjectStore((s) => s.recentProjects);
@@ -53,6 +62,41 @@ export function ProjectPicker() {
     checkClaudeStatus();
     getVersion().then(setAppVersion);
   }, [checkClaudeStatus]);
+
+  useEffect(() => {
+    if (recoveryAttemptedRef.current || recentProjects.length > 0) return;
+    recoveryAttemptedRef.current = true;
+
+    let cancelled = false;
+
+    async function recoverDefaultProjects() {
+      try {
+        const projects = await invoke<DefaultProject[]>(
+          "list_default_projects",
+        );
+        if (cancelled || projects.length === 0) return;
+
+        for (const project of [...projects].reverse()) {
+          addRecentProject(project.path);
+        }
+
+        setIsRestoringProject(true);
+        await openProject(projects[0].path);
+      } catch (err) {
+        console.warn("Failed to recover default projects:", err);
+      } finally {
+        if (!cancelled) {
+          setIsRestoringProject(false);
+        }
+      }
+    }
+
+    recoverDefaultProjects();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [addRecentProject, openProject, recentProjects.length]);
 
   const handleOpenFolder = async () => {
     const selected = await open({
@@ -101,15 +145,20 @@ export function ProjectPicker() {
 
         {!isClaudeReady ? <ClaudeSetup /> : <EnvironmentStatus />}
 
-        <div
-          className={`flex w-full gap-3 ${!isClaudeReady ? "pointer-events-none opacity-50" : ""}`}
-        >
+        {isRestoringProject && (
+          <div className="flex items-center gap-2 text-muted-foreground text-sm">
+            <Loader2Icon className="size-4 animate-spin" />
+            <span>Restoring last project...</span>
+          </div>
+        )}
+
+        <div className="flex w-full gap-3">
           <Button
             onClick={() => setShowModeDialog(true)}
             size="lg"
             variant="outline"
             className="flex-1 gap-2"
-            disabled={!isClaudeReady}
+            disabled={isRestoringProject}
           >
             <FolderPlusIcon className="size-5" />
             New Project
@@ -118,7 +167,7 @@ export function ProjectPicker() {
             onClick={handleOpenFolder}
             size="lg"
             className="flex-1 gap-2"
-            disabled={!isClaudeReady}
+            disabled={isRestoringProject}
           >
             <FolderOpenIcon className="size-5" />
             Open Folder

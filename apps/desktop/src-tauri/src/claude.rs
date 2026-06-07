@@ -1996,6 +1996,7 @@ struct DirectToolOutput {
 struct DirectChatResponse {
     message: serde_json::Value,
     content: String,
+    reasoning: String,
     tool_calls: Vec<DirectToolCall>,
     usage: serde_json::Value,
     streamed_text: bool,
@@ -2827,8 +2828,41 @@ fn direct_assistant_content(response: &serde_json::Value) -> String {
     String::new()
 }
 
+fn direct_assistant_reasoning(response: &serde_json::Value) -> String {
+    let Some(message) = response.pointer("/choices/0/message") else {
+        return String::new();
+    };
+
+    for key in ["reasoning_content", "reasoning", "reasoning_text"] {
+        if let Some(text) = message.get(key).and_then(|v| v.as_str()) {
+            return text.to_string();
+        }
+    }
+
+    if let Some(parts) = message.get("content").and_then(|v| v.as_array()) {
+        return parts
+            .iter()
+            .filter(|part| {
+                matches!(
+                    part.get("type").and_then(|v| v.as_str()),
+                    Some("reasoning") | Some("thinking") | Some("reasoning_text")
+                )
+            })
+            .filter_map(|part| {
+                part.get("text")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| part.get("content").and_then(|v| v.as_str()))
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+    }
+
+    String::new()
+}
+
 fn direct_chat_response_from_value(response: serde_json::Value) -> DirectChatResponse {
     let content = direct_assistant_content(&response);
+    let reasoning = direct_assistant_reasoning(&response);
     let tool_calls = parse_direct_tool_calls(&response);
     let usage = json_usage(&response);
     let message = response
@@ -2838,6 +2872,7 @@ fn direct_chat_response_from_value(response: serde_json::Value) -> DirectChatRes
     DirectChatResponse {
         message,
         content,
+        reasoning,
         tool_calls,
         usage,
         streamed_text: false,
@@ -2865,9 +2900,49 @@ fn direct_stream_text_delta(delta: &serde_json::Value) -> String {
     String::new()
 }
 
-fn emit_direct_streaming_delta(window: &WebviewWindow, tab_id: &str, text: &str) {
-    if text.is_empty() {
+fn direct_stream_reasoning_delta(delta: &serde_json::Value) -> String {
+    for key in ["reasoning_content", "reasoning", "reasoning_text"] {
+        if let Some(text) = delta.get(key).and_then(|v| v.as_str()) {
+            return text.to_string();
+        }
+    }
+
+    if let Some(parts) = delta.get("content").and_then(|v| v.as_array()) {
+        return parts
+            .iter()
+            .filter(|part| {
+                matches!(
+                    part.get("type").and_then(|v| v.as_str()),
+                    Some("reasoning") | Some("thinking") | Some("reasoning_text")
+                )
+            })
+            .filter_map(|part| {
+                part.get("text")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| part.get("content").and_then(|v| v.as_str()))
+            })
+            .collect::<Vec<_>>()
+            .join("");
+    }
+
+    String::new()
+}
+
+fn emit_direct_streaming_delta(
+    window: &WebviewWindow,
+    tab_id: &str,
+    text: &str,
+    reasoning: &str,
+) {
+    if text.is_empty() && reasoning.is_empty() {
         return;
+    }
+    let mut blocks = Vec::new();
+    if !reasoning.is_empty() {
+        blocks.push(json!({ "type": "thinking", "thinking": reasoning }));
+    }
+    if !text.is_empty() {
+        blocks.push(json!({ "type": "text", "text": text }));
     }
     emit_direct_output(
         window,
@@ -2876,7 +2951,7 @@ fn emit_direct_streaming_delta(window: &WebviewWindow, tab_id: &str, text: &str)
             "type": "assistant",
             "subtype": "streaming_delta",
             "message": {
-                "content": [{ "type": "text", "text": text }],
+                "content": blocks,
             },
         }),
     );
@@ -2905,7 +2980,11 @@ fn direct_tool_calls_from_stream(
         .collect()
 }
 
-fn direct_message_from_parts(content: &str, tool_calls: &[DirectToolCall]) -> serde_json::Value {
+fn direct_message_from_parts(
+    content: &str,
+    reasoning: &str,
+    tool_calls: &[DirectToolCall],
+) -> serde_json::Value {
     let mut message = json!({
         "role": "assistant",
         "content": if content.trim().is_empty() {
@@ -2914,6 +2993,11 @@ fn direct_message_from_parts(content: &str, tool_calls: &[DirectToolCall]) -> se
             json!(content)
         },
     });
+    if !reasoning.trim().is_empty() {
+        if let Some(object) = message.as_object_mut() {
+            object.insert("reasoning_content".to_string(), json!(reasoning));
+        }
+    }
     if !tool_calls.is_empty() {
         if let Some(object) = message.as_object_mut() {
             object.insert(
@@ -3220,6 +3304,7 @@ async fn send_openai_compatible_streaming_chat_request(
 
     let mut buffer = String::new();
     let mut content = String::new();
+    let mut reasoning = String::new();
     let mut tool_calls: HashMap<usize, DirectStreamingToolCall> = HashMap::new();
     let mut usage = json!({ "input_tokens": 0, "output_tokens": 0 });
     let mut streamed_text = false;
@@ -3246,10 +3331,11 @@ async fn send_openai_compatible_streaming_chat_request(
             let data = line.trim_start_matches("data:").trim();
             if data == "[DONE]" {
                 let tool_calls = direct_tool_calls_from_stream(tool_calls);
-                let message = direct_message_from_parts(&content, &tool_calls);
+                let message = direct_message_from_parts(&content, &reasoning, &tool_calls);
                 return Ok(DirectChatResponse {
                     message,
                     content,
+                    reasoning,
                     tool_calls,
                     usage,
                     streamed_text,
@@ -3271,11 +3357,16 @@ async fn send_openai_compatible_streaming_chat_request(
             };
 
             let text_delta = direct_stream_text_delta(delta);
+            let reasoning_delta = direct_stream_reasoning_delta(delta);
             if !text_delta.is_empty() {
                 content.push_str(&text_delta);
                 streamed_text = true;
-                emit_direct_streaming_delta(window, tab_id, &text_delta);
             }
+            if !reasoning_delta.is_empty() {
+                reasoning.push_str(&reasoning_delta);
+                streamed_text = true;
+            }
+            emit_direct_streaming_delta(window, tab_id, &text_delta, &reasoning_delta);
 
             if let Some(calls) = delta.get("tool_calls").and_then(|v| v.as_array()) {
                 for (fallback_idx, call) in calls.iter().enumerate() {
@@ -3304,10 +3395,11 @@ async fn send_openai_compatible_streaming_chat_request(
     }
 
     let tool_calls = direct_tool_calls_from_stream(tool_calls);
-    let message = direct_message_from_parts(&content, &tool_calls);
+    let message = direct_message_from_parts(&content, &reasoning, &tool_calls);
     Ok(DirectChatResponse {
         message,
         content,
+        reasoning,
         tool_calls,
         usage,
         streamed_text,
@@ -3430,11 +3522,18 @@ async fn execute_openai_compatible_provider(
         }
 
         let content = response.content;
+        let reasoning = response.reasoning;
         let tool_calls = response.tool_calls;
         let usage = response.usage;
         final_usage = usage.clone();
 
         let mut content_blocks = Vec::new();
+        if !reasoning.trim().is_empty() {
+            content_blocks.push(json!({
+                "type": "thinking",
+                "thinking": reasoning,
+            }));
+        }
         if !content.trim().is_empty() {
             content_blocks.push(json!({ "type": "text", "text": content.clone() }));
         }
@@ -4465,13 +4564,44 @@ mod tests {
         );
 
         let calls = direct_tool_calls_from_stream(calls);
-        let message = direct_message_from_parts("Checking the file", &calls);
+        let message = direct_message_from_parts("Checking the file", "Thinking aloud", &calls);
 
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "Read");
         assert_eq!(calls[0].input["file_path"], "main.tex");
         assert_eq!(message["content"], "Checking the file");
+        assert_eq!(message["reasoning_content"], "Thinking aloud");
         assert_eq!(message["tool_calls"][0]["function"]["name"], "Read");
+    }
+
+    #[test]
+    fn test_direct_provider_extracts_reasoning_content() {
+        let response = json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "reasoning_content": "First reason about structure.",
+                    "content": "Then answer."
+                }
+            }]
+        });
+
+        assert_eq!(
+            direct_assistant_reasoning(&response),
+            "First reason about structure."
+        );
+        assert_eq!(direct_assistant_content(&response), "Then answer.");
+    }
+
+    #[test]
+    fn test_direct_provider_extracts_stream_reasoning_delta() {
+        let delta = json!({
+            "reasoning_content": "Step one.",
+            "content": "Answer part."
+        });
+
+        assert_eq!(direct_stream_reasoning_delta(&delta), "Step one.");
+        assert_eq!(direct_stream_text_delta(&delta), "Answer part.");
     }
 
     #[test]

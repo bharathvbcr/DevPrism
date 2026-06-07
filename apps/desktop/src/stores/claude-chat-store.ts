@@ -133,6 +133,41 @@ function applyTabUpdate(
 
 // ─── State Interface ───
 
+function mergeStreamingContent(
+  existing: ContentBlock[],
+  incoming: ContentBlock[],
+): ContentBlock[] {
+  let merged = [...existing];
+  for (const block of incoming) {
+    if (block.type === "text" && block.text) {
+      const idx = merged.findIndex((item) => item.type === "text");
+      if (idx >= 0) {
+        merged = merged.map((item, itemIdx) =>
+          itemIdx === idx
+            ? { ...item, text: `${item.text ?? ""}${block.text}` }
+            : item,
+        );
+      } else {
+        merged.push(block);
+      }
+    } else if (block.type === "thinking" && block.thinking) {
+      const idx = merged.findIndex((item) => item.type === "thinking");
+      if (idx >= 0) {
+        merged = merged.map((item, itemIdx) =>
+          itemIdx === idx
+            ? { ...item, thinking: `${item.thinking ?? ""}${block.thinking}` }
+            : item,
+        );
+      } else {
+        merged.unshift(block);
+      }
+    } else {
+      merged.push(block);
+    }
+  }
+  return merged;
+}
+
 const DEFAULT_TAB_ID = nextTabId();
 
 interface ClaudeChatState {
@@ -594,21 +629,12 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         if (last?.type === "assistant" && last.subtype === "streaming_delta") {
           const existing = last.message?.content ?? [];
           const incoming = msg.message?.content ?? [];
-          const existingText = existing.find((block) => block.type === "text");
-          const incomingText = incoming.find((block) => block.type === "text");
-          if (existingText && incomingText?.text) {
+          if (incoming.length > 0) {
             const merged: ClaudeStreamMessage = {
               ...last,
               message: {
                 ...last.message,
-                content: existing.map((block) =>
-                  block === existingText
-                    ? {
-                        ...block,
-                        text: `${block.text ?? ""}${incomingText.text}`,
-                      }
-                    : block,
-                ),
+                content: mergeStreamingContent(existing, incoming),
               },
             };
             return applyTabUpdate(state, tabId, {

@@ -244,6 +244,17 @@ fn claude_credential_label() -> Option<&'static str> {
     None
 }
 
+fn claude_credential_env_values(
+    credential: &StoredClaudeCredential,
+) -> Vec<(&'static str, String)> {
+    let mut values = vec![("ANTHROPIC_API_KEY", credential.api_key.clone())];
+    if let Some(base_url) = &credential.base_url {
+        values.push(("ANTHROPIC_BASE_URL", base_url.clone()));
+        values.push(("ANTHROPIC_AUTH_TOKEN", credential.api_key.clone()));
+    }
+    values
+}
+
 #[tauri::command]
 pub async fn save_anthropic_api_key(
     api_key: String,
@@ -984,19 +995,12 @@ fn create_command(
     cmd.env("CLAUDE_CODE_EFFORT_LEVEL", effort_level.unwrap_or("low"));
 
     if let Some(credential) = stored_claude_credential() {
-        if std::env::var("ANTHROPIC_API_KEY")
-            .map(|value| value.trim().is_empty())
-            .unwrap_or(true)
-        {
-            cmd.env("ANTHROPIC_API_KEY", credential.api_key);
-        }
-
-        if let Some(base_url) = credential.base_url {
-            if std::env::var("ANTHROPIC_BASE_URL")
+        for (key, value) in claude_credential_env_values(&credential) {
+            if std::env::var(key)
                 .map(|value| value.trim().is_empty())
                 .unwrap_or(true)
             {
-                cmd.env("ANTHROPIC_BASE_URL", base_url);
+                cmd.env(key, value);
             }
         }
     }
@@ -5650,6 +5654,35 @@ mod tests {
             assert_eq!(stdin_payload, None);
             assert_eq!(args.last().map(String::as_str), Some("hello 文件"));
         }
+    }
+
+    #[test]
+    fn test_claude_external_proxy_sets_api_key_and_auth_token_envs() {
+        let credential = StoredClaudeCredential {
+            api_key: "sk-modelgate".to_string(),
+            base_url: Some("https://mg.aid.pub/claude-proxy".to_string()),
+        };
+        let values = claude_credential_env_values(&credential);
+
+        assert!(values.contains(&("ANTHROPIC_API_KEY", "sk-modelgate".to_string())));
+        assert!(values.contains(&(
+            "ANTHROPIC_BASE_URL",
+            "https://mg.aid.pub/claude-proxy".to_string()
+        )));
+        assert!(values.contains(&("ANTHROPIC_AUTH_TOKEN", "sk-modelgate".to_string())));
+    }
+
+    #[test]
+    fn test_claude_direct_anthropic_key_does_not_set_auth_token() {
+        let credential = StoredClaudeCredential {
+            api_key: "sk-ant-test".to_string(),
+            base_url: None,
+        };
+        let values = claude_credential_env_values(&credential);
+
+        assert!(values.contains(&("ANTHROPIC_API_KEY", "sk-ant-test".to_string())));
+        assert!(!values.iter().any(|(key, _)| *key == "ANTHROPIC_AUTH_TOKEN"));
+        assert!(!values.iter().any(|(key, _)| *key == "ANTHROPIC_BASE_URL"));
     }
 
     #[test]

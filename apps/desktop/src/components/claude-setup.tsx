@@ -33,6 +33,28 @@ type OpenAICompatiblePreset = {
   note: string;
 };
 
+type ClaudeCompatiblePreset = {
+  id: string;
+  label: string;
+  baseUrl: string;
+  note: string;
+};
+
+const CLAUDE_COMPATIBLE_PRESETS: ClaudeCompatiblePreset[] = [
+  {
+    id: "modelgate-web",
+    label: "ModelGate Claude (Web)",
+    baseUrl: "https://mg.aid.pub/claude-proxy",
+    note: "Use a ModelGate web API key with the Claude proxy endpoint.",
+  },
+  {
+    id: "modelgate-local",
+    label: "ModelGate Claude (Client)",
+    baseUrl: "http://localhost:13148/claude-proxy",
+    note: "Use a ModelGate client key while the local ModelGate client is running.",
+  },
+];
+
 const OPENAI_COMPATIBLE_PRESETS: OpenAICompatiblePreset[] = [
   {
     id: "qwen-cn",
@@ -334,17 +356,31 @@ export function ClaudeSetup() {
     }
   };
 
-  const applyProviderPreset = (presetId: string) => {
+  const applyProviderPreset = (
+    presetId: string,
+    selectedProvider: "claude-code" | "openai-compatible" = provider,
+  ) => {
     setProviderPreset(presetId);
     if (presetId === "custom") return;
 
-    const preset = OPENAI_COMPATIBLE_PRESETS.find(
-      (item) => item.id === presetId,
-    );
-    if (!preset) return;
+    if (selectedProvider === "openai-compatible") {
+      const preset = OPENAI_COMPATIBLE_PRESETS.find(
+        (item) => item.id === presetId,
+      );
+      if (!preset) return;
+
+      setBaseUrl(preset.baseUrl);
+      setModel(preset.model);
+      return;
+    }
+
+    const preset = CLAUDE_COMPATIBLE_PRESETS.find((item) => item.id === presetId);
+    if (!preset) {
+      return;
+    }
 
     setBaseUrl(preset.baseUrl);
-    setModel(preset.model);
+    setModel("");
   };
 
   const renderApiKeyForm = ({
@@ -387,8 +423,9 @@ export function ClaudeSetup() {
                     | "claude-code"
                     | "openai-compatible";
                   setProvider(nextProvider);
+                  setProviderPreset("custom");
                   if (nextProvider === "claude-code") {
-                    setProviderPreset("custom");
+                    setModel("");
                   }
                 }}
                 disabled={isSavingApiKey}
@@ -401,47 +438,58 @@ export function ClaudeSetup() {
               </select>
             )}
             <p className="text-[11px] text-muted-foreground">
-              Use OpenAI-compatible for Qwen, DeepSeek, GLM, Gemini, and
-              compatible gateways.
+              {selectedProvider === "openai-compatible"
+                ? "Use OpenAI-compatible for Qwen, DeepSeek, GLM, Gemini, and compatible gateways."
+                : "Use Anthropic directly, Claude Code browser sign-in, or a Claude-compatible proxy."}
             </p>
           </div>
 
-          {selectedProvider === "openai-compatible" && (
-            <div className="space-y-1.5">
-              <Label htmlFor="provider-preset" className="text-xs">
-                Provider Preset
-              </Label>
-              <select
-                id="provider-preset"
-                value={providerPreset}
-                onChange={(event) => applyProviderPreset(event.target.value)}
-                disabled={isSavingApiKey}
-                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm outline-none transition-colors focus-visible:border-ring"
-              >
-                <option value="custom">Custom endpoint</option>
-                {OPENAI_COMPATIBLE_PRESETS.map((preset) => (
-                  <option key={preset.id} value={preset.id}>
-                    {preset.label}
-                  </option>
-                ))}
-              </select>
-              {providerPreset !== "custom" && (
-                <p className="text-[11px] text-muted-foreground">
-                  {
-                    OPENAI_COMPATIBLE_PRESETS.find(
-                      (preset) => preset.id === providerPreset,
-                    )?.note
-                  }
-                </p>
-              )}
-            </div>
-          )}
+          <div className="space-y-1.5">
+            <Label htmlFor="provider-preset" className="text-xs">
+              {selectedProvider === "openai-compatible"
+                ? "Provider Preset"
+                : "Proxy Preset"}
+            </Label>
+            <select
+              id="provider-preset"
+              value={providerPreset}
+              onChange={(event) =>
+                applyProviderPreset(event.target.value, selectedProvider)
+              }
+              disabled={isSavingApiKey}
+              className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm outline-none transition-colors focus-visible:border-ring"
+            >
+              <option value="custom">
+                {selectedProvider === "openai-compatible"
+                  ? "Custom endpoint"
+                  : "No proxy / custom proxy"}
+              </option>
+              {(selectedProvider === "openai-compatible"
+                ? OPENAI_COMPATIBLE_PRESETS
+                : CLAUDE_COMPATIBLE_PRESETS
+              ).map((preset) => (
+                <option key={preset.id} value={preset.id}>
+                  {preset.label}
+                </option>
+              ))}
+            </select>
+            {providerPreset !== "custom" && (
+              <p className="text-[11px] text-muted-foreground">
+                {
+                  (selectedProvider === "openai-compatible"
+                    ? OPENAI_COMPATIBLE_PRESETS
+                    : CLAUDE_COMPATIBLE_PRESETS
+                  ).find((preset) => preset.id === providerPreset)?.note
+                }
+              </p>
+            )}
+          </div>
 
           <div className="space-y-1.5">
             <Label htmlFor="anthropic-api-key" className="text-xs">
               {selectedProvider === "openai-compatible"
                 ? "Provider API Key"
-                : "Anthropic API Key"}
+                : "Anthropic / Proxy Key"}
             </Label>
             <Input
               id="anthropic-api-key"
@@ -449,7 +497,7 @@ export function ClaudeSetup() {
               placeholder={
                 selectedProvider === "openai-compatible"
                   ? "sk-..."
-                  : "sk-ant-..."
+                  : "sk-ant-... or provider key"
               }
               value={apiKey}
               onChange={(event) => setApiKey(event.target.value)}
@@ -459,7 +507,7 @@ export function ClaudeSetup() {
             <p className="text-[11px] text-muted-foreground">
               {selectedProvider === "openai-compatible"
                 ? "Use the API key from your model provider."
-                : "Anthropic Console keys start with sk-ant-. External Claude proxies need a Base URL."}
+                : "Anthropic keys start with sk-ant-. Claude-compatible proxies can use their own key format."}
             </p>
           </div>
 
@@ -473,14 +521,12 @@ export function ClaudeSetup() {
               placeholder={
                 selectedProvider === "openai-compatible"
                   ? "https://api.deepseek.com or https://dashscope.aliyuncs.com/compatible-mode/v1"
-                  : "https://proxy.example.com/claude"
+                  : "https://mg.aid.pub/claude-proxy"
               }
               value={baseUrl}
               onChange={(event) => {
                 setBaseUrl(event.target.value);
-                if (selectedProvider === "openai-compatible") {
-                  setProviderPreset("custom");
-                }
+                setProviderPreset("custom");
               }}
               disabled={isSavingApiKey}
               autoComplete="off"

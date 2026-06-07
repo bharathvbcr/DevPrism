@@ -25,6 +25,59 @@ import {
 } from "@/stores/claude-setup-store";
 import { cn } from "@/lib/utils";
 
+type OpenAICompatiblePreset = {
+  id: string;
+  label: string;
+  baseUrl: string;
+  model: string;
+  note: string;
+};
+
+const OPENAI_COMPATIBLE_PRESETS: OpenAICompatiblePreset[] = [
+  {
+    id: "qwen-cn",
+    label: "Qwen Code (China)",
+    baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    model: "qwen3-coder-plus",
+    note: "Alibaba Cloud Model Studio China endpoint.",
+  },
+  {
+    id: "qwen-intl",
+    label: "Qwen Code (Intl)",
+    baseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+    model: "qwen3-coder-plus",
+    note: "Alibaba Cloud Model Studio international endpoint.",
+  },
+  {
+    id: "deepseek",
+    label: "DeepSeek V4 Pro",
+    baseUrl: "https://api.deepseek.com",
+    model: "deepseek-v4-pro",
+    note: "DeepSeek OpenAI-compatible endpoint.",
+  },
+  {
+    id: "deepseek-fast",
+    label: "DeepSeek V4 Flash",
+    baseUrl: "https://api.deepseek.com",
+    model: "deepseek-v4-flash",
+    note: "Lower-latency DeepSeek option.",
+  },
+  {
+    id: "glm",
+    label: "GLM (BigModel)",
+    baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+    model: "glm-5.1",
+    note: "Zhipu BigModel chat completions endpoint.",
+  },
+  {
+    id: "gemini",
+    label: "Gemini OpenAI",
+    baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+    model: "gemini-3.5-flash",
+    note: "Google Gemini OpenAI-compatible endpoint.",
+  },
+];
+
 // ─── Event Hooks ───
 
 function useInstallEvents() {
@@ -246,6 +299,7 @@ export function ClaudeSetup() {
   const [provider, setProvider] = useState<"claude-code" | "openai-compatible">(
     "claude-code",
   );
+  const [providerPreset, setProviderPreset] = useState("custom");
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [model, setModel] = useState("");
@@ -272,7 +326,21 @@ export function ClaudeSetup() {
       setApiKey("");
       setBaseUrl("");
       setModel("");
+      setProviderPreset("custom");
     }
+  };
+
+  const applyProviderPreset = (presetId: string) => {
+    setProviderPreset(presetId);
+    if (presetId === "custom") return;
+
+    const preset = OPENAI_COMPATIBLE_PRESETS.find(
+      (item) => item.id === presetId,
+    );
+    if (!preset) return;
+
+    setBaseUrl(preset.baseUrl);
+    setModel(preset.model);
   };
 
   if (status === "checking") {
@@ -493,11 +561,15 @@ export function ClaudeSetup() {
             <select
               id="ai-provider"
               value={provider}
-              onChange={(event) =>
-                setProvider(
-                  event.target.value as "claude-code" | "openai-compatible",
-                )
-              }
+              onChange={(event) => {
+                const nextProvider = event.target.value as
+                  | "claude-code"
+                  | "openai-compatible";
+                setProvider(nextProvider);
+                if (nextProvider === "claude-code") {
+                  setProviderPreset("custom");
+                }
+              }}
               disabled={isSavingApiKey}
               className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm outline-none transition-colors focus-visible:border-ring"
             >
@@ -509,6 +581,36 @@ export function ClaudeSetup() {
               gateways.
             </p>
           </div>
+          {provider === "openai-compatible" && (
+            <div className="space-y-1.5">
+              <Label htmlFor="provider-preset" className="text-xs">
+                Provider Preset
+              </Label>
+              <select
+                id="provider-preset"
+                value={providerPreset}
+                onChange={(event) => applyProviderPreset(event.target.value)}
+                disabled={isSavingApiKey}
+                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm outline-none transition-colors focus-visible:border-ring"
+              >
+                <option value="custom">Custom endpoint</option>
+                {OPENAI_COMPATIBLE_PRESETS.map((preset) => (
+                  <option key={preset.id} value={preset.id}>
+                    {preset.label}
+                  </option>
+                ))}
+              </select>
+              {providerPreset !== "custom" && (
+                <p className="text-[11px] text-muted-foreground">
+                  {
+                    OPENAI_COMPATIBLE_PRESETS.find(
+                      (preset) => preset.id === providerPreset,
+                    )?.note
+                  }
+                </p>
+              )}
+            </div>
+          )}
           <div className="space-y-1.5">
             <Label htmlFor="anthropic-api-key" className="text-xs">
               {provider === "openai-compatible"
@@ -545,7 +647,12 @@ export function ClaudeSetup() {
                   : "https://proxy.example.com/claude"
               }
               value={baseUrl}
-              onChange={(event) => setBaseUrl(event.target.value)}
+              onChange={(event) => {
+                setBaseUrl(event.target.value);
+                if (provider === "openai-compatible") {
+                  setProviderPreset("custom");
+                }
+              }}
               disabled={isSavingApiKey}
               autoComplete="off"
             />
@@ -563,9 +670,12 @@ export function ClaudeSetup() {
               <Input
                 id="provider-model"
                 type="text"
-                placeholder="deepseek-chat, qwen-plus, glm-4.5, ..."
+                placeholder="qwen3-coder-plus, deepseek-v4-pro, glm-5.1, ..."
                 value={model}
-                onChange={(event) => setModel(event.target.value)}
+                onChange={(event) => {
+                  setModel(event.target.value);
+                  setProviderPreset("custom");
+                }}
                 disabled={isSavingApiKey}
                 autoComplete="off"
               />

@@ -290,6 +290,39 @@ describe("Multi-tab merge triggers", () => {
       expect(messages[0].message?.content?.[0].text).toBe("Hello world");
     });
 
+    it("_appendMessage merges direct provider streaming thinking deltas", () => {
+      const chat = useClaudeChatStore.getState();
+
+      chat._appendMessage("tab-default", {
+        type: "assistant",
+        subtype: "streaming_delta",
+        message: {
+          content: [
+            { type: "thinking", thinking: "Reason A. " },
+            { type: "text", text: "Hello" },
+          ],
+        },
+      });
+      chat._appendMessage("tab-default", {
+        type: "assistant",
+        subtype: "streaming_delta",
+        message: {
+          content: [
+            { type: "thinking", thinking: "Reason B." },
+            { type: "text", text: " world" },
+          ],
+        },
+      });
+
+      const messages = useClaudeChatStore.getState().messages;
+      expect(messages).toHaveLength(1);
+      expect(messages[0].message?.content?.[0].type).toBe("thinking");
+      expect(messages[0].message?.content?.[0].thinking).toBe(
+        "Reason A. Reason B.",
+      );
+      expect(messages[0].message?.content?.[1].text).toBe("Hello world");
+    });
+
     it("_appendMessage replaces streaming deltas with final direct provider message", () => {
       const chat = useClaudeChatStore.getState();
 

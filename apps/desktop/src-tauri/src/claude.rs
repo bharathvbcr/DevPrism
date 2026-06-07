@@ -2143,6 +2143,18 @@ fn openai_compatible_base_url_has_chat_root(base_url: &str) -> bool {
         || path.ends_with("compatible-mode/v1")
 }
 
+fn direct_reasoning_history_mode(
+    credential: &StoredOpenAiCompatibleCredential,
+) -> DirectReasoningHistoryMode {
+    let base_url = credential.base_url.to_ascii_lowercase();
+    let model = credential.model.to_ascii_lowercase();
+    if base_url.contains("api.deepseek.com") || model.starts_with("deepseek-v4") {
+        DirectReasoningHistoryMode::Preserve
+    } else {
+        DirectReasoningHistoryMode::Strip
+    }
+}
+
 fn json_usage(value: &serde_json::Value) -> serde_json::Value {
     let input_tokens = value
         .pointer("/usage/prompt_tokens")
@@ -2199,6 +2211,12 @@ enum DirectToolRequestMode {
     Tools,
     Functions,
     None,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DirectReasoningHistoryMode {
+    Strip,
+    Preserve,
 }
 
 fn emit_direct_output(window: &WebviewWindow, tab_id: &str, event: &serde_json::Value) {
@@ -3557,12 +3575,25 @@ fn direct_assistant_reasoning(response: &serde_json::Value) -> String {
 
 fn sanitize_direct_assistant_message_for_history(
     mut message: serde_json::Value,
+    _tool_calls: &[DirectToolCall],
+    reasoning: &str,
+    reasoning_history_mode: DirectReasoningHistoryMode,
 ) -> serde_json::Value {
     let Some(object) = message.as_object_mut() else {
         return message;
     };
 
-    object.remove("reasoning_content");
+    let preserve_reasoning = reasoning_history_mode == DirectReasoningHistoryMode::Preserve;
+
+    if preserve_reasoning && !reasoning.trim().is_empty() {
+        object
+            .entry("reasoning_content".to_string())
+            .or_insert_with(|| json!(reasoning));
+    }
+
+    if !preserve_reasoning {
+        object.remove("reasoning_content");
+    }
     object.remove("reasoning");
     object.remove("reasoning_text");
 
@@ -3580,7 +3611,10 @@ fn sanitize_direct_assistant_message_for_history(
     message
 }
 
-fn direct_chat_response_from_value(response: serde_json::Value) -> DirectChatResponse {
+fn direct_chat_response_from_value(
+    response: serde_json::Value,
+    reasoning_history_mode: DirectReasoningHistoryMode,
+) -> DirectChatResponse {
     let content = direct_assistant_content(&response);
     let reasoning = direct_assistant_reasoning(&response);
     let tool_calls = parse_direct_tool_calls(&response);
@@ -3589,7 +3623,12 @@ fn direct_chat_response_from_value(response: serde_json::Value) -> DirectChatRes
         .pointer("/choices/0/message")
         .cloned()
         .unwrap_or_else(|| json!({ "role": "assistant", "content": content.clone() }));
-    let message = sanitize_direct_assistant_message_for_history(message);
+    let message = sanitize_direct_assistant_message_for_history(
+        message,
+        &tool_calls,
+        &reasoning,
+        reasoning_history_mode,
+    );
     DirectChatResponse {
         message,
         content,
@@ -3704,8 +3743,9 @@ fn direct_tool_calls_from_stream(
 
 fn direct_message_from_parts(
     content: &str,
-    _reasoning: &str,
+    reasoning: &str,
     tool_calls: &[DirectToolCall],
+    reasoning_history_mode: DirectReasoningHistoryMode,
 ) -> serde_json::Value {
     let mut message = json!({
         "role": "assistant",
@@ -3715,6 +3755,13 @@ fn direct_message_from_parts(
             json!(content)
         },
     });
+    if reasoning_history_mode == DirectReasoningHistoryMode::Preserve
+        && !reasoning.trim().is_empty()
+    {
+        if let Some(object) = message.as_object_mut() {
+            object.insert("reasoning_content".to_string(), json!(reasoning));
+        }
+    }
     if let Some(tool_call) = tool_calls.iter().find(|tool_call| tool_call.legacy_function_call) {
         if let Some(object) = message.as_object_mut() {
             object.insert(
@@ -4171,7 +4218,10 @@ async fn send_openai_compatible_non_streaming_chat_request(
             can_retry_without_tools: false,
         }
     })?;
-    Ok(direct_chat_response_from_value(response))
+    Ok(direct_chat_response_from_value(
+        response,
+        direct_reasoning_history_mode(credential),
+    ))
 }
 
 async fn send_openai_compatible_streaming_chat_request(
@@ -4244,7 +4294,12 @@ async fn send_openai_compatible_streaming_chat_request(
             let data = line.trim_start_matches("data:").trim();
             if data == "[DONE]" {
                 let tool_calls = direct_tool_calls_from_stream(tool_calls);
-                let message = direct_message_from_parts(&content, &reasoning, &tool_calls);
+                let message = direct_message_from_parts(
+                    &content,
+                    &reasoning,
+                    &tool_calls,
+                    direct_reasoning_history_mode(credential),
+                );
                 return Ok(DirectChatResponse {
                     message,
                     content,
@@ -4323,7 +4378,12 @@ async fn send_openai_compatible_streaming_chat_request(
     }
 
     let tool_calls = direct_tool_calls_from_stream(tool_calls);
-    let message = direct_message_from_parts(&content, &reasoning, &tool_calls);
+    let message = direct_message_from_parts(
+        &content,
+        &reasoning,
+        &tool_calls,
+        direct_reasoning_history_mode(credential),
+    );
     Ok(DirectChatResponse {
         message,
         content,
@@ -5814,7 +5874,12 @@ mod tests {
         );
 
         let calls = direct_tool_calls_from_stream(calls);
-        let message = direct_message_from_parts("Checking the file", "Thinking aloud", &calls);
+        let message = direct_message_from_parts(
+            "Checking the file",
+            "Thinking aloud",
+            &calls,
+            DirectReasoningHistoryMode::Strip,
+        );
 
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "Read");
@@ -5838,7 +5903,8 @@ mod tests {
         );
 
         let calls = direct_tool_calls_from_stream(calls);
-        let message = direct_message_from_parts("", "", &calls);
+        let message =
+            direct_message_from_parts("", "", &calls, DirectReasoningHistoryMode::Strip);
 
         assert_eq!(calls.len(), 1);
         assert!(calls[0].legacy_function_call);
@@ -5882,12 +5948,95 @@ mod tests {
             }]
         });
 
-        let parsed = direct_chat_response_from_value(response);
+        let parsed = direct_chat_response_from_value(response, DirectReasoningHistoryMode::Strip);
 
         assert_eq!(parsed.reasoning, "Hidden chain.");
         assert_eq!(parsed.message["content"], "Visible answer.");
         assert!(parsed.message.get("reasoning_content").is_none());
         assert!(parsed.message.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn test_direct_provider_preserves_deepseek_tool_reasoning_in_history() {
+        let response = json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "reasoning_content": "Need to inspect the source file first.",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {
+                            "name": "Read",
+                            "arguments": "{\"file_path\":\"main.tex\"}"
+                        }
+                    }]
+                }
+            }]
+        });
+
+        let parsed = direct_chat_response_from_value(
+            response,
+            DirectReasoningHistoryMode::Preserve,
+        );
+
+        assert_eq!(parsed.reasoning, "Need to inspect the source file first.");
+        assert_eq!(
+            parsed.message["reasoning_content"],
+            "Need to inspect the source file first."
+        );
+        assert_eq!(parsed.message["tool_calls"][0]["function"]["name"], "Read");
+    }
+
+    #[test]
+    fn test_direct_provider_stream_preserves_deepseek_tool_reasoning_in_history() {
+        let mut calls = HashMap::new();
+        calls.insert(
+            0,
+            DirectStreamingToolCall {
+                id: Some("call-1".to_string()),
+                name: "Read".to_string(),
+                arguments: "{\"file_path\":\"main.tex\"}".to_string(),
+                legacy_function_call: false,
+            },
+        );
+
+        let calls = direct_tool_calls_from_stream(calls);
+        let message = direct_message_from_parts(
+            "",
+            "Need to inspect the source file first.",
+            &calls,
+            DirectReasoningHistoryMode::Preserve,
+        );
+
+        assert_eq!(
+            message["reasoning_content"],
+            "Need to inspect the source file first."
+        );
+        assert_eq!(message["tool_calls"][0]["function"]["name"], "Read");
+    }
+
+    #[test]
+    fn test_direct_provider_preserves_deepseek_final_reasoning_in_history() {
+        let response = json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "reasoning_content": "Now synthesize the inspected file.",
+                    "content": "Here is the final answer."
+                }
+            }]
+        });
+
+        let parsed = direct_chat_response_from_value(response, DirectReasoningHistoryMode::Preserve);
+
+        assert_eq!(parsed.reasoning, "Now synthesize the inspected file.");
+        assert_eq!(
+            parsed.message["reasoning_content"],
+            "Now synthesize the inspected file."
+        );
+        assert_eq!(parsed.message["content"], "Here is the final answer.");
     }
 
     #[test]
@@ -5915,6 +6064,25 @@ mod tests {
             reqwest::StatusCode::UNAUTHORIZED,
             "invalid api key"
         ));
+    }
+
+    #[test]
+    fn test_direct_provider_selects_reasoning_history_mode_by_provider() {
+        let deepseek = StoredOpenAiCompatibleCredential {
+            api_key: "sk-test".to_string(),
+            base_url: "https://api.deepseek.com".to_string(),
+            model: "deepseek-v4-pro".to_string(),
+        };
+        let qwen = StoredOpenAiCompatibleCredential {
+            api_key: "sk-test".to_string(),
+            base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string(),
+            model: "qwen3-coder-plus".to_string(),
+        };
+
+        assert!(
+            direct_reasoning_history_mode(&deepseek) == DirectReasoningHistoryMode::Preserve
+        );
+        assert!(direct_reasoning_history_mode(&qwen) == DirectReasoningHistoryMode::Strip);
     }
 
     #[test]

@@ -589,6 +589,48 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       const tab = state.tabs.find((t) => t.id === tabId);
       if (!tab) return {};
 
+      if (msg.type === "assistant" && msg.subtype === "streaming_delta") {
+        const last = tab.messages[tab.messages.length - 1];
+        if (last?.type === "assistant" && last.subtype === "streaming_delta") {
+          const existing = last.message?.content ?? [];
+          const incoming = msg.message?.content ?? [];
+          const existingText = existing.find((block) => block.type === "text");
+          const incomingText = incoming.find((block) => block.type === "text");
+          if (existingText && incomingText?.text) {
+            const merged: ClaudeStreamMessage = {
+              ...last,
+              message: {
+                ...last.message,
+                content: existing.map((block) =>
+                  block === existingText
+                    ? {
+                        ...block,
+                        text: `${block.text ?? ""}${incomingText.text}`,
+                      }
+                    : block,
+                ),
+              },
+            };
+            return applyTabUpdate(state, tabId, {
+              messages: [...tab.messages.slice(0, -1), merged],
+              totalInputTokens: tab.totalInputTokens + inputDelta,
+              totalOutputTokens: tab.totalOutputTokens + outputDelta,
+            });
+          }
+        }
+      }
+
+      if (msg.type === "assistant" && msg.subtype === "streaming_final") {
+        const last = tab.messages[tab.messages.length - 1];
+        if (last?.type === "assistant" && last.subtype === "streaming_delta") {
+          return applyTabUpdate(state, tabId, {
+            messages: [...tab.messages.slice(0, -1), msg],
+            totalInputTokens: tab.totalInputTokens + inputDelta,
+            totalOutputTokens: tab.totalOutputTokens + outputDelta,
+          });
+        }
+      }
+
       return applyTabUpdate(state, tabId, {
         messages: [...tab.messages, msg],
         totalInputTokens: tab.totalInputTokens + inputDelta,

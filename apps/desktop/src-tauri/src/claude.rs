@@ -1,3 +1,4 @@
+use serde_json::json;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -10,14 +11,34 @@ use tokio::sync::Mutex;
 #[derive(Default, serde::Deserialize, serde::Serialize)]
 #[serde(default)]
 struct ClaudePrismAuthConfig {
+    provider: Option<String>,
     anthropic_api_key: Option<String>,
     anthropic_base_url: Option<String>,
+    openai_api_key: Option<String>,
+    openai_base_url: Option<String>,
+    openai_model: Option<String>,
 }
 
 struct StoredClaudeCredential {
     api_key: String,
     base_url: Option<String>,
 }
+
+#[derive(Clone)]
+struct StoredOpenAiCompatibleCredential {
+    api_key: String,
+    base_url: String,
+    model: String,
+}
+
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+struct DirectProviderMessage {
+    role: String,
+    content: String,
+}
+
+const PROVIDER_CLAUDE_CODE: &str = "claude-code";
+const PROVIDER_OPENAI_COMPATIBLE: &str = "openai-compatible";
 
 /// Check if an environment variable should be explicitly passed to child processes.
 ///
@@ -116,8 +137,39 @@ fn normalize_base_url(value: Option<&str>) -> Result<Option<String>, String> {
     Ok(Some(clean))
 }
 
+fn normalize_provider(value: Option<&str>) -> Result<String, String> {
+    let provider = value.unwrap_or(PROVIDER_CLAUDE_CODE).trim();
+    match provider {
+        "" | PROVIDER_CLAUDE_CODE => Ok(PROVIDER_CLAUDE_CODE.to_string()),
+        PROVIDER_OPENAI_COMPATIBLE => Ok(PROVIDER_OPENAI_COMPATIBLE.to_string()),
+        other => Err(format!("Unsupported provider: {}", other)),
+    }
+}
+
+fn normalize_model(value: Option<&str>) -> Result<Option<String>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+
+    let clean = strip_nul(value).trim().to_string();
+    if clean.is_empty() {
+        return Ok(None);
+    }
+
+    if clean.chars().any(char::is_whitespace) {
+        return Err("Model cannot contain spaces or line breaks".to_string());
+    }
+
+    Ok(Some(clean))
+}
+
 fn stored_claude_credential() -> Option<StoredClaudeCredential> {
     let config = read_claude_prism_auth_config().ok()?;
+    let provider = normalize_provider(config.provider.as_deref()).ok()?;
+    if provider != PROVIDER_CLAUDE_CODE {
+        return None;
+    }
+
     let api_key = config
         .anthropic_api_key
         .and_then(|value| normalize_api_key(&value).ok())?;
@@ -128,6 +180,30 @@ fn stored_claude_credential() -> Option<StoredClaudeCredential> {
     }
 
     Some(StoredClaudeCredential { api_key, base_url })
+}
+
+fn stored_openai_compatible_credential() -> Option<StoredOpenAiCompatibleCredential> {
+    let config = read_claude_prism_auth_config().ok()?;
+    let provider = normalize_provider(config.provider.as_deref()).ok()?;
+    if provider != PROVIDER_OPENAI_COMPATIBLE {
+        return None;
+    }
+
+    let api_key = config
+        .openai_api_key
+        .and_then(|value| normalize_api_key(&value).ok())?;
+    let base_url = normalize_base_url(config.openai_base_url.as_deref())
+        .ok()
+        .flatten()?;
+    let model = normalize_model(config.openai_model.as_deref())
+        .ok()
+        .flatten()?;
+
+    Some(StoredOpenAiCompatibleCredential {
+        api_key,
+        base_url,
+        model,
+    })
 }
 
 fn claude_credential_label() -> Option<&'static str> {
@@ -166,9 +242,25 @@ fn claude_credential_label() -> Option<&'static str> {
 pub async fn save_anthropic_api_key(
     api_key: String,
     base_url: Option<String>,
+    provider: Option<String>,
+    model: Option<String>,
 ) -> Result<(), String> {
     let api_key = normalize_api_key(&api_key)?;
     let base_url = normalize_base_url(base_url.as_deref())?;
+    let provider = normalize_provider(provider.as_deref())?;
+    let model = normalize_model(model.as_deref())?;
+
+    let mut config = read_claude_prism_auth_config()?;
+    config.provider = Some(provider.clone());
+
+    if provider == PROVIDER_OPENAI_COMPATIBLE {
+        let base_url = base_url.ok_or("OpenAI-compatible provider requires a Base URL")?;
+        let model = model.ok_or("OpenAI-compatible provider requires a model")?;
+        config.openai_api_key = Some(api_key);
+        config.openai_base_url = Some(base_url);
+        config.openai_model = Some(model);
+        return write_claude_prism_auth_config(&config);
+    }
 
     if base_url.is_none() && !api_key.starts_with("sk-ant-") {
         return Err(
@@ -177,7 +269,6 @@ pub async fn save_anthropic_api_key(
         );
     }
 
-    let mut config = read_claude_prism_auth_config()?;
     config.anthropic_api_key = Some(api_key);
     config.anthropic_base_url = base_url;
     write_claude_prism_auth_config(&config)
@@ -186,8 +277,12 @@ pub async fn save_anthropic_api_key(
 #[tauri::command]
 pub async fn clear_anthropic_api_key() -> Result<(), String> {
     let mut config = read_claude_prism_auth_config()?;
+    config.provider = Some(PROVIDER_CLAUDE_CODE.to_string());
     config.anthropic_api_key = None;
     config.anthropic_base_url = None;
+    config.openai_api_key = None;
+    config.openai_base_url = None;
+    config.openai_model = None;
     write_claude_prism_auth_config(&config)
 }
 
@@ -202,12 +297,14 @@ use std::os::windows::process::CommandExt;
 #[derive(Clone)]
 pub struct ClaudeProcessState {
     pub processes: Arc<Mutex<HashMap<String, Child>>>,
+    direct_sessions: Arc<Mutex<HashMap<String, Vec<DirectProviderMessage>>>>,
 }
 
 impl Default for ClaudeProcessState {
     fn default() -> Self {
         Self {
             processes: Arc::new(Mutex::new(HashMap::new())),
+            direct_sessions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -1268,6 +1365,17 @@ fn find_git_bash() -> Option<String> {
 
 #[tauri::command]
 pub async fn check_claude_status() -> Result<ClaudeStatus, String> {
+    if let Some(credential) = stored_openai_compatible_credential() {
+        return Ok(ClaudeStatus {
+            installed: true,
+            authenticated: true,
+            binary_path: None,
+            version: Some("OpenAI-compatible provider".to_string()),
+            account_email: Some(format!("{} · {}", credential.model, credential.base_url)),
+            missing_git: false,
+        });
+    }
+
     // On Windows, check for Git for Windows first — Claude Code requires it.
     #[cfg(target_os = "windows")]
     let missing_git = find_git_bash().is_none();
@@ -1697,6 +1805,254 @@ fn common_claude_args() -> Vec<String> {
 
 // ─── Tauri Commands ───
 
+fn direct_provider_system_prompt() -> String {
+    [
+        "You are an AI assistant integrated into ClaudePrism, a LaTeX document editor.",
+        "Help the user write, revise, and reason about academic documents.",
+        "Preserve existing LaTeX structure unless the user asks for a rewrite.",
+        "Use proper LaTeX sectioning, citations, labels, references, and bibliography conventions.",
+        "In direct provider mode you may not have Claude Code tool execution yet. If you cannot directly edit files, provide precise patches or replacement snippets.",
+    ]
+    .join("\n")
+}
+
+fn openai_chat_completions_url(base_url: &str) -> String {
+    let clean = base_url.trim_end_matches('/');
+    if clean.ends_with("/chat/completions") {
+        clean.to_string()
+    } else if clean.ends_with("/v1") || clean.ends_with("/openai/v1") {
+        format!("{}/chat/completions", clean)
+    } else {
+        format!("{}/v1/chat/completions", clean)
+    }
+}
+
+fn json_usage(value: &serde_json::Value) -> serde_json::Value {
+    let input_tokens = value
+        .pointer("/usage/prompt_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let output_tokens = value
+        .pointer("/usage/completion_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    json!({
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+    })
+}
+
+async fn execute_openai_compatible_provider(
+    window: WebviewWindow,
+    project_path: String,
+    prompt: String,
+    tab_id: String,
+    session_id: Option<String>,
+    credential: StoredOpenAiCompatibleCredential,
+) -> Result<(), String> {
+    let started = std::time::Instant::now();
+    let session_id = session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+    let init = json!({
+        "type": "system",
+        "subtype": "init",
+        "session_id": session_id,
+        "model": credential.model.clone(),
+        "cwd": project_path,
+        "tools": [],
+    });
+    let _ = window.emit(
+        "claude-output",
+        ClaudeOutputEvent {
+            tab_id: tab_id.clone(),
+            data: init.to_string(),
+        },
+    );
+
+    let state = window.state::<ClaudeProcessState>();
+    let prior_messages = {
+        let sessions = state.direct_sessions.lock().await;
+        sessions.get(&session_id).cloned().unwrap_or_default()
+    };
+
+    let mut messages = vec![json!({
+        "role": "system",
+        "content": direct_provider_system_prompt(),
+    })];
+    for message in &prior_messages {
+        messages.push(json!({
+            "role": message.role,
+            "content": message.content,
+        }));
+    }
+    messages.push(json!({
+        "role": "user",
+        "content": prompt,
+    }));
+
+    let request_body = json!({
+        "model": credential.model.clone(),
+        "messages": messages,
+        "stream": false,
+    });
+
+    let client = reqwest::Client::new();
+    let url = openai_chat_completions_url(&credential.base_url);
+    let response = match client
+        .post(url)
+        .bearer_auth(&credential.api_key)
+        .header("Content-Type", "application/json")
+        .body(request_body.to_string())
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(err) => {
+            let _ = window.emit(
+                "claude-error",
+                ClaudeErrorEvent {
+                    tab_id: tab_id.clone(),
+                    data: format!("Provider request failed: {}", err),
+                },
+            );
+            let _ = window.emit(
+                "claude-complete",
+                ClaudeCompleteEvent {
+                    tab_id,
+                    success: false,
+                },
+            );
+            return Ok(());
+        }
+    };
+
+    let status = response.status();
+    let response_text = response
+        .text()
+        .await
+        .map_err(|err| format!("Failed to read provider response: {}", err))?;
+
+    if !status.is_success() {
+        let _ = window.emit(
+            "claude-error",
+            ClaudeErrorEvent {
+                tab_id: tab_id.clone(),
+                data: format!("Provider returned HTTP {}: {}", status, response_text),
+            },
+        );
+        let _ = window.emit(
+            "claude-complete",
+            ClaudeCompleteEvent {
+                tab_id,
+                success: false,
+            },
+        );
+        return Ok(());
+    }
+
+    let value: serde_json::Value = match serde_json::from_str(&response_text) {
+        Ok(value) => value,
+        Err(err) => {
+            let _ = window.emit(
+                "claude-error",
+                ClaudeErrorEvent {
+                    tab_id: tab_id.clone(),
+                    data: format!("Provider returned invalid JSON: {}", err),
+                },
+            );
+            let _ = window.emit(
+                "claude-complete",
+                ClaudeCompleteEvent {
+                    tab_id,
+                    success: false,
+                },
+            );
+            return Ok(());
+        }
+    };
+
+    let content = value
+        .pointer("/choices/0/message/content")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    if content.trim().is_empty() {
+        let _ = window.emit(
+            "claude-error",
+            ClaudeErrorEvent {
+                tab_id: tab_id.clone(),
+                data: "Provider response did not include message content".to_string(),
+            },
+        );
+        let _ = window.emit(
+            "claude-complete",
+            ClaudeCompleteEvent {
+                tab_id,
+                success: false,
+            },
+        );
+        return Ok(());
+    }
+
+    let usage = json_usage(&value);
+    let assistant = json!({
+        "type": "assistant",
+        "message": {
+            "content": [{ "type": "text", "text": content }],
+            "usage": usage,
+        },
+    });
+    let _ = window.emit(
+        "claude-output",
+        ClaudeOutputEvent {
+            tab_id: tab_id.clone(),
+            data: assistant.to_string(),
+        },
+    );
+
+    {
+        let mut sessions = state.direct_sessions.lock().await;
+        let history = sessions.entry(session_id.clone()).or_default();
+        history.push(DirectProviderMessage {
+            role: "user".to_string(),
+            content: prompt,
+        });
+        history.push(DirectProviderMessage {
+            role: "assistant".to_string(),
+            content: content.clone(),
+        });
+    }
+
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    let result = json!({
+        "type": "result",
+        "subtype": "success",
+        "is_error": false,
+        "result": content,
+        "duration_ms": elapsed_ms,
+        "duration_api_ms": elapsed_ms,
+        "num_turns": 1,
+        "usage": usage,
+    });
+    let _ = window.emit(
+        "claude-output",
+        ClaudeOutputEvent {
+            tab_id: tab_id.clone(),
+            data: result.to_string(),
+        },
+    );
+    let _ = window.emit(
+        "claude-complete",
+        ClaudeCompleteEvent {
+            tab_id,
+            success: true,
+        },
+    );
+
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn execute_claude_code(
     window: WebviewWindow,
@@ -1706,6 +2062,18 @@ pub async fn execute_claude_code(
     model: Option<String>,
     effort_level: Option<String>,
 ) -> Result<(), String> {
+    if let Some(credential) = stored_openai_compatible_credential() {
+        return execute_openai_compatible_provider(
+            window,
+            project_path,
+            prompt,
+            tab_id,
+            None,
+            credential,
+        )
+        .await;
+    }
+
     let claude_path = find_claude_binary()?;
 
     let (mut args, stdin_payload) = with_prompt_transport(Vec::new(), prompt);
@@ -1728,6 +2096,18 @@ pub async fn continue_claude_code(
     model: Option<String>,
     effort_level: Option<String>,
 ) -> Result<(), String> {
+    if let Some(credential) = stored_openai_compatible_credential() {
+        return execute_openai_compatible_provider(
+            window,
+            project_path,
+            prompt,
+            tab_id,
+            None,
+            credential,
+        )
+        .await;
+    }
+
     let claude_path = find_claude_binary()?;
 
     let (mut args, stdin_payload) = with_prompt_transport(vec!["-c".to_string()], prompt);
@@ -1751,6 +2131,18 @@ pub async fn resume_claude_code(
     model: Option<String>,
     effort_level: Option<String>,
 ) -> Result<(), String> {
+    if let Some(credential) = stored_openai_compatible_credential() {
+        return execute_openai_compatible_provider(
+            window,
+            project_path,
+            prompt,
+            tab_id,
+            Some(session_id),
+            credential,
+        )
+        .await;
+    }
+
     let claude_path = find_claude_binary()?;
 
     let (mut args, stdin_payload) =

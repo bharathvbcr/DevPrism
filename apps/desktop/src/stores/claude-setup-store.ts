@@ -49,7 +49,12 @@ interface ClaudeSetupState {
   checkStatus: () => Promise<void>;
   install: () => Promise<void>;
   login: () => Promise<void>;
-  saveApiKey: (apiKey: string, baseUrl?: string) => Promise<boolean>;
+  saveApiKey: (
+    apiKey: string,
+    baseUrl?: string,
+    provider?: string,
+    model?: string,
+  ) => Promise<boolean>;
   toggleInstallLogs: () => void;
 
   // Internal helpers
@@ -207,9 +212,15 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
     }
   },
 
-  saveApiKey: async (apiKey: string, baseUrl?: string) => {
+  saveApiKey: async (
+    apiKey: string,
+    baseUrl?: string,
+    provider = "claude-code",
+    model?: string,
+  ) => {
     const key = apiKey.trim();
     const url = baseUrl?.trim() ?? "";
+    const modelName = model?.trim() ?? "";
     if (!key) {
       set({ error: "API key is empty" });
       return false;
@@ -225,7 +236,21 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
       return false;
     }
 
-    if (!url && !key.startsWith("sk-ant-")) {
+    if (provider === "openai-compatible" && !url) {
+      set({ error: "OpenAI-compatible provider requires a Base URL." });
+      return false;
+    }
+
+    if (provider === "openai-compatible" && !modelName) {
+      set({ error: "OpenAI-compatible provider requires a model." });
+      return false;
+    }
+
+    if (
+      provider !== "openai-compatible" &&
+      !url &&
+      !key.startsWith("sk-ant-")
+    ) {
       set({
         error:
           "This looks like an external provider key. Set the provider Base URL, or use an Anthropic key that starts with sk-ant-.",
@@ -238,6 +263,8 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
       await invoke("save_anthropic_api_key", {
         apiKey: key,
         baseUrl: url || null,
+        provider,
+        model: modelName || null,
       });
       set({ isSavingApiKey: false });
       await get().checkStatus();

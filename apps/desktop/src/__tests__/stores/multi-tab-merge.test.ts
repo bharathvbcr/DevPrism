@@ -271,6 +271,56 @@ describe("Multi-tab merge triggers", () => {
       expect(state.messages).toHaveLength(0);
     });
 
+    it("_appendMessage merges direct provider streaming deltas", () => {
+      const chat = useClaudeChatStore.getState();
+
+      chat._appendMessage("tab-default", {
+        type: "assistant",
+        subtype: "streaming_delta",
+        message: { content: [{ type: "text", text: "Hello" }] },
+      });
+      chat._appendMessage("tab-default", {
+        type: "assistant",
+        subtype: "streaming_delta",
+        message: { content: [{ type: "text", text: " world" }] },
+      });
+
+      const messages = useClaudeChatStore.getState().messages;
+      expect(messages).toHaveLength(1);
+      expect(messages[0].message?.content?.[0].text).toBe("Hello world");
+    });
+
+    it("_appendMessage replaces streaming deltas with final direct provider message", () => {
+      const chat = useClaudeChatStore.getState();
+
+      chat._appendMessage("tab-default", {
+        type: "assistant",
+        subtype: "streaming_delta",
+        message: { content: [{ type: "text", text: "Draft" }] },
+      });
+      chat._appendMessage("tab-default", {
+        type: "assistant",
+        subtype: "streaming_final",
+        message: {
+          content: [
+            { type: "text", text: "Final" },
+            {
+              type: "tool_use",
+              id: "tool-1",
+              name: "Read",
+              input: { file_path: "main.tex" },
+            },
+          ],
+        },
+      });
+
+      const messages = useClaudeChatStore.getState().messages;
+      expect(messages).toHaveLength(1);
+      expect(messages[0].subtype).toBe("streaming_final");
+      expect(messages[0].message?.content?.[0].text).toBe("Final");
+      expect(messages[0].message?.content?.[1].type).toBe("tool_use");
+    });
+
     it("_setSessionId routes to the specified tab", () => {
       const chat = useClaudeChatStore.getState();
       const tabB = chat.createTab();

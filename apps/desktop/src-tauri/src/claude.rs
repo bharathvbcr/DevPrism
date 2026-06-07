@@ -1971,11 +1971,33 @@ fn openai_chat_completions_url(base_url: &str) -> String {
     let clean = base_url.trim_end_matches('/');
     if clean.ends_with("/chat/completions") {
         clean.to_string()
-    } else if clean.ends_with("/v1") || clean.ends_with("/openai/v1") {
+    } else if openai_compatible_base_url_has_chat_root(clean) {
         format!("{}/chat/completions", clean)
     } else {
         format!("{}/v1/chat/completions", clean)
     }
+}
+
+fn openai_compatible_base_url_has_chat_root(base_url: &str) -> bool {
+    let lower = base_url.to_ascii_lowercase();
+    if lower == "https://api.deepseek.com" || lower == "http://api.deepseek.com" {
+        return true;
+    }
+
+    let path = lower
+        .split_once("://")
+        .and_then(|(_, rest)| rest.split_once('/').map(|(_, path)| path))
+        .unwrap_or("")
+        .trim_matches('/');
+    if path.is_empty() {
+        return false;
+    }
+
+    let segments = path.split('/').collect::<Vec<_>>();
+    let last = segments.last().copied().unwrap_or_default();
+    matches!(last, "v1" | "v2" | "v3" | "v4" | "beta")
+        || path.ends_with("/openai")
+        || path.ends_with("compatible-mode/v1")
 }
 
 fn json_usage(value: &serde_json::Value) -> serde_json::Value {
@@ -4553,6 +4575,46 @@ mod tests {
             assert_eq!(stdin_payload, None);
             assert_eq!(args.last().map(String::as_str), Some("hello 文件"));
         }
+    }
+
+    #[test]
+    fn test_openai_chat_completions_url_preserves_full_endpoint() {
+        assert_eq!(
+            openai_chat_completions_url("https://open.bigmodel.cn/api/paas/v4/chat/completions"),
+            "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+        );
+    }
+
+    #[test]
+    fn test_openai_chat_completions_url_supports_common_provider_roots() {
+        assert_eq!(
+            openai_chat_completions_url("https://dashscope.aliyuncs.com/compatible-mode/v1"),
+            "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+        );
+        assert_eq!(
+            openai_chat_completions_url("https://generativelanguage.googleapis.com/v1beta/openai/"),
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+        );
+        assert_eq!(
+            openai_chat_completions_url("https://open.bigmodel.cn/api/paas/v4"),
+            "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+        );
+        assert_eq!(
+            openai_chat_completions_url("https://api.deepseek.com"),
+            "https://api.deepseek.com/chat/completions"
+        );
+    }
+
+    #[test]
+    fn test_openai_chat_completions_url_keeps_generic_openai_default() {
+        assert_eq!(
+            openai_chat_completions_url("https://api.openai.com"),
+            "https://api.openai.com/v1/chat/completions"
+        );
+        assert_eq!(
+            openai_chat_completions_url("https://openrouter.ai/api/v1"),
+            "https://openrouter.ai/api/v1/chat/completions"
+        );
     }
 
     // --- create_command ---

@@ -33,6 +33,7 @@ import {
   useClaudeChatStore,
   offsetToLineCol,
 } from "@/stores/claude-chat-store";
+import { useClaudeSetupStore } from "@/stores/claude-setup-store";
 import { useDocumentStore, type ProjectFile } from "@/stores/document-store";
 import { getUniqueTargetName } from "@/lib/tauri/fs";
 import { createPdfTextSidecar, isPdfPath } from "@/lib/pdf-text-extractor";
@@ -76,6 +77,13 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
   const effortLevel = useClaudeChatStore((s) => s.effortLevel);
   const setEffortLevel = useClaudeChatStore((s) => s.setEffortLevel);
   const activeTabId = useClaudeChatStore((s) => s.activeTabId);
+  const setupVersion = useClaudeSetupStore((s) => s.version);
+  const setupAccountEmail = useClaudeSetupStore((s) => s.accountEmail);
+  const isDirectProvider = setupVersion === "OpenAI-compatible provider";
+  const directProviderModel = useMemo(() => {
+    const model = setupAccountEmail?.split(" \u00b7 ")[0]?.trim();
+    return model || "Provider";
+  }, [setupAccountEmail]);
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -97,6 +105,12 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
       bottom: window.innerHeight - rect.top + 4,
     });
   }, [modelPickerOpen]);
+
+  useEffect(() => {
+    if (isDirectProvider) {
+      setModelPickerOpen(false);
+    }
+  }, [isDirectProvider]);
 
   // Pinned contexts — supports multiple files/selections
   const [pinnedContexts, setPinnedContexts] = useState<PinnedContext[]>([]);
@@ -735,6 +749,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
 
       {/* Model picker popup — portal to body to escape all stacking contexts */}
       {modelPickerOpen &&
+        !isDirectProvider &&
         createPortal(
           <div
             ref={modelPickerRef}
@@ -957,26 +972,44 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
             <button
               ref={modelButtonRef}
               type="button"
-              onClick={() => setModelPickerOpen((v) => !v)}
+              onClick={() => {
+                if (!isDirectProvider) {
+                  setModelPickerOpen((v) => !v);
+                }
+              }}
+              title={
+                isDirectProvider
+                  ? "Configured in AI provider setup"
+                  : "Choose Claude model"
+              }
               className="flex items-center gap-1.5 rounded-md px-2 py-1 text-muted-foreground text-xs transition-colors hover:bg-muted hover:text-foreground"
             >
-              <span>
-                {selectedModel === "sonnet"
-                  ? "Sonnet"
-                  : selectedModel === "opus"
-                    ? "Opus"
-                    : selectedModel === "haiku"
-                      ? "Haiku"
-                      : "OpusPlan"}
-              </span>
-              <span className="text-muted-foreground/60">
-                {effortLevel === "low"
-                  ? "L"
-                  : effortLevel === "medium"
-                    ? "M"
-                    : "H"}
-              </span>
-              <ChevronDownIcon className="size-3" />
+              {isDirectProvider ? (
+                <>
+                  <SparklesIcon className="size-3" />
+                  <span className="max-w-36 truncate">{directProviderModel}</span>
+                </>
+              ) : (
+                <>
+                  <span>
+                    {selectedModel === "sonnet"
+                      ? "Sonnet"
+                      : selectedModel === "opus"
+                        ? "Opus"
+                        : selectedModel === "haiku"
+                          ? "Haiku"
+                          : "OpusPlan"}
+                  </span>
+                  <span className="text-muted-foreground/60">
+                    {effortLevel === "low"
+                      ? "L"
+                      : effortLevel === "medium"
+                        ? "M"
+                        : "H"}
+                  </span>
+                  <ChevronDownIcon className="size-3" />
+                </>
+              )}
             </button>
           </div>
 

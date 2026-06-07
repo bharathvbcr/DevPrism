@@ -41,6 +41,8 @@ interface DefaultProject {
   has_main_tex: boolean;
 }
 
+let hasAttemptedProjectRestore = false;
+
 export function ProjectPicker() {
   const [showModeDialog, setShowModeDialog] = useState(false);
   const [wizardMode, setWizardMode] = useState<CreationMode | null>(null);
@@ -64,13 +66,34 @@ export function ProjectPicker() {
   }, [checkClaudeStatus]);
 
   useEffect(() => {
-    if (recoveryAttemptedRef.current || recentProjects.length > 0) return;
+    if (recoveryAttemptedRef.current || hasAttemptedProjectRestore) return;
     recoveryAttemptedRef.current = true;
+    hasAttemptedProjectRestore = true;
 
     let cancelled = false;
 
-    async function recoverDefaultProjects() {
+    async function openFirstAvailableProject(paths: string[]) {
+      for (const path of paths) {
+        if (cancelled) return true;
+
+        try {
+          setIsRestoringProject(true);
+          addRecentProject(path);
+          await openProject(path);
+          return true;
+        } catch (err) {
+          console.warn("Failed to restore project:", { path, error: err });
+        }
+      }
+
+      return false;
+    }
+
+    async function recoverProjects() {
       try {
+        const recentPaths = recentProjects.map((project) => project.path);
+        if (await openFirstAvailableProject(recentPaths)) return;
+
         const projects = await invoke<DefaultProject[]>(
           "list_default_projects",
         );
@@ -80,10 +103,11 @@ export function ProjectPicker() {
           addRecentProject(project.path);
         }
 
-        setIsRestoringProject(true);
-        await openProject(projects[0].path);
+        await openFirstAvailableProject(
+          projects.map((project) => project.path),
+        );
       } catch (err) {
-        console.warn("Failed to recover default projects:", err);
+        console.warn("Failed to recover projects:", err);
       } finally {
         if (!cancelled) {
           setIsRestoringProject(false);
@@ -91,12 +115,12 @@ export function ProjectPicker() {
       }
     }
 
-    recoverDefaultProjects();
+    recoverProjects();
 
     return () => {
       cancelled = true;
     };
-  }, [addRecentProject, openProject, recentProjects.length]);
+  }, [addRecentProject, openProject, recentProjects]);
 
   const handleOpenFolder = async () => {
     const selected = await open({

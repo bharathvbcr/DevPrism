@@ -2435,6 +2435,44 @@ async fn clear_direct_provider_cancelled(state: &ClaudeProcessState, process_key
     state.direct_cancellations.lock().await.remove(process_key);
 }
 
+async fn cache_direct_provider_messages(
+    state: &ClaudeProcessState,
+    session_id: &str,
+    messages: &[serde_json::Value],
+) {
+    let mut sessions = state.direct_sessions.lock().await;
+    sessions.insert(session_id.to_string(), messages.to_vec());
+}
+
+async fn finish_direct_provider_cancelled(
+    window: &WebviewWindow,
+    project_path: &str,
+    session_id: &str,
+    tab_id: &str,
+    state: &ClaudeProcessState,
+    process_key: &str,
+    started: std::time::Instant,
+    turns: u64,
+    usage: &serde_json::Value,
+    messages: &[serde_json::Value],
+) {
+    cache_direct_provider_messages(state, session_id, messages).await;
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    let result = json!({
+        "type": "result",
+        "subtype": "cancelled",
+        "is_error": true,
+        "result": "Cancelled by user.",
+        "duration_ms": elapsed_ms,
+        "duration_api_ms": elapsed_ms,
+        "num_turns": turns,
+        "usage": usage,
+    });
+    emit_and_persist_direct_output(window, project_path, session_id, tab_id, &result);
+    clear_direct_provider_cancelled(state, process_key).await;
+    emit_direct_complete(window, tab_id, false);
+}
+
 fn claude_text_from_content_blocks(content: &serde_json::Value) -> Option<String> {
     if let Some(text) = content.as_str() {
         return Some(text.to_string());
@@ -4590,6 +4628,7 @@ async fn execute_openai_compatible_provider(
         if turns > 12 {
             let message = "Provider stopped because it used tools too many times without producing a final answer.";
             emit_direct_error(&window, &tab_id, message);
+            cache_direct_provider_messages(&state, &session_id, &messages).await;
             let result = json!({
                 "type": "result",
                 "subtype": "error",
@@ -4606,6 +4645,19 @@ async fn execute_openai_compatible_provider(
         }
 
         if direct_provider_cancelled(&state, &process_key).await {
+            finish_direct_provider_cancelled(
+                &window,
+                &project_path,
+                &session_id,
+                &tab_id,
+                &state,
+                &process_key,
+                started,
+                turns,
+                &final_usage,
+                &messages,
+            )
+            .await;
             return Ok(());
         }
 
@@ -4623,8 +4675,22 @@ async fn execute_openai_compatible_provider(
             Ok(value) => value,
             Err(err) => {
                 if direct_provider_cancelled(&state, &process_key).await {
+                    finish_direct_provider_cancelled(
+                        &window,
+                        &project_path,
+                        &session_id,
+                        &tab_id,
+                        &state,
+                        &process_key,
+                        started,
+                        turns,
+                        &final_usage,
+                        &messages,
+                    )
+                    .await;
                     return Ok(());
                 }
+                cache_direct_provider_messages(&state, &session_id, &messages).await;
                 emit_direct_error(&window, &tab_id, err);
                 emit_direct_complete(&window, &tab_id, false);
                 return Ok(());
@@ -4632,6 +4698,19 @@ async fn execute_openai_compatible_provider(
         };
 
         if direct_provider_cancelled(&state, &process_key).await {
+            finish_direct_provider_cancelled(
+                &window,
+                &project_path,
+                &session_id,
+                &tab_id,
+                &state,
+                &process_key,
+                started,
+                turns,
+                &final_usage,
+                &messages,
+            )
+            .await;
             return Ok(());
         }
 
@@ -4662,6 +4741,7 @@ async fn execute_openai_compatible_provider(
 
         if content_blocks.is_empty() {
             let message = "Provider response did not include message content or tool calls";
+            cache_direct_provider_messages(&state, &session_id, &messages).await;
             emit_direct_error(&window, &tab_id, message);
             emit_direct_complete(&window, &tab_id, false);
             return Ok(());
@@ -4747,10 +4827,7 @@ async fn execute_openai_compatible_provider(
         );
     }
 
-    {
-        let mut sessions = state.direct_sessions.lock().await;
-        sessions.insert(session_id.clone(), messages);
-    }
+    cache_direct_provider_messages(&state, &session_id, &messages).await;
 
     let elapsed_ms = started.elapsed().as_millis() as u64;
     let result = json!({

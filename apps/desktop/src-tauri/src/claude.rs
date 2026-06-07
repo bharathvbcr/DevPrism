@@ -282,6 +282,26 @@ pub async fn save_anthropic_api_key(
 }
 
 #[tauri::command]
+pub async fn verify_openai_compatible_api_key(
+    api_key: String,
+    base_url: String,
+    model: String,
+) -> Result<(), String> {
+    let api_key = normalize_api_key(&api_key)?;
+    let base_url = normalize_base_url(Some(base_url.as_str()))?
+        .ok_or("OpenAI-compatible provider requires a Base URL")?;
+    let model = normalize_model(Some(model.as_str()))?
+        .ok_or("OpenAI-compatible provider requires a model")?;
+    let credential = StoredOpenAiCompatibleCredential {
+        api_key,
+        base_url,
+        model,
+    };
+
+    verify_openai_compatible_credential(&credential).await
+}
+
+#[tauri::command]
 pub async fn clear_anthropic_api_key() -> Result<(), String> {
     // Clearing should also recover from an empty/corrupt legacy auth file.
     let mut config = read_claude_prism_auth_config().unwrap_or_default();
@@ -2141,6 +2161,92 @@ fn openai_compatible_base_url_has_chat_root(base_url: &str) -> bool {
     matches!(last, "v1" | "v2" | "v3" | "v4" | "beta")
         || path.ends_with("/openai")
         || path.ends_with("compatible-mode/v1")
+}
+
+fn openai_compatible_verification_body(model: &str) -> serde_json::Value {
+    json!({
+        "model": model,
+        "messages": [{
+            "role": "user",
+            "content": "Reply with exactly: ok",
+        }],
+        "stream": false,
+    })
+}
+
+fn provider_error_excerpt(body: &str) -> String {
+    let compact = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.chars().count() <= 500 {
+        return compact;
+    }
+    let truncated: String = compact.chars().take(500).collect();
+    format!("{}...", truncated)
+}
+
+fn openai_compatible_verification_error(status: reqwest::StatusCode, body: &str) -> String {
+    let detail = provider_error_excerpt(body);
+    let hint = match status {
+        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
+            "Invalid provider API key or missing model access."
+        }
+        reqwest::StatusCode::NOT_FOUND => {
+            "Provider endpoint or model was not found. Check the Base URL and model name."
+        }
+        reqwest::StatusCode::BAD_REQUEST | reqwest::StatusCode::UNPROCESSABLE_ENTITY => {
+            "Provider rejected the request. Check the Base URL and model name."
+        }
+        reqwest::StatusCode::TOO_MANY_REQUESTS => {
+            "Provider rate limited the verification request. Try again later."
+        }
+        _ => "Provider verification failed.",
+    };
+    if detail.is_empty() {
+        format!("{} (HTTP {})", hint, status)
+    } else {
+        format!("{} (HTTP {}: {})", hint, status, detail)
+    }
+}
+
+async fn verify_openai_compatible_credential(
+    credential: &StoredOpenAiCompatibleCredential,
+) -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|err| format!("Failed to create provider client: {}", err))?;
+    let request_body = openai_compatible_verification_body(&credential.model);
+
+    let response = client
+        .post(openai_chat_completions_url(&credential.base_url))
+        .bearer_auth(&credential.api_key)
+        .header("Content-Type", "application/json")
+        .body(request_body.to_string())
+        .send()
+        .await
+        .map_err(|err| format!("Provider verification request failed: {}", err))?;
+
+    let status = response.status();
+    let response_text = response
+        .text()
+        .await
+        .map_err(|err| format!("Failed to read provider verification response: {}", err))?;
+
+    if !status.is_success() {
+        return Err(openai_compatible_verification_error(status, &response_text));
+    }
+
+    let response_json: serde_json::Value = serde_json::from_str(&response_text)
+        .map_err(|err| format!("Provider returned invalid JSON during verification: {}", err))?;
+    if response_json.pointer("/choices/0/message").is_none()
+        && response_json.pointer("/choices/0/text").is_none()
+    {
+        return Err(
+            "Provider verification succeeded but did not return an OpenAI-compatible chat response."
+                .to_string(),
+        );
+    }
+
+    Ok(())
 }
 
 fn direct_reasoning_history_mode(
@@ -5584,6 +5690,35 @@ mod tests {
             openai_chat_completions_url("https://openrouter.ai/api/v1"),
             "https://openrouter.ai/api/v1/chat/completions"
         );
+    }
+
+    #[test]
+    fn test_openai_compatible_verification_body_uses_chat_messages_without_tools() {
+        let body = openai_compatible_verification_body("qwen3-coder-plus");
+
+        assert_eq!(body["model"], "qwen3-coder-plus");
+        assert_eq!(body["stream"], false);
+        assert_eq!(body["messages"][0]["role"], "user");
+        assert!(body.get("tools").is_none());
+        assert!(body.get("functions").is_none());
+    }
+
+    #[test]
+    fn test_openai_compatible_verification_error_is_actionable() {
+        let unauthorized = openai_compatible_verification_error(
+            reqwest::StatusCode::UNAUTHORIZED,
+            r#"{ "error": { "message": "bad key" } }"#,
+        );
+        assert!(unauthorized.contains("Invalid provider API key"));
+        assert!(unauthorized.contains("bad key"));
+
+        let not_found =
+            openai_compatible_verification_error(reqwest::StatusCode::NOT_FOUND, "no model");
+        assert!(not_found.contains("Base URL and model name"));
+
+        let rate_limited =
+            openai_compatible_verification_error(reqwest::StatusCode::TOO_MANY_REQUESTS, "");
+        assert!(rate_limited.contains("rate limited"));
     }
 
     #[test]

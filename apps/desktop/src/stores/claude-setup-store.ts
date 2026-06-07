@@ -282,6 +282,14 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
 
     set({ isSavingApiKey: true, error: null });
     try {
+      if (provider === "openai-compatible") {
+        await invoke("verify_openai_compatible_api_key", {
+          apiKey: key,
+          baseUrl: url,
+          model: modelName,
+        });
+      }
+
       await invoke("save_anthropic_api_key", {
         apiKey: key,
         baseUrl: url || null,

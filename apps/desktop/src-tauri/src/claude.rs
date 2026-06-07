@@ -1834,6 +1834,7 @@ fn direct_provider_system_prompt() -> String {
         "You can inspect and edit files through the provided tools. Prefer relative paths inside the current project.",
         "Use LS or Glob to understand the project layout before editing unfamiliar files.",
         "Use Read before non-trivial edits, use Edit for precise replacements, and use Write only when creating or fully replacing a file.",
+        "PDF attachments may have extracted text sidecars next to them, named like paper.pdf.txt. Read the sidecar when inspecting a PDF.",
         "For multi-step writing or editing tasks, use TodoWrite to keep a short plan with at most one in_progress item.",
         "If you prefer Claude/Codex-style task tools, TaskCreate, TaskUpdate, and TaskList are available as a lightweight session task list.",
         "ToolSearch can be used to inspect the currently available local tool names; it does not install external tools.",
@@ -1860,7 +1861,7 @@ fn direct_provider_tools() -> serde_json::Value {
             "type": "function",
             "function": {
                 "name": "Read",
-                "description": "Read a UTF-8 text file from the current project.",
+                "description": "Read a UTF-8 text file from the current project. For PDFs, reads the ClaudePrism extracted text sidecar at <file>.pdf.txt when available.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -2747,10 +2748,51 @@ fn wildcard_match(pattern: &str, text: &str) -> bool {
     dp[pattern.len()][text.len()]
 }
 
+fn is_pdf_file_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.eq_ignore_ascii_case("pdf"))
+        .unwrap_or(false)
+}
+
+fn pdf_text_sidecar_path(path: &Path) -> PathBuf {
+    let mut sidecar = path.as_os_str().to_os_string();
+    sidecar.push(".txt");
+    PathBuf::from(sidecar)
+}
+
 fn execute_direct_read(project_root: &Path, input: &serde_json::Value) -> Result<String, String> {
     let file_path = tool_path_value(input)?;
     let path = ensure_existing_project_tool_path(project_root, &file_path)?;
-    let content = std::fs::read_to_string(&path)
+    let mut read_path = path.clone();
+    let mut read_note = None;
+
+    if is_pdf_file_path(&path) {
+        let sidecar = pdf_text_sidecar_path(&path);
+        let pdf_display_path = relative_project_path(project_root, &path);
+        let sidecar_display_path = relative_project_path(project_root, &sidecar);
+
+        if sidecar.exists() {
+            let canonical_sidecar = sidecar
+                .canonicalize()
+                .map_err(|e| format!("Failed to resolve PDF text sidecar: {}", e))?;
+            if !canonical_sidecar.starts_with(project_root) {
+                return Err("Refusing to read PDF text sidecar outside the project".to_string());
+            }
+            read_note = Some(format!(
+                "[PDF text sidecar for {}: {}]",
+                pdf_display_path, sidecar_display_path
+            ));
+            read_path = canonical_sidecar;
+        } else {
+            return Ok(format!(
+                "[{}]\nPDF files are binary. ClaudePrism can read extracted PDF text when the sidecar exists at {}. Mention or attach this PDF in the chat composer to generate the sidecar, then read {}.",
+                pdf_display_path, sidecar_display_path, sidecar_display_path
+            ));
+        }
+    }
+
+    let content = std::fs::read_to_string(&read_path)
         .map_err(|e| format!("Failed to read {}: {}", file_path, e))?;
     let offset = optional_tool_usize(input, "offset").unwrap_or(1).max(1);
     let limit = optional_tool_usize(input, "limit");
@@ -2762,17 +2804,29 @@ fn execute_direct_read(project_root: &Path, input: &serde_json::Value) -> Result
         .copied()
         .collect::<Vec<_>>()
         .join("\n");
-    let display_path = relative_project_path(project_root, &path);
+    let display_path = relative_project_path(project_root, &read_path);
     let body = if offset > 1 || limit.is_some() {
         format!(
-            "[{} lines {}-{}]\n{}",
+            "{}[{} lines {}-{}]\n{}",
+            read_note
+                .as_ref()
+                .map(|note| format!("{}\n", note))
+                .unwrap_or_default(),
             display_path,
             offset,
             offset + selected.lines().count().saturating_sub(1),
             selected
         )
     } else {
-        format!("[{}]\n{}", display_path, content)
+        format!(
+            "{}[{}]\n{}",
+            read_note
+                .as_ref()
+                .map(|note| format!("{}\n", note))
+                .unwrap_or_default(),
+            display_path,
+            content
+        )
     };
     Ok(truncate_tool_content(body, 20000))
 }
@@ -5399,6 +5453,51 @@ mod tests {
         .await;
         assert!(!grep.is_error);
         assert!(grep.content.contains("main.tex:1"));
+    }
+
+    #[tokio::test]
+    async fn test_direct_provider_read_pdf_uses_text_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = canonical_project_root(dir.path().to_str().unwrap()).unwrap();
+        std::fs::create_dir_all(root.join("attachments")).unwrap();
+        std::fs::write(root.join("attachments").join("paper.pdf"), b"%PDF-1.7\n").unwrap();
+        std::fs::write(
+            root.join("attachments").join("paper.pdf.txt"),
+            "# Extracted PDF Text: attachments/paper.pdf\n\n## Page 1\n\nFlashVID summary",
+        )
+        .unwrap();
+
+        let read = execute_test_direct_provider_tool(
+            &root,
+            "Read",
+            &json!({ "file_path": "attachments/paper.pdf" }),
+        )
+        .await;
+
+        assert!(!read.is_error);
+        assert!(read.content.contains("PDF text sidecar"));
+        assert!(read.content.contains("attachments/paper.pdf.txt"));
+        assert!(read.content.contains("FlashVID summary"));
+    }
+
+    #[tokio::test]
+    async fn test_direct_provider_read_pdf_without_sidecar_guides_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = canonical_project_root(dir.path().to_str().unwrap()).unwrap();
+        std::fs::create_dir_all(root.join("attachments")).unwrap();
+        std::fs::write(root.join("attachments").join("paper.pdf"), b"%PDF-1.7\n").unwrap();
+
+        let read = execute_test_direct_provider_tool(
+            &root,
+            "Read",
+            &json!({ "file_path": "attachments/paper.pdf" }),
+        )
+        .await;
+
+        assert!(!read.is_error);
+        assert!(read.content.contains("PDF files are binary"));
+        assert!(read.content.contains("attachments/paper.pdf.txt"));
+        assert!(read.content.contains("generate the sidecar"));
     }
 
     #[tokio::test]

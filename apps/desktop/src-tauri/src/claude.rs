@@ -33,7 +33,7 @@ struct StoredOpenAiCompatibleCredential {
     model: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 struct DirectTask {
     id: String,
     subject: String,
@@ -2282,6 +2282,86 @@ fn emit_and_persist_direct_output(
     }
 }
 
+fn direct_task_state_event(tasks: &[DirectTask]) -> serde_json::Value {
+    json!({
+        "type": "direct_task_state",
+        "tasks": tasks,
+    })
+}
+
+fn load_direct_task_state_from_path(session_path: &Path) -> Result<Vec<DirectTask>, String> {
+    if !session_path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let file = std::fs::File::open(session_path)
+        .map_err(|e| format!("Failed to open session file: {}", e))?;
+    let reader = std::io::BufReader::new(file);
+    use std::io::BufRead;
+
+    let mut latest_tasks = Vec::new();
+    for line in reader.lines().map_while(Result::ok) {
+        let Ok(entry) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        if entry.get("type").and_then(|v| v.as_str()) != Some("direct_task_state") {
+            continue;
+        }
+        let Some(tasks) = entry.get("tasks") else {
+            continue;
+        };
+        if let Ok(parsed) = serde_json::from_value::<Vec<DirectTask>>(tasks.clone()) {
+            latest_tasks = parsed;
+        }
+    }
+
+    Ok(latest_tasks)
+}
+
+fn load_direct_task_state(project_path: &str, session_id: &str) -> Result<Vec<DirectTask>, String> {
+    if !valid_session_id(session_id) {
+        return Ok(Vec::new());
+    }
+    let sessions_dir = get_sessions_dir(project_path)?;
+    let session_path = sessions_dir.join(format!("{}.jsonl", session_id));
+    load_direct_task_state_from_path(&session_path)
+}
+
+async fn hydrate_direct_task_state(
+    state: &ClaudeProcessState,
+    project_path: &str,
+    session_id: &str,
+) {
+    let mut task_lists = state.direct_task_lists.lock().await;
+    if task_lists.contains_key(session_id) {
+        return;
+    }
+    let tasks = load_direct_task_state(project_path, session_id).unwrap_or_default();
+    task_lists.insert(session_id.to_string(), tasks);
+}
+
+async fn persist_direct_task_state(
+    state: &ClaudeProcessState,
+    project_path: &str,
+    session_id: &str,
+) {
+    let tasks = {
+        let task_lists = state.direct_task_lists.lock().await;
+        task_lists.get(session_id).cloned().unwrap_or_default()
+    };
+    let event = direct_task_state_event(&tasks);
+    if let Err(err) = append_direct_session_event(project_path, session_id, &event) {
+        eprintln!("[direct-provider] failed to persist task state: {}", err);
+    }
+}
+
+fn is_direct_task_mutation_tool(name: &str) -> bool {
+    matches!(
+        canonical_direct_tool_name(name),
+        Some("TaskCreate" | "TaskUpdate")
+    )
+}
+
 async fn direct_provider_cancelled(state: &ClaudeProcessState, process_key: &str) -> bool {
     state
         .direct_cancellations
@@ -4207,6 +4287,7 @@ async fn execute_openai_compatible_provider(
     });
     let state = window.state::<ClaudeProcessState>();
     clear_direct_provider_cancelled(&state, &process_key).await;
+    hydrate_direct_task_state(&state, &project_path, &session_id).await;
     emit_and_persist_direct_output(&window, &project_path, &session_id, &tab_id, &init);
 
     let mut messages = {
@@ -4363,6 +4444,9 @@ async fn execute_openai_compatible_provider(
                 &tool_call.input,
             )
             .await;
+            if !output.is_error && is_direct_task_mutation_tool(&tool_call.name) {
+                persist_direct_task_state(&state, &project_path, &session_id).await;
+            }
             tool_result_blocks.push(json!({
                 "type": "tool_result",
                 "tool_use_id": tool_call.id,
@@ -5466,6 +5550,73 @@ mod tests {
         .await;
         assert!(!completed.is_error);
         assert!(completed.content.contains("[completed]"));
+    }
+
+    #[test]
+    fn test_direct_task_state_loads_latest_jsonl_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let first = direct_task_state_event(&[DirectTask {
+            id: "task-1".to_string(),
+            subject: "First".to_string(),
+            description: "Old state".to_string(),
+            active_form: None,
+            status: "pending".to_string(),
+            owner: None,
+        }]);
+        let latest = direct_task_state_event(&[DirectTask {
+            id: "task-1".to_string(),
+            subject: "First".to_string(),
+            description: "Latest state".to_string(),
+            active_form: Some("Checking latest state".to_string()),
+            status: "completed".to_string(),
+            owner: Some("assistant".to_string()),
+        }]);
+        let content = [
+            serde_json::to_string(&json!({ "type": "user", "message": { "content": "hi" } }))
+                .unwrap(),
+            serde_json::to_string(&first).unwrap(),
+            "not json".to_string(),
+            serde_json::to_string(&latest).unwrap(),
+        ]
+        .join("\n");
+        std::fs::write(&path, content).unwrap();
+
+        let tasks = load_direct_task_state_from_path(&path).unwrap();
+
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].description, "Latest state");
+        assert_eq!(tasks[0].status, "completed");
+        assert_eq!(tasks[0].owner.as_deref(), Some("assistant"));
+    }
+
+    #[tokio::test]
+    async fn test_restored_direct_task_state_is_visible_to_tasklist() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = canonical_project_root(dir.path().to_str().unwrap()).unwrap();
+        let state = ClaudeProcessState::default();
+
+        {
+            let mut task_lists = state.direct_task_lists.lock().await;
+            task_lists.insert(
+                "session-a".to_string(),
+                vec![DirectTask {
+                    id: "task-1".to_string(),
+                    subject: "Resume task".to_string(),
+                    description: "Loaded from prior session state".to_string(),
+                    active_form: None,
+                    status: "in_progress".to_string(),
+                    owner: None,
+                }],
+            );
+        }
+
+        let listed = execute_direct_provider_tool(&state, "session-a", &root, "TaskList", &json!({}))
+            .await;
+
+        assert!(!listed.is_error);
+        assert!(listed.content.contains("Resume task"));
+        assert!(listed.content.contains("[in_progress]"));
     }
 
     #[test]

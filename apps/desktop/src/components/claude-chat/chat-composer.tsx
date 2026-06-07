@@ -35,6 +35,7 @@ import {
 } from "@/stores/claude-chat-store";
 import { useDocumentStore, type ProjectFile } from "@/stores/document-store";
 import { getUniqueTargetName } from "@/lib/tauri/fs";
+import { createPdfTextSidecar, isPdfPath } from "@/lib/pdf-text-extractor";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { cn } from "@/lib/utils";
 import { SlashCommandPicker, type SlashCommand } from "./slash-command-picker";
@@ -246,8 +247,56 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
       .catch(() => setSlashCommands([]));
   }, [slashQuery !== null, projectRoot]);
 
+  const buildPinnedContextForFile = useCallback(
+    async (
+      file: ProjectFile,
+    ): Promise<{ context: PinnedContext; createdSidecar: boolean }> => {
+      if (projectRoot && file.type === "pdf") {
+        try {
+          const sidecar = await createPdfTextSidecar(
+            projectRoot,
+            file.relativePath,
+            file.absolutePath,
+          );
+
+          return {
+            context: {
+              label: `@${file.relativePath}`,
+              filePath: sidecar.sidecarRelativePath,
+              selectedText: sidecar.contextText,
+            },
+            createdSidecar: true,
+          };
+        } catch (err) {
+          log.error("Failed to extract PDF text", {
+            path: file.relativePath,
+            error: String(err),
+          });
+        }
+      }
+
+      const isTextFile =
+        file.type === "tex" ||
+        file.type === "bib" ||
+        file.type === "style" ||
+        file.type === "other";
+
+      return {
+        context: {
+          label: `@${file.relativePath}`,
+          filePath: file.relativePath,
+          selectedText: isTextFile
+            ? (file.content ?? "")
+            : `[Referenced file: ${file.relativePath} (${file.type} file)]`,
+        },
+        createdSidecar: false,
+      };
+    },
+    [projectRoot],
+  );
+
   const selectMention = useCallback(
-    (file: ProjectFile) => {
+    async (file: ProjectFile) => {
       // Replace @query with empty and pin the file as context
       const textarea = textareaRef.current;
       if (!textarea) return;
@@ -261,26 +310,16 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
       setMentionQuery(null);
 
       // Pin the whole file as context
-      const isTextFile =
-        file.type === "tex" ||
-        file.type === "bib" ||
-        file.type === "style" ||
-        file.type === "other";
-      setPinnedContexts((prev) => [
-        ...prev,
-        {
-          label: `@${file.relativePath}`,
-          filePath: file.relativePath,
-          selectedText: isTextFile
-            ? (file.content ?? "")
-            : `[Referenced file: ${file.relativePath} (${file.type} file)]`,
-        },
-      ]);
+      const { context, createdSidecar } = await buildPinnedContextForFile(file);
+      if (createdSidecar) {
+        await refreshFiles();
+      }
+      setPinnedContexts((prev) => [...prev, context]);
 
       // Refocus textarea
       setTimeout(() => textarea.focus(), 0);
     },
-    [input],
+    [buildPinnedContextForFile, input, refreshFiles],
   );
 
   const selectSlashCommand = useCallback((command: SlashCommand) => {
@@ -323,6 +362,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
       // Pin each file as context
       const storeFiles = useDocumentStore.getState().files;
       const newContexts: PinnedContext[] = [];
+      let createdPdfSidecar = false;
 
       for (const relativePath of importedPaths) {
         const imported = storeFiles.find(
@@ -330,18 +370,10 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
         );
 
         if (imported) {
-          const isText =
-            imported.type === "tex" ||
-            imported.type === "bib" ||
-            imported.type === "style" ||
-            imported.type === "other";
-          newContexts.push({
-            label: `@${relativePath}`,
-            filePath: relativePath,
-            selectedText: isText
-              ? (imported.content ?? "")
-              : `[Attached file: ${relativePath} (${imported.type} file)]`,
-          });
+          const { context, createdSidecar } =
+            await buildPinnedContextForFile(imported);
+          createdPdfSidecar ||= createdSidecar;
+          newContexts.push(context);
         } else {
           // File imported but type might be filtered out — still pin as reference
           newContexts.push({
@@ -353,6 +385,10 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
       }
 
       if (newContexts.length > 0) {
+        if (createdPdfSidecar) {
+          await refreshFiles();
+        }
+
         setPinnedContexts((prev) => {
           // Deduplicate by label
           const existingLabels = new Set(prev.map((c) => c.label));
@@ -450,15 +486,36 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
           const buffer = await file.arrayBuffer();
           await writeFile(fullPath, new Uint8Array(buffer));
 
-          // Determine if it's a text file
-          const isText = file.type.startsWith("text/");
-          const content = isText
-            ? await file.text()
-            : `[Attached file: ${uniqueName} (${file.type})]`;
+          let contextFilePath = uniqueName;
+          let content: string;
+
+          if (isPdfPath(uniqueName) || file.type === "application/pdf") {
+            try {
+              const sidecar = await createPdfTextSidecar(
+                projectRoot,
+                uniqueName,
+                fullPath,
+              );
+              contextFilePath = sidecar.sidecarRelativePath;
+              content = sidecar.contextText;
+            } catch (err) {
+              log.error("Failed to extract pasted PDF text", {
+                fileName: uniqueName,
+                error: String(err),
+              });
+              content = `[Attached file: ${uniqueName} (${file.type})]`;
+            }
+          } else {
+            // Determine if it's a text file
+            const isText = file.type.startsWith("text/");
+            content = isText
+              ? await file.text()
+              : `[Attached file: ${uniqueName} (${file.type})]`;
+          }
 
           newContexts.push({
             label: `@${uniqueName}`,
-            filePath: uniqueName,
+            filePath: contextFilePath,
             selectedText: content,
           });
         } catch (err) {
@@ -564,7 +621,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
         }
         if (e.key === "Enter" || e.key === "Tab") {
           e.preventDefault();
-          selectMention(mentionFiles[mentionIndex]);
+          void selectMention(mentionFiles[mentionIndex]);
           return;
         }
         if (e.key === "Escape") {
@@ -804,7 +861,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                   )}
                   onMouseDown={(e) => {
                     e.preventDefault(); // prevent textarea blur
-                    selectMention(file);
+                    void selectMention(file);
                   }}
                   onMouseEnter={() => setMentionIndex(i)}
                 >

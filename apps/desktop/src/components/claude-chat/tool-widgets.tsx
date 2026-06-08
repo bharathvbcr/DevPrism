@@ -1,6 +1,6 @@
 import { type FC, useState } from "react";
 import {
-  BotIcon,
+  BrainIcon,
   CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
@@ -170,11 +170,7 @@ const BashWidget: FC<{
   input: any;
   result?: ContentBlock;
   prefix?: string;
-}> = ({
-  input,
-  result,
-  prefix = "$",
-}) => {
+}> = ({ input, result, prefix = "$" }) => {
   const [expanded, setExpanded] = useState(false);
   const command = input?.command || input?.description || "";
   const resultContent =
@@ -567,9 +563,8 @@ export const ThinkingWidget: FC<{ thinking: string; signature?: string }> = ({
         className="flex w-full items-center justify-between px-3 py-2 transition-colors hover:bg-muted-foreground/10"
       >
         <div className="flex items-center gap-2">
-          <div className="relative">
-            <BotIcon className="size-4 text-muted-foreground" />
-            <SparklesIcon className="absolute -top-1 -right-1 size-2.5 animate-pulse text-muted-foreground/70" />
+          <div className="flex size-5 items-center justify-center rounded-full bg-muted-foreground/10">
+            <BrainIcon className="size-3.5 text-muted-foreground" />
           </div>
           <span className="font-medium text-muted-foreground text-sm italic">
             Thinking...

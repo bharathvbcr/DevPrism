@@ -6,7 +6,7 @@ import {
   type ContentBlock,
 } from "@/stores/claude-chat-store";
 import { MarkdownRenderer } from "./markdown-renderer";
-import { ToolWidget } from "./tool-widgets";
+import { ThinkingWidget, ToolWidget } from "./tool-widgets";
 
 // ─── Streaming Indicator (isolated to prevent re-render storms) ───
 
@@ -316,6 +316,7 @@ const AssistantMessage: FC<{
   const hasRenderableContent = content.some(
     (block) =>
       (block.type === "text" && block.text) ||
+      (block.type === "thinking" && block.thinking) ||
       (block.type === "tool_use" && block.id),
   );
 
@@ -337,6 +338,15 @@ const AssistantMessage: FC<{
           if (block.type === "tool_use" && block.id) {
             const result = toolResultMap.get(block.id);
             return <ToolWidget key={idx} toolUse={block} toolResult={result} />;
+          }
+          if (block.type === "thinking" && block.thinking) {
+            return (
+              <ThinkingWidget
+                key={idx}
+                thinking={block.thinking}
+                signature={block.signature}
+              />
+            );
           }
           return null;
         })}

@@ -299,13 +299,11 @@ async function renameProjectRootWithRetry(
   oldRoot: string,
   newRoot: string,
 ): Promise<void> {
-  let lastError: unknown = null;
   for (let attempt = 0; ; attempt++) {
     try {
       await renameFileOnDisk(oldRoot, newRoot);
       return;
     } catch (error) {
-      lastError = error;
       const delay = PROJECT_RENAME_LOCK_RETRY_DELAYS_MS[attempt];
       if (!isWindowsFolderLockError(error) || delay == null) {
         throw new Error(formatProjectRenameError(error));
@@ -313,7 +311,6 @@ async function renameProjectRootWithRetry(
       await sleep(delay);
     }
   }
-  throw new Error(formatProjectRenameError(lastError));
 }
 
 async function waitForCompileToFinish(
@@ -482,7 +479,9 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
     }
 
     await state.saveAllFiles();
-    const dirtyFiles = get().files.filter((f) => f.isDirty && f.content != null);
+    const dirtyFiles = get().files.filter(
+      (f) => f.isDirty && f.content != null,
+    );
     if (dirtyFiles.length > 0) {
       throw new Error("Save failed. Please save changes before renaming.");
     }
@@ -532,6 +531,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
     clearZoomCache();
     clearEditorStateCache();
     clearPdfBytesCache();
+    useProjectStore.getState().requestSkipAutoRestore();
     set({
       projectRoot: null,
       files: [],

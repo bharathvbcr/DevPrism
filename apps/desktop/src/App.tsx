@@ -8,6 +8,7 @@ import { useClaudeChatStore } from "@/stores/claude-chat-store";
 import { ProjectPicker } from "@/components/project-picker";
 import { WorkspaceLayout } from "@/components/workspace/workspace-layout";
 import { lazy, Suspense, useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
@@ -37,10 +38,15 @@ function NativeWindowThemeBridge() {
       const nativeTheme = isDark ? "dark" : "light";
 
       document.documentElement.style.colorScheme = nativeTheme;
-      getCurrentWindow()
-        .setTheme(nativeTheme)
+      invoke("set_native_window_theme", { theme: nativeTheme })
         .catch((err) => {
-          log.warn("Failed to sync native window theme", {
+          log.warn("Failed to sync native window theme via Rust command", {
+            error: String(err),
+          });
+          return getCurrentWindow().setTheme(nativeTheme);
+        })
+        .catch((err) => {
+          log.warn("Failed to sync native window theme via JS API", {
             error: String(err),
           });
         });

@@ -464,7 +464,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/vcpkg/installed
-          key: vcpkg-linux-x64-v1
+          key: vcpkg-linux-x64-v2
 
       - name: Install Linux dependencies (vcpkg)
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
@@ -482,7 +482,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ~/vcpkg/installed
-          key: vcpkg-linux-x64-v1
+          key: vcpkg-linux-x64-v2
 
       - uses: dtolnay/rust-toolchain@stable
         with:

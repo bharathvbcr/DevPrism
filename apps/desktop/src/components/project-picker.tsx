@@ -16,6 +16,7 @@ import {
   Loader2Icon,
   RefreshCwIcon,
   ArrowUpCircleIcon,
+  KeyRoundIcon,
 } from "lucide-react";
 import { useProjectStore } from "@/stores/project-store";
 import { useDocumentStore } from "@/stores/document-store";
@@ -295,6 +296,7 @@ interface SkillsStatus {
 }
 
 function EnvironmentStatus() {
+  const [showAiSetup, setShowAiSetup] = useState(false);
   const claudeVersion = useClaudeSetupStore((s) => s.version);
   const claudeEmail = useClaudeSetupStore((s) => s.accountEmail);
   const providerModel = useClaudeSetupStore((s) => s.providerModel);
@@ -365,6 +367,11 @@ function EnvironmentStatus() {
           ok={true}
           label={isDirectProvider ? "AI Provider" : "Claude Code"}
           detail={aiDetail}
+          action={{
+            label: showAiSetup ? "Hide" : "Manage",
+            onClick: () => setShowAiSetup((value) => !value),
+            icon: "key",
+          }}
         />
 
         {/* Python (uv) */}
@@ -411,6 +418,8 @@ function EnvironmentStatus() {
         />
       </div>
 
+      {showAiSetup && <ClaudeSetup />}
+
       {showSkillsOnboarding && OnboardingComponent && (
         <OnboardingComponent
           onClose={() => {
@@ -432,7 +441,12 @@ function StatusRow({
   ok: boolean;
   label: string;
   detail: string;
-  action?: { label: string; onClick?: () => void; loading?: boolean };
+  action?: {
+    label: string;
+    onClick?: () => void;
+    loading?: boolean;
+    icon?: "download" | "key";
+  };
 }) {
   return (
     <div className="flex min-w-0 items-center gap-2.5">
@@ -462,6 +476,8 @@ function StatusRow({
         >
           {action.loading ? (
             <Loader2Icon className="mr-1 size-3 animate-spin" />
+          ) : action.icon === "key" ? (
+            <KeyRoundIcon className="mr-1 size-3" />
           ) : (
             <DownloadIcon className="mr-1 size-3" />
           )}

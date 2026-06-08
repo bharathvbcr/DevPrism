@@ -76,45 +76,45 @@ const CLAUDE_COMPATIBLE_PRESETS: ClaudeCompatiblePreset[] = [
 
 const OPENAI_COMPATIBLE_PRESETS: OpenAICompatiblePreset[] = [
   {
-    id: "qwen-cn",
-    label: "Qwen Code (China)",
-    baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    model: "qwen3-coder-plus",
-    note: "Alibaba Cloud Model Studio China endpoint.",
+    id: "openai",
+    label: "OpenAI",
+    baseUrl: "https://api.openai.com",
+    model: "",
+    note: "OpenAI chat completions endpoint.",
   },
   {
-    id: "qwen-intl",
-    label: "Qwen Code (Intl)",
-    baseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-    model: "qwen3-coder-plus",
-    note: "Alibaba Cloud Model Studio international endpoint.",
+    id: "qwen",
+    label: "Qwen",
+    baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    model: "",
+    note: "Alibaba Cloud Model Studio endpoint.",
   },
   {
     id: "deepseek",
-    label: "DeepSeek V4 Pro",
+    label: "DeepSeek",
     baseUrl: "https://api.deepseek.com",
-    model: "deepseek-v4-pro",
+    model: "",
     note: "DeepSeek OpenAI-compatible endpoint.",
   },
   {
-    id: "deepseek-fast",
-    label: "DeepSeek V4 Flash",
-    baseUrl: "https://api.deepseek.com",
-    model: "deepseek-v4-flash",
-    note: "Lower-latency DeepSeek option.",
+    id: "moonshot",
+    label: "Moonshot / Kimi",
+    baseUrl: "https://api.moonshot.cn/v1",
+    model: "",
+    note: "Moonshot AI OpenAI-compatible endpoint.",
   },
   {
     id: "glm",
     label: "GLM (BigModel)",
     baseUrl: "https://open.bigmodel.cn/api/paas/v4",
-    model: "glm-5.1",
+    model: "",
     note: "Zhipu BigModel chat completions endpoint.",
   },
   {
     id: "gemini",
     label: "Gemini OpenAI",
     baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
-    model: "gemini-2.5-flash",
+    model: "",
     note: "Google Gemini OpenAI-compatible endpoint.",
   },
 ];
@@ -130,15 +130,6 @@ const OPENAI_PROVIDER_CARDS: ModelProviderCard[] = [
       .join("")
       .toUpperCase(),
   })),
-  {
-    id: "custom-openai",
-    label: "Custom OpenAI API",
-    provider: "openai-compatible",
-    baseUrl: "",
-    model: "",
-    badge: "API",
-    note: "Use any chat/completions-compatible provider.",
-  },
 ];
 
 const CLAUDE_PROVIDER_CARDS: ModelProviderCard[] = [
@@ -167,6 +158,31 @@ const CLAUDE_PROVIDER_CARDS: ModelProviderCard[] = [
     note: "Use a Claude-compatible proxy endpoint.",
   },
 ];
+
+const OPENAI_DEFAULT_PRESET_ID = OPENAI_PROVIDER_CARDS[0]?.id ?? "openai";
+
+function normalizePresetBaseUrl(url: string) {
+  return url
+    .trim()
+    .replace(/\/chat\/completions$/i, "")
+    .replace(/\/+$/, "")
+    .toLowerCase();
+}
+
+function findOpenAiPresetIdForBaseUrl(baseUrl?: string | null) {
+  const normalized = normalizePresetBaseUrl(baseUrl ?? "");
+  if (!normalized) return null;
+
+  return (
+    OPENAI_COMPATIBLE_PRESETS.find(
+      (preset) => normalizePresetBaseUrl(preset.baseUrl) === normalized,
+    )?.id ?? null
+  );
+}
+
+function openAiPresetIdForBaseUrl(baseUrl?: string | null) {
+  return findOpenAiPresetIdForBaseUrl(baseUrl) ?? OPENAI_DEFAULT_PRESET_ID;
+}
 
 // ─── Event Hooks ───
 
@@ -424,6 +440,10 @@ export function ClaudeSetup() {
     selectedProvider: "claude-code" | "openai-compatible" = provider,
     credentialLabel?: string,
   ) => {
+    const savedPreset =
+      selectedProvider === "openai-compatible"
+        ? openAiPresetIdForBaseUrl(baseUrl)
+        : "anthropic-direct";
     const success = await saveApiKey(
       apiKey,
       baseUrl,
@@ -437,11 +457,7 @@ export function ClaudeSetup() {
       setModel("");
       setModelOptions([]);
       setModelFetchError(null);
-      setProviderPreset(
-        selectedProvider === "openai-compatible"
-          ? "custom-openai"
-          : "anthropic-direct",
-      );
+      setProviderPreset(savedPreset);
       setIsEditingProvider(false);
     }
   };
@@ -449,7 +465,9 @@ export function ClaudeSetup() {
   const beginProviderEdit = (isDirectProvider: boolean) => {
     setProvider(isDirectProvider ? "openai-compatible" : "claude-code");
     setProviderPreset(
-      isDirectProvider ? "custom-openai" : "anthropic-direct",
+      isDirectProvider
+        ? openAiPresetIdForBaseUrl(providerBaseUrl)
+        : "anthropic-direct",
     );
     setApiKey("");
     setBaseUrl(isDirectProvider ? providerBaseUrl || "" : "");
@@ -490,7 +508,6 @@ export function ClaudeSetup() {
       if (!models.includes(model)) {
         setModel(models[0] ?? "");
       }
-      setProviderPreset("custom-openai");
     } catch (err: any) {
       setModelOptions([]);
       setModelFetchError(err?.message || String(err));
@@ -515,7 +532,7 @@ export function ClaudeSetup() {
     const providerCardIds = new Set(providerCards.map((card) => card.id));
     const fallbackCardId =
       selectedProvider === "openai-compatible"
-        ? "custom-openai"
+        ? OPENAI_DEFAULT_PRESET_ID
         : "anthropic-direct";
     const activeCardId = providerCardIds.has(providerPreset)
       ? providerPreset
@@ -633,16 +650,21 @@ export function ClaudeSetup() {
               value={baseUrl}
               onChange={(event) => {
                 const nextUrl = event.target.value;
+                const matchingPreset = findOpenAiPresetIdForBaseUrl(nextUrl);
                 setBaseUrl(nextUrl);
                 setModelOptions([]);
                 setModelFetchError(null);
-                setProviderPreset(
-                  selectedProvider === "openai-compatible"
-                    ? "custom-openai"
-                    : nextUrl.trim()
+                if (selectedProvider === "openai-compatible") {
+                  if (matchingPreset) {
+                    setProviderPreset(matchingPreset);
+                  }
+                } else {
+                  setProviderPreset(
+                    nextUrl.trim()
                       ? "custom-claude-proxy"
                       : "anthropic-direct",
-                );
+                  );
+                }
               }}
               disabled={isSavingApiKey}
               autoComplete="off"
@@ -686,7 +708,6 @@ export function ClaudeSetup() {
                   value={model}
                   onValueChange={(value) => {
                     setModel(value);
-                    setProviderPreset("custom-openai");
                   }}
                   disabled={isSavingApiKey}
                 >
@@ -709,7 +730,6 @@ export function ClaudeSetup() {
                   value={model}
                   onChange={(event) => {
                     setModel(event.target.value);
-                    setProviderPreset("custom-openai");
                   }}
                   disabled={isSavingApiKey}
                   autoComplete="off"

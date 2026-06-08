@@ -139,7 +139,7 @@ describe("useClaudeSetupStore.saveApiKey", () => {
         return [
           {
             id: "cred-1",
-            label: "DeepSeek V4 Pro",
+            label: "DeepSeek",
             model: "deepseek-v4-pro",
             base_url: "https://api.deepseek.com",
           },

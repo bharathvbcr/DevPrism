@@ -838,7 +838,10 @@ mod tests {
         std::fs::write(skill_dir.join("SKILL.md"), "# Exploratory Data Analysis").unwrap();
 
         let src = find_skills_source(tmp.path()).unwrap();
-        assert_eq!(src.file_name().and_then(|name| name.to_str()), Some("skills"));
+        assert_eq!(
+            src.file_name().and_then(|name| name.to_str()),
+            Some("skills")
+        );
     }
 
     #[test]

@@ -5,6 +5,7 @@ import { APP_VISIBILITY_RESTORED } from "@/lib/debug/log-store";
 import type { StructuredTextData, LinkData } from "@/lib/mupdf/types";
 
 const log = createLogger("mupdf-page");
+const RENDER_SCALE_DEBOUNCE_MS = 140;
 
 interface MupdfPageProps {
   docId: number;
@@ -43,10 +44,24 @@ export const MupdfPage = memo(function MupdfPage({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [textData, setTextData] = useState<StructuredTextData | null>(null);
   const [links, setLinks] = useState<LinkData[]>([]);
+  const [renderScale, setRenderScale] = useState(scale);
   const renderGenRef = useRef(0);
 
   const cssW = pageWidth * scale;
   const cssH = pageHeight * scale;
+
+  useEffect(() => {
+    setRenderScale(scale);
+  }, [docId, pageIndex]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!isVisible || docId <= 0) return;
+    const timeout = window.setTimeout(
+      () => setRenderScale(scale),
+      RENDER_SCALE_DEBOUNCE_MS,
+    );
+    return () => window.clearTimeout(timeout);
+  }, [docId, isVisible, scale]);
 
   /** Re-render the page onto the canvas via MuPDF worker. */
   const renderPage = useCallback(() => {
@@ -55,7 +70,7 @@ export const MupdfPage = memo(function MupdfPage({
     const gen = ++renderGenRef.current;
     const client = getMupdfClient();
     const dpr = window.devicePixelRatio || 1;
-    const dpi = scale * 72 * dpr;
+    const dpi = renderScale * 72 * dpr;
 
     client
       .drawPage(docId, pageIndex, dpi)
@@ -78,21 +93,25 @@ export const MupdfPage = memo(function MupdfPage({
         if (gen !== renderGenRef.current) return;
         log.error(`Render error page ${pageIndex}`, { error: String(err) });
       });
-  }, [docId, pageIndex, scale, isVisible]);
+  }, [docId, pageIndex, renderScale, isVisible]);
 
-  // Initial render and re-render on dependency changes
+  // Render the canvas immediately on load, then at debounced high-quality zoom.
   useEffect(() => {
     if (!isVisible || docId <= 0) return;
-
     renderPage();
+  }, [docId, pageIndex, renderScale, isVisible, renderPage]);
+
+  // Text and link layers do not need to be refetched for every zoom change.
+  useEffect(() => {
+    if (!isVisible || docId <= 0) return;
+    let cancelled = false;
 
     const client = getMupdfClient();
-    const gen = renderGenRef.current;
 
     client
       .getPageText(docId, pageIndex)
       .then((data) => {
-        if (gen !== renderGenRef.current) return;
+        if (cancelled) return;
         setTextData(data);
       })
       .catch(() => {});
@@ -100,11 +119,15 @@ export const MupdfPage = memo(function MupdfPage({
     client
       .getPageLinks(docId, pageIndex)
       .then((data) => {
-        if (gen !== renderGenRef.current) return;
+        if (cancelled) return;
         setLinks(data);
       })
       .catch(() => {});
-  }, [docId, pageIndex, scale, isVisible, renderPage]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [docId, pageIndex, isVisible]);
 
   // Re-render canvas when returning from background if content was lost
   useEffect(() => {

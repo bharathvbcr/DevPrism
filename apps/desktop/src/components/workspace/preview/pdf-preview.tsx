@@ -64,7 +64,7 @@ const log = createLogger("pdf-preview");
 
 type FitMode = "fit-width" | "fit-height" | null;
 
-/** Per-root zoom state cache: rootFileId → { scale, fitMode } */
+/** Per-root zoom state cache: rootFileId -> { scale, fitMode } */
 const zoomCache = new Map<string, { scale: number; fitMode: FitMode }>();
 
 /** Max number of PdfViewer instances kept alive simultaneously. */
@@ -689,7 +689,7 @@ export function PdfPreview() {
             PDF Preview
           </h2>
           <p className="mb-4 text-center text-muted-foreground text-sm">
-            Press ⌘+Enter to compile your document
+            Press Cmd+Enter to compile your document
           </p>
           {isTexActive && (
             <Button
@@ -800,7 +800,7 @@ export function PdfPreview() {
       ref={previewContainerRef}
       className="@container/pv relative flex h-full flex-col bg-muted/50"
     >
-      <div className="flex min-h-[calc(40px+var(--titlebar-height))] shrink-0 flex-wrap items-center gap-y-1 border-border border-b bg-background px-2 py-1 pt-[calc(var(--titlebar-height)+0.25rem)] @[52rem]/pv:h-[calc(40px+var(--titlebar-height))] @[52rem]/pv:flex-nowrap @[52rem]/pv:py-0 @[52rem]/pv:pt-[var(--titlebar-height)]">
+      <div className="flex h-[calc(40px+var(--titlebar-height))] shrink-0 flex-nowrap items-center border-border border-b bg-background px-2 pt-[var(--titlebar-height)]">
         <div className="flex min-w-0 shrink-0 items-center gap-1">
           <Select
             value={compilerBackend}
@@ -865,9 +865,9 @@ export function PdfPreview() {
         </div>
         <div
           data-tauri-drag-region
-          className="min-w-4 flex-1 self-stretch @max-[52rem]/pv:hidden"
+          className="min-w-2 flex-1 self-stretch"
         />
-        <div className="ml-auto flex min-w-0 max-w-full shrink flex-wrap items-center justify-end gap-1 @max-[52rem]/pv:w-full">
+        <div className="ml-auto flex min-w-0 shrink-0 flex-nowrap items-center justify-end gap-1">
           {pdfData && (
             <>
               <Button
@@ -884,7 +884,7 @@ export function PdfPreview() {
                 <input
                   type="text"
                   inputMode="numeric"
-                  className="h-6 w-8 shrink-0 rounded border border-border bg-background text-center text-foreground text-xs outline-none focus:ring-1 focus:ring-ring"
+                  className="h-6 w-7 shrink-0 rounded border border-border bg-background text-center text-foreground text-xs outline-none focus:ring-1 focus:ring-ring"
                   value={pageInputValue}
                   onChange={(e) => setPageInputValue(e.target.value)}
                   onBlur={handlePageInputCommit}
@@ -898,7 +898,7 @@ export function PdfPreview() {
                 />
               ) : (
                 <button
-                  className="flex h-6 min-w-[2rem] shrink-0 items-center justify-center rounded px-1 text-muted-foreground text-xs tabular-nums hover:bg-muted"
+                  className="flex h-6 w-7 shrink-0 items-center justify-center rounded text-muted-foreground text-xs tabular-nums hover:bg-muted"
                   onClick={() => {
                     setIsEditingPage(true);
                     setPageInputValue(String(currentPage));
@@ -908,13 +908,16 @@ export function PdfPreview() {
                   {currentPage}
                 </button>
               )}
-              <span className="shrink-0 whitespace-nowrap text-muted-foreground text-xs">
-                / {numPages}
+              <span className="shrink-0 text-muted-foreground/80 text-xs tabular-nums">
+                /
+              </span>
+              <span className="flex h-6 w-7 shrink-0 items-center justify-center text-muted-foreground text-xs tabular-nums">
+                {numPages}
               </span>
               <Button
                 variant="ghost"
                 size="icon"
-                className="size-7"
+                className="size-7 shrink-0"
                 onClick={() => goToPage(currentPage + 1)}
                 disabled={currentPage >= numPages}
                 title="Page Down"
@@ -985,14 +988,14 @@ export function PdfPreview() {
                     : "bg-foreground text-background hover:bg-foreground/90"
                 }`}
                 onClick={() => setCaptureMode(!captureMode)}
-                title={`Capture & Ask (${navigator.userAgent.includes("Mac") ? "⌘X" : "Ctrl+X"})`}
+                title={`Capture & Ask (${navigator.userAgent.includes("Mac") ? "Cmd+X" : "Ctrl+X"})`}
               >
                 <CrosshairIcon className="size-3.5 shrink-0" />
                 <span className="hidden @[56rem]/pv:inline">
                   Capture & Ask
                 </span>
                 <kbd className="pointer-events-none ml-0.5 hidden rounded border border-background/30 bg-background/20 px-1 py-0.5 font-medium text-[10px] text-background leading-none @[64rem]/pv:inline">
-                  {navigator.userAgent.includes("Mac") ? "⌘X" : "Ctrl+X"}
+                  {navigator.userAgent.includes("Mac") ? "Cmd+X" : "Ctrl+X"}
                 </kbd>
               </Button>
               <div className="mx-1 hidden h-4 w-px bg-border @[34rem]/pv:block" />
@@ -1049,7 +1052,7 @@ export function PdfPreview() {
             </kbd>
             <span className="text-[10px] text-muted-foreground">or</span>
             <kbd className="rounded border border-border bg-muted px-1.5 py-0.5 font-medium text-[10px] text-muted-foreground">
-              {navigator.userAgent.includes("Mac") ? "⌘" : "Ctrl+"}X
+              {navigator.userAgent.includes("Mac") ? "Cmd+" : "Ctrl+"}X
             </kbd>
             <span className="text-[10px] text-muted-foreground">to cancel</span>
           </div>

@@ -196,7 +196,7 @@ export function ClaudeChatDrawer() {
 
         {/* Error banner */}
         {error && (
-          <div className="mx-3 mb-1 rounded-lg border border-destructive/50 bg-destructive/10 px-3 py-1.5 text-destructive text-xs">
+          <div className="mx-3 mt-2 mb-1 rounded-lg border border-destructive/50 bg-destructive/10 px-3 py-1.5 text-destructive text-xs">
             {error}
           </div>
         )}

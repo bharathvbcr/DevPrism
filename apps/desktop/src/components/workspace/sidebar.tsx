@@ -214,6 +214,7 @@ export function Sidebar() {
   const deleteFile = useDocumentStore((s) => s.deleteFile);
   const deleteFolder = useDocumentStore((s) => s.deleteFolder);
   const renameFile = useDocumentStore((s) => s.renameFile);
+  const renameProject = useDocumentStore((s) => s.renameProject);
   const createNewFile = useDocumentStore((s) => s.createNewFile);
   const createFolder = useDocumentStore((s) => s.createFolder);
   const importFiles = useDocumentStore((s) => s.importFiles);
@@ -232,6 +233,10 @@ export function Sidebar() {
   const projectRoot = useDocumentStore((s) => s.projectRoot);
   const folders = useDocumentStore((s) => s.folders);
   const { theme, setTheme } = useTheme();
+  const projectName = useMemo(() => {
+    const normalized = projectRoot?.replace(/[\\/]+$/, "");
+    return normalized?.split(/[/\\]/).pop() || "Desktop";
+  }, [projectRoot]);
 
   // ─── Native OS file drop (Tauri onDragDropEvent) ───
   const sidebarFilesRef = useRef<HTMLDivElement>(null);
@@ -430,6 +435,11 @@ export function Sidebar() {
   const [renameDialogOpen, setRenameDialogOpen] = useState(false);
   const [renameFileId, setRenameFileId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const [projectRenameDialogOpen, setProjectRenameDialogOpen] =
+    useState(false);
+  const [projectRenameValue, setProjectRenameValue] = useState("");
+  const [projectRenameError, setProjectRenameError] = useState("");
+  const [isRenamingProject, setIsRenamingProject] = useState(false);
   const [newFileName, setNewFileName] = useState("");
   const [newFolderName, setNewFolderName] = useState("");
 
@@ -580,6 +590,28 @@ export function Sidebar() {
     setRenameDialogOpen(true);
   };
 
+  const openProjectRenameDialog = () => {
+    if (!projectRoot) return;
+    setProjectRenameValue(projectName);
+    setProjectRenameError("");
+    setProjectRenameDialogOpen(true);
+  };
+
+  const handleProjectRename = async () => {
+    const name = projectRenameValue.trim();
+    if (!name || isRenamingProject) return;
+    setIsRenamingProject(true);
+    setProjectRenameError("");
+    try {
+      await renameProject(name);
+      setProjectRenameDialogOpen(false);
+    } catch (err) {
+      setProjectRenameError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsRenamingProject(false);
+    }
+  };
+
   const handleRename = () => {
     const name = renameValue.trim();
     if (!renameFileId || !name) return;
@@ -622,12 +654,21 @@ export function Sidebar() {
     <div className="flex h-full flex-col bg-sidebar text-sidebar-foreground">
       {/* Header — padded top for macOS overlay titlebar */}
       <div className="relative flex h-[calc(48px+var(--titlebar-height))] items-center justify-center border-sidebar-border border-b px-3 pt-[var(--titlebar-height)]">
-        <div className="flex flex-col items-center">
-          <span className="font-semibold text-sm">ClaudePrism</span>
-          <span className="text-muted-foreground text-xs">
-            {projectRoot?.split(/[/\\]/).pop() || "Desktop"}
-          </span>
-        </div>
+        <button
+          type="button"
+          className={cn(
+            "min-w-0 max-w-[calc(100%-3.5rem)] rounded-md px-2 py-1 font-semibold text-sm transition-colors",
+            projectRoot
+              ? "hover:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              : "cursor-default",
+          )}
+          onClick={openProjectRenameDialog}
+          disabled={!projectRoot}
+          title={projectRoot ? "Rename project folder" : undefined}
+          aria-label="Rename project folder"
+        >
+          <span className="block truncate">{projectName}</span>
+        </button>
         <div className="absolute right-3 flex items-center gap-0.5">
           <Button
             variant="ghost"
@@ -925,6 +966,51 @@ export function Sidebar() {
               disabled={!newFolderName.trim()}
             >
               Create
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Rename Project Dialog */}
+      <Dialog
+        open={projectRenameDialogOpen}
+        onOpenChange={(open) => {
+          if (!isRenamingProject) setProjectRenameDialogOpen(open);
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Rename Project</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2 py-4">
+            <Input
+              value={projectRenameValue}
+              onChange={(e) => {
+                setProjectRenameValue(e.target.value);
+                setProjectRenameError("");
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleProjectRename();
+              }}
+              autoFocus
+            />
+            {projectRenameError && (
+              <p className="text-destructive text-xs">{projectRenameError}</p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setProjectRenameDialogOpen(false)}
+              disabled={isRenamingProject}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleProjectRename}
+              disabled={!projectRenameValue.trim() || isRenamingProject}
+            >
+              {isRenamingProject ? "Renaming..." : "Rename"}
             </Button>
           </DialogFooter>
         </DialogContent>

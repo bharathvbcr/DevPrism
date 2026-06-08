@@ -185,6 +185,7 @@ fn create_new_window(app: tauri::AppHandle) -> Result<(), String> {
         .title("ClaudePrism")
         .inner_size(1400.0, 900.0)
         .min_inner_size(800.0, 600.0)
+        .theme(Some(tauri::Theme::Light))
         .visible(false);
 
     #[cfg(target_os = "macos")]
@@ -340,6 +341,7 @@ fn open_debug_window(app: tauri::AppHandle) -> Result<(), String> {
         .title("ClaudePrism — Debug")
         .inner_size(560.0, 700.0)
         .min_inner_size(400.0, 400.0)
+        .theme(Some(tauri::Theme::Light))
         .visible(true)
         .build()
         .map_err(|e| format!("Failed to create debug window: {}", e))?;
@@ -493,6 +495,7 @@ pub fn run() {
             claude::resume_claude_code,
             claude::cancel_claude_execution,
             claude::run_shell_command,
+            claude::migrate_project_sessions,
             claude::get_claude_fast_mode,
             claude::set_claude_fast_mode,
             claude::list_claude_sessions,

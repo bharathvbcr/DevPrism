@@ -30,6 +30,18 @@ describe("useProjectStore", () => {
       expect(recentProjects[1].path).toBe("/b");
     });
 
+    it("normalizes trailing separators when deduplicating", () => {
+      const store = useProjectStore.getState();
+      store.addRecentProject("C:\\Users\\Devlin\\Documents\\ClaudePrism\\paper\\");
+      store.addRecentProject("C:\\Users\\Devlin\\Documents\\ClaudePrism\\paper");
+      const { recentProjects } = useProjectStore.getState();
+      expect(recentProjects).toHaveLength(1);
+      expect(recentProjects[0]).toMatchObject({
+        path: "C:\\Users\\Devlin\\Documents\\ClaudePrism\\paper",
+        name: "paper",
+      });
+    });
+
     it("limits to MAX_RECENT (10) entries", () => {
       const store = useProjectStore.getState();
       for (let i = 0; i < 12; i++) {
@@ -65,6 +77,40 @@ describe("useProjectStore", () => {
       const { recentProjects } = useProjectStore.getState();
       expect(recentProjects).toHaveLength(1);
       expect(recentProjects[0].path).toBe("/b");
+    });
+  });
+
+  describe("renameRecentProject", () => {
+    it("replaces the old recent project path with the new folder path", () => {
+      const store = useProjectStore.getState();
+      store.addRecentProject("/work/old");
+      store.addRecentProject("/work/other");
+      store.renameRecentProject("/work/old", "/work/new");
+
+      const { recentProjects } = useProjectStore.getState();
+      expect(recentProjects[0]).toMatchObject({
+        path: "/work/new",
+        name: "new",
+      });
+      expect(recentProjects.some((project) => project.path === "/work/old")).toBe(
+        false,
+      );
+      expect(recentProjects.some((project) => project.path === "/work/other")).toBe(
+        true,
+      );
+    });
+
+    it("matches renamed paths even when the old recent path has a trailing slash", () => {
+      const store = useProjectStore.getState();
+      store.addRecentProject("/work/old/");
+      store.renameRecentProject("/work/old", "/work/new/");
+
+      const { recentProjects } = useProjectStore.getState();
+      expect(recentProjects).toHaveLength(1);
+      expect(recentProjects[0]).toMatchObject({
+        path: "/work/new",
+        name: "new",
+      });
     });
   });
 });

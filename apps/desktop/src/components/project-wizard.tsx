@@ -34,39 +34,9 @@ import {
   buildReferenceFilesSection,
   importReferenceFilesWithSidecars,
 } from "@/lib/project-attachments";
+import { getProjectNameError, normalizeProjectName } from "@/lib/project-name";
 
 // ─── Helpers ───
-
-function randomProjectName(): string {
-  const adjectives = [
-    "swift",
-    "bright",
-    "calm",
-    "bold",
-    "keen",
-    "warm",
-    "pure",
-    "vast",
-    "deep",
-    "fair",
-  ];
-  const nouns = [
-    "paper",
-    "draft",
-    "thesis",
-    "note",
-    "study",
-    "essay",
-    "report",
-    "brief",
-    "folio",
-    "opus",
-  ];
-  const adj = adjectives[Math.floor(Math.random() * adjectives.length)];
-  const noun = nouns[Math.floor(Math.random() * nouns.length)];
-  const id = Math.random().toString(36).slice(2, 6);
-  return `${adj}-${noun}-${id}`;
-}
 
 // ─── Wizard Component ───
 
@@ -111,12 +81,14 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
   const [purpose, setPurpose] = useState("");
   const [attachments, setAttachments] = useState<string[]>([]);
   const [projectFolder, setProjectFolder] = useState<string | null>(null);
-  const [projectName, setProjectName] = useState(randomProjectName);
+  const [projectName, setProjectName] = useState("");
+  const [projectNameError, setProjectNameError] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const [refFilesOpen, setRefFilesOpen] = useState(false);
   const [locationOpen, setLocationOpen] = useState(false);
 
+  const projectNameRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const addRecentProject = useProjectStore((s) => s.addRecentProject);
@@ -127,7 +99,7 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
   const template = getTemplateById("blank")!;
 
   useEffect(() => {
-    const timer = setTimeout(() => textareaRef.current?.focus(), 100);
+    const timer = setTimeout(() => projectNameRef.current?.focus(), 100);
     return () => clearTimeout(timer);
   }, []);
 
@@ -236,11 +208,20 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
   }, []);
 
   const handleCreate = async () => {
-    if (!template || !projectFolder || !projectName.trim()) return;
+    const name = normalizeProjectName(projectName);
+    const nameError = getProjectNameError(projectName);
+    if (!template || !projectFolder || nameError) {
+      setProjectNameError(nameError ?? "");
+      return;
+    }
     setIsCreating(true);
 
     try {
-      const projectPath = await join(projectFolder, projectName.trim());
+      const projectPath = await join(projectFolder, name);
+      if (await exists(projectPath)) {
+        setProjectNameError("A folder with this name already exists here");
+        return;
+      }
       await mkdir(projectPath, { recursive: true });
 
       // Create CLAUDE.md for Claude Code context
@@ -306,7 +287,9 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
     }
   };
 
-  const canCreate = template && projectFolder && projectName.trim();
+  const canCreate = Boolean(
+    template && projectFolder && !getProjectNameError(projectName),
+  );
 
   return (
     <div className="flex h-full flex-col bg-background">
@@ -326,6 +309,32 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
       {/* Form */}
       <div className="flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-[520px] space-y-4 px-6 py-10">
+          {/* Project name */}
+          <div className="space-y-2.5">
+            <div>
+              <span className="font-semibold text-sm">Project name</span>
+              <p className="mt-0.5 text-muted-foreground text-xs leading-relaxed">
+                This becomes the folder name on disk.
+              </p>
+            </div>
+            <Input
+              ref={projectNameRef}
+              placeholder="e.g., flashvid-paper"
+              value={projectName}
+              onChange={(e) => {
+                setProjectName(e.target.value);
+                setProjectNameError("");
+              }}
+              onBlur={() =>
+                setProjectNameError(getProjectNameError(projectName) ?? "")
+              }
+              className="rounded-xl border-border/60 bg-card/30 text-sm focus-visible:bg-card/50"
+            />
+            {projectNameError && (
+              <p className="text-destructive text-xs">{projectNameError}</p>
+            )}
+          </div>
+
           {/* Purpose */}
           <div className="space-y-2.5">
             <div>
@@ -446,7 +455,7 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
                 {!locationOpen && projectFolder && projectName.trim() && (
                   <span className="min-w-0 max-w-[180px] truncate rounded-md bg-muted/40 px-2 py-0.5 font-mono text-[11px] text-muted-foreground/60">
                     .../{projectFolder.split(/[/\\]/).pop()}/
-                    {projectName.trim()}
+                    {normalizeProjectName(projectName)}
                   </span>
                 )}
                 <ChevronDownIcon
@@ -455,13 +464,12 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
               </button>
               {locationOpen && (
                 <div className="space-y-2.5 px-4 pb-4">
-                  <div className="flex gap-2">
-                    <Input
-                      placeholder="Project name"
-                      value={projectName}
-                      onChange={(e) => setProjectName(e.target.value)}
-                      className="flex-1 rounded-lg border-border/60 bg-background/50"
-                    />
+                  <div className="flex items-center gap-2">
+                    <p className="min-w-0 flex-1 truncate rounded-md bg-muted/30 px-2.5 py-1.5 font-mono text-[11px] text-muted-foreground/60">
+                      {projectFolder
+                        ? `${projectFolder}/${normalizeProjectName(projectName) || "..."}`
+                        : "Choose a location"}
+                    </p>
                     <Button
                       variant="outline"
                       size="sm"
@@ -472,11 +480,6 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
                       {projectFolder ? "Change" : "Choose"}
                     </Button>
                   </div>
-                  {projectFolder && (
-                    <p className="truncate rounded-md bg-muted/30 px-2.5 py-1.5 font-mono text-[11px] text-muted-foreground/60">
-                      {projectFolder}/{projectName.trim() || "..."}
-                    </p>
-                  )}
                 </div>
               )}
             </div>

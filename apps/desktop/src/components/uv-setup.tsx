@@ -71,7 +71,7 @@ export function UvSetupDialog({ open, onClose }: UvSetupDialogProps) {
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="w-[min(42rem,calc(100vw-2rem))] overflow-hidden sm:max-w-none">
+      <DialogContent className="w-full max-w-[34rem] overflow-hidden sm:max-w-[34rem]">
         <DialogHeader>
           <DialogTitle className="flex min-w-0 items-center gap-2 pr-8">
             <TerminalIcon className="size-5 shrink-0" />
@@ -168,8 +168,9 @@ export function UvSetupDialog({ open, onClose }: UvSetupDialogProps) {
           {/* Info text */}
           {status === "ready" && venvReady && (
             <p className="max-w-full break-words text-muted-foreground text-xs leading-relaxed">
-              Claude Code will automatically use this environment when running
-              Python code. Use{" "}
+              Claude Code and ClaudePrism terminal tools use this environment
+              when running Python code. OpenAI-compatible providers use it
+              through PowerShell/Bash tool calls. Use{" "}
               <code className="text-foreground">uv pip install</code> to add
               packages.
             </p>

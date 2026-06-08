@@ -1,5 +1,16 @@
-import { describe, it, expect } from "vitest";
-import { offsetToLineCol } from "@/stores/claude-chat-store";
+import { beforeEach, describe, expect, it } from "vitest";
+import {
+  CLAUDE_CODE_PROVIDER_ID,
+  SELECTED_PROVIDER_CREDENTIAL_STORAGE_KEY,
+  loadSelectedProviderCredentialId,
+  offsetToLineCol,
+  useClaudeChatStore,
+} from "@/stores/claude-chat-store";
+
+beforeEach(() => {
+  localStorage.clear();
+  useClaudeChatStore.setState({ selectedProviderCredentialId: null });
+});
 
 describe("offsetToLineCol", () => {
   it("returns line 1, col 1 for offset 0 on empty string", () => {
@@ -36,5 +47,33 @@ describe("offsetToLineCol", () => {
   it("handles content with only newlines", () => {
     expect(offsetToLineCol("\n\n", 1)).toEqual({ line: 2, col: 1 });
     expect(offsetToLineCol("\n\n", 2)).toEqual({ line: 3, col: 1 });
+  });
+});
+
+describe("provider selection persistence", () => {
+  it("persists Claude Code as an explicit provider selection", () => {
+    useClaudeChatStore
+      .getState()
+      .setSelectedProviderCredentialId(CLAUDE_CODE_PROVIDER_ID);
+
+    expect(
+      localStorage.getItem(SELECTED_PROVIDER_CREDENTIAL_STORAGE_KEY),
+    ).toBe(CLAUDE_CODE_PROVIDER_ID);
+    expect(loadSelectedProviderCredentialId()).toBe(CLAUDE_CODE_PROVIDER_ID);
+  });
+
+  it("persists and clears OpenAI-compatible provider selections", () => {
+    useClaudeChatStore.getState().setSelectedProviderCredentialId("qwen");
+
+    expect(
+      localStorage.getItem(SELECTED_PROVIDER_CREDENTIAL_STORAGE_KEY),
+    ).toBe("qwen");
+
+    useClaudeChatStore.getState().setSelectedProviderCredentialId(null);
+
+    expect(
+      localStorage.getItem(SELECTED_PROVIDER_CREDENTIAL_STORAGE_KEY),
+    ).toBeNull();
+    expect(loadSelectedProviderCredentialId()).toBeNull();
   });
 });

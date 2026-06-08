@@ -44,6 +44,7 @@ function resetStores() {
         id: "tab-default",
         title: "New Chat",
         sessionId: null,
+        providerKey: null,
         messages: [],
         isStreaming: false,
         error: null,

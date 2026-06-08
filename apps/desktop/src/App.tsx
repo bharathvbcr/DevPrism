@@ -1,4 +1,4 @@
-import { ThemeProvider } from "next-themes";
+import { ThemeProvider, useTheme } from "next-themes";
 import { ErrorBoundary } from "react-error-boundary";
 import { Toaster } from "@/components/ui/sonner";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
@@ -25,6 +25,46 @@ const LazyDebugPage = lazy(() =>
     default: m.DebugPage,
   })),
 );
+
+function NativeWindowThemeBridge() {
+  const { resolvedTheme, theme } = useTheme();
+
+  useEffect(() => {
+    const syncNativeTheme = () => {
+      const isDark =
+        document.documentElement.classList.contains("dark") ||
+        resolvedTheme === "dark";
+      const nativeTheme = isDark ? "dark" : "light";
+
+      document.documentElement.style.colorScheme = nativeTheme;
+      getCurrentWindow()
+        .setTheme(nativeTheme)
+        .catch((err) => {
+          log.warn("Failed to sync native window theme", {
+            error: String(err),
+          });
+        });
+    };
+
+    syncNativeTheme();
+
+    const observer = new MutationObserver(syncNativeTheme);
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["class"],
+    });
+
+    const systemThemeQuery = window.matchMedia("(prefers-color-scheme: dark)");
+    systemThemeQuery.addEventListener("change", syncNativeTheme);
+
+    return () => {
+      observer.disconnect();
+      systemThemeQuery.removeEventListener("change", syncNativeTheme);
+    };
+  }, [resolvedTheme, theme]);
+
+  return null;
+}
 
 function WorkspaceWithClaude() {
   const projectRoot = useDocumentStore((s) => s.projectRoot);
@@ -115,6 +155,7 @@ export function App({ onReady }: { onReady?: () => void }) {
     <ErrorBoundary FallbackComponent={ErrorFallback}>
       <ThemeProvider attribute="class" defaultTheme="light" enableSystem>
         <TooltipProvider>
+          <NativeWindowThemeBridge />
           {/* Global macOS titlebar drag region — sits above all content */}
           <div
             data-tauri-drag-region

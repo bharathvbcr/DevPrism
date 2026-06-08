@@ -1,6 +1,8 @@
 import anthropicIcon from "@/assets/providers/anthropic.svg";
 import deepseekIcon from "@/assets/providers/deepseek.svg";
 import geminiIcon from "@/assets/providers/gemini-color.svg";
+import moonshotIcon from "@/assets/providers/moonshot.svg";
+import openaiIcon from "@/assets/providers/openai.svg";
 import qwenIcon from "@/assets/providers/qwen.svg";
 import zhipuIcon from "@/assets/providers/zhipu-color.svg";
 
@@ -52,11 +54,23 @@ export function getProviderIconSrc(input: ProviderIconInput): string | null {
   }
 
   if (
+    haystack.includes("moonshot") ||
+    haystack.includes("kimi") ||
+    haystack.includes("api.moonshot.cn")
+  ) {
+    return moonshotIcon;
+  }
+
+  if (
     haystack.includes("anthropic") ||
     haystack.includes("claude") ||
     haystack.includes("sk-ant")
   ) {
     return anthropicIcon;
+  }
+
+  if (haystack.includes("openai") || haystack.includes("api.openai.com")) {
+    return openaiIcon;
   }
 
   return null;

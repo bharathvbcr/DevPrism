@@ -66,6 +66,8 @@ struct DirectTask {
 
 const PROVIDER_CLAUDE_CODE: &str = "claude-code";
 const PROVIDER_OPENAI_COMPATIBLE: &str = "openai-compatible";
+const DIRECT_PROVIDER_MAX_TOOL_TURNS: u64 = 12;
+const DIRECT_PROVIDER_CONVERGE_TURN: u64 = 10;
 const DIRECT_PROVIDER_TOOL_NAMES: &[&str] = &[
     "Read",
     "Write",
@@ -6518,27 +6520,108 @@ async fn execute_openai_compatible_provider(
     let final_content: String;
     let mut final_usage = json!({ "input_tokens": 0, "output_tokens": 0 });
     let mut turns = 0_u64;
+    let mut convergence_nudged = false;
     let client = reqwest::Client::new();
 
     loop {
         turns += 1;
-        if turns > 12 {
-            let message = "Provider stopped because it used tools too many times without producing a final answer.";
-            emit_direct_error(&window, &tab_id, message);
-            cache_direct_provider_messages(&state, &session_id, &messages).await;
-            let result = json!({
-                "type": "result",
-                "subtype": "error",
-                "is_error": true,
-                "result": message,
-                "duration_ms": started.elapsed().as_millis() as u64,
-                "duration_api_ms": started.elapsed().as_millis() as u64,
-                "num_turns": turns,
-                "usage": final_usage,
+        if turns == DIRECT_PROVIDER_CONVERGE_TURN && !convergence_nudged {
+            request_messages.push(json!({
+                "role": "user",
+                "content": "You have already used many tools. Prefer stopping tool use now: synthesize the findings, explain any uncertainty, and provide the final answer unless one more tool call is absolutely necessary.",
+            }));
+            convergence_nudged = true;
+        }
+        if turns > DIRECT_PROVIDER_MAX_TOOL_TURNS {
+            let mut final_request_messages = request_messages.clone();
+            final_request_messages.push(json!({
+                "role": "user",
+                "content": "Stop using tools now. Based on all gathered context and tool results above, provide the best final answer. If anything remains incomplete, say exactly what is missing and what the user should do next.",
+            }));
+            let response = match send_openai_compatible_without_tools(
+                &client,
+                &credential,
+                &final_request_messages,
+                &window,
+                &tab_id,
+                &state,
+                &process_key,
+            )
+            .await
+            {
+                Ok(value) => value,
+                Err(err) => {
+                    let message = format!(
+                        "Provider kept requesting tools and ClaudePrism could not force a final answer: {}",
+                        err
+                    );
+                    emit_direct_error(&window, &tab_id, message.clone());
+                    cache_direct_provider_messages(&state, &session_id, &messages).await;
+                    let result = json!({
+                        "type": "result",
+                        "subtype": "error",
+                        "is_error": true,
+                        "result": message,
+                        "duration_ms": started.elapsed().as_millis() as u64,
+                        "duration_api_ms": started.elapsed().as_millis() as u64,
+                        "num_turns": turns,
+                        "usage": final_usage,
+                    });
+                    emit_and_persist_direct_output(
+                        &window,
+                        &project_path,
+                        &session_id,
+                        &tab_id,
+                        &result,
+                    );
+                    emit_direct_complete(&window, &tab_id, false);
+                    return Ok(());
+                }
+            };
+
+            final_usage = response.usage.clone();
+            let final_text = if response.content.trim().is_empty() {
+                if response.reasoning.trim().is_empty() {
+                    "I used several tools but the provider did not produce a final text answer. Please ask me to continue with a narrower instruction.".to_string()
+                } else {
+                    response.reasoning.trim().to_string()
+                }
+            } else {
+                response.content.trim().to_string()
+            };
+            let mut content_blocks = Vec::new();
+            if !response.reasoning.trim().is_empty() && response.reasoning.trim() != final_text {
+                content_blocks.push(json!({
+                    "type": "thinking",
+                    "thinking": response.reasoning,
+                }));
+            }
+            content_blocks.push(json!({ "type": "text", "text": final_text.clone() }));
+            let mut assistant_event = json!({
+                "type": "assistant",
+                "message": {
+                    "content": content_blocks,
+                    "usage": final_usage.clone(),
+                },
             });
-            emit_and_persist_direct_output(&window, &project_path, &session_id, &tab_id, &result);
-            emit_direct_complete(&window, &tab_id, false);
-            return Ok(());
+            if response.streamed_text {
+                if let Some(object) = assistant_event.as_object_mut() {
+                    object.insert("subtype".to_string(), json!("streaming_final"));
+                }
+            }
+            emit_and_persist_direct_output(
+                &window,
+                &project_path,
+                &session_id,
+                &tab_id,
+                &assistant_event,
+            );
+            messages.push(json!({
+                "role": "assistant",
+                "content": final_text.clone(),
+            }));
+            final_content = final_text;
+            break;
         }
 
         if direct_provider_cancelled(&state, &process_key).await {

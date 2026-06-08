@@ -800,7 +800,7 @@ export function PdfPreview() {
       ref={previewContainerRef}
       className="@container/pv relative flex h-full flex-col bg-muted/50"
     >
-      <div className="flex h-[calc(40px+var(--titlebar-height))] shrink-0 flex-nowrap items-center border-border border-b bg-background px-2 pt-[var(--titlebar-height)]">
+      <div className="flex h-[calc(var(--workspace-topbar-height)+var(--titlebar-height))] shrink-0 flex-nowrap items-center border-border border-b bg-background px-2">
         <div className="flex min-w-0 shrink-0 items-center gap-1">
           <Select
             value={compilerBackend}
@@ -810,7 +810,7 @@ export function PdfPreview() {
           >
             <SelectTrigger
               size="sm"
-              className="h-7! w-[6.75rem] text-xs @[44rem]/pv:w-[8.5rem]"
+              className="h-7! @[44rem]/pv:w-[8.5rem] w-[6.75rem] text-xs"
             >
               <SelectValue />
             </SelectTrigger>
@@ -822,7 +822,7 @@ export function PdfPreview() {
           {isSaving && (
             <div className="flex items-center gap-1.5 rounded-md bg-muted/50 px-2 py-1">
               <LoaderIcon className="size-3.5 animate-spin text-muted-foreground" />
-              <span className="hidden font-medium text-muted-foreground text-xs @[38rem]/pv:inline">
+              <span className="@[38rem]/pv:inline hidden font-medium text-muted-foreground text-xs">
                 Saving...
               </span>
             </div>
@@ -830,7 +830,7 @@ export function PdfPreview() {
           {!isSaving && isCompiling && (
             <div className="flex items-center gap-1.5 rounded-md bg-muted/50 px-2 py-1">
               <LoaderIcon className="size-3.5 animate-spin text-muted-foreground" />
-              <span className="hidden font-medium text-muted-foreground text-xs @[38rem]/pv:inline">
+              <span className="@[38rem]/pv:inline hidden font-medium text-muted-foreground text-xs">
                 Compiling...
               </span>
             </div>
@@ -839,12 +839,12 @@ export function PdfPreview() {
             <Button
               variant="ghost"
               size="sm"
-              className="h-7 gap-1.5 px-2 text-xs @[42rem]/pv:px-2.5"
+              className="h-7 gap-1.5 @[42rem]/pv:px-2.5 px-2 text-xs"
               onClick={() => handleCompile(true)}
               title={pdfData ? "Recompile" : "Compile"}
             >
               <RefreshCwIcon className="size-3.5" />
-              <span className="hidden @[42rem]/pv:inline">
+              <span className="@[42rem]/pv:inline hidden">
                 {pdfData ? "Recompile" : "Compile"}
               </span>
             </Button>
@@ -859,14 +859,11 @@ export function PdfPreview() {
               title="Retry compile"
             >
               <RefreshCwIcon className="size-3.5" />
-              <span className="hidden @[42rem]/pv:inline">Retry</span>
+              <span className="@[42rem]/pv:inline hidden">Retry</span>
             </Button>
           )}
         </div>
-        <div
-          data-tauri-drag-region
-          className="min-w-2 flex-1 self-stretch"
-        />
+        <div data-tauri-drag-region className="min-w-2 flex-1 self-stretch" />
         <div className="ml-auto flex min-w-0 shrink-0 flex-nowrap items-center justify-end gap-1">
           {pdfData && (
             <>
@@ -924,7 +921,7 @@ export function PdfPreview() {
               >
                 <ChevronDownIcon className="size-3.5" />
               </Button>
-              <div className="mx-1 hidden h-4 w-px bg-border @[34rem]/pv:block" />
+              <div className="mx-1 @[34rem]/pv:block hidden h-4 w-px bg-border" />
               <Button
                 variant="ghost"
                 size="icon"
@@ -956,7 +953,7 @@ export function PdfPreview() {
               >
                 <SelectTrigger
                   size="sm"
-                  className="h-7! w-[5rem] text-xs @[48rem]/pv:w-[7.5rem]"
+                  className="h-7! @[48rem]/pv:w-[7.5rem] w-[5rem] text-xs"
                 >
                   <SelectValue>
                     {fitMode === "fit-width"
@@ -977,12 +974,12 @@ export function PdfPreview() {
                   ))}
                 </SelectContent>
               </Select>
-              <div className="mx-1 hidden h-4 w-px bg-border @[34rem]/pv:block" />
+              <div className="mx-1 @[34rem]/pv:block hidden h-4 w-px bg-border" />
               {/* Capture mode */}
               <Button
                 variant={captureMode ? "default" : "secondary"}
                 size="sm"
-                className={`h-7 gap-1.5 px-2 text-xs @[56rem]/pv:px-2.5 ${
+                className={`h-7 gap-1.5 @[56rem]/pv:px-2.5 px-2 text-xs ${
                   captureMode
                     ? "ring-2 ring-primary/30"
                     : "bg-foreground text-background hover:bg-foreground/90"
@@ -991,14 +988,12 @@ export function PdfPreview() {
                 title={`Capture & Ask (${navigator.userAgent.includes("Mac") ? "Cmd+X" : "Ctrl+X"})`}
               >
                 <CrosshairIcon className="size-3.5 shrink-0" />
-                <span className="hidden @[56rem]/pv:inline">
-                  Capture & Ask
-                </span>
-                <kbd className="pointer-events-none ml-0.5 hidden rounded border border-background/30 bg-background/20 px-1 py-0.5 font-medium text-[10px] text-background leading-none @[64rem]/pv:inline">
+                <span className="@[56rem]/pv:inline hidden">Capture & Ask</span>
+                <kbd className="pointer-events-none ml-0.5 @[64rem]/pv:inline hidden rounded border border-background/30 bg-background/20 px-1 py-0.5 font-medium text-[10px] text-background leading-none">
                   {navigator.userAgent.includes("Mac") ? "Cmd+X" : "Ctrl+X"}
                 </kbd>
               </Button>
-              <div className="mx-1 hidden h-4 w-px bg-border @[34rem]/pv:block" />
+              <div className="mx-1 @[34rem]/pv:block hidden h-4 w-px bg-border" />
               <Button
                 variant="ghost"
                 size="icon"

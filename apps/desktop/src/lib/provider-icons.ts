@@ -13,8 +13,8 @@ interface ProviderIconInput {
   id?: string | null;
 }
 
-export function getProviderIconSrc(input: ProviderIconInput): string | null {
-  const haystack = [
+function providerHaystack(input: ProviderIconInput) {
+  return [
     input.id,
     input.label,
     input.baseUrl,
@@ -23,6 +23,78 @@ export function getProviderIconSrc(input: ProviderIconInput): string | null {
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
+}
+
+function isGenericOpenAiLabel(label?: string | null) {
+  const normalized = label?.trim().toLowerCase();
+  return (
+    !normalized ||
+    normalized === "custom openai api" ||
+    normalized === "openai-compatible provider"
+  );
+}
+
+export function getProviderDisplayName(input: ProviderIconInput): string {
+  const haystack = providerHaystack(input);
+
+  if (
+    haystack.includes("qwen") ||
+    haystack.includes("dashscope") ||
+    haystack.includes("aliyuncs")
+  ) {
+    return "Qwen";
+  }
+
+  if (haystack.includes("deepseek")) {
+    return "DeepSeek";
+  }
+
+  if (
+    haystack.includes("glm") ||
+    haystack.includes("zhipu") ||
+    haystack.includes("bigmodel") ||
+    haystack.includes("open.bigmodel.cn")
+  ) {
+    return "GLM";
+  }
+
+  if (
+    haystack.includes("gemini") ||
+    haystack.includes("googleapis") ||
+    haystack.includes("generativelanguage")
+  ) {
+    return "Gemini";
+  }
+
+  if (
+    haystack.includes("moonshot") ||
+    haystack.includes("kimi") ||
+    haystack.includes("api.moonshot.cn")
+  ) {
+    return "Moonshot / Kimi";
+  }
+
+  if (
+    haystack.includes("anthropic") ||
+    haystack.includes("claude") ||
+    haystack.includes("sk-ant")
+  ) {
+    return "Anthropic";
+  }
+
+  if (haystack.includes("openai") || haystack.includes("api.openai.com")) {
+    return "OpenAI";
+  }
+
+  if (!isGenericOpenAiLabel(input.label)) {
+    return input.label!.trim();
+  }
+
+  return "Provider";
+}
+
+export function getProviderIconSrc(input: ProviderIconInput): string | null {
+  const haystack = providerHaystack(input);
 
   if (
     haystack.includes("qwen") ||

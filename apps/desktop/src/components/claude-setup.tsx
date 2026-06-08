@@ -31,7 +31,10 @@ import {
   useClaudeSetupStore,
   type StepInfo,
 } from "@/stores/claude-setup-store";
-import { getProviderIconSrc } from "@/lib/provider-icons";
+import {
+  getProviderDisplayName,
+  getProviderIconSrc,
+} from "@/lib/provider-icons";
 import { cn } from "@/lib/utils";
 
 type OpenAICompatiblePreset = {
@@ -65,12 +68,6 @@ const CLAUDE_COMPATIBLE_PRESETS: ClaudeCompatiblePreset[] = [
     label: "ModelGate Claude (Web)",
     baseUrl: "https://mg.aid.pub/claude-proxy",
     note: "Use a ModelGate web API key with the Claude proxy endpoint.",
-  },
-  {
-    id: "modelgate-local",
-    label: "ModelGate Claude (Client)",
-    baseUrl: "http://localhost:13148/claude-proxy",
-    note: "Use a ModelGate client key while the local ModelGate client is running.",
   },
 ];
 
@@ -911,6 +908,11 @@ export function ClaudeSetup() {
         {isDirectProvider && openAiCredentials.length > 0 && (
           <div className="space-y-1 border-border border-t pt-2">
             {openAiCredentials.map((credential) => {
+              const displayName = getProviderDisplayName({
+                label: credential.label,
+                baseUrl: credential.base_url,
+                model: credential.model,
+              });
               const iconSrc = getProviderIconSrc({
                 label: credential.label,
                 baseUrl: credential.base_url,
@@ -932,7 +934,7 @@ export function ClaudeSetup() {
                     <CircleIcon className="size-2.5 shrink-0 text-muted-foreground/50" />
                   )}
                   <span className="shrink-0 font-medium">
-                    {credential.label}
+                    {displayName}
                   </span>
                   <span className="min-w-0 flex-1 truncate text-muted-foreground">
                     {credential.model}

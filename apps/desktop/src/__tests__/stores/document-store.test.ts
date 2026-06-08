@@ -228,10 +228,7 @@ describe("useDocumentStore", () => {
 
       await useDocumentStore.getState().renameProject("renamed");
 
-      expect(writeTextFile).toHaveBeenCalledWith(
-        "/work/old/main.tex",
-        "dirty",
-      );
+      expect(writeTextFile).toHaveBeenCalledWith("/work/old/main.tex", "dirty");
       expect(rename).toHaveBeenCalledWith("/work/old", "/work/renamed");
     });
   });

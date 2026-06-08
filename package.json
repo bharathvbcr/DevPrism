@@ -1,7 +1,7 @@
 {
   "name": "@claude-prism/root",
   "description": "Open-Source AI LaTeX writing workspace",
-  "version": "1.1.6",
+  "version": "1.1.7",
   "repository": {
     "type": "git",
     "url": "https://github.com/delibae/claude-prism"
@@ -35,7 +35,10 @@
       "serialize-javascript": ">=6.0.3",
       "undici": ">=7.24.0",
       "flatted": ">=3.4.0",
-      "hono": ">=4.12.7"
+      "hono": ">=4.12.7",
+      "ws": ">=8.20.1",
+      "postcss": ">=8.5.10",
+      "uuid": ">=11.1.1"
     }
   }
 }

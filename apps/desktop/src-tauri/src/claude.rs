@@ -81,15 +81,21 @@ const DIRECT_PROVIDER_TOOL_NAMES: &[&str] = &[
     "TaskUpdate",
     "TaskList",
     "TaskStop",
+    "TaskOutput",
     "AskUserQuestion",
     "EnterPlanMode",
     "ExitPlanMode",
+    "EnterWorktree",
+    "ExitWorktree",
     "Skill",
     "Agent",
+    "NotebookEdit",
     "WebFetch",
     "WebSearch",
     "ListMcpResources",
     "ReadMcpResource",
+    "Config",
+    "Sleep",
     "PowerShell",
     "Bash",
 ];
@@ -649,6 +655,7 @@ pub struct ClaudeProcessState {
     direct_sessions: Arc<Mutex<HashMap<String, Vec<serde_json::Value>>>>,
     direct_cancellations: Arc<Mutex<HashSet<String>>>,
     direct_task_lists: Arc<Mutex<HashMap<String, Vec<DirectTask>>>>,
+    direct_workdirs: Arc<Mutex<HashMap<String, PathBuf>>>,
 }
 
 impl Default for ClaudeProcessState {
@@ -658,6 +665,7 @@ impl Default for ClaudeProcessState {
             direct_sessions: Arc::new(Mutex::new(HashMap::new())),
             direct_cancellations: Arc::new(Mutex::new(HashSet::new())),
             direct_task_lists: Arc::new(Mutex::new(HashMap::new())),
+            direct_workdirs: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -2195,7 +2203,10 @@ fn direct_provider_system_prompt() -> String {
         "Use AskUserQuestion when you need the user to choose between concrete options before continuing.",
         "Use EnterPlanMode for complex implementation planning, and ExitPlanMode when you need user approval before implementing a plan.",
         "Use Skill to load installed project/global SKILL.md guidance before applying a domain-specific skill.",
-        "If you prefer Claude/Codex-style task tools, TaskCreate, TaskGet, TaskUpdate, TaskList, and TaskStop are available as a lightweight session task list.",
+        "Use Agent for focused sub-agent style investigation; direct-provider mode runs it through the same selected provider model.",
+        "Use NotebookEdit for Jupyter notebooks rather than raw JSON string edits.",
+        "Use EnterWorktree/ExitWorktree when you need an isolated git worktree; subsequent tools run from the active worktree.",
+        "If you prefer Claude/Codex-style task tools, TaskCreate, TaskGet, TaskUpdate, TaskList, TaskOutput, and TaskStop are available as a lightweight session task list.",
         "ToolSearch can be used to inspect the currently available local tool names; it does not install external tools.",
         "Do not claim a file was changed unless a tool result confirms it.",
     ];
@@ -2475,6 +2486,22 @@ fn direct_provider_tools() -> serde_json::Value {
         {
             "type": "function",
             "function": {
+                "name": "TaskOutput",
+                "description": "Read the current output/status for a lightweight direct-provider task. This aliases TaskGet for Claude Code compatibility.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "taskId": { "type": "string", "description": "Task id returned by TaskCreate or TaskList." },
+                        "task_id": { "type": "string", "description": "Alias for taskId." },
+                        "id": { "type": "string", "description": "Alias for taskId." }
+                    },
+                    "required": ["taskId"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "AskUserQuestion",
                 "description": "Ask the user one or more multiple-choice questions when you need a preference, clarification, or decision before continuing.",
                 "parameters": {
@@ -2540,6 +2567,30 @@ fn direct_provider_tools() -> serde_json::Value {
         {
             "type": "function",
             "function": {
+                "name": "EnterWorktree",
+                "description": "Create an isolated git worktree and switch this direct-provider session into it. Subsequent file and shell tools run from the worktree.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string", "description": "Optional short worktree name using letters, digits, dots, underscores, and dashes." }
+                    }
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "ExitWorktree",
+                "description": "Switch this direct-provider session back to the original project directory.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {}
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "Skill",
                 "description": "Load installed project/global SKILL.md guidance by skill name or folder. If no skill is provided, lists available skills.",
                 "parameters": {
@@ -2562,9 +2613,27 @@ fn direct_provider_tools() -> serde_json::Value {
                     "properties": {
                         "prompt": { "type": "string", "description": "Task for the sub-agent." },
                         "description": { "type": "string", "description": "Short task description." },
+                        "task": { "type": "string", "description": "Alias for prompt." },
                         "subagent_type": { "type": "string", "description": "Requested agent type." }
-                    },
-                    "required": ["prompt"]
+                    }
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "NotebookEdit",
+                "description": "Edit a Jupyter .ipynb notebook cell by id or cell-N index. Use this instead of raw JSON edits for notebooks.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "notebook_path": { "type": "string", "description": "Path to the .ipynb notebook." },
+                        "file_path": { "type": "string", "description": "Alias for notebook_path." },
+                        "cell_id": { "type": "string", "description": "Cell id or cell-N index. Omit when inserting at the beginning." },
+                        "new_source": { "type": "string", "description": "New source for replace/insert. Can be empty for delete." },
+                        "cell_type": { "type": "string", "enum": ["code", "markdown"], "description": "Cell type for insert or conversion." },
+                        "edit_mode": { "type": "string", "enum": ["replace", "insert", "delete"], "description": "Defaults to replace." }
+                    }
                 }
             }
         },
@@ -2586,12 +2655,40 @@ fn direct_provider_tools() -> serde_json::Value {
         {
             "type": "function",
             "function": {
+                "name": "Config",
+                "description": "Inspect direct-provider runtime configuration for this session.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": { "type": "string", "enum": ["get", "list"], "description": "Defaults to get." }
+                    }
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "Sleep",
+                "description": "Wait briefly before continuing, useful when polling a command or generated file.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "seconds": { "type": "number", "description": "Seconds to sleep, capped at 30." },
+                        "duration_ms": { "type": "integer", "description": "Milliseconds to sleep, capped at 30000." }
+                    }
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "WebSearch",
                 "description": "Search the web. ClaudePrism direct-provider sessions expose this for compatibility; use WebFetch when you already have URLs.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "query": { "type": "string", "description": "Search query." },
+                        "max_chars": { "type": "integer", "description": "Maximum characters to return. Defaults to 12000." },
                         "allowed_domains": { "type": "array", "items": { "type": "string" } },
                         "blocked_domains": { "type": "array", "items": { "type": "string" } }
                     },
@@ -3111,10 +3208,116 @@ async fn persist_direct_task_state(
     }
 }
 
+fn direct_workdir_state_event(cwd: &Path) -> serde_json::Value {
+    json!({
+        "type": "direct_workdir_state",
+        "cwd": cwd.to_string_lossy(),
+    })
+}
+
+fn load_direct_workdir_state_from_path(
+    session_path: &Path,
+    fallback: &Path,
+) -> Result<PathBuf, String> {
+    if !session_path.exists() {
+        return Ok(fallback.to_path_buf());
+    }
+
+    let file = std::fs::File::open(session_path)
+        .map_err(|e| format!("Failed to open session file: {}", e))?;
+    let reader = std::io::BufReader::new(file);
+    use std::io::BufRead;
+
+    let mut latest = fallback.to_path_buf();
+    for line in reader.lines().map_while(Result::ok) {
+        let Ok(entry) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        if entry.get("type").and_then(|v| v.as_str()) != Some("direct_workdir_state") {
+            continue;
+        }
+        let Some(cwd) = entry.get("cwd").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let path = PathBuf::from(strip_nul(cwd).trim());
+        if path.is_dir() {
+            latest = path;
+        }
+    }
+
+    Ok(latest)
+}
+
+fn load_direct_workdir_state(
+    project_path: &str,
+    session_id: &str,
+    fallback: &Path,
+) -> Result<PathBuf, String> {
+    if !valid_session_id(session_id) {
+        return Ok(fallback.to_path_buf());
+    }
+    let sessions_dir = get_sessions_dir(project_path)?;
+    let session_path = sessions_dir.join(format!("{}.jsonl", session_id));
+    load_direct_workdir_state_from_path(&session_path, fallback)
+}
+
+async fn hydrate_direct_workdir_state(
+    state: &ClaudeProcessState,
+    project_path: &str,
+    session_id: &str,
+    fallback: &Path,
+) {
+    let mut workdirs = state.direct_workdirs.lock().await;
+    if workdirs.contains_key(session_id) {
+        return;
+    }
+    let cwd = load_direct_workdir_state(project_path, session_id, fallback)
+        .unwrap_or_else(|_| fallback.to_path_buf());
+    workdirs.insert(session_id.to_string(), cwd);
+}
+
+async fn direct_session_root(
+    state: &ClaudeProcessState,
+    session_id: &str,
+    fallback: &Path,
+) -> PathBuf {
+    let workdirs = state.direct_workdirs.lock().await;
+    workdirs
+        .get(session_id)
+        .filter(|path| path.is_dir())
+        .cloned()
+        .unwrap_or_else(|| fallback.to_path_buf())
+}
+
+async fn set_direct_session_root(state: &ClaudeProcessState, session_id: &str, cwd: PathBuf) {
+    let mut workdirs = state.direct_workdirs.lock().await;
+    workdirs.insert(session_id.to_string(), cwd);
+}
+
+async fn persist_direct_workdir_state(
+    state: &ClaudeProcessState,
+    project_path: &str,
+    session_id: &str,
+    fallback: &Path,
+) {
+    let cwd = direct_session_root(state, session_id, fallback).await;
+    let event = direct_workdir_state_event(&cwd);
+    if let Err(err) = append_direct_session_event(project_path, session_id, &event) {
+        eprintln!("[direct-provider] failed to persist workdir state: {}", err);
+    }
+}
+
 fn is_direct_task_mutation_tool(name: &str) -> bool {
     matches!(
         canonical_direct_tool_name(name),
         Some("TaskCreate" | "TaskUpdate" | "TaskStop")
+    )
+}
+
+fn is_direct_workdir_mutation_tool(name: &str) -> bool {
+    matches!(
+        canonical_direct_tool_name(name),
+        Some("EnterWorktree" | "ExitWorktree")
     )
 }
 
@@ -3983,21 +4186,36 @@ fn direct_tool_catalog() -> Vec<(&'static str, &'static str)> {
         ("TaskUpdate", "Update a lightweight session task."),
         ("TaskList", "List lightweight session tasks."),
         ("TaskStop", "Stop or complete a lightweight session task."),
+        ("TaskOutput", "Read lightweight task output/status."),
         ("AskUserQuestion", "Ask the user multiple-choice questions."),
         ("EnterPlanMode", "Enter planning mode for complex work."),
         (
             "ExitPlanMode",
             "Present a plan and pause for user approval.",
         ),
+        ("EnterWorktree", "Create and switch into a git worktree."),
+        (
+            "ExitWorktree",
+            "Switch back to the original project directory.",
+        ),
         ("Skill", "Load installed SKILL.md guidance."),
-        ("Agent", "Sub-agent compatibility shim."),
+        (
+            "Agent",
+            "Run a focused sub-agent loop with the selected provider.",
+        ),
+        ("NotebookEdit", "Edit Jupyter notebook cells safely."),
         ("WebFetch", "Fetch a public URL."),
-        ("WebSearch", "Web search compatibility shim."),
+        (
+            "WebSearch",
+            "Search the web and return readable result text.",
+        ),
         (
             "ListMcpResources",
             "MCP resource listing compatibility shim.",
         ),
         ("ReadMcpResource", "MCP resource read compatibility shim."),
+        ("Config", "Inspect direct-provider runtime configuration."),
+        ("Sleep", "Pause briefly before continuing."),
         (
             "PowerShell",
             "Run a PowerShell command in the project directory.",
@@ -4295,6 +4513,332 @@ async fn execute_direct_task_stop(
     Ok(output)
 }
 
+async fn execute_direct_task_output(
+    state: &ClaudeProcessState,
+    session_id: &str,
+    input: &serde_json::Value,
+) -> Result<String, String> {
+    execute_direct_task_get(state, session_id, input).await
+}
+
+fn notebook_cell_index(cells: &[serde_json::Value], cell_id: &str) -> Option<usize> {
+    if let Some(index) = cells
+        .iter()
+        .position(|cell| cell.get("id").and_then(|v| v.as_str()) == Some(cell_id))
+    {
+        return Some(index);
+    }
+    let numeric = cell_id
+        .strip_prefix("cell-")
+        .unwrap_or(cell_id)
+        .parse::<usize>()
+        .ok()?;
+    (numeric < cells.len()).then_some(numeric)
+}
+
+fn notebook_supports_cell_ids(notebook: &serde_json::Value) -> bool {
+    let nbformat = notebook
+        .get("nbformat")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(4);
+    let minor = notebook
+        .get("nbformat_minor")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    nbformat > 4 || (nbformat == 4 && minor >= 5)
+}
+
+fn execute_direct_notebook_edit(
+    project_root: &Path,
+    input: &serde_json::Value,
+) -> Result<String, String> {
+    let notebook_path = optional_tool_string(input, "notebook_path")
+        .or_else(|| optional_tool_string(input, "file_path"))
+        .ok_or_else(|| "Missing notebook_path".to_string())?;
+    let path = ensure_existing_project_tool_path(project_root, &notebook_path)?;
+    if path
+        .extension()
+        .and_then(|v| v.to_str())
+        .map(|value| !value.eq_ignore_ascii_case("ipynb"))
+        .unwrap_or(true)
+    {
+        return Err("NotebookEdit only supports .ipynb files".to_string());
+    }
+
+    let edit_mode =
+        optional_tool_string(input, "edit_mode").unwrap_or_else(|| "replace".to_string());
+    if !matches!(edit_mode.as_str(), "replace" | "insert" | "delete") {
+        return Err("edit_mode must be replace, insert, or delete".to_string());
+    }
+    let new_source = optional_tool_string(input, "new_source").unwrap_or_default();
+    let cell_type = optional_tool_string(input, "cell_type");
+    if let Some(cell_type) = &cell_type {
+        if !matches!(cell_type.as_str(), "code" | "markdown") {
+            return Err("cell_type must be code or markdown".to_string());
+        }
+    }
+
+    let original =
+        std::fs::read_to_string(&path).map_err(|e| format!("Failed to read notebook: {}", e))?;
+    let mut notebook: serde_json::Value = serde_json::from_str(&original)
+        .map_err(|e| format!("Notebook is not valid JSON: {}", e))?;
+    let supports_ids = notebook_supports_cell_ids(&notebook);
+    let cells = notebook
+        .get_mut("cells")
+        .and_then(|v| v.as_array_mut())
+        .ok_or_else(|| "Notebook JSON does not contain a cells array".to_string())?;
+
+    let cell_id = optional_tool_string(input, "cell_id");
+    let index = match (edit_mode.as_str(), cell_id.as_deref()) {
+        ("insert", Some(id)) => notebook_cell_index(cells, id)
+            .map(|idx| idx + 1)
+            .ok_or_else(|| format!("Cell not found: {}", id))?,
+        ("insert", None) => 0,
+        (_, Some(id)) => {
+            notebook_cell_index(cells, id).ok_or_else(|| format!("Cell not found: {}", id))?
+        }
+        (_, None) => {
+            return Err("cell_id is required unless edit_mode is insert".to_string());
+        }
+    };
+
+    if edit_mode == "delete" {
+        if index >= cells.len() {
+            return Err(format!("Cell index {} is out of bounds", index));
+        }
+        cells.remove(index);
+    } else if edit_mode == "insert" {
+        let final_cell_type = cell_type.unwrap_or_else(|| "code".to_string());
+        let mut cell = if final_cell_type == "markdown" {
+            json!({
+                "cell_type": "markdown",
+                "metadata": {},
+                "source": new_source,
+            })
+        } else {
+            json!({
+                "cell_type": "code",
+                "execution_count": null,
+                "metadata": {},
+                "outputs": [],
+                "source": new_source,
+            })
+        };
+        if supports_ids {
+            if let Some(object) = cell.as_object_mut() {
+                let generated_id = uuid::Uuid::new_v4()
+                    .to_string()
+                    .replace('-', "")
+                    .chars()
+                    .take(12)
+                    .collect::<String>();
+                object.insert("id".to_string(), json!(generated_id));
+            }
+        }
+        if index > cells.len() {
+            return Err(format!("Cell index {} is out of bounds", index));
+        }
+        cells.insert(index, cell);
+    } else {
+        if index >= cells.len() {
+            return Err(format!("Cell index {} is out of bounds", index));
+        }
+        let cell = cells
+            .get_mut(index)
+            .and_then(|v| v.as_object_mut())
+            .ok_or_else(|| "Target notebook cell is not an object".to_string())?;
+        cell.insert("source".to_string(), json!(new_source));
+        if let Some(cell_type) = cell_type {
+            cell.insert("cell_type".to_string(), json!(cell_type));
+        }
+        if cell.get("cell_type").and_then(|v| v.as_str()) == Some("code") {
+            cell.insert("execution_count".to_string(), serde_json::Value::Null);
+            cell.insert("outputs".to_string(), json!([]));
+        }
+    }
+
+    let updated = serde_json::to_string_pretty(&notebook)
+        .map_err(|e| format!("Failed to serialize notebook: {}", e))?;
+    std::fs::write(&path, updated).map_err(|e| format!("Failed to write notebook: {}", e))?;
+    Ok(format!(
+        "{} cell {} in {}",
+        match edit_mode.as_str() {
+            "insert" => "Inserted",
+            "delete" => "Deleted",
+            _ => "Updated",
+        },
+        index,
+        relative_project_path(project_root, &path)
+    ))
+}
+
+async fn run_direct_command_collect(
+    program: &str,
+    args: Vec<String>,
+    cwd: &Path,
+    timeout_ms: u64,
+) -> Result<(i32, String, String), String> {
+    let cwd_string = cwd.to_string_lossy().to_string();
+    let mut cmd = create_command(program, args, &cwd_string, None);
+    cmd.kill_on_drop(true);
+    let output = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), cmd.output())
+        .await
+        .map_err(|_| format!("Command timed out after {}ms", timeout_ms))?
+        .map_err(|e| format!("Failed to run {}: {}", program, e))?;
+    Ok((
+        output.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&output.stdout).to_string(),
+        String::from_utf8_lossy(&output.stderr).to_string(),
+    ))
+}
+
+fn sanitize_worktree_slug(input: Option<String>, session_id: &str) -> String {
+    let raw = input.unwrap_or_else(|| {
+        let short = session_id.chars().take(8).collect::<String>();
+        format!("session-{}", short)
+    });
+    let mut slug = raw
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .chars()
+        .take(64)
+        .collect::<String>();
+    if slug.is_empty() {
+        slug = "worktree".to_string();
+    }
+    slug
+}
+
+async fn execute_direct_enter_worktree(
+    state: &ClaudeProcessState,
+    session_id: &str,
+    current_root: &Path,
+    input: &serde_json::Value,
+) -> Result<String, String> {
+    let (code, stdout, stderr) = run_direct_command_collect(
+        "git",
+        vec![
+            "-C".to_string(),
+            current_root.to_string_lossy().to_string(),
+            "rev-parse".to_string(),
+            "--show-toplevel".to_string(),
+        ],
+        current_root,
+        30_000,
+    )
+    .await?;
+    if code != 0 {
+        return Err(format!(
+            "Current directory is not a git repository: {}",
+            stderr
+        ));
+    }
+    let repo_root = PathBuf::from(stdout.trim())
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve git root: {}", e))?;
+    let repo_name = repo_root
+        .file_name()
+        .and_then(|v| v.to_str())
+        .unwrap_or("repo");
+    let parent = repo_root
+        .parent()
+        .ok_or_else(|| "Git root has no parent directory".to_string())?;
+    let slug = sanitize_worktree_slug(optional_tool_string(input, "name"), session_id);
+    let worktree_dir = parent.join(format!("{}-claudeprism-worktrees", repo_name));
+    std::fs::create_dir_all(&worktree_dir)
+        .map_err(|e| format!("Failed to create worktree directory: {}", e))?;
+    let worktree_path = worktree_dir.join(&slug);
+    if worktree_path.exists() {
+        return Err(format!(
+            "Worktree path already exists: {}",
+            worktree_path.display()
+        ));
+    }
+    let branch_name = format!("claude-prism/{}", slug);
+    let args = vec![
+        "-C".to_string(),
+        repo_root.to_string_lossy().to_string(),
+        "worktree".to_string(),
+        "add".to_string(),
+        "-b".to_string(),
+        branch_name.clone(),
+        worktree_path.to_string_lossy().to_string(),
+        "HEAD".to_string(),
+    ];
+    let (code, stdout, stderr) =
+        run_direct_command_collect("git", args, &repo_root, 120_000).await?;
+    if code != 0 {
+        return Err(format!(
+            "Failed to create worktree branch {}.\nstdout:\n{}\nstderr:\n{}",
+            branch_name, stdout, stderr
+        ));
+    }
+    let active = worktree_path
+        .canonicalize()
+        .unwrap_or_else(|_| worktree_path.clone());
+    set_direct_session_root(state, session_id, active.clone()).await;
+    Ok(format!(
+        "Created and entered worktree {}\nBranch: {}\nSubsequent direct-provider tools now run from this worktree.",
+        active.display(),
+        branch_name
+    ))
+}
+
+async fn execute_direct_exit_worktree(
+    state: &ClaudeProcessState,
+    session_id: &str,
+    original_project_root: &Path,
+) -> Result<String, String> {
+    set_direct_session_root(state, session_id, original_project_root.to_path_buf()).await;
+    Ok(format!(
+        "Exited worktree. Subsequent direct-provider tools now run from {}.",
+        original_project_root.display()
+    ))
+}
+
+fn execute_direct_config(
+    project_root: &Path,
+    credential: Option<&StoredOpenAiCompatibleCredential>,
+) -> Result<String, String> {
+    let provider = credential
+        .map(|credential| {
+            format!(
+                "{}\nmodel: {}\nbase_url: {}",
+                credential.label, credential.model, credential.base_url
+            )
+        })
+        .unwrap_or_else(|| "No direct provider credential in this tool context.".to_string());
+    Ok(format!(
+        "ClaudePrism direct-provider runtime\ncwd: {}\nprovider: {}",
+        project_root.display(),
+        provider
+    ))
+}
+
+async fn execute_direct_sleep(input: &serde_json::Value) -> Result<String, String> {
+    let duration_ms = input
+        .get("duration_ms")
+        .and_then(|v| v.as_u64())
+        .or_else(|| {
+            input
+                .get("seconds")
+                .and_then(|v| v.as_f64())
+                .map(|seconds| (seconds * 1000.0).max(0.0) as u64)
+        })
+        .unwrap_or(1000)
+        .clamp(0, 30_000);
+    tokio::time::sleep(std::time::Duration::from_millis(duration_ms)).await;
+    Ok(format!("Slept for {}ms", duration_ms))
+}
+
 async fn execute_direct_bash(
     project_root: &Path,
     input: &serde_json::Value,
@@ -4507,6 +5051,58 @@ async fn execute_direct_webfetch(input: &serde_json::Value) -> Result<String, St
     ))
 }
 
+fn percent_encode_query(input: &str) -> String {
+    let mut encoded = String::new();
+    for byte in input.as_bytes() {
+        match *byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(*byte as char)
+            }
+            b' ' => encoded.push('+'),
+            other => encoded.push_str(&format!("%{:02X}", other)),
+        }
+    }
+    encoded
+}
+
+async fn execute_direct_websearch(input: &serde_json::Value) -> Result<String, String> {
+    let query = required_tool_string(input, "query")?;
+    let max_chars = optional_tool_usize(input, "max_chars")
+        .unwrap_or(12000)
+        .clamp(1000, 30000);
+    let url = format!(
+        "https://duckduckgo.com/html/?q={}",
+        percent_encode_query(&query)
+    );
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("Failed to create WebSearch client: {}", e))?;
+    let response = client
+        .get(&url)
+        .header("User-Agent", "ClaudePrism/1.0 direct-provider WebSearch")
+        .send()
+        .await
+        .map_err(|e| format!("WebSearch failed: {}", e))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read WebSearch response: {}", e))?;
+    if !status.is_success() {
+        return Err(truncate_tool_content(
+            format!("WebSearch HTTP {} for query '{}'\n{}", status, query, body),
+            max_chars,
+        ));
+    }
+    let text = strip_html_to_text(&body);
+    Ok(truncate_tool_content(
+        format!("[WebSearch]\nQuery: {}\nSource: {}\n\n{}", query, url, text),
+        max_chars,
+    ))
+}
+
 fn direct_skill_dirs(project_root: &Path) -> Vec<PathBuf> {
     let mut dirs = vec![project_root.join(".claude").join("skills")];
     if let Some(home) = dirs::home_dir() {
@@ -4617,22 +5213,143 @@ fn execute_direct_enter_plan_mode(input: &serde_json::Value) -> Result<String, S
     ))
 }
 
-fn execute_direct_agent(input: &serde_json::Value) -> Result<String, String> {
+async fn send_openai_compatible_agent_chat_request(
+    client: &reqwest::Client,
+    credential: &StoredOpenAiCompatibleCredential,
+    messages: &[serde_json::Value],
+) -> Result<DirectChatResponse, String> {
+    match send_openai_compatible_non_streaming_chat_request(
+        client,
+        credential,
+        messages,
+        DirectToolRequestMode::Tools,
+    )
+    .await
+    {
+        Ok(response) => Ok(response),
+        Err(err) if err.can_retry_without_tools => {
+            match send_openai_compatible_non_streaming_chat_request(
+                client,
+                credential,
+                messages,
+                DirectToolRequestMode::Functions,
+            )
+            .await
+            {
+                Ok(response) => Ok(response),
+                Err(err) if err.can_retry_without_tools => {
+                    send_openai_compatible_non_streaming_chat_request(
+                        client,
+                        credential,
+                        messages,
+                        DirectToolRequestMode::None,
+                    )
+                    .await
+                    .map_err(|err| err.message)
+                }
+                Err(err) => Err(err.message),
+            }
+        }
+        Err(err) => Err(err.message),
+    }
+}
+
+async fn execute_direct_agent(
+    state: &ClaudeProcessState,
+    session_id: &str,
+    original_project_root: &Path,
+    current_project_root: &Path,
+    input: &serde_json::Value,
+    client: Option<&reqwest::Client>,
+    credential: Option<&StoredOpenAiCompatibleCredential>,
+    agent_depth: usize,
+) -> Result<String, String> {
     let prompt = required_tool_string_any(input, &["prompt", "description", "task"])?;
     let agent_type = optional_tool_string(input, "subagent_type")
         .or_else(|| optional_tool_string(input, "agent_type"))
         .unwrap_or_else(|| "general-purpose".to_string());
-    Ok(format!(
-        "Sub-agent '{}' is not running as a separate process in ClaudePrism direct-provider mode yet. Continue this task inline using the available tools.\nRequested task:\n{}",
-        agent_type, prompt
-    ))
-}
+    let Some(client) = client else {
+        return Err("Agent requires an active direct-provider client.".to_string());
+    };
+    let Some(credential) = credential else {
+        return Err("Agent requires an active direct-provider credential.".to_string());
+    };
+    if agent_depth >= 2 {
+        return Err("Nested Agent depth exceeded; continue inline instead.".to_string());
+    }
 
-fn execute_direct_websearch(input: &serde_json::Value) -> Result<String, String> {
-    let query = required_tool_string(input, "query")?;
-    Ok(format!(
-        "WebSearch is exposed for Claude Code compatibility, but ClaudePrism direct-provider mode does not have a search backend configured yet. Use WebFetch if you have URLs, or ask the user for sources.\nQuery: {}",
-        query
+    let mut messages = vec![
+        json!({
+            "role": "system",
+            "content": format!(
+                "{}\n\nYou are running as a focused sub-agent of type '{}'. Work independently, use tools when needed, do not ask the user questions, and return a concise final report with evidence.",
+                direct_provider_system_prompt(),
+                agent_type
+            ),
+        }),
+        json!({
+            "role": "user",
+            "content": prompt.clone(),
+        }),
+    ];
+
+    let mut final_report = String::new();
+    for turn in 1..=6 {
+        let response = send_openai_compatible_agent_chat_request(client, credential, &messages)
+            .await
+            .map_err(|e| format!("Agent provider request failed: {}", e))?;
+        let content = response.content.trim().to_string();
+        let reasoning = response.reasoning.trim().to_string();
+        let tool_calls = response.tool_calls;
+        messages.push(response.message);
+
+        if tool_calls.is_empty() {
+            final_report = if content.is_empty() {
+                reasoning
+            } else {
+                content
+            };
+            break;
+        }
+
+        let mut tool_messages = Vec::new();
+        for tool_call in tool_calls {
+            if is_direct_ui_pause_tool(&tool_call.name) {
+                let (_, message) = direct_tool_result_values(
+                    &tool_call,
+                    "Sub-agents cannot pause for UI interaction; return the best answer from available context.".to_string(),
+                    true,
+                );
+                tool_messages.push(message);
+                continue;
+            }
+            let active_root = direct_session_root(state, session_id, current_project_root).await;
+            let output = execute_direct_provider_tool_without_agent(
+                state,
+                session_id,
+                original_project_root,
+                &active_root,
+                &tool_call.name,
+                &tool_call.input,
+                Some(credential),
+            )
+            .await;
+            let (_, message) =
+                direct_tool_result_values(&tool_call, output.content, output.is_error);
+            tool_messages.push(message);
+        }
+        messages.extend(tool_messages);
+        if turn == 6 {
+            final_report = "Agent stopped after 6 tool turns without a final answer.".to_string();
+        }
+    }
+
+    Ok(truncate_tool_content(
+        format!(
+            "[Agent: {}]\nTask:\n{}\n\nResult:\n{}",
+            agent_type, prompt, final_report
+        ),
+        30000,
     ))
 }
 
@@ -4649,18 +5366,23 @@ fn execute_direct_read_mcp_resource(input: &serde_json::Value) -> Result<String,
     ))
 }
 
-async fn execute_direct_provider_tool(
+async fn execute_direct_provider_tool_without_agent(
     state: &ClaudeProcessState,
     session_id: &str,
+    original_project_root: &Path,
     project_root: &Path,
     name: &str,
     input: &serde_json::Value,
+    credential: Option<&StoredOpenAiCompatibleCredential>,
 ) -> DirectToolOutput {
     let result = match name {
         "Read" | "read" => execute_direct_read(project_root, input),
         "Write" | "write" => execute_direct_write(project_root, input),
         "Edit" | "edit" => execute_direct_edit(project_root, input),
         "MultiEdit" | "multiedit" => execute_direct_multiedit(project_root, input),
+        "NotebookEdit" | "notebookedit" | "notebook_edit" => {
+            execute_direct_notebook_edit(project_root, input)
+        }
         "LS" | "ls" | "List" | "list" => execute_direct_ls(project_root, input),
         "Glob" | "glob" => execute_direct_glob(project_root, input),
         "Grep" | "grep" => execute_direct_grep(project_root, input),
@@ -4681,25 +5403,40 @@ async fn execute_direct_provider_tool(
         "TaskStop" | "taskstop" | "task_stop" => {
             execute_direct_task_stop(state, session_id, input).await
         }
+        "TaskOutput" | "taskoutput" | "task_output" => {
+            execute_direct_task_output(state, session_id, input).await
+        }
         "AskUserQuestion" | "askuserquestion" | "ask_user_question" => Err(
             "AskUserQuestion is handled by the ClaudePrism UI. Wait for the user's next message."
                 .to_string(),
         ),
-        "EnterPlanMode" | "enterplanmode" | "enter_plan_mode" => execute_direct_enter_plan_mode(input),
+        "EnterPlanMode" | "enterplanmode" | "enter_plan_mode" => {
+            execute_direct_enter_plan_mode(input)
+        }
         "ExitPlanMode" | "exitplanmode" | "exit_plan_mode" => Err(
             "ExitPlanMode is handled by the ClaudePrism UI. Wait for the user's approval or revision."
                 .to_string(),
         ),
+        "EnterWorktree" | "enterworktree" | "enter_worktree" => {
+            execute_direct_enter_worktree(state, session_id, project_root, input).await
+        }
+        "ExitWorktree" | "exitworktree" | "exit_worktree" => {
+            execute_direct_exit_worktree(state, session_id, original_project_root).await
+        }
         "Skill" | "skill" => execute_direct_skill(project_root, input),
-        "Agent" | "agent" | "Task" | "task" => execute_direct_agent(input),
+        "Agent" | "agent" | "Task" | "task" => {
+            Err("Nested Agent calls are disabled inside a direct-provider Agent.".to_string())
+        }
         "WebFetch" | "webfetch" | "web_fetch" => execute_direct_webfetch(input).await,
-        "WebSearch" | "websearch" | "web_search" => execute_direct_websearch(input),
+        "WebSearch" | "websearch" | "web_search" => execute_direct_websearch(input).await,
         "ListMcpResources" | "listmcpresources" | "list_mcp_resources" => {
             execute_direct_list_mcp_resources(input)
         }
         "ReadMcpResource" | "readmcpresource" | "read_mcp_resource" => {
             execute_direct_read_mcp_resource(input)
         }
+        "Config" | "config" => execute_direct_config(project_root, credential),
+        "Sleep" | "sleep" => execute_direct_sleep(input).await,
         "PowerShell" | "powershell" | "pwsh" => execute_direct_powershell(project_root, input).await,
         "Bash" | "bash" => execute_direct_bash(project_root, input).await,
         other => Err(format!("Unsupported tool: {}", other)),
@@ -5735,17 +6472,19 @@ async fn execute_openai_compatible_provider(
         }
     };
 
+    let state = window.state::<ClaudeProcessState>();
+    clear_direct_provider_cancelled(&state, &process_key).await;
+    hydrate_direct_task_state(&state, &project_path, &session_id).await;
+    hydrate_direct_workdir_state(&state, &project_path, &session_id, &project_root).await;
+    let initial_root = direct_session_root(&state, &session_id, &project_root).await;
     let init = json!({
         "type": "system",
         "subtype": "init",
         "session_id": session_id,
         "model": credential.model.clone(),
-        "cwd": project_path.clone(),
+        "cwd": initial_root.to_string_lossy(),
         "tools": DIRECT_PROVIDER_TOOL_NAMES,
     });
-    let state = window.state::<ClaudeProcessState>();
-    clear_direct_provider_cancelled(&state, &process_key).await;
-    hydrate_direct_task_state(&state, &project_path, &session_id).await;
     emit_and_persist_direct_output(&window, &project_path, &session_id, &tab_id, &init);
 
     let mut messages = {
@@ -6016,16 +6755,25 @@ async fn execute_openai_compatible_provider(
                 return Ok(());
             }
 
+            let active_root = direct_session_root(&state, &session_id, &project_root).await;
             let output = execute_direct_provider_tool(
                 &state,
                 &session_id,
                 &project_root,
+                &active_root,
                 &tool_call.name,
                 &tool_call.input,
+                Some(&client),
+                Some(&credential),
+                0,
             )
             .await;
             if !output.is_error && is_direct_task_mutation_tool(&tool_call.name) {
                 persist_direct_task_state(&state, &project_path, &session_id).await;
+            }
+            if !output.is_error && is_direct_workdir_mutation_tool(&tool_call.name) {
+                persist_direct_workdir_state(&state, &project_path, &session_id, &project_root)
+                    .await;
             }
             let (block, tool_message) =
                 direct_tool_result_values(tool_call, output.content, output.is_error);
@@ -6242,6 +6990,57 @@ pub async fn kill_process_for_window(state: &ClaudeProcessState, window_label: &
         if let Some(mut child) = processes.remove(&key) {
             let _ = child.kill().await;
         }
+    }
+}
+
+async fn execute_direct_provider_tool(
+    state: &ClaudeProcessState,
+    session_id: &str,
+    original_project_root: &Path,
+    project_root: &Path,
+    name: &str,
+    input: &serde_json::Value,
+    client: Option<&reqwest::Client>,
+    credential: Option<&StoredOpenAiCompatibleCredential>,
+    agent_depth: usize,
+) -> DirectToolOutput {
+    let result = match name {
+        "Agent" | "agent" | "Task" | "task" => {
+            execute_direct_agent(
+                state,
+                session_id,
+                original_project_root,
+                project_root,
+                input,
+                client,
+                credential,
+                agent_depth,
+            )
+            .await
+        }
+        _ => {
+            return execute_direct_provider_tool_without_agent(
+                state,
+                session_id,
+                original_project_root,
+                project_root,
+                name,
+                input,
+                credential,
+            )
+            .await;
+        }
+    };
+
+    match result {
+        Ok(content) => DirectToolOutput {
+            content,
+            is_error: false,
+        },
+        Err(content) => DirectToolOutput {
+            content,
+            is_error: true,
+        },
     }
 }
 
@@ -7104,7 +7903,39 @@ mod tests {
         input: &serde_json::Value,
     ) -> DirectToolOutput {
         let state = ClaudeProcessState::default();
-        execute_direct_provider_tool(&state, "test-session", project_root, name, input).await
+        execute_direct_provider_tool(
+            &state,
+            "test-session",
+            project_root,
+            project_root,
+            name,
+            input,
+            None,
+            None,
+            0,
+        )
+        .await
+    }
+
+    async fn execute_test_direct_provider_tool_with_state(
+        state: &ClaudeProcessState,
+        session_id: &str,
+        project_root: &Path,
+        name: &str,
+        input: &serde_json::Value,
+    ) -> DirectToolOutput {
+        execute_direct_provider_tool(
+            state,
+            session_id,
+            project_root,
+            project_root,
+            name,
+            input,
+            None,
+            None,
+            0,
+        )
+        .await
     }
 
     #[tokio::test]
@@ -7300,7 +8131,7 @@ mod tests {
         let root = canonical_project_root(dir.path().to_str().unwrap()).unwrap();
         let state = ClaudeProcessState::default();
 
-        let created = execute_direct_provider_tool(
+        let created = execute_test_direct_provider_tool_with_state(
             &state,
             "session-a",
             &root,
@@ -7315,13 +8146,19 @@ mod tests {
         assert!(!created.is_error);
         assert!(created.content.contains("task-1"));
 
-        let listed =
-            execute_direct_provider_tool(&state, "session-a", &root, "TaskList", &json!({})).await;
+        let listed = execute_test_direct_provider_tool_with_state(
+            &state,
+            "session-a",
+            &root,
+            "TaskList",
+            &json!({}),
+        )
+        .await;
         assert!(!listed.is_error);
         assert!(listed.content.contains("Inspect paper draft"));
         assert!(listed.content.contains("[pending]"));
 
-        let updated = execute_direct_provider_tool(
+        let updated = execute_test_direct_provider_tool_with_state(
             &state,
             "session-a",
             &root,
@@ -7332,7 +8169,7 @@ mod tests {
         assert!(!updated.is_error);
         assert!(updated.content.contains("Task completed"));
 
-        let completed = execute_direct_provider_tool(
+        let completed = execute_test_direct_provider_tool_with_state(
             &state,
             "session-a",
             &root,
@@ -7350,7 +8187,7 @@ mod tests {
         let root = canonical_project_root(dir.path().to_str().unwrap()).unwrap();
         let state = ClaudeProcessState::default();
 
-        let created = execute_direct_provider_tool(
+        let created = execute_test_direct_provider_tool_with_state(
             &state,
             "session-a",
             &root,
@@ -7363,7 +8200,7 @@ mod tests {
         .await;
         assert!(!created.is_error);
 
-        let got = execute_direct_provider_tool(
+        let got = execute_test_direct_provider_tool_with_state(
             &state,
             "session-a",
             &root,
@@ -7374,7 +8211,18 @@ mod tests {
         assert!(!got.is_error);
         assert!(got.content.contains("Follow up"));
 
-        let stopped = execute_direct_provider_tool(
+        let output = execute_test_direct_provider_tool_with_state(
+            &state,
+            "session-a",
+            &root,
+            "TaskOutput",
+            &json!({ "taskId": "task-1" }),
+        )
+        .await;
+        assert!(!output.is_error);
+        assert!(output.content.contains("Follow up"));
+
+        let stopped = execute_test_direct_provider_tool_with_state(
             &state,
             "session-a",
             &root,
@@ -7385,6 +8233,52 @@ mod tests {
         assert!(!stopped.is_error);
         assert!(stopped.content.contains("[completed]"));
         assert!(stopped.content.contains("Done enough"));
+    }
+
+    #[tokio::test]
+    async fn test_direct_provider_notebook_edit_updates_cell() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = canonical_project_root(dir.path().to_str().unwrap()).unwrap();
+        let notebook = root.join("analysis.ipynb");
+        std::fs::write(
+            &notebook,
+            serde_json::to_string_pretty(&json!({
+                "cells": [{
+                    "cell_type": "code",
+                    "execution_count": 7,
+                    "id": "abc123",
+                    "metadata": {},
+                    "outputs": [{ "output_type": "stream", "text": "old" }],
+                    "source": "print('old')"
+                }],
+                "metadata": { "language_info": { "name": "python" } },
+                "nbformat": 4,
+                "nbformat_minor": 5
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let edited = execute_test_direct_provider_tool(
+            &root,
+            "NotebookEdit",
+            &json!({
+                "file_path": "analysis.ipynb",
+                "cell_id": "abc123",
+                "new_source": "print('new')"
+            }),
+        )
+        .await;
+
+        assert!(!edited.is_error);
+        let updated: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&notebook).unwrap()).unwrap();
+        assert_eq!(updated["cells"][0]["source"], "print('new')");
+        assert_eq!(
+            updated["cells"][0]["execution_count"],
+            serde_json::Value::Null
+        );
+        assert_eq!(updated["cells"][0]["outputs"], json!([]));
     }
 
     #[tokio::test]
@@ -7466,6 +8360,26 @@ mod tests {
         assert_eq!(tasks[0].owner.as_deref(), Some("assistant"));
     }
 
+    #[test]
+    fn test_direct_workdir_state_loads_latest_jsonl_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let fallback = dir.path().join("project");
+        let worktree = dir.path().join("worktree");
+        std::fs::create_dir_all(&fallback).unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+        let path = dir.path().join("session.jsonl");
+        let content = [
+            serde_json::to_string(&direct_workdir_state_event(&fallback)).unwrap(),
+            serde_json::to_string(&direct_workdir_state_event(&worktree)).unwrap(),
+        ]
+        .join("\n");
+        std::fs::write(&path, content).unwrap();
+
+        let cwd = load_direct_workdir_state_from_path(&path, &fallback).unwrap();
+
+        assert_eq!(cwd, worktree);
+    }
+
     #[tokio::test]
     async fn test_restored_direct_task_state_is_visible_to_tasklist() {
         let dir = tempfile::tempdir().unwrap();
@@ -7487,8 +8401,14 @@ mod tests {
             );
         }
 
-        let listed =
-            execute_direct_provider_tool(&state, "session-a", &root, "TaskList", &json!({})).await;
+        let listed = execute_test_direct_provider_tool_with_state(
+            &state,
+            "session-a",
+            &root,
+            "TaskList",
+            &json!({}),
+        )
+        .await;
 
         assert!(!listed.is_error);
         assert!(listed.content.contains("Resume task"));

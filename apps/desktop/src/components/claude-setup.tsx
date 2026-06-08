@@ -14,6 +14,7 @@ import {
   GitBranchIcon,
   ExternalLinkIcon,
   KeyRoundIcon,
+  Trash2Icon,
 } from "lucide-react";
 import { open as shellOpen } from "@tauri-apps/plugin-shell";
 import { Button } from "@/components/ui/button";
@@ -325,10 +326,12 @@ export function ClaudeSetup() {
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [model, setModel] = useState("");
+  const [isEditingProvider, setIsEditingProvider] = useState(false);
   const status = useClaudeSetupStore((s) => s.status);
   const isInstalling = useClaudeSetupStore((s) => s.isInstalling);
   const isLoggingIn = useClaudeSetupStore((s) => s.isLoggingIn);
   const isSavingApiKey = useClaudeSetupStore((s) => s.isSavingApiKey);
+  const isClearingApiKey = useClaudeSetupStore((s) => s.isClearingApiKey);
   const error = useClaudeSetupStore((s) => s.error);
   const version = useClaudeSetupStore((s) => s.version);
   const accountEmail = useClaudeSetupStore((s) => s.accountEmail);
@@ -337,6 +340,7 @@ export function ClaudeSetup() {
   const install = useClaudeSetupStore((s) => s.install);
   const login = useClaudeSetupStore((s) => s.login);
   const saveApiKey = useClaudeSetupStore((s) => s.saveApiKey);
+  const clearApiKey = useClaudeSetupStore((s) => s.clearApiKey);
   const checkStatus = useClaudeSetupStore((s) => s.checkStatus);
   const installSteps = useClaudeSetupStore((s) => s.installSteps);
   const loginSteps = useClaudeSetupStore((s) => s.loginSteps);
@@ -353,6 +357,27 @@ export function ClaudeSetup() {
       setBaseUrl("");
       setModel("");
       setProviderPreset("custom");
+      setIsEditingProvider(false);
+    }
+  };
+
+  const beginProviderEdit = (isDirectProvider: boolean) => {
+    setProvider(isDirectProvider ? "openai-compatible" : "claude-code");
+    setProviderPreset("custom");
+    setApiKey("");
+    setBaseUrl(isDirectProvider ? providerBaseUrl || "" : "");
+    setModel(isDirectProvider ? providerModel || "" : "");
+    setIsEditingProvider(true);
+  };
+
+  const handleClearApiKey = async () => {
+    const success = await clearApiKey();
+    if (success) {
+      setApiKey("");
+      setBaseUrl("");
+      setModel("");
+      setProviderPreset("custom");
+      setIsEditingProvider(false);
     }
   };
 
@@ -630,8 +655,62 @@ export function ClaudeSetup() {
     const readyDetail = isDirectProvider
       ? [version, providerModel, providerBaseUrl].filter(Boolean).join(" / ")
       : [version, accountEmail].filter(Boolean).join(" / ");
+
+    if (isEditingProvider) {
+      return (
+        <div className="flex w-full flex-col gap-3 rounded-xl border border-border bg-muted/30 px-5 py-4">
+          <div className="flex items-center gap-3">
+            <CheckCircle2Icon className="size-5 shrink-0 text-green-600" />
+            <div className="min-w-0 flex-1">
+              <p className="font-medium text-sm">
+                {isDirectProvider ? "Update AI Provider" : "Update Claude Code"}
+              </p>
+              <p className="truncate text-muted-foreground text-xs">
+                {readyDetail}
+              </p>
+            </div>
+          </div>
+
+          {renderApiKeyForm({ allowBrowserSignIn: !isDirectProvider })}
+
+          <div className="grid grid-cols-2 gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                setIsEditingProvider(false);
+                setApiKey("");
+                setBaseUrl("");
+                setModel("");
+                setProviderPreset("custom");
+              }}
+              disabled={isSavingApiKey || isClearingApiKey}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="gap-2 text-destructive hover:text-destructive"
+              onClick={handleClearApiKey}
+              disabled={isSavingApiKey || isClearingApiKey}
+            >
+              {isClearingApiKey ? (
+                <LoaderIcon className="size-3.5 animate-spin" />
+              ) : (
+                <Trash2Icon className="size-3.5" />
+              )}
+              Forget Provider
+            </Button>
+          </div>
+        </div>
+      );
+    }
+
     return (
-      <div className="flex w-full items-center gap-3 rounded-xl border border-border bg-muted/30 px-5 py-4">
+      <div className="flex w-full flex-wrap items-center gap-3 rounded-xl border border-border bg-muted/30 px-5 py-4">
         <CheckCircle2Icon className="size-5 shrink-0 text-green-600" />
         <div className="min-w-0 flex-1">
           <p className="font-medium text-sm">
@@ -640,6 +719,33 @@ export function ClaudeSetup() {
           <p className="truncate text-muted-foreground text-xs">
             {readyDetail}
           </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="gap-2"
+            onClick={() => beginProviderEdit(isDirectProvider)}
+          >
+            <RefreshCwIcon className="size-3.5" />
+            Change Provider
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="gap-2 text-destructive hover:text-destructive"
+            onClick={handleClearApiKey}
+            disabled={isClearingApiKey}
+          >
+            {isClearingApiKey ? (
+              <LoaderIcon className="size-3.5 animate-spin" />
+            ) : (
+              <Trash2Icon className="size-3.5" />
+            )}
+            Forget
+          </Button>
         </div>
       </div>
     );

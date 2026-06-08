@@ -106,6 +106,7 @@ describe("useClaudeSetupStore.saveApiKey", () => {
       isInstalling: false,
       isLoggingIn: false,
       isSavingApiKey: false,
+      isClearingApiKey: false,
       error: null,
       version: null,
       accountEmail: null,
@@ -182,5 +183,39 @@ describe("useClaudeSetupStore.saveApiKey", () => {
     expect(useClaudeSetupStore.getState().error).toBe(
       "Invalid provider API key",
     );
+  });
+
+  it("clears saved credentials and refreshes status", async () => {
+    useClaudeSetupStore.setState({
+      status: "ready",
+      version: "OpenAI-compatible provider",
+      providerModel: "qwen3-coder-plus",
+      providerBaseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    });
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "check_claude_status") {
+        return {
+          installed: true,
+          authenticated: false,
+          binary_path: null,
+          version: "1.0.0",
+          account_email: null,
+          provider_model: null,
+          provider_base_url: null,
+          missing_git: false,
+        };
+      }
+      return null;
+    });
+
+    const success = await useClaudeSetupStore.getState().clearApiKey();
+
+    expect(success).toBe(true);
+    expect(invoke).toHaveBeenNthCalledWith(1, "clear_anthropic_api_key");
+    expect(invoke).toHaveBeenNthCalledWith(2, "check_claude_status");
+    expect(useClaudeSetupStore.getState().status).toBe("not-authenticated");
+    expect(useClaudeSetupStore.getState().providerModel).toBeNull();
+    expect(useClaudeSetupStore.getState().providerBaseUrl).toBeNull();
+    expect(useClaudeSetupStore.getState().isClearingApiKey).toBe(false);
   });
 });

@@ -35,6 +35,7 @@ interface ClaudeSetupState {
   isInstalling: boolean;
   isLoggingIn: boolean;
   isSavingApiKey: boolean;
+  isClearingApiKey: boolean;
   error: string | null;
   version: string | null;
   accountEmail: string | null;
@@ -59,6 +60,7 @@ interface ClaudeSetupState {
     provider?: string,
     model?: string,
   ) => Promise<boolean>;
+  clearApiKey: () => Promise<boolean>;
   toggleInstallLogs: () => void;
 
   // Internal helpers
@@ -119,6 +121,7 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
   isInstalling: false,
   isLoggingIn: false,
   isSavingApiKey: false,
+  isClearingApiKey: false,
   error: null,
   version: null,
   accountEmail: null,
@@ -302,6 +305,22 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
     } catch (err: any) {
       set({
         isSavingApiKey: false,
+        error: err?.message || String(err),
+      });
+      return false;
+    }
+  },
+
+  clearApiKey: async () => {
+    set({ isClearingApiKey: true, error: null });
+    try {
+      await invoke("clear_anthropic_api_key");
+      set({ isClearingApiKey: false });
+      await get().checkStatus();
+      return true;
+    } catch (err: any) {
+      set({
+        isClearingApiKey: false,
         error: err?.message || String(err),
       });
       return false;

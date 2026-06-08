@@ -447,7 +447,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
-            autoconf autoconf-archive automake libtool pkg-config
+            autoconf autoconf-archive automake libtool pkg-config \
+            libgraphite2-dev
 
       # Static linking via vcpkg — avoids runtime dependency on system ICU/harfbuzz.
       # Without this, the binary links against the build host's libicuuc.so.70
@@ -508,7 +509,12 @@ jobs:
           TECTONIC_DEP_BACKEND: vcpkg
           CXXFLAGS: "-std=c++17"
           CFLAGS: ""
-        run: pnpm --filter @claude-prism/desktop tauri build --target x86_64-unknown-linux-gnu
+        run: |
+          # vcpkg builds graphite2 with STV_HIDDEN on gr_* symbols.
+          # rust-lld treats hidden symbol refs as hard errors; ld.bfd does not.
+          # Switch to ld.bfd for linking.
+          export RUSTFLAGS="-C linker=gcc -C link-arg=-fuse-ld=bfd"
+          pnpm --filter @claude-prism/desktop tauri build --target x86_64-unknown-linux-gnu
 
       - name: Collect updater artifacts
         id: collect

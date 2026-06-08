@@ -21,6 +21,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   useClaudeSetupStore,
   type StepInfo,
 } from "@/stores/claude-setup-store";
@@ -385,6 +392,9 @@ export function ClaudeSetup() {
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [model, setModel] = useState("");
+  const [modelOptions, setModelOptions] = useState<string[]>([]);
+  const [isFetchingModels, setIsFetchingModels] = useState(false);
+  const [modelFetchError, setModelFetchError] = useState<string | null>(null);
   const [isEditingProvider, setIsEditingProvider] = useState(false);
   const status = useClaudeSetupStore((s) => s.status);
   const isInstalling = useClaudeSetupStore((s) => s.isInstalling);
@@ -396,10 +406,12 @@ export function ClaudeSetup() {
   const accountEmail = useClaudeSetupStore((s) => s.accountEmail);
   const providerModel = useClaudeSetupStore((s) => s.providerModel);
   const providerBaseUrl = useClaudeSetupStore((s) => s.providerBaseUrl);
+  const openAiCredentials = useClaudeSetupStore((s) => s.openAiCredentials);
   const install = useClaudeSetupStore((s) => s.install);
   const login = useClaudeSetupStore((s) => s.login);
   const saveApiKey = useClaudeSetupStore((s) => s.saveApiKey);
   const clearApiKey = useClaudeSetupStore((s) => s.clearApiKey);
+  const fetchProviderModels = useClaudeSetupStore((s) => s.fetchProviderModels);
   const checkStatus = useClaudeSetupStore((s) => s.checkStatus);
   const installSteps = useClaudeSetupStore((s) => s.installSteps);
   const loginSteps = useClaudeSetupStore((s) => s.loginSteps);
@@ -409,12 +421,21 @@ export function ClaudeSetup() {
 
   const handleSaveApiKey = async (
     selectedProvider: "claude-code" | "openai-compatible" = provider,
+    credentialLabel?: string,
   ) => {
-    const success = await saveApiKey(apiKey, baseUrl, selectedProvider, model);
+    const success = await saveApiKey(
+      apiKey,
+      baseUrl,
+      selectedProvider,
+      model,
+      credentialLabel,
+    );
     if (success) {
       setApiKey("");
       setBaseUrl("");
       setModel("");
+      setModelOptions([]);
+      setModelFetchError(null);
       setProviderPreset(
         selectedProvider === "openai-compatible"
           ? "custom-openai"
@@ -432,6 +453,8 @@ export function ClaudeSetup() {
     setApiKey("");
     setBaseUrl(isDirectProvider ? providerBaseUrl || "" : "");
     setModel(isDirectProvider ? providerModel || "" : "");
+    setModelOptions([]);
+    setModelFetchError(null);
     setIsEditingProvider(true);
   };
 
@@ -441,6 +464,8 @@ export function ClaudeSetup() {
       setApiKey("");
       setBaseUrl("");
       setModel("");
+      setModelOptions([]);
+      setModelFetchError(null);
       setProviderPreset("anthropic-direct");
       setIsEditingProvider(false);
     }
@@ -451,6 +476,26 @@ export function ClaudeSetup() {
     setProviderPreset(card.id);
     setBaseUrl(card.baseUrl);
     setModel(card.model);
+    setModelOptions(card.model ? [card.model] : []);
+    setModelFetchError(null);
+  };
+
+  const handleFetchModels = async () => {
+    setIsFetchingModels(true);
+    setModelFetchError(null);
+    try {
+      const models = await fetchProviderModels(apiKey, baseUrl);
+      setModelOptions(models);
+      if (!models.includes(model)) {
+        setModel(models[0] ?? "");
+      }
+      setProviderPreset("custom-openai");
+    } catch (err: any) {
+      setModelOptions([]);
+      setModelFetchError(err?.message || String(err));
+    } finally {
+      setIsFetchingModels(false);
+    }
   };
 
   const renderApiKeyForm = ({
@@ -474,6 +519,7 @@ export function ClaudeSetup() {
     const activeCardId = providerCardIds.has(providerPreset)
       ? providerPreset
       : fallbackCardId;
+    const activeCard = providerCards.find((card) => card.id === activeCardId);
 
     return (
       <>
@@ -481,7 +527,7 @@ export function ClaudeSetup() {
           className="space-y-2"
           onSubmit={(event) => {
             event.preventDefault();
-            handleSaveApiKey(selectedProvider);
+            handleSaveApiKey(selectedProvider, activeCard?.label);
           }}
         >
           <div className="space-y-2">
@@ -498,15 +544,15 @@ export function ClaudeSetup() {
                   onClick={() => selectProviderCard(card)}
                   disabled={isSavingApiKey}
                   className={cn(
-                    "flex min-h-16 items-start gap-2 rounded-md border px-2.5 py-2 text-left transition-colors",
+                    "flex items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition-colors",
                     activeCardId === card.id
-                      ? "border-primary bg-primary/5 text-foreground"
-                      : "border-border bg-background hover:bg-muted/60",
+                      ? "bg-accent text-accent-foreground"
+                      : "hover:bg-muted",
                   )}
                 >
                   <span
                     className={cn(
-                      "flex size-7 shrink-0 items-center justify-center rounded-md border font-semibold text-[11px]",
+                      "flex size-6 shrink-0 items-center justify-center rounded-md border font-semibold text-[10px]",
                       activeCardId === card.id
                         ? "border-primary/30 bg-primary/10 text-primary"
                         : "border-border bg-muted text-muted-foreground",
@@ -518,12 +564,12 @@ export function ClaudeSetup() {
                     <span className="block truncate font-medium text-xs">
                       {card.label}
                     </span>
-                    <span className="line-clamp-2 text-[11px] text-muted-foreground leading-snug">
+                    <span className="block truncate text-muted-foreground text-xs">
                       {card.note}
                     </span>
                   </span>
                   {activeCardId === card.id && (
-                    <CheckIcon className="mt-0.5 size-3.5 shrink-0 text-primary" />
+                    <CheckIcon className="size-3 shrink-0" />
                   )}
                 </button>
               ))}
@@ -545,7 +591,11 @@ export function ClaudeSetup() {
                   : "sk-ant-... or provider key"
               }
               value={apiKey}
-              onChange={(event) => setApiKey(event.target.value)}
+              onChange={(event) => {
+                setApiKey(event.target.value);
+                setModelOptions([]);
+                setModelFetchError(null);
+              }}
               disabled={isSavingApiKey}
               autoComplete="off"
             />
@@ -572,6 +622,8 @@ export function ClaudeSetup() {
               onChange={(event) => {
                 const nextUrl = event.target.value;
                 setBaseUrl(nextUrl);
+                setModelOptions([]);
+                setModelFetchError(null);
                 setProviderPreset(
                   selectedProvider === "openai-compatible"
                     ? "custom-openai"
@@ -592,23 +644,72 @@ export function ClaudeSetup() {
 
           {selectedProvider === "openai-compatible" && (
             <div className="space-y-1.5">
-              <Label htmlFor="provider-model" className="text-xs">
-                Model
-              </Label>
-              <Input
-                id="provider-model"
-                type="text"
-                placeholder="qwen3-coder-plus, deepseek-v4-pro, glm-5.1, ..."
-                value={model}
-                onChange={(event) => {
-                  setModel(event.target.value);
-                  setProviderPreset("custom-openai");
-                }}
-                disabled={isSavingApiKey}
-                autoComplete="off"
-              />
+              <div className="flex items-center justify-between gap-2">
+                <Label htmlFor="provider-model" className="text-xs">
+                  Model
+                </Label>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="h-6 gap-1 px-2 text-xs"
+                  onClick={handleFetchModels}
+                  disabled={
+                    isSavingApiKey ||
+                    isFetchingModels ||
+                    !apiKey.trim() ||
+                    !baseUrl.trim()
+                  }
+                >
+                  {isFetchingModels ? (
+                    <LoaderIcon className="size-3 animate-spin" />
+                  ) : (
+                    <RefreshCwIcon className="size-3" />
+                  )}
+                  Fetch Models
+                </Button>
+              </div>
+              {modelOptions.length > 0 ? (
+                <Select
+                  value={model}
+                  onValueChange={(value) => {
+                    setModel(value);
+                    setProviderPreset("custom-openai");
+                  }}
+                  disabled={isSavingApiKey}
+                >
+                  <SelectTrigger id="provider-model" className="h-9 w-full">
+                    <SelectValue placeholder="Select a model" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {modelOptions.map((item) => (
+                      <SelectItem key={item} value={item}>
+                        {item}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <Input
+                  id="provider-model"
+                  type="text"
+                  placeholder="Fetch models, or enter qwen3-coder-plus, deepseek-v4-pro, glm-5.1, ..."
+                  value={model}
+                  onChange={(event) => {
+                    setModel(event.target.value);
+                    setProviderPreset("custom-openai");
+                  }}
+                  disabled={isSavingApiKey}
+                  autoComplete="off"
+                />
+              )}
+              {modelFetchError && (
+                <p className="break-words text-[11px] text-amber-600">
+                  {modelFetchError}
+                </p>
+              )}
               <p className="text-[11px] text-muted-foreground">
-                This model is used directly and ignores the Claude model picker.
+                Fetches the provider's real /models list when available.
               </p>
             </div>
           )}
@@ -710,7 +811,9 @@ export function ClaudeSetup() {
                 setApiKey("");
                 setBaseUrl("");
                 setModel("");
-                setProviderPreset("custom");
+                setModelOptions([]);
+                setModelFetchError(null);
+                setProviderPreset("anthropic-direct");
               }}
               disabled={isSavingApiKey || isClearingApiKey}
             >
@@ -737,43 +840,60 @@ export function ClaudeSetup() {
     }
 
     return (
-      <div className="flex w-full flex-wrap items-center gap-3 rounded-xl border border-border bg-muted/30 px-5 py-4">
-        <CheckCircle2Icon className="size-5 shrink-0 text-green-600" />
-        <div className="min-w-0 flex-1">
-          <p className="font-medium text-sm">
-            {isDirectProvider ? "AI Provider Ready" : "Claude Code Ready"}
-          </p>
-          <p className="truncate text-muted-foreground text-xs">
+      <div className="flex w-full flex-col gap-2 rounded-xl border border-border bg-muted/30 px-4 py-3">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <CheckCircle2Icon className="size-3.5 shrink-0 text-foreground" />
+          <span className="shrink-0 text-sm">
+            {isDirectProvider ? "AI Providers" : "Claude Code"}
+          </span>
+          <span className="min-w-0 flex-1 truncate text-muted-foreground text-xs">
             {readyDetail}
-          </p>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
+          </span>
           <Button
             type="button"
             size="sm"
-            variant="outline"
-            className="gap-2"
+            variant="ghost"
+            className="h-6 shrink-0 gap-1 px-2 text-xs"
             onClick={() => beginProviderEdit(isDirectProvider)}
           >
-            <RefreshCwIcon className="size-3.5" />
-            Change Provider
+            <RefreshCwIcon className="size-3" />
+            Add
           </Button>
           <Button
             type="button"
             size="sm"
             variant="ghost"
-            className="gap-2 text-destructive hover:text-destructive"
+            className="h-6 shrink-0 gap-1 px-2 text-destructive text-xs hover:text-destructive"
             onClick={handleClearApiKey}
             disabled={isClearingApiKey}
           >
             {isClearingApiKey ? (
-              <LoaderIcon className="size-3.5 animate-spin" />
+              <LoaderIcon className="size-3 animate-spin" />
             ) : (
-              <Trash2Icon className="size-3.5" />
+              <Trash2Icon className="size-3" />
             )}
-            Forget
+            Clear
           </Button>
         </div>
+
+        {isDirectProvider && openAiCredentials.length > 0 && (
+          <div className="space-y-1 border-border border-t pt-2">
+            {openAiCredentials.map((credential) => (
+              <div
+                key={credential.id}
+                className="flex min-w-0 items-center gap-2 rounded-md px-2 py-1 text-xs"
+              >
+                <CircleIcon className="size-2.5 shrink-0 text-muted-foreground/50" />
+                <span className="shrink-0 font-medium">
+                  {credential.label}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-muted-foreground">
+                  {credential.model}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     );
   }

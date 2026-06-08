@@ -14,6 +14,13 @@ interface ClaudeStatus {
   missing_git: boolean;
 }
 
+export interface OpenAiCompatibleCredentialInfo {
+  id: string;
+  label: string;
+  base_url: string;
+  model: string;
+}
+
 type SetupStatus =
   | "checking"
   | "missing-git"
@@ -41,6 +48,8 @@ interface ClaudeSetupState {
   accountEmail: string | null;
   providerModel: string | null;
   providerBaseUrl: string | null;
+  openAiCredentials: OpenAiCompatibleCredentialInfo[];
+  activeOpenAiCredentialId: string | null;
 
   // Install progress
   installSteps: StepInfo[];
@@ -59,8 +68,12 @@ interface ClaudeSetupState {
     baseUrl?: string,
     provider?: string,
     model?: string,
+    credentialLabel?: string,
   ) => Promise<boolean>;
   clearApiKey: () => Promise<boolean>;
+  listApiCredentials: () => Promise<void>;
+  setActiveApiCredential: (credentialId: string) => Promise<boolean>;
+  fetchProviderModels: (apiKey: string, baseUrl: string) => Promise<string[]>;
   toggleInstallLogs: () => void;
 
   // Internal helpers
@@ -127,6 +140,8 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
   accountEmail: null,
   providerModel: null,
   providerBaseUrl: null,
+  openAiCredentials: [],
+  activeOpenAiCredentialId: null,
 
   installSteps: [],
   installLogs: [],
@@ -138,6 +153,22 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
     set({ status: "checking", error: null });
     try {
       const result = await invoke<ClaudeStatus>("check_claude_status");
+      let openAiCredentials: OpenAiCompatibleCredentialInfo[] = [];
+      try {
+        openAiCredentials = await invoke<OpenAiCompatibleCredentialInfo[]>(
+          "list_openai_compatible_credentials",
+        );
+      } catch {
+        openAiCredentials = [];
+      }
+      const activeOpenAiCredentialId =
+        openAiCredentials.find(
+          (credential) =>
+            credential.model === result.provider_model &&
+            credential.base_url === result.provider_base_url,
+        )?.id ??
+        openAiCredentials[0]?.id ??
+        null;
 
       // On Windows, Git for Windows is required before anything else
       if (result.missing_git) {
@@ -147,6 +178,8 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
           accountEmail: null,
           providerModel: null,
           providerBaseUrl: null,
+          openAiCredentials,
+          activeOpenAiCredentialId,
         });
         return;
       }
@@ -158,6 +191,8 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
           accountEmail: null,
           providerModel: null,
           providerBaseUrl: null,
+          openAiCredentials,
+          activeOpenAiCredentialId,
         });
         return;
       }
@@ -169,6 +204,8 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
           accountEmail: null,
           providerModel: null,
           providerBaseUrl: null,
+          openAiCredentials,
+          activeOpenAiCredentialId,
         });
         return;
       }
@@ -179,6 +216,8 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
         accountEmail: result.account_email,
         providerModel: result.provider_model,
         providerBaseUrl: result.provider_base_url,
+        openAiCredentials,
+        activeOpenAiCredentialId,
       });
     } catch (err: any) {
       set({
@@ -242,6 +281,7 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
     baseUrl?: string,
     provider = "claude-code",
     model?: string,
+    credentialLabel?: string,
   ) => {
     const key = apiKey.trim();
     const url = baseUrl?.trim() ?? "";
@@ -298,6 +338,7 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
         baseUrl: url || null,
         provider,
         model: modelName || null,
+        credentialLabel: credentialLabel || null,
       });
       set({ isSavingApiKey: false });
       await get().checkStatus();
@@ -325,6 +366,43 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
       });
       return false;
     }
+  },
+
+  listApiCredentials: async () => {
+    const credentials = await invoke<OpenAiCompatibleCredentialInfo[]>(
+      "list_openai_compatible_credentials",
+    );
+    set((state) => ({
+      openAiCredentials: credentials,
+      activeOpenAiCredentialId:
+        credentials.find(
+          (credential) =>
+            credential.model === state.providerModel &&
+            credential.base_url === state.providerBaseUrl,
+        )?.id ??
+        credentials[0]?.id ??
+        null,
+    }));
+  },
+
+  setActiveApiCredential: async (credentialId: string) => {
+    try {
+      await invoke("set_active_openai_compatible_credential", {
+        credentialId,
+      });
+      await get().checkStatus();
+      return true;
+    } catch (err: any) {
+      set({ error: err?.message || String(err) });
+      return false;
+    }
+  },
+
+  fetchProviderModels: async (apiKey: string, baseUrl: string) => {
+    return invoke<string[]>("list_openai_compatible_models", {
+      apiKey: apiKey.trim(),
+      baseUrl: baseUrl.trim(),
+    });
   },
 
   toggleInstallLogs: () => {

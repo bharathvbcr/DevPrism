@@ -50,6 +50,7 @@ function resetClaudeChatStore() {
     pendingInitialPrompt: null,
     pendingAttachments: [],
     selectedModel: "opus",
+    selectedProviderCredentialId: null,
     effortLevel: "medium",
     _cancelledByUser: false,
   });

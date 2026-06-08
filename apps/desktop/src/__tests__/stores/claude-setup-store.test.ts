@@ -112,6 +112,8 @@ describe("useClaudeSetupStore.saveApiKey", () => {
       accountEmail: null,
       providerModel: null,
       providerBaseUrl: null,
+      openAiCredentials: [],
+      activeOpenAiCredentialId: null,
       installSteps: [],
       installLogs: [],
       installLogsVisible: false,
@@ -132,6 +134,16 @@ describe("useClaudeSetupStore.saveApiKey", () => {
           provider_base_url: "https://api.deepseek.com",
           missing_git: false,
         };
+      }
+      if (command === "list_openai_compatible_credentials") {
+        return [
+          {
+            id: "cred-1",
+            label: "DeepSeek V4 Pro",
+            model: "deepseek-v4-pro",
+            base_url: "https://api.deepseek.com",
+          },
+        ];
       }
       return null;
     });
@@ -156,6 +168,7 @@ describe("useClaudeSetupStore.saveApiKey", () => {
       baseUrl: "https://api.deepseek.com",
       provider: "openai-compatible",
       model: "deepseek-v4-pro",
+      credentialLabel: null,
     });
   });
 
@@ -205,6 +218,9 @@ describe("useClaudeSetupStore.saveApiKey", () => {
           missing_git: false,
         };
       }
+      if (command === "list_openai_compatible_credentials") {
+        return [];
+      }
       return null;
     });
 
@@ -213,6 +229,10 @@ describe("useClaudeSetupStore.saveApiKey", () => {
     expect(success).toBe(true);
     expect(invoke).toHaveBeenNthCalledWith(1, "clear_anthropic_api_key");
     expect(invoke).toHaveBeenNthCalledWith(2, "check_claude_status");
+    expect(invoke).toHaveBeenNthCalledWith(
+      3,
+      "list_openai_compatible_credentials",
+    );
     expect(useClaudeSetupStore.getState().status).toBe("not-authenticated");
     expect(useClaudeSetupStore.getState().providerModel).toBeNull();
     expect(useClaudeSetupStore.getState().providerBaseUrl).toBeNull();

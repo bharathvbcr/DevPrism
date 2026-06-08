@@ -1,4 +1,5 @@
 import { useCallback, useRef, useEffect, useState } from "react";
+import { flushSync } from "react-dom";
 import { LoaderIcon } from "lucide-react";
 import { open as shellOpen } from "@tauri-apps/plugin-shell";
 import { ask } from "@tauri-apps/plugin-dialog";
@@ -16,8 +17,8 @@ const log = createLogger("pdf-viewer");
 
 const MIN_PDF_SCALE = 0.25;
 const MAX_PDF_SCALE = 4;
-const WHEEL_ZOOM_SENSITIVITY = 0.0024;
-const MAX_WHEEL_DELTA_PER_FRAME = 280;
+const WHEEL_ZOOM_SENSITIVITY = 0.006;
+const MAX_WHEEL_DELTA_PER_FRAME = 420;
 
 function clampPdfScale(value: number): number {
   return Math.max(MIN_PDF_SCALE, Math.min(MAX_PDF_SCALE, value));
@@ -39,6 +40,54 @@ function isWheelInsideElement(event: WheelEvent, element: HTMLElement): boolean 
     event.clientY >= rect.top &&
     event.clientY <= rect.bottom
   );
+}
+
+interface PageZoomAnchor {
+  pageNumber: number;
+  pdfX: number;
+  pdfY: number;
+}
+
+function findPageZoomAnchor(
+  container: HTMLElement,
+  clientX: number,
+  clientY: number,
+  scale: number,
+): PageZoomAnchor | null {
+  if (scale <= 0) return null;
+
+  const pages = Array.from(container.querySelectorAll(".mupdf-page"));
+  let bestPage: HTMLElement | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  for (const page of pages) {
+    const el = page as HTMLElement;
+    const rect = el.getBoundingClientRect();
+    const distance =
+      clientY >= rect.top && clientY <= rect.bottom
+        ? 0
+        : Math.min(Math.abs(clientY - rect.top), Math.abs(clientY - rect.bottom));
+
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestPage = el;
+    }
+  }
+
+  if (!bestPage) return null;
+
+  const pageNumber = parseInt(
+    bestPage.getAttribute("data-page-number") || "0",
+    10,
+  );
+  if (!pageNumber) return null;
+
+  const rect = bestPage.getBoundingClientRect();
+  return {
+    pageNumber,
+    pdfX: (clientX - rect.left) / scale,
+    pdfY: (clientY - rect.top) / scale,
+  };
 }
 /** Module-level scroll position cache: rootFileId → page number */
 const scrollPositionCache = new Map<string, number>();
@@ -374,7 +423,7 @@ export function PdfViewer({
     pages.forEach((p) => observer.observe(p));
 
     return () => observer.disconnect();
-  }, [pageSizes, scale, isActive, focusGen]);
+  }, [pageSizes, isActive, focusGen]);
 
   // Report container dimensions to parent for fit-to-width/height
   useEffect(() => {
@@ -566,24 +615,45 @@ export function PdfViewer({
         return;
       }
 
-      const rect = container.getBoundingClientRect();
-      const anchorClientX = clientX ?? rect.left + rect.width / 2;
-      const anchorClientY = clientY ?? rect.top + rect.height / 2;
-      const anchorX = anchorClientX - rect.left + container.scrollLeft;
-      const anchorY = anchorClientY - rect.top + container.scrollTop;
-      const ratio = nextScale / previousScale;
+      const containerRect = container.getBoundingClientRect();
+      const anchorClientX = clientX ?? containerRect.left + containerRect.width / 2;
+      const anchorClientY = clientY ?? containerRect.top + containerRect.height / 2;
+      const pageAnchor = findPageZoomAnchor(
+        container,
+        anchorClientX,
+        anchorClientY,
+        previousScale,
+      );
+      const fallbackAnchorX =
+        anchorClientX - containerRect.left + container.scrollLeft;
+      const fallbackAnchorY =
+        anchorClientY - containerRect.top + container.scrollTop;
+      const fallbackRatio = nextScale / previousScale;
 
       scaleRef.current = nextScale;
-      onScaleChange(nextScale);
+      flushSync(() => onScaleChange(nextScale));
 
-      requestAnimationFrame(() => {
-        const currentContainer = containerRef.current;
-        if (!currentContainer) return;
-        currentContainer.scrollLeft =
-          anchorX * ratio - (anchorClientX - rect.left);
-        currentContainer.scrollTop =
-          anchorY * ratio - (anchorClientY - rect.top);
-      });
+      const currentContainer = containerRef.current;
+      if (!currentContainer) return;
+
+      if (pageAnchor) {
+        const pageEl = currentContainer.querySelector(
+          `.mupdf-page[data-page-number="${pageAnchor.pageNumber}"]`,
+        ) as HTMLElement | null;
+        if (pageEl) {
+          const pageRect = pageEl.getBoundingClientRect();
+          currentContainer.scrollLeft +=
+            pageRect.left + pageAnchor.pdfX * nextScale - anchorClientX;
+          currentContainer.scrollTop +=
+            pageRect.top + pageAnchor.pdfY * nextScale - anchorClientY;
+          return;
+        }
+      }
+
+      currentContainer.scrollLeft =
+        fallbackAnchorX * fallbackRatio - (anchorClientX - containerRect.left);
+      currentContainer.scrollTop =
+        fallbackAnchorY * fallbackRatio - (anchorClientY - containerRect.top);
     },
     [onScaleChange],
   );

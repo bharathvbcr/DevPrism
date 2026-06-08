@@ -482,6 +482,7 @@ pub fn run() {
             claude::save_anthropic_api_key,
             claude::verify_openai_compatible_api_key,
             claude::list_openai_compatible_models,
+            claude::list_openai_compatible_credential_models,
             claude::clear_anthropic_api_key,
             claude::list_openai_compatible_credentials,
             claude::set_active_openai_compatible_credential,

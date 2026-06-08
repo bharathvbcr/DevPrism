@@ -5,6 +5,7 @@ import { useHistoryStore } from "./history-store";
 import { createLogger } from "@/lib/debug/logger";
 
 const log = createLogger("claude");
+export const CLAUDE_CODE_PROVIDER_ID = "__claude-code__";
 
 /** Convert a character offset to 1-based line:col */
 export function offsetToLineCol(
@@ -239,6 +240,8 @@ interface ClaudeChatState {
   setSelectedModel: (model: "sonnet" | "opus" | "haiku" | "opusplan") => void;
   selectedProviderCredentialId: string | null;
   setSelectedProviderCredentialId: (credentialId: string | null) => void;
+  selectedProviderModels: Record<string, string>;
+  setSelectedProviderModel: (credentialId: string, model: string) => void;
 
   /** Effort level for Opus 4.6 adaptive reasoning */
   effortLevel: "low" | "medium" | "high";
@@ -292,6 +295,14 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
   selectedProviderCredentialId: null,
   setSelectedProviderCredentialId: (credentialId) =>
     set({ selectedProviderCredentialId: credentialId }),
+  selectedProviderModels: {},
+  setSelectedProviderModel: (credentialId, model) =>
+    set((state) => ({
+      selectedProviderModels: {
+        ...state.selectedProviderModels,
+        [credentialId]: model,
+      },
+    })),
 
   effortLevel: "medium",
   setEffortLevel: (level) => set({ effortLevel: level }),
@@ -337,7 +348,16 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       selectedModel,
       effortLevel,
       selectedProviderCredentialId,
+      selectedProviderModels,
     } = state;
+    const providerCredentialId =
+      selectedProviderCredentialId &&
+      selectedProviderCredentialId !== CLAUDE_CODE_PROVIDER_ID
+        ? selectedProviderCredentialId
+        : null;
+    const providerModelOverride = providerCredentialId
+      ? selectedProviderModels[providerCredentialId] || null
+      : null;
 
     const sendStart = performance.now();
     log.info("sendPrompt start", {
@@ -460,7 +480,8 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
           tabId: activeTabId,
           model: selectedModel,
           effortLevel,
-          providerCredentialId: selectedProviderCredentialId,
+          providerCredentialId,
+          providerModelOverride,
         });
       } else {
         // New session
@@ -470,7 +491,8 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
           tabId: activeTabId,
           model: selectedModel,
           effortLevel,
-          providerCredentialId: selectedProviderCredentialId,
+          providerCredentialId,
+          providerModelOverride,
         });
       }
       log.info(

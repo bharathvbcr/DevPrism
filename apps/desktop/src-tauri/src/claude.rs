@@ -306,11 +306,6 @@ fn stored_openai_compatible_credential_from_config(
     config: &ClaudePrismAuthConfig,
     credential_id: Option<&str>,
 ) -> Option<StoredOpenAiCompatibleCredential> {
-    let provider = normalize_provider(config.provider.as_deref()).ok()?;
-    if provider != PROVIDER_OPENAI_COMPATIBLE {
-        return None;
-    }
-
     let credentials = normalized_openai_compatible_credentials(config);
     if let Some(credential_id) = credential_id {
         if let Some(credential) = credentials
@@ -320,6 +315,11 @@ fn stored_openai_compatible_credential_from_config(
         {
             return Some(credential);
         }
+    }
+
+    let provider = normalize_provider(config.provider.as_deref()).ok()?;
+    if provider != PROVIDER_OPENAI_COMPATIBLE {
+        return None;
     }
 
     if let Some(active_id) = config.active_openai_credential_id.as_deref() {
@@ -504,8 +504,28 @@ pub async fn list_openai_compatible_models(
         return Err(message);
     }
 
+    fetch_openai_compatible_models(&api_key, &base_url).await
+}
+
+#[tauri::command]
+pub async fn list_openai_compatible_credential_models(
+    credential_id: String,
+) -> Result<Vec<String>, String> {
+    let config = read_claude_prism_auth_config().unwrap_or_default();
+    let credential = normalized_openai_compatible_credentials(&config)
+        .into_iter()
+        .find(|credential| credential.id == credential_id)
+        .ok_or("Configured provider credential not found")?;
+
+    fetch_openai_compatible_models(&credential.api_key, &credential.base_url).await
+}
+
+async fn fetch_openai_compatible_models(
+    api_key: &str,
+    base_url: &str,
+) -> Result<Vec<String>, String> {
     let response = reqwest::Client::new()
-        .get(openai_models_url(&base_url))
+        .get(openai_models_url(base_url))
         .bearer_auth(api_key)
         .send()
         .await
@@ -5292,10 +5312,14 @@ pub async fn execute_claude_code(
     model: Option<String>,
     effort_level: Option<String>,
     provider_credential_id: Option<String>,
+    provider_model_override: Option<String>,
 ) -> Result<(), String> {
-    if let Some(credential) =
+    if let Some(mut credential) =
         stored_openai_compatible_credential_by_id(provider_credential_id.as_deref())
     {
+        if let Some(model) = normalize_model(provider_model_override.as_deref())? {
+            credential.model = model;
+        }
         return execute_openai_compatible_provider(
             window,
             project_path,
@@ -5329,10 +5353,14 @@ pub async fn continue_claude_code(
     model: Option<String>,
     effort_level: Option<String>,
     provider_credential_id: Option<String>,
+    provider_model_override: Option<String>,
 ) -> Result<(), String> {
-    if let Some(credential) =
+    if let Some(mut credential) =
         stored_openai_compatible_credential_by_id(provider_credential_id.as_deref())
     {
+        if let Some(model) = normalize_model(provider_model_override.as_deref())? {
+            credential.model = model;
+        }
         return execute_openai_compatible_provider(
             window,
             project_path,
@@ -5367,10 +5395,14 @@ pub async fn resume_claude_code(
     model: Option<String>,
     effort_level: Option<String>,
     provider_credential_id: Option<String>,
+    provider_model_override: Option<String>,
 ) -> Result<(), String> {
-    if let Some(credential) =
+    if let Some(mut credential) =
         stored_openai_compatible_credential_by_id(provider_credential_id.as_deref())
     {
+        if let Some(model) = normalize_model(provider_model_override.as_deref())? {
+            credential.model = model;
+        }
         return execute_openai_compatible_provider(
             window,
             project_path,

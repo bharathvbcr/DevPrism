@@ -41,6 +41,16 @@ type ClaudeCompatiblePreset = {
   note: string;
 };
 
+type ModelProviderCard = {
+  id: string;
+  label: string;
+  provider: "claude-code" | "openai-compatible";
+  baseUrl: string;
+  model: string;
+  badge: string;
+  note: string;
+};
+
 const CLAUDE_COMPATIBLE_PRESETS: ClaudeCompatiblePreset[] = [
   {
     id: "modelgate-web",
@@ -98,6 +108,55 @@ const OPENAI_COMPATIBLE_PRESETS: OpenAICompatiblePreset[] = [
     baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
     model: "gemini-2.5-flash",
     note: "Google Gemini OpenAI-compatible endpoint.",
+  },
+];
+
+const OPENAI_PROVIDER_CARDS: ModelProviderCard[] = [
+  ...OPENAI_COMPATIBLE_PRESETS.map((preset) => ({
+    ...preset,
+    provider: "openai-compatible" as const,
+    badge: preset.label
+      .split(/\s+/)
+      .slice(0, 2)
+      .map((part) => part[0])
+      .join("")
+      .toUpperCase(),
+  })),
+  {
+    id: "custom-openai",
+    label: "Custom OpenAI API",
+    provider: "openai-compatible",
+    baseUrl: "",
+    model: "",
+    badge: "API",
+    note: "Use any chat/completions-compatible provider.",
+  },
+];
+
+const CLAUDE_PROVIDER_CARDS: ModelProviderCard[] = [
+  {
+    id: "anthropic-direct",
+    label: "Anthropic",
+    provider: "claude-code",
+    baseUrl: "",
+    model: "",
+    badge: "A",
+    note: "Use a direct Anthropic API key.",
+  },
+  ...CLAUDE_COMPATIBLE_PRESETS.map((preset) => ({
+    ...preset,
+    provider: "claude-code" as const,
+    model: "",
+    badge: "MG",
+  })),
+  {
+    id: "custom-claude-proxy",
+    label: "Custom Claude Proxy",
+    provider: "claude-code",
+    baseUrl: "",
+    model: "",
+    badge: "CP",
+    note: "Use a Claude-compatible proxy endpoint.",
   },
 ];
 
@@ -322,7 +381,7 @@ export function ClaudeSetup() {
   const [provider, setProvider] = useState<"claude-code" | "openai-compatible">(
     "claude-code",
   );
-  const [providerPreset, setProviderPreset] = useState("custom");
+  const [providerPreset, setProviderPreset] = useState("anthropic-direct");
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [model, setModel] = useState("");
@@ -356,14 +415,20 @@ export function ClaudeSetup() {
       setApiKey("");
       setBaseUrl("");
       setModel("");
-      setProviderPreset("custom");
+      setProviderPreset(
+        selectedProvider === "openai-compatible"
+          ? "custom-openai"
+          : "anthropic-direct",
+      );
       setIsEditingProvider(false);
     }
   };
 
   const beginProviderEdit = (isDirectProvider: boolean) => {
     setProvider(isDirectProvider ? "openai-compatible" : "claude-code");
-    setProviderPreset("custom");
+    setProviderPreset(
+      isDirectProvider ? "custom-openai" : "anthropic-direct",
+    );
     setApiKey("");
     setBaseUrl(isDirectProvider ? providerBaseUrl || "" : "");
     setModel(isDirectProvider ? providerModel || "" : "");
@@ -376,36 +441,16 @@ export function ClaudeSetup() {
       setApiKey("");
       setBaseUrl("");
       setModel("");
-      setProviderPreset("custom");
+      setProviderPreset("anthropic-direct");
       setIsEditingProvider(false);
     }
   };
 
-  const applyProviderPreset = (
-    presetId: string,
-    selectedProvider: "claude-code" | "openai-compatible" = provider,
-  ) => {
-    setProviderPreset(presetId);
-    if (presetId === "custom") return;
-
-    if (selectedProvider === "openai-compatible") {
-      const preset = OPENAI_COMPATIBLE_PRESETS.find(
-        (item) => item.id === presetId,
-      );
-      if (!preset) return;
-
-      setBaseUrl(preset.baseUrl);
-      setModel(preset.model);
-      return;
-    }
-
-    const preset = CLAUDE_COMPATIBLE_PRESETS.find((item) => item.id === presetId);
-    if (!preset) {
-      return;
-    }
-
-    setBaseUrl(preset.baseUrl);
-    setModel("");
+  const selectProviderCard = (card: ModelProviderCard) => {
+    setProvider(card.provider);
+    setProviderPreset(card.id);
+    setBaseUrl(card.baseUrl);
+    setModel(card.model);
   };
 
   const renderApiKeyForm = ({
@@ -418,6 +463,17 @@ export function ClaudeSetup() {
     const selectedProvider = forceOpenAiCompatible
       ? "openai-compatible"
       : provider;
+    const providerCards = forceOpenAiCompatible
+      ? OPENAI_PROVIDER_CARDS
+      : [...OPENAI_PROVIDER_CARDS, ...CLAUDE_PROVIDER_CARDS];
+    const providerCardIds = new Set(providerCards.map((card) => card.id));
+    const fallbackCardId =
+      selectedProvider === "openai-compatible"
+        ? "custom-openai"
+        : "anthropic-direct";
+    const activeCardId = providerCardIds.has(providerPreset)
+      ? providerPreset
+      : fallbackCardId;
 
     return (
       <>
@@ -428,86 +484,50 @@ export function ClaudeSetup() {
             handleSaveApiKey(selectedProvider);
           }}
         >
-          <div className="space-y-1.5">
-            <Label htmlFor="ai-provider" className="text-xs">
-              Provider
-            </Label>
-            {forceOpenAiCompatible ? (
-              <div
-                id="ai-provider"
-                className="rounded-md border border-input bg-background px-3 py-2 text-sm"
-              >
-                OpenAI-compatible API
-              </div>
-            ) : (
-              <select
-                id="ai-provider"
-                value={provider}
-                onChange={(event) => {
-                  const nextProvider = event.target.value as
-                    | "claude-code"
-                    | "openai-compatible";
-                  setProvider(nextProvider);
-                  setProviderPreset("custom");
-                  if (nextProvider === "claude-code") {
-                    setModel("");
-                  }
-                }}
-                disabled={isSavingApiKey}
-                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm outline-none transition-colors focus-visible:border-ring"
-              >
-                <option value="claude-code">Claude Code / Anthropic API</option>
-                <option value="openai-compatible">
-                  OpenAI-compatible API
-                </option>
-              </select>
-            )}
-            <p className="text-[11px] text-muted-foreground">
+          <div className="space-y-2">
+            <Label className="text-xs">
               {selectedProvider === "openai-compatible"
-                ? "Use OpenAI-compatible for Qwen, DeepSeek, GLM, Gemini, and compatible gateways."
-                : "Use Anthropic directly, Claude Code browser sign-in, or a Claude-compatible proxy."}
-            </p>
-          </div>
-
-          <div className="space-y-1.5">
-            <Label htmlFor="provider-preset" className="text-xs">
-              {selectedProvider === "openai-compatible"
-                ? "Provider Preset"
-                : "Proxy Preset"}
+                ? "Model Provider"
+                : "Provider"}
             </Label>
-            <select
-              id="provider-preset"
-              value={providerPreset}
-              onChange={(event) =>
-                applyProviderPreset(event.target.value, selectedProvider)
-              }
-              disabled={isSavingApiKey}
-              className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm outline-none transition-colors focus-visible:border-ring"
-            >
-              <option value="custom">
-                {selectedProvider === "openai-compatible"
-                  ? "Custom endpoint"
-                  : "No proxy / custom proxy"}
-              </option>
-              {(selectedProvider === "openai-compatible"
-                ? OPENAI_COMPATIBLE_PRESETS
-                : CLAUDE_COMPATIBLE_PRESETS
-              ).map((preset) => (
-                <option key={preset.id} value={preset.id}>
-                  {preset.label}
-                </option>
+            <div className="grid grid-cols-2 gap-2">
+              {providerCards.map((card) => (
+                <button
+                  key={card.id}
+                  type="button"
+                  onClick={() => selectProviderCard(card)}
+                  disabled={isSavingApiKey}
+                  className={cn(
+                    "flex min-h-16 items-start gap-2 rounded-md border px-2.5 py-2 text-left transition-colors",
+                    activeCardId === card.id
+                      ? "border-primary bg-primary/5 text-foreground"
+                      : "border-border bg-background hover:bg-muted/60",
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "flex size-7 shrink-0 items-center justify-center rounded-md border font-semibold text-[11px]",
+                      activeCardId === card.id
+                        ? "border-primary/30 bg-primary/10 text-primary"
+                        : "border-border bg-muted text-muted-foreground",
+                    )}
+                  >
+                    {card.badge}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-medium text-xs">
+                      {card.label}
+                    </span>
+                    <span className="line-clamp-2 text-[11px] text-muted-foreground leading-snug">
+                      {card.note}
+                    </span>
+                  </span>
+                  {activeCardId === card.id && (
+                    <CheckIcon className="mt-0.5 size-3.5 shrink-0 text-primary" />
+                  )}
+                </button>
               ))}
-            </select>
-            {providerPreset !== "custom" && (
-              <p className="text-[11px] text-muted-foreground">
-                {
-                  (selectedProvider === "openai-compatible"
-                    ? OPENAI_COMPATIBLE_PRESETS
-                    : CLAUDE_COMPATIBLE_PRESETS
-                  ).find((preset) => preset.id === providerPreset)?.note
-                }
-              </p>
-            )}
+            </div>
           </div>
 
           <div className="space-y-1.5">
@@ -550,8 +570,15 @@ export function ClaudeSetup() {
               }
               value={baseUrl}
               onChange={(event) => {
-                setBaseUrl(event.target.value);
-                setProviderPreset("custom");
+                const nextUrl = event.target.value;
+                setBaseUrl(nextUrl);
+                setProviderPreset(
+                  selectedProvider === "openai-compatible"
+                    ? "custom-openai"
+                    : nextUrl.trim()
+                      ? "custom-claude-proxy"
+                      : "anthropic-direct",
+                );
               }}
               disabled={isSavingApiKey}
               autoComplete="off"
@@ -575,7 +602,7 @@ export function ClaudeSetup() {
                 value={model}
                 onChange={(event) => {
                   setModel(event.target.value);
-                  setProviderPreset("custom");
+                  setProviderPreset("custom-openai");
                 }}
                 disabled={isSavingApiKey}
                 autoComplete="off"

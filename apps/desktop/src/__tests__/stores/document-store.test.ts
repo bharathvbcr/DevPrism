@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   readDir,
   readTextFile,
+  rename,
   stat,
   writeTextFile,
 } from "@tauri-apps/plugin-fs";
@@ -12,6 +13,7 @@ import {
   clearPdfBytesCache,
   type ProjectFile,
 } from "@/stores/document-store";
+import { useProjectStore } from "@/stores/project-store";
 
 // Mock history store
 vi.mock("@/stores/history-store", () => ({
@@ -20,6 +22,7 @@ vi.mock("@/stores/history-store", () => ({
       init: vi.fn(() => Promise.resolve()),
       loadSnapshots: vi.fn(() => Promise.resolve()),
       createSnapshot: vi.fn(() => Promise.resolve()),
+      reset: vi.fn(),
     })),
   },
 }));
@@ -65,6 +68,10 @@ describe("useDocumentStore", () => {
       pendingRecompile: false,
       isSaving: false,
       initialized: true,
+    });
+    useProjectStore.setState({
+      recentProjects: [],
+      lastProjectFolder: null,
     });
   });
 
@@ -159,6 +166,73 @@ describe("useDocumentStore", () => {
       expect(
         useDocumentStore.getState().files.map((file) => file.relativePath),
       ).toEqual(["main.tex", "tool.py"]);
+    });
+  });
+
+  describe("renameProject", () => {
+    it("renames the project folder and reopens the new path", async () => {
+      vi.mocked(invoke).mockResolvedValue(undefined as never);
+      vi.mocked(readDir).mockResolvedValue([
+        { name: "main.tex", isDirectory: false },
+      ] as any);
+      vi.mocked(readTextFile).mockResolvedValue("\\documentclass{article}");
+      useProjectStore.setState({
+        recentProjects: [{ path: "/work/old", name: "old", lastOpened: 1 }],
+        lastProjectFolder: "/work",
+      });
+      useDocumentStore.setState({
+        projectRoot: "/work/old",
+        files: [makeFile({ absolutePath: "/work/old/main.tex" })],
+      });
+
+      await useDocumentStore.getState().renameProject("renamed");
+
+      expect(rename).toHaveBeenCalledWith("/work/old", "/work/renamed");
+      expect(invoke).toHaveBeenCalledWith("migrate_project_sessions", {
+        oldProjectPath: "/work/old",
+        newProjectPath: "/work/renamed",
+      });
+      expect(invoke).toHaveBeenCalledWith("allow_project_directory", {
+        rootPath: "/work/renamed",
+      });
+      expect(useDocumentStore.getState().projectRoot).toBe("/work/renamed");
+      expect(useProjectStore.getState().recentProjects[0]).toMatchObject({
+        path: "/work/renamed",
+        name: "renamed",
+      });
+      expect(
+        useProjectStore
+          .getState()
+          .recentProjects.some((project) => project.path === "/work/old"),
+      ).toBe(false);
+      expect(useProjectStore.getState().lastProjectFolder).toBe("/work");
+    });
+
+    it("saves dirty files before renaming the project folder", async () => {
+      vi.mocked(invoke).mockResolvedValue(undefined as never);
+      vi.mocked(writeTextFile).mockResolvedValue(undefined);
+      vi.mocked(readDir).mockResolvedValue([
+        { name: "main.tex", isDirectory: false },
+      ] as any);
+      vi.mocked(readTextFile).mockResolvedValue("\\documentclass{article}");
+      useDocumentStore.setState({
+        projectRoot: "/work/old",
+        files: [
+          makeFile({
+            absolutePath: "/work/old/main.tex",
+            content: "dirty",
+            isDirty: true,
+          }),
+        ],
+      });
+
+      await useDocumentStore.getState().renameProject("renamed");
+
+      expect(writeTextFile).toHaveBeenCalledWith(
+        "/work/old/main.tex",
+        "dirty",
+      );
+      expect(rename).toHaveBeenCalledWith("/work/old", "/work/renamed");
     });
   });
 

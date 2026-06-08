@@ -79,10 +79,11 @@ export function ProjectPicker() {
 
         try {
           setIsRestoringProject(true);
-          addRecentProject(path);
           await openProject(path);
+          addRecentProject(path);
           return true;
         } catch (err) {
+          removeRecentProject(path);
           console.warn("Failed to restore project:", { path, error: err });
         }
       }
@@ -121,7 +122,7 @@ export function ProjectPicker() {
     return () => {
       cancelled = true;
     };
-  }, [addRecentProject, openProject, recentProjects]);
+  }, [addRecentProject, openProject, recentProjects, removeRecentProject]);
 
   const handleOpenFolder = async () => {
     const selected = await open({
@@ -130,14 +131,19 @@ export function ProjectPicker() {
       title: "Open Project Folder",
     });
     if (selected) {
-      addRecentProject(selected);
       await openProject(selected);
+      addRecentProject(selected);
     }
   };
 
   const handleOpenRecent = async (path: string) => {
-    addRecentProject(path);
-    await openProject(path);
+    try {
+      await openProject(path);
+      addRecentProject(path);
+    } catch (err) {
+      removeRecentProject(path);
+      console.warn("Failed to open recent project:", { path, error: err });
+    }
   };
 
   const handleSelectMode = (mode: CreationMode) => {

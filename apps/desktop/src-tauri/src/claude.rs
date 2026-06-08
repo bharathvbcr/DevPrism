@@ -66,8 +66,9 @@ struct DirectTask {
 
 const PROVIDER_CLAUDE_CODE: &str = "claude-code";
 const PROVIDER_OPENAI_COMPATIBLE: &str = "openai-compatible";
-const DIRECT_PROVIDER_MAX_TOOL_TURNS: u64 = 12;
-const DIRECT_PROVIDER_CONVERGE_TURN: u64 = 10;
+const DIRECT_PROVIDER_MAX_TOOL_TURNS_ENV: &str = "CLAUDE_PRISM_DIRECT_PROVIDER_MAX_TOOL_TURNS";
+const DIRECT_PROVIDER_CONVERGE_TURN_ENV: &str = "CLAUDE_PRISM_DIRECT_PROVIDER_CONVERGE_TURN";
+const DIRECT_PROVIDER_PROJECT_CONTEXT_HEADER: &str = "[ClaudePrism project context]";
 const DIRECT_PROVIDER_TOOL_NAMES: &[&str] = &[
     "Read",
     "Write",
@@ -244,14 +245,16 @@ fn known_proxy_mismatch_error(provider: &str, base_url: Option<&str>) -> Option<
 
 fn stored_claude_credential() -> Option<StoredClaudeCredential> {
     let config = read_claude_prism_auth_config().ok()?;
-    let provider = normalize_provider(config.provider.as_deref()).ok()?;
-    if provider != PROVIDER_CLAUDE_CODE {
-        return None;
-    }
+    stored_claude_credential_from_config(&config)
+}
 
+fn stored_claude_credential_from_config(
+    config: &ClaudePrismAuthConfig,
+) -> Option<StoredClaudeCredential> {
     let api_key = config
         .anthropic_api_key
-        .and_then(|value| normalize_api_key(&value).ok())?;
+        .as_deref()
+        .and_then(|value| normalize_api_key(value).ok())?;
     let base_url = normalize_base_url(config.anthropic_base_url.as_deref()).ok()?;
 
     if base_url.is_none() && !api_key.starts_with("sk-ant-") {
@@ -268,9 +271,9 @@ fn stored_openai_compatible_credential() -> Option<StoredOpenAiCompatibleCredent
 
 fn stored_openai_compatible_credential_by_id(
     credential_id: Option<&str>,
-) -> Option<StoredOpenAiCompatibleCredential> {
-    let config = read_claude_prism_auth_config().ok()?;
-    stored_openai_compatible_credential_from_config(&config, credential_id)
+) -> Result<Option<StoredOpenAiCompatibleCredential>, String> {
+    let config = read_claude_prism_auth_config()?;
+    openai_compatible_credential_by_id_from_config(&config, credential_id)
 }
 
 fn normalized_openai_compatible_credentials(
@@ -368,6 +371,25 @@ fn stored_openai_compatible_credential_from_config(
     }
 
     credentials.into_iter().next()
+}
+
+fn openai_compatible_credential_by_id_from_config(
+    config: &ClaudePrismAuthConfig,
+    credential_id: Option<&str>,
+) -> Result<Option<StoredOpenAiCompatibleCredential>, String> {
+    let credential_id = credential_id
+        .map(strip_nul)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let Some(credential_id) = credential_id else {
+        return Ok(None);
+    };
+
+    normalized_openai_compatible_credentials(config)
+        .into_iter()
+        .find(|credential| credential.id == credential_id)
+        .map(Some)
+        .ok_or_else(|| "Configured provider credential not found".to_string())
 }
 
 fn claude_credential_label() -> Option<&'static str> {
@@ -2204,10 +2226,11 @@ fn direct_provider_system_prompt() -> String {
         "For multi-step writing or editing tasks, use TodoWrite to keep a short plan with at most one in_progress item.",
         "Use AskUserQuestion when you need the user to choose between concrete options before continuing.",
         "Use EnterPlanMode for complex implementation planning, and ExitPlanMode when you need user approval before implementing a plan.",
-        "Use Skill to load installed project/global SKILL.md guidance before applying a domain-specific skill.",
+        "Skill workflow: for domain-specific work (data analysis, paper writing, LaTeX packages, biology, chemistry, plotting, notebooks, or any task that names a skill), call Skill first. If a listed skill matches the user's request, invoking Skill before answering is a blocking requirement. If you do not know the exact skill name, call Skill with no arguments to list installed skills, then call Skill with the matching /folder or name. Never mention that you are using a skill unless you actually called Skill. Follow the loaded SKILL.md before using its conventions; do not invent skill behavior that was not loaded.",
         "Use Agent for focused sub-agent style investigation; direct-provider mode runs it through the same selected provider model.",
         "Use NotebookEdit for Jupyter notebooks rather than raw JSON string edits.",
         "Use EnterWorktree/ExitWorktree when you need an isolated git worktree; subsequent tools run from the active worktree.",
+        "Python workflow: PowerShell/Bash commands launched by ClaudePrism run from the project directory and inherit the project .venv when it exists. Use `python` for scripts and `uv pip install <package>` for packages.",
         "If you prefer Claude/Codex-style task tools, TaskCreate, TaskGet, TaskUpdate, TaskList, TaskOutput, and TaskStop are available as a lightweight session task list.",
         "ToolSearch can be used to inspect the currently available local tool names; it does not install external tools.",
         "Do not claim a file was changed unless a tool result confirms it.",
@@ -2228,6 +2251,123 @@ fn direct_provider_no_tools_system_prompt() -> String {
         "When file changes are needed, provide precise patches, replacement snippets, or step-by-step commands for the user.",
     ]
     .join("\n")
+}
+
+fn direct_provider_system_prompt_for_project(project_root: &Path) -> String {
+    format!(
+        "{}\n\n{}",
+        direct_provider_system_prompt(),
+        direct_provider_project_context(project_root)
+    )
+}
+
+fn direct_provider_project_context(project_root: &Path) -> String {
+    let mut lines = vec![
+        DIRECT_PROVIDER_PROJECT_CONTEXT_HEADER.to_string(),
+        format!("Project root: {}", project_root.display()),
+    ];
+
+    if project_root.join(".venv").is_dir() {
+        lines.push("Python: project .venv is present. ClaudePrism PowerShell/Bash tool calls receive VIRTUAL_ENV and put .venv first on PATH, so `python` resolves to this environment. Use `uv pip install <package>` to add packages.".to_string());
+    } else {
+        lines.push("Python: no project .venv is present yet. If Python work is needed, ask the user to set up the Python Environment or use available system Python carefully.".to_string());
+    }
+
+    let skills = available_direct_skills(project_root);
+    if skills.is_empty() {
+        lines.push(
+            "Installed skills: none found in project .claude/skills or global ~/.claude/skills."
+                .to_string(),
+        );
+    } else {
+        lines.push("Installed skills available through the Skill tool. For domain-specific tasks, load the matching skill before applying its workflow:".to_string());
+        for (folder, name, skill_md) in skills.iter().take(80) {
+            let description = std::fs::read_to_string(skill_md)
+                .ok()
+                .and_then(|content| skill_description_from_content(&content))
+                .map(|description| format!(" - {}", description))
+                .unwrap_or_default();
+            lines.push(format!("- /{}: {}{}", folder, name, description));
+        }
+        if skills.len() > 80 {
+            lines.push(format!(
+                "- ... {} more skills omitted; call Skill with no arguments to list all.",
+                skills.len() - 80
+            ));
+        }
+    }
+
+    lines.join("\n")
+}
+
+fn direct_provider_prompt_for_mode(
+    mode: DirectToolRequestMode,
+    existing_system_prompt: Option<&str>,
+) -> String {
+    let base = if mode == DirectToolRequestMode::None {
+        direct_provider_no_tools_system_prompt()
+    } else {
+        direct_provider_system_prompt()
+    };
+
+    if mode == DirectToolRequestMode::Functions {
+        if let Some(context) =
+            existing_system_prompt.and_then(direct_provider_existing_project_context)
+        {
+            return format!("{}\n\n{}", base, context);
+        }
+    }
+
+    base
+}
+
+fn direct_provider_existing_project_context(prompt: &str) -> Option<&str> {
+    prompt
+        .find(DIRECT_PROVIDER_PROJECT_CONTEXT_HEADER)
+        .map(|index| &prompt[index..])
+}
+
+fn parse_optional_direct_turn_limit(value: &str) -> Option<u64> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.eq_ignore_ascii_case("0")
+        || value.eq_ignore_ascii_case("none")
+        || value.eq_ignore_ascii_case("false")
+        || value.eq_ignore_ascii_case("off")
+    {
+        return None;
+    }
+
+    value.parse::<u64>().ok().filter(|turns| *turns > 0)
+}
+
+fn parse_optional_direct_turn_limit_env(name: &str) -> Option<u64> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| parse_optional_direct_turn_limit(&value))
+}
+
+fn direct_provider_max_tool_turns() -> Option<u64> {
+    parse_optional_direct_turn_limit_env(DIRECT_PROVIDER_MAX_TOOL_TURNS_ENV)
+}
+
+fn direct_provider_converge_turn_for(
+    max_tool_turns: Option<u64>,
+    explicit_converge_turn: Option<u64>,
+) -> Option<u64> {
+    if explicit_converge_turn.is_some() {
+        return explicit_converge_turn;
+    }
+    max_tool_turns
+        .and_then(|turns| turns.checked_sub(2))
+        .filter(|turns| *turns > 0)
+}
+
+fn direct_provider_converge_turn(max_tool_turns: Option<u64>) -> Option<u64> {
+    direct_provider_converge_turn_for(
+        max_tool_turns,
+        parse_optional_direct_turn_limit_env(DIRECT_PROVIDER_CONVERGE_TURN_ENV),
+    )
 }
 
 fn direct_provider_tools() -> serde_json::Value {
@@ -2594,13 +2734,14 @@ fn direct_provider_tools() -> serde_json::Value {
             "type": "function",
             "function": {
                 "name": "Skill",
-                "description": "Load installed project/global SKILL.md guidance by skill name or folder. If no skill is provided, lists available skills.",
+                "description": "Load installed project/global SKILL.md guidance by skill name or folder. If no skill is provided, list available skills. When a listed skill matches the user's task, calling Skill before answering is required; do not guess unlisted skills.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "skill": { "type": "string", "description": "Skill folder/name to load." },
                         "name": { "type": "string", "description": "Alias for skill." },
-                        "command": { "type": "string", "description": "Slash command or skill name, for example /biopython." }
+                        "command": { "type": "string", "description": "Slash command or skill name, for example /biopython." },
+                        "args": { "type": "string", "description": "Optional arguments mentioned by the user; currently provided as context only." }
                     }
                 }
             }
@@ -5136,6 +5277,31 @@ fn skill_display_name_from_content(content: &str) -> Option<String> {
     None
 }
 
+fn skill_description_from_content(content: &str) -> Option<String> {
+    for line in content.lines().take(60) {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("description:") {
+            let description = rest
+                .trim()
+                .trim_matches('"')
+                .trim_matches('\'')
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            if description.is_empty() {
+                return None;
+            }
+            let truncated: String = description.chars().take(180).collect();
+            return Some(if description.chars().count() > 180 {
+                format!("{}...", truncated)
+            } else {
+                truncated
+            });
+        }
+    }
+    None
+}
+
 fn available_direct_skills(project_root: &Path) -> Vec<(String, String, PathBuf)> {
     let mut seen = HashSet::new();
     let mut skills = Vec::new();
@@ -5285,7 +5451,7 @@ async fn execute_direct_agent(
             "role": "system",
             "content": format!(
                 "{}\n\nYou are running as a focused sub-agent of type '{}'. Work independently, use tools when needed, do not ask the user questions, and return a concise final report with evidence.",
-                direct_provider_system_prompt(),
+                direct_provider_system_prompt_for_project(current_project_root),
                 agent_type
             ),
         }),
@@ -5954,11 +6120,8 @@ fn direct_messages_for_tool_capability(
         let role = message.get("role").and_then(|v| v.as_str());
         if role == Some("system") {
             if let Some(object) = message.as_object_mut() {
-                let prompt = if mode == DirectToolRequestMode::Functions {
-                    direct_provider_system_prompt()
-                } else {
-                    direct_provider_no_tools_system_prompt()
-                };
+                let existing = object.get("content").and_then(|value| value.as_str());
+                let prompt = direct_provider_prompt_for_mode(mode, existing);
                 object.insert("content".to_string(), json!(prompt));
             }
             break;
@@ -5973,11 +6136,7 @@ fn direct_messages_for_tool_capability(
             0,
             json!({
                 "role": "system",
-                "content": if mode == DirectToolRequestMode::Functions {
-                    direct_provider_system_prompt()
-                } else {
-                    direct_provider_no_tools_system_prompt()
-                },
+                "content": direct_provider_prompt_for_mode(mode, None),
             }),
         );
     }
@@ -6483,6 +6642,8 @@ async fn execute_openai_compatible_provider(
         "type": "system",
         "subtype": "init",
         "session_id": session_id,
+        "provider": PROVIDER_OPENAI_COMPATIBLE,
+        "provider_credential_id": credential.id.clone(),
         "model": credential.model.clone(),
         "cwd": initial_root.to_string_lossy(),
         "tools": DIRECT_PROVIDER_TOOL_NAMES,
@@ -6499,7 +6660,7 @@ async fn execute_openai_compatible_provider(
 
     let mut request_messages = vec![json!({
         "role": "system",
-        "content": direct_provider_system_prompt(),
+        "content": direct_provider_system_prompt_for_project(&initial_root),
     })];
     request_messages.extend(messages.clone());
     request_messages.push(json!({ "role": "user", "content": prompt.clone() }));
@@ -6521,18 +6682,20 @@ async fn execute_openai_compatible_provider(
     let mut final_usage = json!({ "input_tokens": 0, "output_tokens": 0 });
     let mut turns = 0_u64;
     let mut convergence_nudged = false;
+    let max_tool_turns = direct_provider_max_tool_turns();
+    let converge_turn = direct_provider_converge_turn(max_tool_turns);
     let client = reqwest::Client::new();
 
     loop {
         turns += 1;
-        if turns == DIRECT_PROVIDER_CONVERGE_TURN && !convergence_nudged {
+        if converge_turn == Some(turns) && !convergence_nudged {
             request_messages.push(json!({
                 "role": "user",
                 "content": "You have already used many tools. Prefer stopping tool use now: synthesize the findings, explain any uncertainty, and provide the final answer unless one more tool call is absolutely necessary.",
             }));
             convergence_nudged = true;
         }
-        if turns > DIRECT_PROVIDER_MAX_TOOL_TURNS {
+        if max_tool_turns.is_some_and(|max_turns| turns > max_turns) {
             let mut final_request_messages = request_messages.clone();
             final_request_messages.push(json!({
                 "role": "user",
@@ -6912,7 +7075,7 @@ pub async fn execute_claude_code(
     provider_model_override: Option<String>,
 ) -> Result<(), String> {
     if let Some(mut credential) =
-        stored_openai_compatible_credential_by_id(provider_credential_id.as_deref())
+        stored_openai_compatible_credential_by_id(provider_credential_id.as_deref())?
     {
         if let Some(model) = normalize_model(provider_model_override.as_deref())? {
             credential.model = model;
@@ -6953,7 +7116,7 @@ pub async fn continue_claude_code(
     provider_model_override: Option<String>,
 ) -> Result<(), String> {
     if let Some(mut credential) =
-        stored_openai_compatible_credential_by_id(provider_credential_id.as_deref())
+        stored_openai_compatible_credential_by_id(provider_credential_id.as_deref())?
     {
         if let Some(model) = normalize_model(provider_model_override.as_deref())? {
             credential.model = model;
@@ -6995,7 +7158,7 @@ pub async fn resume_claude_code(
     provider_model_override: Option<String>,
 ) -> Result<(), String> {
     if let Some(mut credential) =
-        stored_openai_compatible_credential_by_id(provider_credential_id.as_deref())
+        stored_openai_compatible_credential_by_id(provider_credential_id.as_deref())?
     {
         if let Some(model) = normalize_model(provider_model_override.as_deref())? {
             credential.model = model;
@@ -7153,6 +7316,108 @@ fn get_sessions_dir(project_path: &str) -> Result<PathBuf, String> {
     );
 
     Ok(home.join(".claude").join("projects").join(&encoded))
+}
+
+fn unique_session_migration_target(target: &Path) -> PathBuf {
+    if !target.exists() {
+        return target.to_path_buf();
+    }
+
+    let parent = target.parent().unwrap_or_else(|| Path::new(""));
+    let stem = target
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("session");
+    let extension = target.extension().and_then(|value| value.to_str());
+
+    for index in 1..1000 {
+        let file_name = match extension {
+            Some(ext) => format!("{}-migrated-{}.{}", stem, index, ext),
+            None => format!("{}-migrated-{}", stem, index),
+        };
+        let candidate = parent.join(file_name);
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+
+    parent.join(format!(
+        "{}-migrated-{}",
+        stem,
+        chrono::Utc::now().timestamp()
+    ))
+}
+
+fn move_session_entry(source: &Path, target: &Path) -> Result<(), String> {
+    let target = unique_session_migration_target(target);
+    match std::fs::rename(source, &target) {
+        Ok(()) => Ok(()),
+        Err(rename_err) => {
+            if source.is_dir() {
+                return Err(format!(
+                    "Failed to move session directory {:?} to {:?}: {}",
+                    source, target, rename_err
+                ));
+            }
+            std::fs::copy(source, &target).map_err(|copy_err| {
+                format!(
+                    "Failed to copy session file {:?} to {:?}: {}",
+                    source, target, copy_err
+                )
+            })?;
+            std::fs::remove_file(source).map_err(|remove_err| {
+                format!(
+                    "Copied session file to {:?}, but failed to remove old file {:?}: {}",
+                    target, source, remove_err
+                )
+            })?;
+            Ok(())
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn migrate_project_sessions(
+    old_project_path: String,
+    new_project_path: String,
+) -> Result<(), String> {
+    let old_sessions_dir = get_sessions_dir(&old_project_path)?;
+    let new_sessions_dir = get_sessions_dir(&new_project_path)?;
+
+    if old_sessions_dir == new_sessions_dir || !old_sessions_dir.exists() {
+        return Ok(());
+    }
+
+    if let Some(parent) = new_sessions_dir.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create Claude projects directory: {}", e))?;
+    }
+
+    if !new_sessions_dir.exists() {
+        match std::fs::rename(&old_sessions_dir, &new_sessions_dir) {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                eprintln!(
+                    "[session] failed to rename sessions dir {:?} -> {:?}: {}. Falling back to merge.",
+                    old_sessions_dir, new_sessions_dir, err
+                );
+            }
+        }
+    }
+
+    std::fs::create_dir_all(&new_sessions_dir)
+        .map_err(|e| format!("Failed to create migrated sessions directory: {}", e))?;
+
+    let entries = std::fs::read_dir(&old_sessions_dir)
+        .map_err(|e| format!("Failed to read old sessions directory: {}", e))?;
+    for entry in entries.flatten() {
+        let source = entry.path();
+        let target = new_sessions_dir.join(entry.file_name());
+        move_session_entry(&source, &target)?;
+    }
+
+    let _ = std::fs::remove_dir(&old_sessions_dir);
+    Ok(())
 }
 
 /// Clean raw user message text into a display title.
@@ -7500,6 +7765,30 @@ pub async fn set_claude_fast_mode(enabled: bool) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    fn test_openai_compatible_auth_config() -> ClaudePrismAuthConfig {
+        ClaudePrismAuthConfig {
+            provider: Some(PROVIDER_OPENAI_COMPATIBLE.to_string()),
+            active_openai_credential_id: Some("qwen".to_string()),
+            openai_credentials: vec![
+                StoredOpenAiCompatibleCredentialConfig {
+                    id: "qwen".to_string(),
+                    label: "Qwen".to_string(),
+                    api_key: "sk-qwen".to_string(),
+                    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string(),
+                    model: "qwen3-coder-plus".to_string(),
+                },
+                StoredOpenAiCompatibleCredentialConfig {
+                    id: "deepseek".to_string(),
+                    label: "DeepSeek".to_string(),
+                    api_key: "sk-deepseek".to_string(),
+                    base_url: "https://api.deepseek.com".to_string(),
+                    model: "deepseek-chat".to_string(),
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
     // --- get_sessions_dir ---
 
     #[test]
@@ -7653,6 +7942,43 @@ mod tests {
     }
 
     #[test]
+    fn test_claude_credential_is_available_when_openai_provider_is_active() {
+        let mut config = test_openai_compatible_auth_config();
+        config.anthropic_api_key = Some("sk-modelgate".to_string());
+        config.anthropic_base_url = Some("https://mg.aid.pub/claude-proxy".to_string());
+
+        let credential = stored_claude_credential_from_config(&config).unwrap();
+
+        assert_eq!(credential.api_key, "sk-modelgate");
+        assert_eq!(
+            credential.base_url.as_deref(),
+            Some("https://mg.aid.pub/claude-proxy")
+        );
+    }
+
+    #[test]
+    fn test_direct_provider_turn_limit_is_optional() {
+        assert_eq!(parse_optional_direct_turn_limit(""), None);
+        assert_eq!(parse_optional_direct_turn_limit("0"), None);
+        assert_eq!(parse_optional_direct_turn_limit("off"), None);
+        assert_eq!(parse_optional_direct_turn_limit("none"), None);
+        assert_eq!(parse_optional_direct_turn_limit("false"), None);
+        assert_eq!(parse_optional_direct_turn_limit("not-a-number"), None);
+        assert_eq!(parse_optional_direct_turn_limit("42"), Some(42));
+    }
+
+    #[test]
+    fn test_direct_provider_converge_turn_tracks_explicit_max() {
+        assert_eq!(direct_provider_converge_turn_for(None, None), None);
+        assert_eq!(direct_provider_converge_turn_for(Some(1), None), None);
+        assert_eq!(direct_provider_converge_turn_for(Some(12), None), Some(10));
+        assert_eq!(
+            direct_provider_converge_turn_for(Some(12), Some(3)),
+            Some(3)
+        );
+    }
+
+    #[test]
     fn test_known_proxy_mismatch_rejects_modelgate_codex_proxy() {
         let error = known_proxy_mismatch_error(
             PROVIDER_OPENAI_COMPATIBLE,
@@ -7684,6 +8010,34 @@ mod tests {
             Some("https://mg.aid.pub/claude-proxy"),
         )
         .is_none());
+    }
+
+    #[test]
+    fn test_provider_id_lookup_none_does_not_fallback_to_active_provider() {
+        let config = test_openai_compatible_auth_config();
+        let credential = openai_compatible_credential_by_id_from_config(&config, None).unwrap();
+
+        assert!(credential.is_none());
+    }
+
+    #[test]
+    fn test_provider_id_lookup_uses_explicit_provider() {
+        let config = test_openai_compatible_auth_config();
+        let credential = openai_compatible_credential_by_id_from_config(&config, Some("deepseek"))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(credential.id, "deepseek");
+        assert_eq!(credential.model, "deepseek-chat");
+    }
+
+    #[test]
+    fn test_provider_id_lookup_rejects_missing_provider() {
+        let config = test_openai_compatible_auth_config();
+        let error =
+            openai_compatible_credential_by_id_from_config(&config, Some("missing")).unwrap_err();
+
+        assert!(error.contains("Configured provider credential not found"));
     }
 
     #[test]
@@ -8893,6 +9247,31 @@ mod tests {
     }
 
     #[test]
+    fn test_direct_provider_project_prompt_surfaces_python_and_skills() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".venv")).unwrap();
+        let skill_dir = dir
+            .path()
+            .join(".claude")
+            .join("skills")
+            .join("paper-helper");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: Paper Helper\ndescription: Helps revise academic papers.\n---\n\n# Paper Helper",
+        )
+        .unwrap();
+
+        let root = canonical_project_root(dir.path().to_str().unwrap()).unwrap();
+        let prompt = direct_provider_system_prompt_for_project(&root);
+
+        assert!(prompt.contains(DIRECT_PROVIDER_PROJECT_CONTEXT_HEADER));
+        assert!(prompt.contains("project .venv is present"));
+        assert!(prompt.contains("/paper-helper: Paper Helper - Helps revise academic papers."));
+        assert!(prompt.contains("invoking Skill before answering is a blocking requirement"));
+    }
+
+    #[test]
     fn test_direct_provider_no_tools_prompt_replaces_system_message() {
         let messages = vec![
             json!({ "role": "system", "content": direct_provider_system_prompt() }),
@@ -8940,6 +9319,34 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Previous tool result call-1"));
+    }
+
+    #[test]
+    fn test_direct_provider_legacy_functions_preserves_project_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join(".claude").join("skills").join("plotter");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: Plotter\ndescription: Creates analysis plots.\n---\n\n# Plotter",
+        )
+        .unwrap();
+        let root = canonical_project_root(dir.path().to_str().unwrap()).unwrap();
+        let messages = vec![
+            json!({ "role": "system", "content": direct_provider_system_prompt_for_project(&root) }),
+            json!({ "role": "user", "content": "Make a plot" }),
+        ];
+
+        let function_messages = direct_messages_for_tool_capability(
+            &messages,
+            DirectToolRequestMode::Functions,
+            DirectReasoningHistoryMode::Strip,
+        );
+        let content = function_messages[0]["content"].as_str().unwrap();
+
+        assert!(content.contains(DIRECT_PROVIDER_PROJECT_CONTEXT_HEADER));
+        assert!(content.contains("/plotter: Plotter - Creates analysis plots."));
+        assert!(content.contains("You can inspect and edit files through the provided tools"));
     }
 
     #[test]

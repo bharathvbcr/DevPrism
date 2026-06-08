@@ -2,10 +2,42 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { useDocumentStore } from "./document-store";
 import { useHistoryStore } from "./history-store";
+import { useClaudeSetupStore } from "./claude-setup-store";
 import { createLogger } from "@/lib/debug/logger";
 
 const log = createLogger("claude");
 export const CLAUDE_CODE_PROVIDER_ID = "__claude-code__";
+export const SELECTED_PROVIDER_CREDENTIAL_STORAGE_KEY =
+  "claude-prism:selected-provider-credential-id";
+
+function providerSelectionStorage(): Storage | null {
+  try {
+    return globalThis.localStorage ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function loadSelectedProviderCredentialId(): string | null {
+  const value = providerSelectionStorage()?.getItem(
+    SELECTED_PROVIDER_CREDENTIAL_STORAGE_KEY,
+  );
+  const trimmed = value?.trim();
+  return trimmed || null;
+}
+
+function persistSelectedProviderCredentialId(credentialId: string | null) {
+  const storage = providerSelectionStorage();
+  if (!storage) return;
+  if (credentialId?.trim()) {
+    storage.setItem(
+      SELECTED_PROVIDER_CREDENTIAL_STORAGE_KEY,
+      credentialId.trim(),
+    );
+  } else {
+    storage.removeItem(SELECTED_PROVIDER_CREDENTIAL_STORAGE_KEY);
+  }
+}
 
 /** Convert a character offset to 1-based line:col */
 export function offsetToLineCol(
@@ -72,6 +104,7 @@ export interface TabState {
   id: string;
   title: string;
   sessionId: string | null;
+  providerKey: string | null;
   messages: ClaudeStreamMessage[];
   isStreaming: boolean;
   error: string | null;
@@ -95,6 +128,7 @@ function makeDefaultTab(id: string): TabState {
     id,
     title: "New Chat",
     sessionId: null,
+    providerKey: null,
     messages: [],
     isStreaming: false,
     error: null,
@@ -102,6 +136,48 @@ function makeDefaultTab(id: string): TabState {
     totalOutputTokens: 0,
     draft: { input: "", pinnedContexts: [] },
   };
+}
+
+function providerSessionKey(providerCredentialId: string | null): string {
+  return providerCredentialId
+    ? `openai-compatible:${providerCredentialId}`
+    : CLAUDE_CODE_PROVIDER_ID;
+}
+
+function providerCredentialIdFromSessionKey(
+  providerKey: string | null,
+): string | null | undefined {
+  if (!providerKey) return undefined;
+  if (providerKey === CLAUDE_CODE_PROVIDER_ID) return CLAUDE_CODE_PROVIDER_ID;
+  const prefix = "openai-compatible:";
+  return providerKey.startsWith(prefix)
+    ? providerKey.slice(prefix.length)
+    : undefined;
+}
+
+function inferProviderKeyFromHistory(history: any[]): string | null {
+  const init = history.find(
+    (entry) => entry?.type === "system" && entry?.subtype === "init",
+  );
+  if (!init) return null;
+
+  if (
+    init.provider === "openai-compatible" &&
+    typeof init.provider_credential_id === "string" &&
+    init.provider_credential_id.trim()
+  ) {
+    return providerSessionKey(init.provider_credential_id.trim());
+  }
+
+  const model = typeof init.model === "string" ? init.model : "";
+  if (model.toLowerCase().startsWith("claude")) {
+    return CLAUDE_CODE_PROVIDER_ID;
+  }
+
+  const matchingCredential = useClaudeSetupStore
+    .getState()
+    .openAiCredentials.find((credential) => credential.model === model);
+  return matchingCredential ? providerSessionKey(matchingCredential.id) : null;
 }
 
 function usageFromMessage(msg: ClaudeStreamMessage): {
@@ -128,6 +204,70 @@ function usageTotalsForMessages(messages: ClaudeStreamMessage[]): {
     },
     { inputTokens: 0, outputTokens: 0 },
   );
+}
+
+function stringifyBlockContent(value: unknown): string {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function messageContentText(message: ClaudeStreamMessage): string {
+  const blocks = message.message?.content ?? [];
+  const parts: string[] = [];
+  for (const block of blocks) {
+    if (block.type === "text" && block.text?.trim()) {
+      parts.push(block.text.trim());
+    } else if (block.type === "tool_use") {
+      const input = block.input ? stringifyBlockContent(block.input) : "";
+      parts.push(
+        `[tool_use: ${block.name ?? "unknown"}${input ? ` ${input}` : ""}]`,
+      );
+    } else if (block.type === "tool_result") {
+      const content = stringifyBlockContent(block.content ?? "");
+      parts.push(
+        `[tool_result${block.is_error ? " error" : ""}: ${content}]`,
+      );
+    }
+  }
+  return parts.join("\n").trim();
+}
+
+function buildProviderSwitchContext(
+  messages: ClaudeStreamMessage[],
+  maxChars = 18000,
+): string | null {
+  const entries = messages
+    .filter((msg) => msg.type === "user" || msg.type === "assistant")
+    .map((msg) => {
+      const text = messageContentText(msg);
+      if (!text) return null;
+      return `${msg.type === "user" ? "User" : "Assistant"}:\n${text}`;
+    })
+    .filter((entry): entry is string => !!entry);
+
+  if (entries.length === 0) return null;
+
+  const selected: string[] = [];
+  let total = 0;
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    const next = entries[i];
+    if (selected.length > 0 && total + next.length > maxChars) break;
+    selected.unshift(next);
+    total += next.length;
+  }
+
+  return [
+    "[Provider switch context]",
+    "The conversation below happened earlier in this same ClaudePrism chat before switching model providers.",
+    "Use it as prior context. Do not repeat it; answer only the user's latest request after this block.",
+    "",
+    selected.join("\n\n"),
+    "[End provider switch context]",
+  ].join("\n");
 }
 
 let tabCounter = 0;
@@ -292,9 +432,11 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
 
   selectedModel: "opus",
   setSelectedModel: (model) => set({ selectedModel: model }),
-  selectedProviderCredentialId: null,
-  setSelectedProviderCredentialId: (credentialId) =>
-    set({ selectedProviderCredentialId: credentialId }),
+  selectedProviderCredentialId: loadSelectedProviderCredentialId(),
+  setSelectedProviderCredentialId: (credentialId) => {
+    persistSelectedProviderCredentialId(credentialId);
+    set({ selectedProviderCredentialId: credentialId });
+  },
   selectedProviderModels: {},
   setSelectedProviderModel: (credentialId, model) =>
     set((state) => ({
@@ -358,10 +500,22 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     const providerModelOverride = providerCredentialId
       ? selectedProviderModels[providerCredentialId] || null
       : null;
+    const requestProviderKey = providerSessionKey(providerCredentialId);
+    const previousProviderKey = activeTab?.providerKey ?? null;
+    const providerChanged =
+      !!sessionId && !!previousProviderKey && previousProviderKey !== requestProviderKey;
+    const switchingDirectProviderToClaudeCode =
+      providerChanged &&
+      requestProviderKey === CLAUDE_CODE_PROVIDER_ID &&
+      previousProviderKey !== CLAUDE_CODE_PROVIDER_ID;
+    const resumeSessionId = switchingDirectProviderToClaudeCode
+      ? null
+      : sessionId ?? null;
 
     const sendStart = performance.now();
     log.info("sendPrompt start", {
       sessionId: !!sessionId,
+      providerChanged,
       hasContext: !!contextOverride,
       tab: activeTabId,
     });
@@ -414,6 +568,8 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
           ...(s.tabs.find((t) => t.id === activeTabId)?.messages ?? []),
           userMessage,
         ],
+        sessionId: resumeSessionId,
+        providerKey: requestProviderKey,
         isStreaming: true,
         error: null,
       };
@@ -465,17 +621,23 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       }
       prompt = `${ctx}\n\n${userPrompt}`;
     }
+    if (switchingDirectProviderToClaudeCode) {
+      const priorContext = buildProviderSwitchContext(activeTab?.messages ?? []);
+      if (priorContext) {
+        prompt = `${priorContext}\n\n${prompt}`;
+      }
+    }
     log.info("invoking CLI", {
       promptLength: prompt.length,
-      mode: sessionId ? "resume" : "new",
+      mode: resumeSessionId ? "resume" : "new",
     });
 
     try {
-      if (sessionId) {
+      if (resumeSessionId) {
         // Resume existing session
         await invoke("resume_claude_code", {
           projectPath,
-          sessionId,
+          sessionId: resumeSessionId,
           prompt,
           tabId: activeTabId,
           model: selectedModel,
@@ -542,6 +704,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       applyTabUpdate(s, activeTabId, {
         messages: [],
         sessionId: null,
+        providerKey: null,
         error: null,
         isStreaming: false,
         totalInputTokens: 0,
@@ -561,6 +724,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       applyTabUpdate(s, activeTabId, {
         messages: [],
         sessionId,
+        providerKey: null,
         error: null,
         isStreaming: false,
         totalInputTokens: 0,
@@ -586,11 +750,23 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         }
 
         const totals = usageTotalsForMessages(messages);
+        const providerKey = inferProviderKeyFromHistory(history);
+        const selectedProviderCredentialId =
+          providerCredentialIdFromSessionKey(providerKey);
+        if (selectedProviderCredentialId !== undefined) {
+          persistSelectedProviderCredentialId(selectedProviderCredentialId);
+        }
         set((s) =>
-          applyTabUpdate(s, activeTabId, {
-            messages,
-            totalInputTokens: totals.inputTokens,
-            totalOutputTokens: totals.outputTokens,
+          ({
+            ...applyTabUpdate(s, activeTabId, {
+              messages,
+              providerKey,
+              totalInputTokens: totals.inputTokens,
+              totalOutputTokens: totals.outputTokens,
+            }),
+            ...(selectedProviderCredentialId !== undefined
+              ? { selectedProviderCredentialId }
+              : {}),
           }),
         );
       } catch (err) {

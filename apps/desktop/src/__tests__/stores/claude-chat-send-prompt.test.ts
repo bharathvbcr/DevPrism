@@ -41,6 +41,7 @@ function resetClaudeChatStore() {
         id: "tab-default",
         title: "New Chat",
         sessionId: null,
+        providerKey: null,
         messages: [],
         isStreaming: false,
         error: null,
@@ -186,6 +187,78 @@ describe("useClaudeChatStore.sendPrompt context assembly", () => {
       expect.objectContaining({
         providerCredentialId: null,
         providerModelOverride: null,
+      }),
+    );
+  });
+
+  it("starts Claude Code with prior context when switching from a direct provider", async () => {
+    useClaudeChatStore.setState((state) => ({
+      sessionId: "qwen-session",
+      selectedProviderCredentialId: CLAUDE_CODE_PROVIDER_ID,
+      tabs: state.tabs.map((tab) =>
+        tab.id === "tab-default"
+          ? {
+              ...tab,
+              sessionId: "qwen-session",
+              providerKey: "openai-compatible:qwen-cred",
+              messages: [
+                {
+                  type: "user",
+                  message: { content: [{ type: "text", text: "Old DS question" }] },
+                },
+                {
+                  type: "assistant",
+                  message: { content: [{ type: "text", text: "Old DS answer" }] },
+                },
+              ],
+            }
+          : tab,
+      ),
+    }));
+
+    await useClaudeChatStore.getState().sendPrompt("Use Claude now");
+
+    expect(invoke).toHaveBeenCalledWith(
+      "execute_claude_code",
+      expect.objectContaining({
+        providerCredentialId: null,
+        providerModelOverride: null,
+        prompt: expect.stringContaining("[Provider switch context]"),
+      }),
+    );
+    const prompt = (vi.mocked(invoke).mock.calls[0]?.[1] as any).prompt;
+    expect(prompt).toContain("Old DS question");
+    expect(prompt).toContain("Old DS answer");
+    expect(prompt).toContain("Use Claude now");
+    expect(
+      vi.mocked(invoke).mock.calls.some(([command]) => command === "resume_claude_code"),
+    ).toBe(false);
+  });
+
+  it("keeps the same backend session when switching between OpenAI-compatible providers", async () => {
+    useClaudeChatStore.setState((state) => ({
+      sessionId: "shared-session",
+      selectedProviderCredentialId: "deepseek-cred",
+      selectedProviderModels: { "deepseek-cred": "deepseek-chat" },
+      tabs: state.tabs.map((tab) =>
+        tab.id === "tab-default"
+          ? {
+              ...tab,
+              sessionId: "shared-session",
+              providerKey: "openai-compatible:qwen-cred",
+            }
+          : tab,
+      ),
+    }));
+
+    await useClaudeChatStore.getState().sendPrompt("Use DeepSeek now");
+
+    expect(invoke).toHaveBeenCalledWith(
+      "resume_claude_code",
+      expect.objectContaining({
+        sessionId: "shared-session",
+        providerCredentialId: "deepseek-cred",
+        providerModelOverride: "deepseek-chat",
       }),
     );
   });

@@ -267,15 +267,17 @@ export function useClaudeEvents() {
 
       chatStore._appendMessage(tabId, msg);
 
-      // When AskUserQuestion is detected, cancel the process so the user
+      // When a UI-pause tool is detected, cancel the process so the user
       // can interact with the widget before Claude continues.
       if (msg.type === "assistant" && msg.message?.content) {
-        const hasAskUser = msg.message.content.some(
-          (b: any) => b.type === "tool_use" && b.name === "AskUserQuestion",
+        const hasUiPauseTool = msg.message.content.some(
+          (b: any) =>
+            b.type === "tool_use" &&
+            (b.name === "AskUserQuestion" || b.name === "ExitPlanMode"),
         );
-        if (hasAskUser) {
+        if (hasUiPauseTool) {
           log.info(
-            `[${tabId}] ${elapsed(tabId)} AskUserQuestion detected — cancelling process for user input`,
+            `[${tabId}] ${elapsed(tabId)} UI-pause tool detected - cancelling process for user input`,
           );
           cancelledForAskRef.current.set(tabId, true);
           invoke("cancel_claude_execution", { tabId }).catch(() => {});

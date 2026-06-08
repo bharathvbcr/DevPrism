@@ -400,7 +400,17 @@ function InstallLogOutput() {
 
 // ─── Main Component ───
 
-export function ClaudeSetup() {
+interface ClaudeSetupProps {
+  variant?: "default" | "provider-dialog";
+  onSaved?: () => void;
+  onCancel?: () => void;
+}
+
+export function ClaudeSetup({
+  variant = "default",
+  onSaved,
+  onCancel,
+}: ClaudeSetupProps = {}) {
   const [provider, setProvider] = useState<"claude-code" | "openai-compatible">(
     "claude-code",
   );
@@ -458,7 +468,18 @@ export function ClaudeSetup() {
       setModelFetchError(null);
       setProviderPreset(savedPreset);
       setIsEditingProvider(false);
+      onSaved?.();
     }
+  };
+
+  const resetProviderForm = () => {
+    setIsEditingProvider(false);
+    setApiKey("");
+    setBaseUrl("");
+    setModel("");
+    setModelOptions([]);
+    setModelFetchError(null);
+    setProviderPreset("anthropic-direct");
   };
 
   const beginProviderEdit = (isDirectProvider: boolean) => {
@@ -811,6 +832,27 @@ export function ClaudeSetup() {
     );
   }
 
+  if (variant === "provider-dialog") {
+    return (
+      <div className="space-y-3">
+        {renderApiKeyForm({ forceOpenAiCompatible: true })}
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="w-full"
+          onClick={() => {
+            resetProviderForm();
+            onCancel?.();
+          }}
+          disabled={isSavingApiKey}
+        >
+          Cancel
+        </Button>
+      </div>
+    );
+  }
+
   if (status === "ready") {
     const isDirectProvider = version === "OpenAI-compatible provider";
     const readyDetail = isDirectProvider
@@ -840,13 +882,7 @@ export function ClaudeSetup() {
               size="sm"
               variant="outline"
               onClick={() => {
-                setIsEditingProvider(false);
-                setApiKey("");
-                setBaseUrl("");
-                setModel("");
-                setModelOptions([]);
-                setModelFetchError(null);
-                setProviderPreset("anthropic-direct");
+                resetProviderForm();
               }}
               disabled={isSavingApiKey || isClearingApiKey}
             >

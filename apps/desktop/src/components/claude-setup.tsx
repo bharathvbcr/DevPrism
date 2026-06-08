@@ -145,15 +145,6 @@ const CLAUDE_PROVIDER_CARDS: ModelProviderCard[] = [
     model: "",
     badge: "MG",
   })),
-  {
-    id: "custom-claude-proxy",
-    label: "Custom Claude Proxy",
-    provider: "claude-code",
-    baseUrl: "",
-    model: "",
-    badge: "CP",
-    note: "Use a Claude-compatible proxy endpoint.",
-  },
 ];
 
 const OPENAI_DEFAULT_PRESET_ID = OPENAI_PROVIDER_CARDS[0]?.id ?? "openai";
@@ -179,6 +170,17 @@ function findOpenAiPresetIdForBaseUrl(baseUrl?: string | null) {
 
 function openAiPresetIdForBaseUrl(baseUrl?: string | null) {
   return findOpenAiPresetIdForBaseUrl(baseUrl) ?? OPENAI_DEFAULT_PRESET_ID;
+}
+
+function findClaudePresetIdForBaseUrl(baseUrl?: string | null) {
+  const normalized = normalizePresetBaseUrl(baseUrl ?? "");
+  if (!normalized) return null;
+
+  return (
+    CLAUDE_COMPATIBLE_PRESETS.find(
+      (preset) => normalizePresetBaseUrl(preset.baseUrl) === normalized,
+    )?.id ?? null
+  );
 }
 
 // ─── Event Hooks ───
@@ -648,6 +650,8 @@ export function ClaudeSetup() {
               onChange={(event) => {
                 const nextUrl = event.target.value;
                 const matchingPreset = findOpenAiPresetIdForBaseUrl(nextUrl);
+                const matchingClaudePreset =
+                  findClaudePresetIdForBaseUrl(nextUrl);
                 setBaseUrl(nextUrl);
                 setModelOptions([]);
                 setModelFetchError(null);
@@ -656,11 +660,11 @@ export function ClaudeSetup() {
                     setProviderPreset(matchingPreset);
                   }
                 } else {
-                  setProviderPreset(
-                    nextUrl.trim()
-                      ? "custom-claude-proxy"
-                      : "anthropic-direct",
-                  );
+                  if (matchingClaudePreset) {
+                    setProviderPreset(matchingClaudePreset);
+                  } else if (!nextUrl.trim()) {
+                    setProviderPreset("anthropic-direct");
+                  }
                 }
               }}
               disabled={isSavingApiKey}

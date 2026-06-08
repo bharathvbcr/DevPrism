@@ -510,10 +510,38 @@ jobs:
           CXXFLAGS: "-std=c++17"
           CFLAGS: ""
         run: |
-          # Replace vcpkg's graphite2 with system one (vcpkg builds with hidden symbol visibility)
-          rm -f $HOME/vcpkg/installed/x64-linux/lib/libgraphite2.*
-          ln -sf /usr/lib/x86_64-linux-gnu/libgraphite2.so $HOME/vcpkg/installed/x64-linux/lib/libgraphite2.so
-          ln -sf /usr/lib/x86_64-linux-gnu/libgraphite2.a $HOME/vcpkg/installed/x64-linux/lib/libgraphite2.a 2>/dev/null || true
+          # Fix vcpkg graphite2: globalize hidden symbols so tectonic can link them
+          # (vcpkg builds graphite2 with -fvisibility=hidden, hiding gr_* API symbols)
+          VCPKG_GR2="$HOME/vcpkg/installed/x64-linux/lib/libgraphite2.a"
+          if [ -f "$VCPKG_GR2" ]; then
+            objcopy --globalize-symbols=<(nm "$VCPKG_GR2" | grep ' t gr_\| d gr_' | awk '{print $3}') "$VCPKG_GR2" 2>/dev/null || \
+            objcopy --globalize-symbol=gr_label_destroy \
+                    --globalize-symbol=gr_fref_label \
+                    --globalize-symbol=gr_fref_value_label \
+                    --globalize-symbol=gr_make_font \
+                    --globalize-symbol=gr_seg_destroy \
+                    --globalize-symbol=gr_fref_set_feature_value \
+                    --globalize-symbol=gr_make_seg \
+                    --globalize-symbol=gr_seg_first_slot \
+                    --globalize-symbol=gr_font_destroy \
+                    --globalize-symbol=gr_face_destroy \
+                    --globalize-symbol=gr_make_face \
+                    --globalize-symbol=gr_face_featureval_for_lang \
+                    --globalize-symbol=gr_face_find_fref \
+                    --globalize-symbol=gr_face_n_fref \
+                    --globalize-symbol=gr_fref_feature_value \
+                    --globalize-symbol=gr_fref_n_values \
+                    --globalize-symbol=gr_fref_id \
+                    --globalize-symbol=gr_seg_last_slot \
+                    --globalize-symbol=gr_slot_next_in_segment \
+                    --globalize-symbol=gr_slot_origin_X \
+                    --globalize-symbol=gr_slot_advance_X \
+                    --globalize-symbol=gr_seg_advance_X \
+                    --globalize-symbol=gr_seg_advance_Y \
+                    --globalize-symbol=gr_slot_origin_Y \
+                    --globalize-symbol=gr_slot_advance_Y \
+                    "$VCPKG_GR2"
+          fi
           pnpm --filter @claude-prism/desktop tauri build --target x86_64-unknown-linux-gnu
 
       - name: Collect updater artifacts

@@ -23,7 +23,10 @@ vi.mock("@/stores/history-store", () => ({
   },
 }));
 
-import { useClaudeChatStore } from "@/stores/claude-chat-store";
+import {
+  CLAUDE_CODE_PROVIDER_ID,
+  useClaudeChatStore,
+} from "@/stores/claude-chat-store";
 
 function resetClaudeChatStore() {
   useClaudeChatStore.setState({
@@ -51,6 +54,7 @@ function resetClaudeChatStore() {
     pendingAttachments: [],
     selectedModel: "opus",
     selectedProviderCredentialId: null,
+    selectedProviderModels: {},
     effortLevel: "medium",
     _cancelledByUser: false,
   });
@@ -167,6 +171,39 @@ describe("useClaudeChatStore.sendPrompt context assembly", () => {
     expect(createSnapshotMock).toHaveBeenCalledWith(
       "/project",
       "[claude] Before Claude edit",
+    );
+  });
+
+  it("sends Claude Code when the Claude provider option is selected", async () => {
+    useClaudeChatStore.setState({
+      selectedProviderCredentialId: CLAUDE_CODE_PROVIDER_ID,
+    });
+
+    await useClaudeChatStore.getState().sendPrompt("Use Claude");
+
+    expect(invoke).toHaveBeenCalledWith(
+      "execute_claude_code",
+      expect.objectContaining({
+        providerCredentialId: null,
+        providerModelOverride: null,
+      }),
+    );
+  });
+
+  it("passes an OpenAI-compatible model override with the provider credential", async () => {
+    useClaudeChatStore.setState({
+      selectedProviderCredentialId: "qwen-cred",
+      selectedProviderModels: { "qwen-cred": "qwen3.7-plus" },
+    });
+
+    await useClaudeChatStore.getState().sendPrompt("Use Qwen");
+
+    expect(invoke).toHaveBeenCalledWith(
+      "execute_claude_code",
+      expect.objectContaining({
+        providerCredentialId: "qwen-cred",
+        providerModelOverride: "qwen3.7-plus",
+      }),
     );
   });
 });

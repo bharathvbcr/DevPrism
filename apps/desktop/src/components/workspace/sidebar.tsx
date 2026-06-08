@@ -435,8 +435,7 @@ export function Sidebar() {
   const [renameDialogOpen, setRenameDialogOpen] = useState(false);
   const [renameFileId, setRenameFileId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
-  const [projectRenameDialogOpen, setProjectRenameDialogOpen] =
-    useState(false);
+  const [projectRenameDialogOpen, setProjectRenameDialogOpen] = useState(false);
   const [projectRenameValue, setProjectRenameValue] = useState("");
   const [projectRenameError, setProjectRenameError] = useState("");
   const [isRenamingProject, setIsRenamingProject] = useState(false);
@@ -653,7 +652,7 @@ export function Sidebar() {
   return (
     <div className="flex h-full flex-col bg-sidebar text-sidebar-foreground">
       {/* Header — padded top for macOS overlay titlebar */}
-      <div className="relative flex h-[calc(48px+var(--titlebar-height))] items-center justify-center border-sidebar-border border-b px-3 pt-[var(--titlebar-height)]">
+      <div className="relative flex h-[calc(var(--workspace-topbar-height)+var(--titlebar-height))] items-center justify-center border-sidebar-border border-b px-3">
         <button
           type="button"
           className={cn(
@@ -691,12 +690,12 @@ export function Sidebar() {
             className="flex h-full flex-col"
             data-sidebar-files
           >
-            <div className="relative flex h-8 shrink-0 items-center justify-center border-sidebar-border border-b px-3">
-              <div className="flex items-center gap-2">
-                <FolderIcon className="size-3.5 text-muted-foreground" />
-                <span className="font-medium text-xs">Files</span>
+            <div className="flex h-8 shrink-0 items-center justify-between gap-2 border-sidebar-border border-b px-3">
+              <div className="flex min-w-0 items-center gap-2">
+                <FolderIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                <span className="truncate font-medium text-xs">Files</span>
               </div>
-              <div className="absolute right-3 flex items-center gap-0.5">
+              <div className="flex shrink-0 items-center gap-0.5">
                 <Button
                   variant="ghost"
                   size="icon"

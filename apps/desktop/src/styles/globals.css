@@ -124,6 +124,7 @@
     /* macOS overlay titlebar inset — traffic lights safe area */
     --titlebar-height: 18px;
     --traffic-light-width: 70px;
+    --workspace-topbar-height: 40px;
   }
   body {
     @apply bg-background text-foreground;

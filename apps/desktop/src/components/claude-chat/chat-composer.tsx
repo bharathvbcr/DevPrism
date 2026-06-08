@@ -37,7 +37,10 @@ import { useClaudeSetupStore } from "@/stores/claude-setup-store";
 import { useDocumentStore, type ProjectFile } from "@/stores/document-store";
 import { getUniqueTargetName } from "@/lib/tauri/fs";
 import { createPdfTextSidecar, isPdfPath } from "@/lib/pdf-text-extractor";
-import { getProviderIconSrc } from "@/lib/provider-icons";
+import {
+  getProviderDisplayName,
+  getProviderIconSrc,
+} from "@/lib/provider-icons";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { cn } from "@/lib/utils";
 import { SlashCommandPicker, type SlashCommand } from "./slash-command-picker";
@@ -105,6 +108,13 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
     null;
   const directProviderModel =
     selectedProviderCredential?.model || providerModel || "Provider";
+  const selectedProviderDisplayName = selectedProviderCredential
+    ? getProviderDisplayName({
+        label: selectedProviderCredential.label,
+        baseUrl: selectedProviderCredential.base_url,
+        model: selectedProviderCredential.model,
+      })
+    : "Provider";
   const selectedProviderIconSrc = selectedProviderCredential
     ? getProviderIconSrc({
         label: selectedProviderCredential.label,
@@ -804,6 +814,11 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                   openAiCredentials.map((credential) => {
                     const active =
                       selectedProviderCredential?.id === credential.id;
+                    const displayName = getProviderDisplayName({
+                      label: credential.label,
+                      baseUrl: credential.base_url,
+                      model: credential.model,
+                    });
                     const iconSrc = getProviderIconSrc({
                       label: credential.label,
                       baseUrl: credential.base_url,
@@ -836,7 +851,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                         )}
                         <div className="min-w-0 flex-1">
                           <div className="truncate font-medium text-xs">
-                            {credential.label}
+                            {displayName}
                           </div>
                           <div className="truncate text-muted-foreground text-xs">
                             {credential.model}
@@ -1084,7 +1099,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                     <SparklesIcon className="size-3" />
                   )}
                   <span className="max-w-36 truncate">
-                    {selectedProviderCredential?.label ?? "Provider"}
+                    {selectedProviderDisplayName}
                   </span>
                   <span className="max-w-32 truncate text-muted-foreground/60">
                     {directProviderModel}

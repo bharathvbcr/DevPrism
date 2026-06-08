@@ -5,7 +5,7 @@ import { APP_VISIBILITY_RESTORED } from "@/lib/debug/log-store";
 import type { StructuredTextData, LinkData } from "@/lib/mupdf/types";
 
 const log = createLogger("mupdf-page");
-const RENDER_SCALE_DEBOUNCE_MS = 140;
+const RENDER_SCALE_DEBOUNCE_MS = 260;
 
 interface MupdfPageProps {
   docId: number;

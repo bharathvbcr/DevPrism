@@ -74,13 +74,36 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
   const isStreaming = useClaudeChatStore((s) => s.isStreaming);
   const selectedModel = useClaudeChatStore((s) => s.selectedModel);
   const setSelectedModel = useClaudeChatStore((s) => s.setSelectedModel);
+  const selectedProviderCredentialId = useClaudeChatStore(
+    (s) => s.selectedProviderCredentialId,
+  );
+  const setSelectedProviderCredentialId = useClaudeChatStore(
+    (s) => s.setSelectedProviderCredentialId,
+  );
   const effortLevel = useClaudeChatStore((s) => s.effortLevel);
   const setEffortLevel = useClaudeChatStore((s) => s.setEffortLevel);
   const activeTabId = useClaudeChatStore((s) => s.activeTabId);
   const setupVersion = useClaudeSetupStore((s) => s.version);
   const providerModel = useClaudeSetupStore((s) => s.providerModel);
+  const openAiCredentials = useClaudeSetupStore((s) => s.openAiCredentials);
+  const activeOpenAiCredentialId = useClaudeSetupStore(
+    (s) => s.activeOpenAiCredentialId,
+  );
+  const setActiveApiCredential = useClaudeSetupStore(
+    (s) => s.setActiveApiCredential,
+  );
   const isDirectProvider = setupVersion === "OpenAI-compatible provider";
-  const directProviderModel = providerModel || "Provider";
+  const selectedProviderCredential =
+    openAiCredentials.find(
+      (credential) => credential.id === selectedProviderCredentialId,
+    ) ??
+    openAiCredentials.find(
+      (credential) => credential.id === activeOpenAiCredentialId,
+    ) ??
+    openAiCredentials[0] ??
+    null;
+  const directProviderModel =
+    selectedProviderCredential?.model || providerModel || "Provider";
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -104,10 +127,14 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
   }, [modelPickerOpen]);
 
   useEffect(() => {
-    if (isDirectProvider) {
-      setModelPickerOpen(false);
+    if (!selectedProviderCredentialId && selectedProviderCredential?.id) {
+      setSelectedProviderCredentialId(selectedProviderCredential.id);
     }
-  }, [isDirectProvider]);
+  }, [
+    selectedProviderCredential?.id,
+    selectedProviderCredentialId,
+    setSelectedProviderCredentialId,
+  ]);
 
   // Pinned contexts — supports multiple files/selections
   const [pinnedContexts, setPinnedContexts] = useState<PinnedContext[]>([]);
@@ -746,105 +773,151 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
 
       {/* Model picker popup — portal to body to escape all stacking contexts */}
       {modelPickerOpen &&
-        !isDirectProvider &&
         createPortal(
           <div
             ref={modelPickerRef}
-            className="fixed w-64 rounded-lg border border-border bg-background shadow-lg"
+            className="fixed w-72 rounded-lg border border-border bg-background shadow-lg"
             style={{
               left: pickerPos.left,
               bottom: pickerPos.bottom,
               zIndex: 9999,
             }}
           >
-            {/* Models */}
-            <div className="p-1">
-              <div className="px-2 py-1 font-medium text-muted-foreground text-xs">
-                Model
-              </div>
-              {[
-                {
-                  id: "sonnet" as const,
-                  name: "Sonnet",
-                  desc: "Fast, efficient for most tasks",
-                  icon: <ZapIcon className="size-3.5" />,
-                },
-                {
-                  id: "opus" as const,
-                  name: "Opus",
-                  desc: "Most capable, complex reasoning",
-                  icon: <SparklesIcon className="size-3.5" />,
-                },
-                {
-                  id: "haiku" as const,
-                  name: "Haiku",
-                  desc: "Fastest, simple tasks",
-                  icon: <RabbitIcon className="size-3.5" />,
-                },
-                {
-                  id: "opusplan" as const,
-                  name: "OpusPlan",
-                  desc: "Opus for planning, Sonnet for execution",
-                  icon: <LayersIcon className="size-3.5" />,
-                },
-              ].map((m) => (
-                <button
-                  key={m.id}
-                  className={cn(
-                    "flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition-colors",
-                    selectedModel === m.id
-                      ? "bg-accent text-accent-foreground"
-                      : "hover:bg-muted",
-                  )}
-                  onClick={() => setSelectedModel(m.id)}
-                >
-                  {m.icon}
-                  <div className="min-w-0 flex-1">
-                    <div className="font-medium text-xs">{m.name}</div>
-                    <div className="truncate text-muted-foreground text-xs">
-                      {m.desc}
-                    </div>
+            {isDirectProvider ? (
+              <div className="p-1">
+                <div className="px-2 py-1 font-medium text-muted-foreground text-xs">
+                  Provider
+                </div>
+                {openAiCredentials.length === 0 ? (
+                  <div className="px-3 py-2 text-muted-foreground text-xs">
+                    No configured providers
                   </div>
-                  {selectedModel === m.id && (
-                    <CheckIcon className="size-3 shrink-0" />
-                  )}
-                </button>
-              ))}
-            </div>
-
-            <div className="border-border border-t" />
-
-            {/* Effort level */}
-            <div className="p-2">
-              <div className="mb-1.5 flex items-center justify-between px-1">
-                <span className="font-medium text-muted-foreground text-xs">
-                  Effort
-                </span>
-                <span className="text-muted-foreground text-xs">
-                  {effortLevel === "low"
-                    ? "Low"
-                    : effortLevel === "medium"
-                      ? "Medium"
-                      : "High"}
-                </span>
+                ) : (
+                  openAiCredentials.map((credential) => {
+                    const active =
+                      selectedProviderCredential?.id === credential.id;
+                    return (
+                      <button
+                        key={credential.id}
+                        className={cn(
+                          "flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition-colors",
+                          active
+                            ? "bg-accent text-accent-foreground"
+                            : "hover:bg-muted",
+                        )}
+                        onClick={() => {
+                          setSelectedProviderCredentialId(credential.id);
+                          void setActiveApiCredential(credential.id);
+                          setModelPickerOpen(false);
+                        }}
+                      >
+                        <SparklesIcon className="size-3.5 shrink-0" />
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate font-medium text-xs">
+                            {credential.label}
+                          </div>
+                          <div className="truncate text-muted-foreground text-xs">
+                            {credential.model}
+                          </div>
+                        </div>
+                        {active && <CheckIcon className="size-3 shrink-0" />}
+                      </button>
+                    );
+                  })
+                )}
               </div>
-              <div className="flex gap-1">
-                {(["low", "medium", "high"] as const).map((level) => (
-                  <button
-                    key={level}
-                    className={cn(
-                      "flex-1 rounded-md py-1 text-center font-medium text-xs transition-colors",
-                      effortLevel === level
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-muted text-muted-foreground hover:bg-muted/80",
-                    )}
-                    onClick={() => setEffortLevel(level)}
-                  >
-                    {level === "low" ? "L" : level === "medium" ? "M" : "H"}
-                  </button>
-                ))}
-              </div>
-            </div>
+            ) : (
+              <>
+                {/* Models */}
+                <div className="p-1">
+                  <div className="px-2 py-1 font-medium text-muted-foreground text-xs">
+                    Model
+                  </div>
+                  {[
+                    {
+                      id: "sonnet" as const,
+                      name: "Sonnet",
+                      desc: "Fast, efficient for most tasks",
+                      icon: <ZapIcon className="size-3.5" />,
+                    },
+                    {
+                      id: "opus" as const,
+                      name: "Opus",
+                      desc: "Most capable, complex reasoning",
+                      icon: <SparklesIcon className="size-3.5" />,
+                    },
+                    {
+                      id: "haiku" as const,
+                      name: "Haiku",
+                      desc: "Fastest, simple tasks",
+                      icon: <RabbitIcon className="size-3.5" />,
+                    },
+                    {
+                      id: "opusplan" as const,
+                      name: "OpusPlan",
+                      desc: "Opus for planning, Sonnet for execution",
+                      icon: <LayersIcon className="size-3.5" />,
+                    },
+                  ].map((m) => (
+                    <button
+                      key={m.id}
+                      className={cn(
+                        "flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition-colors",
+                        selectedModel === m.id
+                          ? "bg-accent text-accent-foreground"
+                          : "hover:bg-muted",
+                      )}
+                      onClick={() => setSelectedModel(m.id)}
+                    >
+                      {m.icon}
+                      <div className="min-w-0 flex-1">
+                        <div className="font-medium text-xs">{m.name}</div>
+                        <div className="truncate text-muted-foreground text-xs">
+                          {m.desc}
+                        </div>
+                      </div>
+                      {selectedModel === m.id && (
+                        <CheckIcon className="size-3 shrink-0" />
+                      )}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="border-border border-t" />
+
+                {/* Effort level */}
+                <div className="p-2">
+                  <div className="mb-1.5 flex items-center justify-between px-1">
+                    <span className="font-medium text-muted-foreground text-xs">
+                      Effort
+                    </span>
+                    <span className="text-muted-foreground text-xs">
+                      {effortLevel === "low"
+                        ? "Low"
+                        : effortLevel === "medium"
+                          ? "Medium"
+                          : "High"}
+                    </span>
+                  </div>
+                  <div className="flex gap-1">
+                    {(["low", "medium", "high"] as const).map((level) => (
+                      <button
+                        key={level}
+                        className={cn(
+                          "flex-1 rounded-md py-1 text-center font-medium text-xs transition-colors",
+                          effortLevel === level
+                            ? "bg-primary text-primary-foreground"
+                            : "bg-muted text-muted-foreground hover:bg-muted/80",
+                        )}
+                        onClick={() => setEffortLevel(level)}
+                      >
+                        {level === "low" ? "L" : level === "medium" ? "M" : "H"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
           </div>,
           document.body,
         )}
@@ -969,14 +1042,10 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
             <button
               ref={modelButtonRef}
               type="button"
-              onClick={() => {
-                if (!isDirectProvider) {
-                  setModelPickerOpen((v) => !v);
-                }
-              }}
+              onClick={() => setModelPickerOpen((v) => !v)}
               title={
                 isDirectProvider
-                  ? "Configured in AI provider setup"
+                  ? "Switch configured provider"
                   : "Choose Claude model"
               }
               className="flex items-center gap-1.5 rounded-md px-2 py-1 text-muted-foreground text-xs transition-colors hover:bg-muted hover:text-foreground"
@@ -984,7 +1053,13 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
               {isDirectProvider ? (
                 <>
                   <SparklesIcon className="size-3" />
-                  <span className="max-w-36 truncate">{directProviderModel}</span>
+                  <span className="max-w-36 truncate">
+                    {selectedProviderCredential?.label ?? "Provider"}
+                  </span>
+                  <span className="max-w-32 truncate text-muted-foreground/60">
+                    {directProviderModel}
+                  </span>
+                  <ChevronDownIcon className="size-3" />
                 </>
               ) : (
                 <>

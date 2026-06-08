@@ -19,6 +19,8 @@ struct ClaudePrismAuthConfig {
     openai_api_key: Option<String>,
     openai_base_url: Option<String>,
     openai_model: Option<String>,
+    active_openai_credential_id: Option<String>,
+    openai_credentials: Vec<StoredOpenAiCompatibleCredentialConfig>,
 }
 
 struct StoredClaudeCredential {
@@ -28,7 +30,26 @@ struct StoredClaudeCredential {
 
 #[derive(Clone)]
 struct StoredOpenAiCompatibleCredential {
+    id: String,
+    label: String,
     api_key: String,
+    base_url: String,
+    model: String,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+struct StoredOpenAiCompatibleCredentialConfig {
+    id: String,
+    label: String,
+    api_key: String,
+    base_url: String,
+    model: String,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct OpenAiCompatibleCredentialInfo {
+    id: String,
+    label: String,
     base_url: String,
     model: String,
 }
@@ -209,26 +230,109 @@ fn stored_claude_credential() -> Option<StoredClaudeCredential> {
 
 fn stored_openai_compatible_credential() -> Option<StoredOpenAiCompatibleCredential> {
     let config = read_claude_prism_auth_config().ok()?;
+    stored_openai_compatible_credential_from_config(&config, None)
+}
+
+fn stored_openai_compatible_credential_by_id(
+    credential_id: Option<&str>,
+) -> Option<StoredOpenAiCompatibleCredential> {
+    let config = read_claude_prism_auth_config().ok()?;
+    stored_openai_compatible_credential_from_config(&config, credential_id)
+}
+
+fn normalized_openai_compatible_credentials(
+    config: &ClaudePrismAuthConfig,
+) -> Vec<StoredOpenAiCompatibleCredential> {
+    let mut credentials = Vec::new();
+    for credential in &config.openai_credentials {
+        let Ok(api_key) = normalize_api_key(&credential.api_key) else {
+            continue;
+        };
+        let Some(base_url) = normalize_base_url(Some(credential.base_url.as_str()))
+            .ok()
+            .flatten()
+        else {
+            continue;
+        };
+        let Some(model) = normalize_model(Some(credential.model.as_str()))
+            .ok()
+            .flatten()
+        else {
+            continue;
+        };
+        let id = strip_nul(&credential.id).trim().to_string();
+        if id.is_empty() {
+            continue;
+        }
+        let label = strip_nul(&credential.label).trim().to_string();
+        credentials.push(StoredOpenAiCompatibleCredential {
+            id,
+            label: if label.is_empty() {
+                model.clone()
+            } else {
+                label
+            },
+            api_key,
+            base_url,
+            model,
+        });
+    }
+
+    if credentials.is_empty() {
+        if let (Some(api_key), Some(base_url), Some(model)) = (
+            config
+                .openai_api_key
+                .as_deref()
+                .and_then(|value| normalize_api_key(value).ok()),
+            normalize_base_url(config.openai_base_url.as_deref())
+                .ok()
+                .flatten(),
+            normalize_model(config.openai_model.as_deref()).ok().flatten(),
+        ) {
+            credentials.push(StoredOpenAiCompatibleCredential {
+                id: "legacy-openai-compatible".to_string(),
+                label: model.clone(),
+                api_key,
+                base_url,
+                model,
+            });
+        }
+    }
+
+    credentials
+}
+
+fn stored_openai_compatible_credential_from_config(
+    config: &ClaudePrismAuthConfig,
+    credential_id: Option<&str>,
+) -> Option<StoredOpenAiCompatibleCredential> {
     let provider = normalize_provider(config.provider.as_deref()).ok()?;
     if provider != PROVIDER_OPENAI_COMPATIBLE {
         return None;
     }
 
-    let api_key = config
-        .openai_api_key
-        .and_then(|value| normalize_api_key(&value).ok())?;
-    let base_url = normalize_base_url(config.openai_base_url.as_deref())
-        .ok()
-        .flatten()?;
-    let model = normalize_model(config.openai_model.as_deref())
-        .ok()
-        .flatten()?;
+    let credentials = normalized_openai_compatible_credentials(config);
+    if let Some(credential_id) = credential_id {
+        if let Some(credential) = credentials
+            .iter()
+            .find(|credential| credential.id == credential_id)
+            .cloned()
+        {
+            return Some(credential);
+        }
+    }
 
-    Some(StoredOpenAiCompatibleCredential {
-        api_key,
-        base_url,
-        model,
-    })
+    if let Some(active_id) = config.active_openai_credential_id.as_deref() {
+        if let Some(credential) = credentials
+            .iter()
+            .find(|credential| credential.id == active_id)
+            .cloned()
+        {
+            return Some(credential);
+        }
+    }
+
+    credentials.into_iter().next()
 }
 
 fn claude_credential_label() -> Option<&'static str> {
@@ -280,6 +384,8 @@ pub async fn save_anthropic_api_key(
     base_url: Option<String>,
     provider: Option<String>,
     model: Option<String>,
+    credential_label: Option<String>,
+    credential_id: Option<String>,
 ) -> Result<(), String> {
     let api_key = normalize_api_key(&api_key)?;
     let base_url = normalize_base_url(base_url.as_deref())?;
@@ -296,6 +402,51 @@ pub async fn save_anthropic_api_key(
     if provider == PROVIDER_OPENAI_COMPATIBLE {
         let base_url = base_url.ok_or("OpenAI-compatible provider requires a Base URL")?;
         let model = model.ok_or("OpenAI-compatible provider requires a model")?;
+        let label = credential_label
+            .as_deref()
+            .map(strip_nul)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| model.clone());
+        let credential_id = credential_id
+            .as_deref()
+            .map(strip_nul)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                config
+                    .openai_credentials
+                    .iter()
+                    .find(|credential| {
+                        credential.label == label
+                            && credential.base_url == base_url
+                            && credential.model == model
+                    })
+                    .map(|credential| credential.id.clone())
+            })
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+        let credential = StoredOpenAiCompatibleCredentialConfig {
+            id: credential_id.clone(),
+            label,
+            api_key: api_key.clone(),
+            base_url: base_url.clone(),
+            model: model.clone(),
+        };
+
+        if let Some(existing) = config
+            .openai_credentials
+            .iter_mut()
+            .find(|item| item.id == credential_id)
+        {
+            *existing = credential;
+        } else {
+            config.openai_credentials.push(credential);
+        }
+
+        config.active_openai_credential_id = Some(credential_id);
         config.openai_api_key = Some(api_key);
         config.openai_base_url = Some(base_url);
         config.openai_model = Some(model);
@@ -331,12 +482,66 @@ pub async fn verify_openai_compatible_api_key(
     let model = normalize_model(Some(model.as_str()))?
         .ok_or("OpenAI-compatible provider requires a model")?;
     let credential = StoredOpenAiCompatibleCredential {
+        id: "verification".to_string(),
+        label: model.clone(),
         api_key,
         base_url,
         model,
     };
 
     verify_openai_compatible_credential(&credential).await
+}
+
+#[tauri::command]
+pub async fn list_openai_compatible_models(
+    api_key: String,
+    base_url: String,
+) -> Result<Vec<String>, String> {
+    let api_key = normalize_api_key(&api_key)?;
+    let base_url = normalize_base_url(Some(base_url.as_str()))?
+        .ok_or("OpenAI-compatible provider requires a Base URL")?;
+    if let Some(message) =
+        known_proxy_mismatch_error(PROVIDER_OPENAI_COMPATIBLE, Some(base_url.as_str()))
+    {
+        return Err(message);
+    }
+
+    let response = reqwest::Client::new()
+        .get(openai_models_url(&base_url))
+        .bearer_auth(api_key)
+        .send()
+        .await
+        .map_err(|err| format!("Failed to fetch provider models: {}", err))?;
+    let status = response.status();
+    let response_text = response
+        .text()
+        .await
+        .map_err(|err| format!("Failed to read provider models response: {}", err))?;
+
+    if !status.is_success() {
+        return Err(openai_compatible_verification_error(status, &response_text));
+    }
+
+    let value: serde_json::Value = serde_json::from_str(&response_text)
+        .map_err(|err| format!("Provider returned invalid models JSON: {}", err))?;
+    let mut models = value
+        .get("data")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.get("id").and_then(|value| value.as_str()))
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    models.sort();
+    models.dedup();
+    if models.is_empty() {
+        return Err("Provider did not return any models.".to_string());
+    }
+
+    Ok(models)
 }
 
 #[tauri::command]
@@ -349,6 +554,39 @@ pub async fn clear_anthropic_api_key() -> Result<(), String> {
     config.openai_api_key = None;
     config.openai_base_url = None;
     config.openai_model = None;
+    config.active_openai_credential_id = None;
+    config.openai_credentials.clear();
+    write_claude_prism_auth_config(&config)
+}
+
+#[tauri::command]
+pub async fn list_openai_compatible_credentials(
+) -> Result<Vec<OpenAiCompatibleCredentialInfo>, String> {
+    let config = read_claude_prism_auth_config().unwrap_or_default();
+    Ok(normalized_openai_compatible_credentials(&config)
+        .into_iter()
+        .map(|credential| OpenAiCompatibleCredentialInfo {
+            id: credential.id,
+            label: credential.label,
+            base_url: credential.base_url,
+            model: credential.model,
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub async fn set_active_openai_compatible_credential(credential_id: String) -> Result<(), String> {
+    let mut config = read_claude_prism_auth_config().unwrap_or_default();
+    let credential = normalized_openai_compatible_credentials(&config)
+        .into_iter()
+        .find(|credential| credential.id == credential_id)
+        .ok_or("Configured provider credential not found")?;
+
+    config.provider = Some(PROVIDER_OPENAI_COMPATIBLE.to_string());
+    config.active_openai_credential_id = Some(credential.id);
+    config.openai_api_key = Some(credential.api_key);
+    config.openai_base_url = Some(credential.base_url);
+    config.openai_model = Some(credential.model);
     write_claude_prism_auth_config(&config)
 }
 
@@ -2169,6 +2407,19 @@ fn openai_chat_completions_url(base_url: &str) -> String {
         format!("{}/chat/completions", clean)
     } else {
         format!("{}/v1/chat/completions", clean)
+    }
+}
+
+fn openai_models_url(base_url: &str) -> String {
+    let clean = base_url.trim_end_matches('/');
+    if let Some(root) = clean.strip_suffix("/chat/completions") {
+        return format!("{}/models", root.trim_end_matches('/'));
+    }
+
+    if openai_compatible_base_url_has_chat_root(clean) {
+        format!("{}/models", clean)
+    } else {
+        format!("{}/v1/models", clean)
     }
 }
 
@@ -5042,8 +5293,11 @@ pub async fn execute_claude_code(
     tab_id: String,
     model: Option<String>,
     effort_level: Option<String>,
+    provider_credential_id: Option<String>,
 ) -> Result<(), String> {
-    if let Some(credential) = stored_openai_compatible_credential() {
+    if let Some(credential) =
+        stored_openai_compatible_credential_by_id(provider_credential_id.as_deref())
+    {
         return execute_openai_compatible_provider(
             window,
             project_path,
@@ -5076,8 +5330,11 @@ pub async fn continue_claude_code(
     tab_id: String,
     model: Option<String>,
     effort_level: Option<String>,
+    provider_credential_id: Option<String>,
 ) -> Result<(), String> {
-    if let Some(credential) = stored_openai_compatible_credential() {
+    if let Some(credential) =
+        stored_openai_compatible_credential_by_id(provider_credential_id.as_deref())
+    {
         return execute_openai_compatible_provider(
             window,
             project_path,
@@ -5111,8 +5368,11 @@ pub async fn resume_claude_code(
     tab_id: String,
     model: Option<String>,
     effort_level: Option<String>,
+    provider_credential_id: Option<String>,
 ) -> Result<(), String> {
-    if let Some(credential) = stored_openai_compatible_credential() {
+    if let Some(credential) =
+        stored_openai_compatible_credential_by_id(provider_credential_id.as_deref())
+    {
         return execute_openai_compatible_provider(
             window,
             project_path,
@@ -5783,6 +6043,26 @@ mod tests {
         assert_eq!(
             openai_chat_completions_url("https://openrouter.ai/api/v1"),
             "https://openrouter.ai/api/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn test_openai_models_url_matches_provider_roots() {
+        assert_eq!(
+            openai_models_url("https://dashscope.aliyuncs.com/compatible-mode/v1"),
+            "https://dashscope.aliyuncs.com/compatible-mode/v1/models"
+        );
+        assert_eq!(
+            openai_models_url("https://generativelanguage.googleapis.com/v1beta/openai/"),
+            "https://generativelanguage.googleapis.com/v1beta/openai/models"
+        );
+        assert_eq!(
+            openai_models_url("https://open.bigmodel.cn/api/paas/v4/chat/completions"),
+            "https://open.bigmodel.cn/api/paas/v4/models"
+        );
+        assert_eq!(
+            openai_models_url("https://api.openai.com"),
+            "https://api.openai.com/v1/models"
         );
     }
 
@@ -6695,16 +6975,22 @@ mod tests {
     #[test]
     fn test_direct_provider_selects_reasoning_history_mode_by_provider() {
         let deepseek = StoredOpenAiCompatibleCredential {
+            id: "deepseek".to_string(),
+            label: "DeepSeek".to_string(),
             api_key: "sk-test".to_string(),
             base_url: "https://api.deepseek.com".to_string(),
             model: "deepseek-v4-pro".to_string(),
         };
         let qwen = StoredOpenAiCompatibleCredential {
+            id: "qwen".to_string(),
+            label: "Qwen".to_string(),
             api_key: "sk-test".to_string(),
             base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string(),
             model: "qwen3-coder-plus".to_string(),
         };
         let proxied_deepseek = StoredOpenAiCompatibleCredential {
+            id: "proxied-deepseek".to_string(),
+            label: "Proxied DeepSeek".to_string(),
             api_key: "sk-test".to_string(),
             base_url: "https://openrouter.ai/api/v1".to_string(),
             model: "deepseek/deepseek-v4-pro".to_string(),

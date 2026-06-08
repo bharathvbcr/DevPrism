@@ -237,6 +237,8 @@ interface ClaudeChatState {
   /** Currently selected model (passed per-prompt to Claude CLI) */
   selectedModel: "sonnet" | "opus" | "haiku" | "opusplan";
   setSelectedModel: (model: "sonnet" | "opus" | "haiku" | "opusplan") => void;
+  selectedProviderCredentialId: string | null;
+  setSelectedProviderCredentialId: (credentialId: string | null) => void;
 
   /** Effort level for Opus 4.6 adaptive reasoning */
   effortLevel: "low" | "medium" | "high";
@@ -287,6 +289,9 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
 
   selectedModel: "opus",
   setSelectedModel: (model) => set({ selectedModel: model }),
+  selectedProviderCredentialId: null,
+  setSelectedProviderCredentialId: (credentialId) =>
+    set({ selectedProviderCredentialId: credentialId }),
 
   effortLevel: "medium",
   setEffortLevel: (level) => set({ effortLevel: level }),
@@ -327,7 +332,12 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     // Guard: prevent sending from a tab that's already streaming
     if (activeTab?.isStreaming) return;
 
-    const { sessionId, selectedModel, effortLevel } = state;
+    const {
+      sessionId,
+      selectedModel,
+      effortLevel,
+      selectedProviderCredentialId,
+    } = state;
 
     const sendStart = performance.now();
     log.info("sendPrompt start", {
@@ -450,6 +460,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
           tabId: activeTabId,
           model: selectedModel,
           effortLevel,
+          providerCredentialId: selectedProviderCredentialId,
         });
       } else {
         // New session
@@ -459,6 +470,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
           tabId: activeTabId,
           model: selectedModel,
           effortLevel,
+          providerCredentialId: selectedProviderCredentialId,
         });
       }
       log.info(

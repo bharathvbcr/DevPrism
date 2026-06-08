@@ -4,8 +4,8 @@
   "productName": "ClaudePrism",
   "version": "1.1.6",
   "build": {
-    "beforeDevCommand": "pnpm dev",
-    "beforeBuildCommand": "pnpm build",
+    "beforeDevCommand": "corepack pnpm dev",
+    "beforeBuildCommand": "corepack pnpm build",
     "devUrl": "http://localhost:1420",
     "frontendDist": "../dist"
   },
@@ -24,6 +24,7 @@
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
         "theme": "Light",
+        "zoomHotkeysEnabled": true,
         "trafficLightPosition": {
           "x": 12,
           "y": 12

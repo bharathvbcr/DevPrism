@@ -9,8 +9,8 @@ mod uv;
 mod zotero;
 
 use std::path::Path;
-use tauri_plugin_fs::FsExt;
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri_plugin_fs::FsExt;
 
 /// Entry point for the `--tectonic-compile` subprocess mode.
 /// Runs tectonic compilation in an isolated process so that C-level global state
@@ -186,6 +186,7 @@ fn create_new_window(app: tauri::AppHandle) -> Result<(), String> {
         .inner_size(1400.0, 900.0)
         .min_inner_size(800.0, 600.0)
         .theme(Some(tauri::Theme::Light))
+        .zoom_hotkeys_enabled(true)
         .visible(false);
 
     #[cfg(target_os = "macos")]
@@ -256,12 +257,7 @@ fn apply_windows_titlebar_theme(window: &tauri::WebviewWindow, dark: bool) -> Re
     if result < 0 {
         // Older Windows 10 builds used attribute 19 before Microsoft documented 20.
         result = unsafe {
-            dwm_set_window_attribute(
-                hwnd,
-                19,
-                &dark_value as *const _ as *const _,
-                attr_size,
-            )
+            dwm_set_window_attribute(hwnd, 19, &dark_value as *const _ as *const _, attr_size)
         };
     }
 
@@ -465,6 +461,7 @@ fn open_debug_window(app: tauri::AppHandle) -> Result<(), String> {
         .inner_size(560.0, 700.0)
         .min_inner_size(400.0, 400.0)
         .theme(Some(tauri::Theme::Light))
+        .zoom_hotkeys_enabled(true)
         .visible(true)
         .build()
         .map_err(|e| format!("Failed to create debug window: {}", e))?;
@@ -582,9 +579,7 @@ pub fn run() {
                 tokio::time::sleep(std::time::Duration::from_secs(8)).await;
                 if let Some(window) = handle.get_webview_window("main") {
                     if !window.is_visible().unwrap_or(true) {
-                        eprintln!(
-                            "[safety] Main window still hidden after 8s, force-showing"
-                        );
+                        eprintln!("[safety] Main window still hidden after 8s, force-showing");
                         let _ = window.show();
                         let _ = window.set_focus();
                     }
@@ -697,7 +692,7 @@ pub fn run() {
                         let _ = window.eval(
                             "document.body.style.display='none';\
                              document.body.offsetHeight;\
-                             document.body.style.display='';"
+                             document.body.style.display='';",
                         );
                     }
                     let _ = window.emit("window-focus-restored", ());

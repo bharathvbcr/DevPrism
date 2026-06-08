@@ -10,6 +10,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
 #[derive(Default, serde::Deserialize, serde::Serialize)]
 #[serde(default)]
 struct ClaudePrismAuthConfig {
@@ -68,6 +71,8 @@ const PROVIDER_CLAUDE_CODE: &str = "claude-code";
 const PROVIDER_OPENAI_COMPATIBLE: &str = "openai-compatible";
 const DIRECT_PROVIDER_MAX_TOOL_TURNS_ENV: &str = "CLAUDE_PRISM_DIRECT_PROVIDER_MAX_TOOL_TURNS";
 const DIRECT_PROVIDER_CONVERGE_TURN_ENV: &str = "CLAUDE_PRISM_DIRECT_PROVIDER_CONVERGE_TURN";
+const DIRECT_PROVIDER_ALLOW_SHELL_ENV: &str = "CLAUDE_PRISM_DIRECT_PROVIDER_ALLOW_SHELL";
+const DIRECT_PROVIDER_DEFAULT_MAX_TOOL_TURNS: u64 = 100;
 const DIRECT_PROVIDER_PROJECT_CONTEXT_HEADER: &str = "[ClaudePrism project context]";
 const DIRECT_PROVIDER_TOOL_NAMES: &[&str] = &[
     "Read",
@@ -152,6 +157,52 @@ fn read_claude_prism_auth_config() -> Result<ClaudePrismAuthConfig, String> {
     serde_json::from_str(content).map_err(|e| format!("Failed to parse auth settings: {}", e))
 }
 
+fn restrict_auth_file_permissions(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("Failed to lock down auth settings permissions: {}", e))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(())
+}
+
+fn backup_corrupt_auth_config(path: &Path, reason: &str) -> Result<PathBuf, String> {
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "anthropic-auth.json".to_string());
+    let timestamp = chrono::Utc::now().format("%Y%m%d%H%M%S");
+    let backup = path.with_file_name(format!("{}.corrupt-{}.bak", file_name, timestamp));
+    std::fs::rename(path, &backup)
+        .map_err(|e| format!("Failed to back up corrupt auth settings: {}", e))?;
+    let _ = restrict_auth_file_permissions(&backup);
+    eprintln!(
+        "[auth] backed up corrupt auth settings to {}: {}",
+        backup.display(),
+        reason
+    );
+    Ok(backup)
+}
+
+fn read_claude_prism_auth_config_for_update() -> Result<ClaudePrismAuthConfig, String> {
+    match read_claude_prism_auth_config() {
+        Ok(config) => Ok(config),
+        Err(err) => {
+            let path = get_claude_prism_auth_path()?;
+            if path.exists() {
+                backup_corrupt_auth_config(&path, &err)?;
+                Ok(ClaudePrismAuthConfig::default())
+            } else {
+                Err(err)
+            }
+        }
+    }
+}
+
 fn write_claude_prism_auth_config(config: &ClaudePrismAuthConfig) -> Result<(), String> {
     let path = get_claude_prism_auth_path()?;
     if let Some(parent) = path.parent() {
@@ -161,7 +212,20 @@ fn write_claude_prism_auth_config(config: &ClaudePrismAuthConfig) -> Result<(), 
 
     let content = serde_json::to_string_pretty(config)
         .map_err(|e| format!("Failed to serialize auth settings: {}", e))?;
-    std::fs::write(&path, content).map_err(|e| format!("Failed to write auth settings: {}", e))
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(&path)
+        .map_err(|e| format!("Failed to write auth settings: {}", e))?;
+    file.write_all(content.as_bytes())
+        .map_err(|e| format!("Failed to write auth settings: {}", e))?;
+    file.flush()
+        .map_err(|e| format!("Failed to flush auth settings: {}", e))?;
+    restrict_auth_file_permissions(&path)
 }
 
 fn normalize_api_key(value: &str) -> Result<String, String> {

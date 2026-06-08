@@ -7,6 +7,8 @@ export const MIN_APP_ZOOM = 0.5;
 export const MAX_APP_ZOOM = 3;
 export const APP_ZOOM_STEP = 0.1;
 
+let nativeWheelZoomGuardInstalled = false;
+
 export type AppZoomAction = "in" | "out" | "reset";
 
 type ZoomShortcutEvent = Pick<
@@ -45,6 +47,7 @@ export async function persistAppZoom(value: number): Promise<number> {
 }
 
 export function initializeAppZoom(): Promise<number> {
+  installNativeWheelZoomGuard();
   return applyAppZoom(readStoredAppZoom());
 }
 
@@ -101,4 +104,19 @@ export function shouldHandleAppZoomShortcut(
 ): boolean {
   if (!(target instanceof Element)) return true;
   return !target.closest(`[${LOCAL_ZOOM_SHORTCUTS_ATTR}]`);
+}
+
+export function installNativeWheelZoomGuard(): void {
+  if (nativeWheelZoomGuardInstalled || typeof document === "undefined") return;
+  nativeWheelZoomGuardInstalled = true;
+
+  document.addEventListener(
+    "wheel",
+    (event) => {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
+      if (!shouldHandleAppZoomShortcut(event.target)) return;
+      event.preventDefault();
+    },
+    { capture: true, passive: false },
+  );
 }

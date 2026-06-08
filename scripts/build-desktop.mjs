@@ -17,22 +17,23 @@ if (process.platform === "win32") {
   env.CXXFLAGS = [env.CXXFLAGS, "/std:c++17"].filter(Boolean).join(" ");
 }
 
+const args = ["--filter=@claude-prism/desktop", "tauri", "build"];
+
+if (!env.TAURI_SIGNING_PRIVATE_KEY) {
+  args.push("--config", "src-tauri/tauri.local-build.conf.json");
+}
+
 const child =
   process.platform === "win32"
     ? spawn(
         process.env.ComSpec ?? "cmd.exe",
-        [
-          "/d",
-          "/s",
-          "/c",
-          "corepack pnpm --filter=@claude-prism/desktop tauri dev",
-        ],
+        ["/d", "/s", "/c", `corepack pnpm ${args.join(" ")}`],
         {
           env,
           stdio: "inherit",
         },
       )
-    : spawn("pnpm", ["--filter=@claude-prism/desktop", "tauri", "dev"], {
+    : spawn("pnpm", args, {
         env,
         stdio: "inherit",
       });

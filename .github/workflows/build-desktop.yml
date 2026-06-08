@@ -510,9 +510,10 @@ jobs:
           CXXFLAGS: "-std=c++17"
           CFLAGS: ""
         run: |
-          # Remove vcpkg's graphite2 so the linker uses the system one
-          # (vcpkg builds graphite2 with hidden symbol visibility, causing link errors)
-          rm -f $HOME/vcpkg/installed/x64-linux/lib/libgraphite2.* 2>/dev/null || true
+          # Replace vcpkg's graphite2 with system one (vcpkg builds with hidden symbol visibility)
+          rm -f $HOME/vcpkg/installed/x64-linux/lib/libgraphite2.*
+          ln -sf /usr/lib/x86_64-linux-gnu/libgraphite2.so $HOME/vcpkg/installed/x64-linux/lib/libgraphite2.so
+          ln -sf /usr/lib/x86_64-linux-gnu/libgraphite2.a $HOME/vcpkg/installed/x64-linux/lib/libgraphite2.a 2>/dev/null || true
           pnpm --filter @claude-prism/desktop tauri build --target x86_64-unknown-linux-gnu
 
       - name: Collect updater artifacts

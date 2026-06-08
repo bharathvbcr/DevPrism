@@ -516,6 +516,7 @@ jobs:
           ZOTERO_CONSUMER_KEY: ${{ secrets.ZOTERO_CONSUMER_KEY }}
           ZOTERO_CONSUMER_SECRET: ${{ secrets.ZOTERO_CONSUMER_SECRET }}
           TECTONIC_DEP_BACKEND: vcpkg
+          VCPKGRS_TRIPLET: x64-linux-static
           CXXFLAGS: "-std=c++17"
           CFLAGS: ""
         run: pnpm --filter @claude-prism/desktop tauri build --target x86_64-unknown-linux-gnu

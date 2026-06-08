@@ -520,7 +520,7 @@ jobs:
             ar x "$VCPKG_GR2"
             for obj in *.o; do
               [ -f "$obj" ] || continue
-              nm "$obj" 2>/dev/null | grep ' t gr_\| d gr_' | awk '{print $3}' > syms.txt
+              nm "$obj" 2>/dev/null | { grep ' t gr_\| d gr_' || true; } | awk '{print $3}' > syms.txt
               if [ -s syms.txt ]; then
                 objcopy --globalize-symbols=syms.txt "$obj"
               fi

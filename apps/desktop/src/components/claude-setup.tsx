@@ -429,6 +429,7 @@ export function ClaudeSetup({
   const isClearingApiKey = useClaudeSetupStore((s) => s.isClearingApiKey);
   const error = useClaudeSetupStore((s) => s.error);
   const version = useClaudeSetupStore((s) => s.version);
+  const providerKind = useClaudeSetupStore((s) => s.providerKind);
   const accountEmail = useClaudeSetupStore((s) => s.accountEmail);
   const providerModel = useClaudeSetupStore((s) => s.providerModel);
   const providerBaseUrl = useClaudeSetupStore((s) => s.providerBaseUrl);
@@ -758,7 +759,7 @@ export function ClaudeSetup({
                 />
               )}
               {modelFetchError && (
-                <p className="max-w-full break-all whitespace-pre-wrap text-[11px] text-amber-600">
+                <p className="max-w-full whitespace-pre-wrap break-all text-[11px] text-amber-600">
                   {modelFetchError}
                 </p>
               )}
@@ -769,7 +770,7 @@ export function ClaudeSetup({
           )}
 
           {error && (
-            <p className="max-w-full break-all whitespace-pre-wrap text-destructive text-xs">
+            <p className="max-w-full whitespace-pre-wrap break-all text-destructive text-xs">
               {error}
             </p>
           )}
@@ -856,7 +857,7 @@ export function ClaudeSetup({
   }
 
   if (status === "ready") {
-    const isDirectProvider = version === "OpenAI-compatible provider";
+    const isDirectProvider = providerKind === "openai-compatible";
     const readyDetail = isDirectProvider
       ? [version, providerModel, providerBaseUrl].filter(Boolean).join(" / ")
       : [version, accountEmail].filter(Boolean).join(" / ");
@@ -975,9 +976,7 @@ export function ClaudeSetup({
                   ) : (
                     <CircleIcon className="size-2.5 shrink-0 text-muted-foreground/50" />
                   )}
-                  <span className="shrink-0 font-medium">
-                    {displayName}
-                  </span>
+                  <span className="shrink-0 font-medium">{displayName}</span>
                   <span className="min-w-0 flex-1 truncate text-muted-foreground">
                     {credential.model}
                   </span>

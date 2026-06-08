@@ -71,7 +71,6 @@ const PROVIDER_CLAUDE_CODE: &str = "claude-code";
 const PROVIDER_OPENAI_COMPATIBLE: &str = "openai-compatible";
 const DIRECT_PROVIDER_MAX_TOOL_TURNS_ENV: &str = "CLAUDE_PRISM_DIRECT_PROVIDER_MAX_TOOL_TURNS";
 const DIRECT_PROVIDER_CONVERGE_TURN_ENV: &str = "CLAUDE_PRISM_DIRECT_PROVIDER_CONVERGE_TURN";
-const DIRECT_PROVIDER_ALLOW_SHELL_ENV: &str = "CLAUDE_PRISM_DIRECT_PROVIDER_ALLOW_SHELL";
 const DIRECT_PROVIDER_DEFAULT_MAX_TOOL_TURNS: u64 = 100;
 const DIRECT_PROVIDER_PROJECT_CONTEXT_HEADER: &str = "[ClaudePrism project context]";
 const DIRECT_PROVIDER_TOOL_NAMES: &[&str] = &[
@@ -104,8 +103,6 @@ const DIRECT_PROVIDER_TOOL_NAMES: &[&str] = &[
     "ReadMcpResource",
     "Config",
     "Sleep",
-    "PowerShell",
-    "Bash",
 ];
 
 /// Check if an environment variable should be explicitly passed to child processes.
@@ -154,7 +151,10 @@ fn read_claude_prism_auth_config() -> Result<ClaudePrismAuthConfig, String> {
     let content = std::fs::read_to_string(&path)
         .map_err(|e| format!("Failed to read auth settings: {}", e))?;
     let content = content.trim_start_matches('\u{feff}');
-    serde_json::from_str(content).map_err(|e| format!("Failed to parse auth settings: {}", e))
+    let config = serde_json::from_str(content)
+        .map_err(|e| format!("Failed to parse auth settings: {}", e))?;
+    restrict_auth_file_permissions(&path)?;
+    Ok(config)
 }
 
 fn restrict_auth_file_permissions(path: &Path) -> Result<(), String> {
@@ -326,11 +326,6 @@ fn stored_claude_credential_from_config(
     }
 
     Some(StoredClaudeCredential { api_key, base_url })
-}
-
-fn stored_openai_compatible_credential() -> Option<StoredOpenAiCompatibleCredential> {
-    let config = read_claude_prism_auth_config().ok()?;
-    stored_openai_compatible_credential_from_config(&config, None)
 }
 
 fn stored_openai_compatible_credential_by_id(
@@ -516,8 +511,9 @@ pub async fn save_anthropic_api_key(
         return Err(message);
     }
 
-    // Saving a new key should repair an empty/corrupt legacy auth file.
-    let mut config = read_claude_prism_auth_config().unwrap_or_default();
+    // Saving a new key should repair an empty/corrupt legacy auth file after
+    // backing it up, never silently discard parseable credentials.
+    let mut config = read_claude_prism_auth_config_for_update()?;
     config.provider = Some(provider.clone());
 
     if provider == PROVIDER_OPENAI_COMPATIBLE {
@@ -632,7 +628,7 @@ pub async fn list_openai_compatible_models(
 pub async fn list_openai_compatible_credential_models(
     credential_id: String,
 ) -> Result<Vec<String>, String> {
-    let config = read_claude_prism_auth_config().unwrap_or_default();
+    let config = read_claude_prism_auth_config()?;
     let credential = normalized_openai_compatible_credentials(&config)
         .into_iter()
         .find(|credential| credential.id == credential_id)
@@ -685,8 +681,9 @@ async fn fetch_openai_compatible_models(
 
 #[tauri::command]
 pub async fn clear_anthropic_api_key() -> Result<(), String> {
-    // Clearing should also recover from an empty/corrupt legacy auth file.
-    let mut config = read_claude_prism_auth_config().unwrap_or_default();
+    // Clearing should also recover from an empty/corrupt legacy auth file after
+    // preserving the bad file for manual recovery.
+    let mut config = read_claude_prism_auth_config_for_update()?;
     config.provider = Some(PROVIDER_CLAUDE_CODE.to_string());
     config.anthropic_api_key = None;
     config.anthropic_base_url = None;
@@ -701,7 +698,7 @@ pub async fn clear_anthropic_api_key() -> Result<(), String> {
 #[tauri::command]
 pub async fn list_openai_compatible_credentials(
 ) -> Result<Vec<OpenAiCompatibleCredentialInfo>, String> {
-    let config = read_claude_prism_auth_config().unwrap_or_default();
+    let config = read_claude_prism_auth_config()?;
     Ok(normalized_openai_compatible_credentials(&config)
         .into_iter()
         .map(|credential| OpenAiCompatibleCredentialInfo {
@@ -715,7 +712,7 @@ pub async fn list_openai_compatible_credentials(
 
 #[tauri::command]
 pub async fn set_active_openai_compatible_credential(credential_id: String) -> Result<(), String> {
-    let mut config = read_claude_prism_auth_config().unwrap_or_default();
+    let mut config = read_claude_prism_auth_config_for_update()?;
     let credential = normalized_openai_compatible_credentials(&config)
         .into_iter()
         .find(|credential| credential.id == credential_id)
@@ -1777,6 +1774,7 @@ pub struct ClaudeStatus {
     pub authenticated: bool,
     pub binary_path: Option<String>,
     pub version: Option<String>,
+    pub provider_kind: String,
     pub account_email: Option<String>,
     pub provider_model: Option<String>,
     pub provider_base_url: Option<String>,
@@ -1831,12 +1829,14 @@ fn find_git_bash() -> Option<String> {
 
 #[tauri::command]
 pub async fn check_claude_status() -> Result<ClaudeStatus, String> {
-    if let Some(credential) = stored_openai_compatible_credential() {
+    let auth_config = read_claude_prism_auth_config()?;
+    if let Some(credential) = stored_openai_compatible_credential_from_config(&auth_config, None) {
         return Ok(ClaudeStatus {
             installed: true,
             authenticated: true,
             binary_path: None,
             version: Some("OpenAI-compatible provider".to_string()),
+            provider_kind: PROVIDER_OPENAI_COMPATIBLE.to_string(),
             account_email: None,
             provider_model: Some(credential.model),
             provider_base_url: Some(credential.base_url),
@@ -1859,6 +1859,7 @@ pub async fn check_claude_status() -> Result<ClaudeStatus, String> {
                 authenticated: false,
                 binary_path: None,
                 version: None,
+                provider_kind: PROVIDER_CLAUDE_CODE.to_string(),
                 account_email: None,
                 provider_model: None,
                 provider_base_url: None,
@@ -1882,6 +1883,7 @@ pub async fn check_claude_status() -> Result<ClaudeStatus, String> {
                 authenticated: false,
                 binary_path: None,
                 version: None,
+                provider_kind: PROVIDER_CLAUDE_CODE.to_string(),
                 account_email: None,
                 provider_model: None,
                 provider_base_url: None,
@@ -1919,6 +1921,7 @@ pub async fn check_claude_status() -> Result<ClaudeStatus, String> {
         authenticated,
         binary_path: Some(binary_path),
         version,
+        provider_kind: PROVIDER_CLAUDE_CODE.to_string(),
         account_email,
         provider_model: None,
         provider_base_url: None,
@@ -2294,14 +2297,11 @@ fn direct_provider_system_prompt() -> String {
         "Use Agent for focused sub-agent style investigation; direct-provider mode runs it through the same selected provider model.",
         "Use NotebookEdit for Jupyter notebooks rather than raw JSON string edits.",
         "Use EnterWorktree/ExitWorktree when you need an isolated git worktree; subsequent tools run from the active worktree.",
-        "Python workflow: PowerShell/Bash commands launched by ClaudePrism run from the project directory and inherit the project .venv when it exists. Use `python` for scripts and `uv pip install <package>` for packages.",
+        "Direct-provider mode cannot run shell commands automatically. Use file, search, notebook, task, skill, and web tools; when command execution is truly needed, write the command for the user to run or ask them to switch to Claude Code.",
         "If you prefer Claude/Codex-style task tools, TaskCreate, TaskGet, TaskUpdate, TaskList, TaskOutput, and TaskStop are available as a lightweight session task list.",
         "ToolSearch can be used to inspect the currently available local tool names; it does not install external tools.",
         "Do not claim a file was changed unless a tool result confirms it.",
     ];
-    if cfg!(target_os = "windows") {
-        lines.push("On Windows, prefer PowerShell for terminal operations unless the user explicitly asks for Bash/cmd syntax.");
-    }
     lines.join("\n")
 }
 
@@ -2332,7 +2332,7 @@ fn direct_provider_project_context(project_root: &Path) -> String {
     ];
 
     if project_root.join(".venv").is_dir() {
-        lines.push("Python: project .venv is present. ClaudePrism PowerShell/Bash tool calls receive VIRTUAL_ENV and put .venv first on PATH, so `python` resolves to this environment. Use `uv pip install <package>` to add packages.".to_string());
+        lines.push("Python: project .venv is present. Direct-provider tools can edit scripts and notebooks, but they do not execute shell commands; ask the user to run `python` or `uv pip install <package>` when execution is needed.".to_string());
     } else {
         lines.push("Python: no project .venv is present yet. If Python work is needed, ask the user to set up the Python Environment or use available system Python carefully.".to_string());
     }
@@ -2411,23 +2411,23 @@ fn parse_optional_direct_turn_limit_env(name: &str) -> Option<u64> {
         .and_then(|value| parse_optional_direct_turn_limit(&value))
 }
 
-fn direct_provider_max_tool_turns() -> Option<u64> {
+fn direct_provider_max_tool_turns() -> u64 {
     parse_optional_direct_turn_limit_env(DIRECT_PROVIDER_MAX_TOOL_TURNS_ENV)
+        .unwrap_or(DIRECT_PROVIDER_DEFAULT_MAX_TOOL_TURNS)
+        .clamp(1, DIRECT_PROVIDER_DEFAULT_MAX_TOOL_TURNS)
 }
 
 fn direct_provider_converge_turn_for(
-    max_tool_turns: Option<u64>,
+    max_tool_turns: u64,
     explicit_converge_turn: Option<u64>,
 ) -> Option<u64> {
-    if explicit_converge_turn.is_some() {
-        return explicit_converge_turn;
+    if let Some(turn) = explicit_converge_turn {
+        return Some(turn.clamp(1, max_tool_turns));
     }
-    max_tool_turns
-        .and_then(|turns| turns.checked_sub(2))
-        .filter(|turns| *turns > 0)
+    max_tool_turns.checked_sub(2).filter(|turns| *turns > 0)
 }
 
-fn direct_provider_converge_turn(max_tool_turns: Option<u64>) -> Option<u64> {
+fn direct_provider_converge_turn(max_tool_turns: u64) -> Option<u64> {
     direct_provider_converge_turn_for(
         max_tool_turns,
         parse_optional_direct_turn_limit_env(DIRECT_PROVIDER_CONVERGE_TURN_ENV),
@@ -2774,7 +2774,7 @@ fn direct_provider_tools() -> serde_json::Value {
             "type": "function",
             "function": {
                 "name": "EnterWorktree",
-                "description": "Create an isolated git worktree and switch this direct-provider session into it. Subsequent file and shell tools run from the worktree.",
+                "description": "Create an isolated git worktree and switch this direct-provider session into it. Subsequent file and project tools run from the worktree.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -2928,38 +2928,6 @@ fn direct_provider_tools() -> serde_json::Value {
                         "uri": { "type": "string", "description": "Resource URI." }
                     },
                     "required": ["server", "uri"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "PowerShell",
-                "description": "Run a PowerShell command in the current project directory. Prefer this for Windows terminal work; use dedicated file tools for reading, writing, editing, and searching files.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "command": { "type": "string", "description": "PowerShell command to run in the project directory." },
-                        "description": { "type": "string", "description": "Short description of why the command is needed." },
-                        "timeout_ms": { "type": "integer", "description": "Optional timeout in milliseconds. Defaults to 120000." }
-                    },
-                    "required": ["command"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "Bash",
-                "description": "Run a shell command in the current project directory. Use concise commands and prefer read-only commands before edits.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "command": { "type": "string", "description": "Shell command to run in the project directory." },
-                        "description": { "type": "string", "description": "Short description of why the command is needed." },
-                        "timeout_ms": { "type": "integer", "description": "Optional timeout in milliseconds. Defaults to 120000." }
-                    },
-                    "required": ["command"]
                 }
             }
         }
@@ -3825,15 +3793,18 @@ fn resolve_project_tool_path(project_root: &Path, requested: &str) -> Result<Pat
     if clean.is_empty() {
         return Err("Path is empty".to_string());
     }
+    let canonical_root = project_root
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve project root: {}", e))?;
 
     let requested_path = PathBuf::from(&clean);
     let candidate = if requested_path.is_absolute() {
         requested_path
     } else {
-        project_root.join(requested_path)
+        canonical_root.join(requested_path)
     };
     let normalized = lexical_normalize(&candidate);
-    if !normalized.starts_with(project_root) {
+    if !normalized.starts_with(&canonical_root) {
         return Err("Refusing to access a path outside the project".to_string());
     }
     Ok(normalized)
@@ -3844,10 +3815,13 @@ fn ensure_existing_project_tool_path(
     requested: &str,
 ) -> Result<PathBuf, String> {
     let resolved = resolve_project_tool_path(project_root, requested)?;
+    let canonical_root = project_root
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve project root: {}", e))?;
     let canonical = resolved
         .canonicalize()
         .map_err(|e| format!("Failed to resolve path: {}", e))?;
-    if !canonical.starts_with(project_root) {
+    if !canonical.starts_with(&canonical_root) {
         return Err("Refusing to access a path outside the project".to_string());
     }
     Ok(canonical)
@@ -3869,12 +3843,16 @@ fn ensure_writable_project_tool_path(
     project_root: &Path,
     requested: &str,
 ) -> Result<PathBuf, String> {
+    let canonical_root = project_root
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve project root: {}", e))?;
     let resolved = resolve_project_tool_path(project_root, requested)?;
+    reject_writable_symlink_components(&canonical_root, &resolved)?;
     if resolved.exists() {
         let canonical = resolved
             .canonicalize()
             .map_err(|e| format!("Failed to resolve path: {}", e))?;
-        if !canonical.starts_with(project_root) {
+        if !canonical.starts_with(&canonical_root) {
             return Err("Refusing to write outside the project".to_string());
         }
         return Ok(canonical);
@@ -3888,10 +3866,41 @@ fn ensure_writable_project_tool_path(
     let canonical_parent = existing_parent
         .canonicalize()
         .map_err(|e| format!("Failed to resolve parent directory: {}", e))?;
-    if !canonical_parent.starts_with(project_root) {
+    if !canonical_parent.starts_with(&canonical_root) {
         return Err("Refusing to write outside the project".to_string());
     }
     Ok(resolved)
+}
+
+fn reject_writable_symlink_components(project_root: &Path, resolved: &Path) -> Result<(), String> {
+    let relative = resolved
+        .strip_prefix(project_root)
+        .map_err(|_| "Refusing to write outside the project".to_string())?;
+    let mut current = project_root.to_path_buf();
+
+    for component in relative.components() {
+        match component {
+            Component::Normal(part) => {
+                current.push(part);
+                match std::fs::symlink_metadata(&current) {
+                    Ok(metadata) => {
+                        if metadata.file_type().is_symlink() {
+                            return Err("Refusing to write through a symlink inside the project"
+                                .to_string());
+                        }
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => break,
+                    Err(err) => {
+                        return Err(format!("Failed to inspect project path: {}", err));
+                    }
+                }
+            }
+            Component::CurDir => {}
+            _ => return Err("Refusing to write outside the project".to_string()),
+        }
+    }
+
+    Ok(())
 }
 
 fn relative_project_path(project_root: &Path, path: &Path) -> String {
@@ -4423,15 +4432,7 @@ fn direct_tool_catalog() -> Vec<(&'static str, &'static str)> {
         ("ReadMcpResource", "MCP resource read compatibility shim."),
         ("Config", "Inspect direct-provider runtime configuration."),
         ("Sleep", "Pause briefly before continuing."),
-        (
-            "PowerShell",
-            "Run a PowerShell command in the project directory.",
-        ),
         ("ToolSearch", "Inspect available local tool names."),
-        (
-            "Bash",
-            "Run a shell command in the current project directory.",
-        ),
     ]
 }
 
@@ -5046,103 +5047,6 @@ async fn execute_direct_sleep(input: &serde_json::Value) -> Result<String, Strin
     Ok(format!("Slept for {}ms", duration_ms))
 }
 
-async fn execute_direct_bash(
-    project_root: &Path,
-    input: &serde_json::Value,
-) -> Result<String, String> {
-    let command = required_tool_string(input, "command")?;
-    if command.trim().is_empty() {
-        return Err("command cannot be empty".to_string());
-    }
-    let timeout_ms = input
-        .get("timeout_ms")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(120_000)
-        .clamp(1_000, 300_000);
-    #[cfg(not(target_os = "windows"))]
-    let (shell, args) = ("sh", vec!["-c".to_string(), command.clone()]);
-    #[cfg(target_os = "windows")]
-    let (shell, args) = ("cmd", vec!["/C".to_string(), command.clone()]);
-
-    let cwd = project_root.to_string_lossy().to_string();
-    let mut cmd = create_command(shell, args, &cwd, None);
-    cmd.kill_on_drop(true);
-    let output = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), cmd.output())
-        .await
-        .map_err(|_| format!("Command timed out after {}ms", timeout_ms))?
-        .map_err(|e| format!("Failed to run command: {}", e))?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let exit_code = output.status.code().unwrap_or(-1);
-    Ok(truncate_tool_content(
-        format!(
-            "$ {}\nexit_code: {}\n\nstdout:\n{}\n\nstderr:\n{}",
-            command, exit_code, stdout, stderr
-        ),
-        30000,
-    ))
-}
-
-async fn execute_direct_powershell(
-    project_root: &Path,
-    input: &serde_json::Value,
-) -> Result<String, String> {
-    let command = required_tool_string(input, "command")?;
-    if command.trim().is_empty() {
-        return Err("command cannot be empty".to_string());
-    }
-    let timeout_ms = input
-        .get("timeout_ms")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(120_000)
-        .clamp(1_000, 300_000);
-
-    #[cfg(target_os = "windows")]
-    let (shell, args) = (
-        "powershell.exe",
-        vec![
-            "-NoLogo".to_string(),
-            "-NoProfile".to_string(),
-            "-NonInteractive".to_string(),
-            "-ExecutionPolicy".to_string(),
-            "Bypass".to_string(),
-            "-Command".to_string(),
-            command.clone(),
-        ],
-    );
-    #[cfg(not(target_os = "windows"))]
-    let (shell, args) = (
-        "pwsh",
-        vec![
-            "-NoLogo".to_string(),
-            "-NoProfile".to_string(),
-            "-NonInteractive".to_string(),
-            "-Command".to_string(),
-            command.clone(),
-        ],
-    );
-
-    let cwd = project_root.to_string_lossy().to_string();
-    let mut cmd = create_command(shell, args, &cwd, None);
-    cmd.kill_on_drop(true);
-    let output = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), cmd.output())
-        .await
-        .map_err(|_| format!("PowerShell command timed out after {}ms", timeout_ms))?
-        .map_err(|e| format!("Failed to run PowerShell command: {}", e))?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let exit_code = output.status.code().unwrap_or(-1);
-    Ok(truncate_tool_content(
-        format!(
-            "PS> {}\nexit_code: {}\n\nstdout:\n{}\n\nstderr:\n{}",
-            command, exit_code, stdout, stderr
-        ),
-        30000,
-    ))
-}
-
 fn strip_html_to_text(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut in_tag = false;
@@ -5669,8 +5573,10 @@ async fn execute_direct_provider_tool_without_agent(
         }
         "Config" | "config" => execute_direct_config(project_root, credential),
         "Sleep" | "sleep" => execute_direct_sleep(input).await,
-        "PowerShell" | "powershell" | "pwsh" => execute_direct_powershell(project_root, input).await,
-        "Bash" | "bash" => execute_direct_bash(project_root, input).await,
+        "PowerShell" | "powershell" | "pwsh" | "Bash" | "bash" => Err(
+            "Shell tools are disabled for OpenAI-compatible/direct providers. Switch to Claude Code or run the command manually."
+                .to_string(),
+        ),
         other => Err(format!("Unsupported tool: {}", other)),
     };
 
@@ -6759,7 +6665,7 @@ async fn execute_openai_compatible_provider(
             }));
             convergence_nudged = true;
         }
-        if max_tool_turns.is_some_and(|max_turns| turns > max_turns) {
+        if turns > max_tool_turns {
             let mut final_request_messages = request_messages.clone();
             final_request_messages.push(json!({
                 "role": "user",
@@ -8033,13 +7939,10 @@ mod tests {
 
     #[test]
     fn test_direct_provider_converge_turn_tracks_explicit_max() {
-        assert_eq!(direct_provider_converge_turn_for(None, None), None);
-        assert_eq!(direct_provider_converge_turn_for(Some(1), None), None);
-        assert_eq!(direct_provider_converge_turn_for(Some(12), None), Some(10));
-        assert_eq!(
-            direct_provider_converge_turn_for(Some(12), Some(3)),
-            Some(3)
-        );
+        assert_eq!(direct_provider_converge_turn_for(1, None), None);
+        assert_eq!(direct_provider_converge_turn_for(12, None), Some(10));
+        assert_eq!(direct_provider_converge_turn_for(12, Some(3)), Some(3));
+        assert_eq!(direct_provider_converge_turn_for(12, Some(99)), Some(12));
     }
 
     #[test]
@@ -8540,6 +8443,26 @@ mod tests {
         assert!(write.content.contains("outside the project"));
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_direct_provider_write_rejects_symlink_parent_outside_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root = canonical_project_root(dir.path().to_str().unwrap()).unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("linked-out")).unwrap();
+
+        let write = execute_test_direct_provider_tool(
+            &root,
+            "Write",
+            &json!({ "file_path": "linked-out/owned.tex", "content": "nope" }),
+        )
+        .await;
+
+        assert!(write.is_error);
+        assert!(write.content.contains("symlink inside the project"));
+        assert!(!outside.path().join("owned.tex").exists());
+    }
+
     #[tokio::test]
     async fn test_direct_provider_glob_lists_matching_project_files() {
         let dir = tempfile::tempdir().unwrap();
@@ -8811,7 +8734,8 @@ mod tests {
 
     #[test]
     fn test_direct_provider_extended_tool_aliases_are_canonical() {
-        assert_eq!(canonical_direct_tool_name("PowerShell"), Some("PowerShell"));
+        assert_eq!(canonical_direct_tool_name("PowerShell"), None);
+        assert_eq!(canonical_direct_tool_name("Bash"), None);
         assert_eq!(canonical_direct_tool_name("web_search"), Some("WebSearch"));
         assert_eq!(canonical_direct_tool_name("TaskGet"), Some("TaskGet"));
         assert_eq!(

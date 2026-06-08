@@ -109,6 +109,7 @@ describe("useClaudeSetupStore.saveApiKey", () => {
       isClearingApiKey: false,
       error: null,
       version: null,
+      providerKind: null,
       accountEmail: null,
       providerModel: null,
       providerBaseUrl: null,
@@ -129,6 +130,7 @@ describe("useClaudeSetupStore.saveApiKey", () => {
           authenticated: true,
           binary_path: null,
           version: "OpenAI-compatible provider",
+          provider_kind: "openai-compatible",
           account_email: null,
           provider_model: "deepseek-v4-pro",
           provider_base_url: "https://api.deepseek.com",
@@ -158,11 +160,15 @@ describe("useClaudeSetupStore.saveApiKey", () => {
       );
 
     expect(success).toBe(true);
-    expect(invoke).toHaveBeenNthCalledWith(1, "verify_openai_compatible_api_key", {
-      apiKey: "sk-test",
-      baseUrl: "https://api.deepseek.com",
-      model: "deepseek-v4-pro",
-    });
+    expect(invoke).toHaveBeenNthCalledWith(
+      1,
+      "verify_openai_compatible_api_key",
+      {
+        apiKey: "sk-test",
+        baseUrl: "https://api.deepseek.com",
+        model: "deepseek-v4-pro",
+      },
+    );
     expect(invoke).toHaveBeenNthCalledWith(2, "save_anthropic_api_key", {
       apiKey: "sk-test",
       baseUrl: "https://api.deepseek.com",
@@ -202,6 +208,7 @@ describe("useClaudeSetupStore.saveApiKey", () => {
     useClaudeSetupStore.setState({
       status: "ready",
       version: "OpenAI-compatible provider",
+      providerKind: "openai-compatible",
       providerModel: "qwen3-coder-plus",
       providerBaseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
     });
@@ -212,6 +219,7 @@ describe("useClaudeSetupStore.saveApiKey", () => {
           authenticated: false,
           binary_path: null,
           version: "1.0.0",
+          provider_kind: "claude-code",
           account_email: null,
           provider_model: null,
           provider_base_url: null,

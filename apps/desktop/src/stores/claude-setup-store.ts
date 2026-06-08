@@ -8,6 +8,7 @@ interface ClaudeStatus {
   authenticated: boolean;
   binary_path: string | null;
   version: string | null;
+  provider_kind: "claude-code" | "openai-compatible" | null;
   account_email: string | null;
   provider_model: string | null;
   provider_base_url: string | null;
@@ -45,6 +46,7 @@ interface ClaudeSetupState {
   isClearingApiKey: boolean;
   error: string | null;
   version: string | null;
+  providerKind: "claude-code" | "openai-compatible" | null;
   accountEmail: string | null;
   providerModel: string | null;
   providerBaseUrl: string | null;
@@ -137,6 +139,7 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
   isClearingApiKey: false,
   error: null,
   version: null,
+  providerKind: null,
   accountEmail: null,
   providerModel: null,
   providerBaseUrl: null,
@@ -175,6 +178,7 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
         set({
           status: "missing-git",
           version: null,
+          providerKind: result.provider_kind ?? "claude-code",
           accountEmail: null,
           providerModel: null,
           providerBaseUrl: null,
@@ -188,6 +192,7 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
         set({
           status: "not-installed",
           version: null,
+          providerKind: result.provider_kind ?? "claude-code",
           accountEmail: null,
           providerModel: null,
           providerBaseUrl: null,
@@ -201,6 +206,7 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
         set({
           status: "not-authenticated",
           version: result.version,
+          providerKind: result.provider_kind ?? "claude-code",
           accountEmail: null,
           providerModel: null,
           providerBaseUrl: null,
@@ -213,6 +219,7 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
       set({
         status: "ready",
         version: result.version,
+        providerKind: result.provider_kind ?? "claude-code",
         accountEmail: result.account_email,
         providerModel: result.provider_model,
         providerBaseUrl: result.provider_base_url,

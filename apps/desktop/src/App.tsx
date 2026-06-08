@@ -159,7 +159,7 @@ export function App({ onReady }: { onReady?: () => void }) {
 
   return (
     <ErrorBoundary FallbackComponent={ErrorFallback}>
-      <ThemeProvider attribute="class" defaultTheme="light" enableSystem>
+      <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
         <TooltipProvider>
           <NativeWindowThemeBridge />
           {/* Global macOS titlebar drag region — sits above all content */}

@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
+import { toast } from "sonner";
 import {
   FolderOpenIcon,
   FolderPlusIcon,
@@ -42,8 +43,6 @@ interface DefaultProject {
   has_main_tex: boolean;
 }
 
-let hasAttemptedProjectRestore = false;
-
 export function ProjectPicker() {
   const [showModeDialog, setShowModeDialog] = useState(false);
   const [wizardMode, setWizardMode] = useState<CreationMode | null>(null);
@@ -53,8 +52,12 @@ export function ProjectPicker() {
   const { status: updateStatus, checkForUpdate, installUpdate } = useUpdater();
 
   const recentProjects = useProjectStore((s) => s.recentProjects);
+  const initialRecentProjectsRef = useRef(recentProjects);
   const addRecentProject = useProjectStore((s) => s.addRecentProject);
   const removeRecentProject = useProjectStore((s) => s.removeRecentProject);
+  const consumeSkipAutoRestore = useProjectStore(
+    (s) => s.consumeSkipAutoRestore,
+  );
   const openProject = useDocumentStore((s) => s.openProject);
 
   const claudeStatus = useClaudeSetupStore((s) => s.status);
@@ -67,9 +70,9 @@ export function ProjectPicker() {
   }, [checkClaudeStatus]);
 
   useEffect(() => {
-    if (recoveryAttemptedRef.current || hasAttemptedProjectRestore) return;
+    if (recoveryAttemptedRef.current) return;
     recoveryAttemptedRef.current = true;
-    hasAttemptedProjectRestore = true;
+    if (consumeSkipAutoRestore()) return;
 
     let cancelled = false;
 
@@ -93,7 +96,9 @@ export function ProjectPicker() {
 
     async function recoverProjects() {
       try {
-        const recentPaths = recentProjects.map((project) => project.path);
+        const recentPaths = initialRecentProjectsRef.current.map(
+          (project) => project.path,
+        );
         if (await openFirstAvailableProject(recentPaths)) return;
 
         const projects = await invoke<DefaultProject[]>(
@@ -122,17 +127,29 @@ export function ProjectPicker() {
     return () => {
       cancelled = true;
     };
-  }, [addRecentProject, openProject, recentProjects, removeRecentProject]);
+  }, [
+    addRecentProject,
+    consumeSkipAutoRestore,
+    openProject,
+    removeRecentProject,
+  ]);
 
   const handleOpenFolder = async () => {
-    const selected = await open({
-      directory: true,
-      multiple: false,
-      title: "Open Project Folder",
-    });
-    if (selected) {
-      await openProject(selected);
-      addRecentProject(selected);
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: "Open Project Folder",
+      });
+      if (typeof selected === "string" && selected) {
+        await openProject(selected);
+        addRecentProject(selected);
+      }
+    } catch (err) {
+      console.warn("Failed to open selected project folder:", err);
+      toast.error("Failed to open project folder", {
+        description: err instanceof Error ? err.message : String(err),
+      });
     }
   };
 
@@ -304,12 +321,15 @@ interface SkillsStatus {
 function EnvironmentStatus() {
   const [showAiSetup, setShowAiSetup] = useState(false);
   const claudeVersion = useClaudeSetupStore((s) => s.version);
+  const providerKind = useClaudeSetupStore((s) => s.providerKind);
   const claudeEmail = useClaudeSetupStore((s) => s.accountEmail);
   const providerModel = useClaudeSetupStore((s) => s.providerModel);
   const providerBaseUrl = useClaudeSetupStore((s) => s.providerBaseUrl);
-  const isDirectProvider = claudeVersion === "OpenAI-compatible provider";
+  const isDirectProvider = providerKind === "openai-compatible";
   const aiDetail = isDirectProvider
-    ? [claudeVersion, providerModel, providerBaseUrl].filter(Boolean).join(" · ")
+    ? [claudeVersion, providerModel, providerBaseUrl]
+        .filter(Boolean)
+        .join(" · ")
     : [claudeVersion, claudeEmail].filter(Boolean).join(" · ");
 
   const uvStatus = useUvSetupStore((s) => s.status);

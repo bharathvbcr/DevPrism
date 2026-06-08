@@ -24,6 +24,7 @@ import {
   SparklesIcon,
   RabbitIcon,
   LayersIcon,
+  PlusIcon,
 } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { writeFile, mkdir, exists } from "@tauri-apps/plugin-fs";
@@ -43,6 +44,14 @@ import {
   getProviderIconSrc,
 } from "@/lib/provider-icons";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import { ClaudeSetup } from "@/components/claude-setup";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { SlashCommandPicker, type SlashCommand } from "./slash-command-picker";
 import { createLogger } from "@/lib/debug/logger";
@@ -146,6 +155,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
   const [providerModelError, setProviderModelError] = useState<string | null>(
     null,
   );
+  const [providerSetupOpen, setProviderSetupOpen] = useState(false);
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -1015,6 +1025,23 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                     </button>
                   );
                 })}
+                <button
+                  className="mt-1 flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  onClick={() => {
+                    setModelPickerOpen(false);
+                    setProviderSetupOpen(true);
+                  }}
+                >
+                  <PlusIcon className="size-3.5 shrink-0" />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate font-medium text-xs">
+                      Add Provider
+                    </div>
+                    <div className="truncate text-xs">
+                      Save another API key
+                    </div>
+                  </div>
+                </button>
               </div>
 
               <div className="max-h-80 min-w-0 overflow-y-auto p-1">
@@ -1120,6 +1147,27 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
           </div>,
           document.body,
         )}
+
+      <Dialog open={providerSetupOpen} onOpenChange={setProviderSetupOpen}>
+        <DialogContent className="w-[min(42rem,calc(100vw-2rem))] sm:max-w-none">
+          <DialogHeader>
+            <DialogTitle>Add AI Provider</DialogTitle>
+            <DialogDescription>
+              Configure another OpenAI-compatible provider for this project.
+            </DialogDescription>
+          </DialogHeader>
+          <ClaudeSetup
+            variant="provider-dialog"
+            onCancel={() => setProviderSetupOpen(false)}
+            onSaved={() => {
+              setProviderSetupOpen(false);
+              setSelectedProviderCredentialId(null);
+              setProviderModelOptions({});
+              setProviderModelError(null);
+            }}
+          />
+        </DialogContent>
+      </Dialog>
 
       {/* @ mention dropdown */}
       {slashQuery === null &&

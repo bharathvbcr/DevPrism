@@ -562,19 +562,19 @@ export function ClaudeSetup({
     return (
       <>
         <form
-          className="space-y-2"
+          className="min-w-0 max-w-full space-y-2 overflow-hidden"
           onSubmit={(event) => {
             event.preventDefault();
             handleSaveApiKey(selectedProvider, activeCard?.label);
           }}
         >
-          <div className="space-y-2">
+          <div className="min-w-0 space-y-2">
             <Label className="text-xs">
               {selectedProvider === "openai-compatible"
                 ? "Model Provider"
                 : "Provider"}
             </Label>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid min-w-0 grid-cols-2 gap-2">
               {providerCards.map((card) => {
                 const iconSrc = getProviderIconSrc(card);
                 const active = activeCardId === card.id;
@@ -625,7 +625,7 @@ export function ClaudeSetup({
             </div>
           </div>
 
-          <div className="space-y-1.5">
+          <div className="min-w-0 space-y-1.5">
             <Label htmlFor="anthropic-api-key" className="text-xs">
               {selectedProvider === "openai-compatible"
                 ? "Provider API Key"
@@ -655,7 +655,7 @@ export function ClaudeSetup({
             </p>
           </div>
 
-          <div className="space-y-1.5">
+          <div className="min-w-0 space-y-1.5">
             <Label htmlFor="anthropic-base-url" className="text-xs">
               Base URL
             </Label>
@@ -699,7 +699,7 @@ export function ClaudeSetup({
           </div>
 
           {selectedProvider === "openai-compatible" && (
-            <div className="space-y-1.5">
+            <div className="min-w-0 space-y-1.5">
               <div className="flex items-center justify-between gap-2">
                 <Label htmlFor="provider-model" className="text-xs">
                   Model
@@ -758,7 +758,7 @@ export function ClaudeSetup({
                 />
               )}
               {modelFetchError && (
-                <p className="break-words text-[11px] text-amber-600">
+                <p className="max-w-full break-all whitespace-pre-wrap text-[11px] text-amber-600">
                   {modelFetchError}
                 </p>
               )}
@@ -769,7 +769,9 @@ export function ClaudeSetup({
           )}
 
           {error && (
-            <p className="break-words text-destructive text-xs">{error}</p>
+            <p className="max-w-full break-all whitespace-pre-wrap text-destructive text-xs">
+              {error}
+            </p>
           )}
           <Button
             type="submit"
@@ -834,7 +836,7 @@ export function ClaudeSetup({
 
   if (variant === "provider-dialog") {
     return (
-      <div className="space-y-3">
+      <div className="min-w-0 max-w-full space-y-3 overflow-hidden">
         {renderApiKeyForm({ forceOpenAiCompatible: true })}
         <Button
           type="button"

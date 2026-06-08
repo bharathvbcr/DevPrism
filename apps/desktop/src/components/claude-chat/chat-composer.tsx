@@ -1149,7 +1149,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
         )}
 
       <Dialog open={providerSetupOpen} onOpenChange={setProviderSetupOpen}>
-        <DialogContent className="w-[min(42rem,calc(100vw-2rem))] sm:max-w-none">
+        <DialogContent className="max-h-[85vh] w-[min(42rem,calc(100vw-2rem))] overflow-x-hidden overflow-y-auto sm:max-w-none">
           <DialogHeader>
             <DialogTitle>Add AI Provider</DialogTitle>
             <DialogDescription>

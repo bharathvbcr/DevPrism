@@ -31,6 +31,7 @@ import {
   useClaudeSetupStore,
   type StepInfo,
 } from "@/stores/claude-setup-store";
+import { getProviderIconSrc } from "@/lib/provider-icons";
 import { cn } from "@/lib/utils";
 
 type OpenAICompatiblePreset = {
@@ -537,42 +538,53 @@ export function ClaudeSetup() {
                 : "Provider"}
             </Label>
             <div className="grid grid-cols-2 gap-2">
-              {providerCards.map((card) => (
-                <button
-                  key={card.id}
-                  type="button"
-                  onClick={() => selectProviderCard(card)}
-                  disabled={isSavingApiKey}
-                  className={cn(
-                    "flex items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition-colors",
-                    activeCardId === card.id
-                      ? "bg-accent text-accent-foreground"
-                      : "hover:bg-muted",
-                  )}
-                >
-                  <span
+              {providerCards.map((card) => {
+                const iconSrc = getProviderIconSrc(card);
+                const active = activeCardId === card.id;
+
+                return (
+                  <button
+                    key={card.id}
+                    type="button"
+                    onClick={() => selectProviderCard(card)}
+                    disabled={isSavingApiKey}
                     className={cn(
-                      "flex size-6 shrink-0 items-center justify-center rounded-md border font-semibold text-[10px]",
-                      activeCardId === card.id
-                        ? "border-primary/30 bg-primary/10 text-primary"
-                        : "border-border bg-muted text-muted-foreground",
+                      "flex items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition-colors",
+                      active
+                        ? "bg-accent text-accent-foreground"
+                        : "hover:bg-muted",
                     )}
                   >
-                    {card.badge}
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate font-medium text-xs">
-                      {card.label}
+                    <span
+                      className={cn(
+                        "flex size-6 shrink-0 items-center justify-center rounded-md border font-semibold text-[10px]",
+                        active
+                          ? "border-primary/30 bg-primary/10 text-primary"
+                          : "border-border bg-muted text-muted-foreground",
+                      )}
+                    >
+                      {iconSrc ? (
+                        <img
+                          src={iconSrc}
+                          alt=""
+                          className="size-4 object-contain"
+                        />
+                      ) : (
+                        card.badge
+                      )}
                     </span>
-                    <span className="block truncate text-muted-foreground text-xs">
-                      {card.note}
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate font-medium text-xs">
+                        {card.label}
+                      </span>
+                      <span className="block truncate text-muted-foreground text-xs">
+                        {card.note}
+                      </span>
                     </span>
-                  </span>
-                  {activeCardId === card.id && (
-                    <CheckIcon className="size-3 shrink-0" />
-                  )}
-                </button>
-              ))}
+                    {active && <CheckIcon className="size-3 shrink-0" />}
+                  </button>
+                );
+              })}
             </div>
           </div>
 
@@ -878,20 +890,36 @@ export function ClaudeSetup() {
 
         {isDirectProvider && openAiCredentials.length > 0 && (
           <div className="space-y-1 border-border border-t pt-2">
-            {openAiCredentials.map((credential) => (
-              <div
-                key={credential.id}
-                className="flex min-w-0 items-center gap-2 rounded-md px-2 py-1 text-xs"
-              >
-                <CircleIcon className="size-2.5 shrink-0 text-muted-foreground/50" />
-                <span className="shrink-0 font-medium">
-                  {credential.label}
-                </span>
-                <span className="min-w-0 flex-1 truncate text-muted-foreground">
-                  {credential.model}
-                </span>
-              </div>
-            ))}
+            {openAiCredentials.map((credential) => {
+              const iconSrc = getProviderIconSrc({
+                label: credential.label,
+                baseUrl: credential.base_url,
+                model: credential.model,
+              });
+
+              return (
+                <div
+                  key={credential.id}
+                  className="flex min-w-0 items-center gap-2 rounded-md px-2 py-1 text-xs"
+                >
+                  {iconSrc ? (
+                    <img
+                      src={iconSrc}
+                      alt=""
+                      className="size-3.5 shrink-0 object-contain"
+                    />
+                  ) : (
+                    <CircleIcon className="size-2.5 shrink-0 text-muted-foreground/50" />
+                  )}
+                  <span className="shrink-0 font-medium">
+                    {credential.label}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate text-muted-foreground">
+                    {credential.model}
+                  </span>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>

@@ -37,6 +37,7 @@ import { useClaudeSetupStore } from "@/stores/claude-setup-store";
 import { useDocumentStore, type ProjectFile } from "@/stores/document-store";
 import { getUniqueTargetName } from "@/lib/tauri/fs";
 import { createPdfTextSidecar, isPdfPath } from "@/lib/pdf-text-extractor";
+import { getProviderIconSrc } from "@/lib/provider-icons";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { cn } from "@/lib/utils";
 import { SlashCommandPicker, type SlashCommand } from "./slash-command-picker";
@@ -104,6 +105,13 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
     null;
   const directProviderModel =
     selectedProviderCredential?.model || providerModel || "Provider";
+  const selectedProviderIconSrc = selectedProviderCredential
+    ? getProviderIconSrc({
+        label: selectedProviderCredential.label,
+        baseUrl: selectedProviderCredential.base_url,
+        model: selectedProviderCredential.model,
+      })
+    : null;
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -796,6 +804,12 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                   openAiCredentials.map((credential) => {
                     const active =
                       selectedProviderCredential?.id === credential.id;
+                    const iconSrc = getProviderIconSrc({
+                      label: credential.label,
+                      baseUrl: credential.base_url,
+                      model: credential.model,
+                    });
+
                     return (
                       <button
                         key={credential.id}
@@ -811,7 +825,15 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                           setModelPickerOpen(false);
                         }}
                       >
-                        <SparklesIcon className="size-3.5 shrink-0" />
+                        {iconSrc ? (
+                          <img
+                            src={iconSrc}
+                            alt=""
+                            className="size-4 shrink-0 object-contain"
+                          />
+                        ) : (
+                          <SparklesIcon className="size-3.5 shrink-0" />
+                        )}
                         <div className="min-w-0 flex-1">
                           <div className="truncate font-medium text-xs">
                             {credential.label}
@@ -1052,7 +1074,15 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
             >
               {isDirectProvider ? (
                 <>
-                  <SparklesIcon className="size-3" />
+                  {selectedProviderIconSrc ? (
+                    <img
+                      src={selectedProviderIconSrc}
+                      alt=""
+                      className="size-3.5 shrink-0 object-contain"
+                    />
+                  ) : (
+                    <SparklesIcon className="size-3" />
+                  )}
                   <span className="max-w-36 truncate">
                     {selectedProviderCredential?.label ?? "Provider"}
                   </span>

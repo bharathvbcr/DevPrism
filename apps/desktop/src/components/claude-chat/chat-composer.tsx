@@ -136,6 +136,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
         model: selectedProviderCredential.model,
       })
     : null;
+  const claudeCodeIconSrc = getProviderIconSrc({ label: "Anthropic" });
   const [providerModelOptions, setProviderModelOptions] = useState<
     Record<string, string[]>
   >({});
@@ -936,7 +937,15 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                     setSelectedProviderCredentialId(CLAUDE_CODE_PROVIDER_ID);
                   }}
                 >
-                  <SparklesIcon className="size-3.5 shrink-0" />
+                  {claudeCodeIconSrc ? (
+                    <img
+                      src={claudeCodeIconSrc}
+                      alt=""
+                      className="size-4 shrink-0 object-contain"
+                    />
+                  ) : (
+                    <SparklesIcon className="size-3.5 shrink-0" />
+                  )}
                   <div className="min-w-0 flex-1">
                     <div className="truncate font-medium text-xs">
                       Claude Code
@@ -1257,7 +1266,15 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                 </>
               ) : (
                 <>
-                  <SparklesIcon className="size-3" />
+                  {claudeCodeIconSrc ? (
+                    <img
+                      src={claudeCodeIconSrc}
+                      alt=""
+                      className="size-3.5 shrink-0 object-contain"
+                    />
+                  ) : (
+                    <SparklesIcon className="size-3" />
+                  )}
                   <span>Claude Code</span>
                   <span>
                     {selectedModel === "sonnet"

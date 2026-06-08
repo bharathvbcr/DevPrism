@@ -453,18 +453,28 @@ jobs:
       # Without this, the binary links against the build host's libicuuc.so.70
       # (Ubuntu 22.04) and fails on distros shipping newer ICU (e.g. Ubuntu 25.10
       # with libicuuc.so.76). Mirrors the macOS approach (commit 9566956).
+      # Uses a custom static triplet because x64-linux defaults to dynamic libs,
+      # which causes hidden symbol errors with graphite2 (gr_label_destroy).
       - name: Setup vcpkg
         run: |
           git clone --depth 1 https://github.com/microsoft/vcpkg $HOME/vcpkg
           $HOME/vcpkg/bootstrap-vcpkg.sh
           echo "VCPKG_ROOT=$HOME/vcpkg" >> $GITHUB_ENV
 
+          # Create a static triplet for Linux
+          cat > $HOME/vcpkg/triplets/x64-linux-static.cmake <<'TRIPLET'
+          set(VCPKG_TARGET_ARCHITECTURE x64)
+          set(VCPKG_CRT_LINKAGE dynamic)
+          set(VCPKG_LIBRARY_LINKAGE static)
+          set(VCPKG_CMAKE_SYSTEM_NAME Linux)
+          TRIPLET
+
       - name: Restore vcpkg cache
         id: vcpkg-cache
         uses: actions/cache/restore@v4
         with:
           path: ~/vcpkg/installed
-          key: vcpkg-linux-x64-v2
+          key: vcpkg-linux-x64-static-v1
 
       - name: Install Linux dependencies (vcpkg)
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
@@ -472,17 +482,17 @@ jobs:
           VCPKG_BINARY_SOURCES: "clear"
         run: |
           $HOME/vcpkg/vcpkg install \
-            "harfbuzz[graphite2]:x64-linux" \
-            fontconfig:x64-linux \
-            freetype:x64-linux \
-            icu:x64-linux
+            "harfbuzz[graphite2]:x64-linux-static" \
+            fontconfig:x64-linux-static \
+            freetype:x64-linux-static \
+            icu:x64-linux-static
 
       - name: Save vcpkg cache
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: ~/vcpkg/installed
-          key: vcpkg-linux-x64-v2
+          key: vcpkg-linux-x64-static-v1
 
       - uses: dtolnay/rust-toolchain@stable
         with:

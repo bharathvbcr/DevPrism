@@ -509,7 +509,11 @@ jobs:
           TECTONIC_DEP_BACKEND: vcpkg
           CXXFLAGS: "-std=c++17"
           CFLAGS: ""
-        run: pnpm --filter @claude-prism/desktop tauri build --target x86_64-unknown-linux-gnu
+        run: |
+          # Remove vcpkg's graphite2 so the linker uses the system one
+          # (vcpkg builds graphite2 with hidden symbol visibility, causing link errors)
+          rm -f $HOME/vcpkg/installed/x64-linux/lib/libgraphite2.* 2>/dev/null || true
+          pnpm --filter @claude-prism/desktop tauri build --target x86_64-unknown-linux-gnu
 
       - name: Collect updater artifacts
         id: collect

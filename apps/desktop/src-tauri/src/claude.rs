@@ -66,6 +66,33 @@ struct DirectTask {
 
 const PROVIDER_CLAUDE_CODE: &str = "claude-code";
 const PROVIDER_OPENAI_COMPATIBLE: &str = "openai-compatible";
+const DIRECT_PROVIDER_TOOL_NAMES: &[&str] = &[
+    "Read",
+    "Write",
+    "Edit",
+    "MultiEdit",
+    "LS",
+    "Glob",
+    "Grep",
+    "TodoWrite",
+    "ToolSearch",
+    "TaskCreate",
+    "TaskGet",
+    "TaskUpdate",
+    "TaskList",
+    "TaskStop",
+    "AskUserQuestion",
+    "EnterPlanMode",
+    "ExitPlanMode",
+    "Skill",
+    "Agent",
+    "WebFetch",
+    "WebSearch",
+    "ListMcpResources",
+    "ReadMcpResource",
+    "PowerShell",
+    "Bash",
+];
 
 /// Check if an environment variable should be explicitly passed to child processes.
 ///
@@ -101,9 +128,7 @@ fn get_claude_prism_auth_path() -> Result<PathBuf, String> {
     let config_dir = dirs::config_dir()
         .or_else(dirs::home_dir)
         .ok_or("Could not find config directory")?;
-    Ok(config_dir
-        .join("ClaudePrism")
-        .join("anthropic-auth.json"))
+    Ok(config_dir.join("ClaudePrism").join("anthropic-auth.json"))
 }
 
 fn read_claude_prism_auth_config() -> Result<ClaudePrismAuthConfig, String> {
@@ -112,8 +137,8 @@ fn read_claude_prism_auth_config() -> Result<ClaudePrismAuthConfig, String> {
         return Ok(ClaudePrismAuthConfig::default());
     }
 
-    let content =
-        std::fs::read_to_string(&path).map_err(|e| format!("Failed to read auth settings: {}", e))?;
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("Failed to read auth settings: {}", e))?;
     let content = content.trim_start_matches('\u{feff}');
     serde_json::from_str(content).map_err(|e| format!("Failed to parse auth settings: {}", e))
 }
@@ -287,7 +312,9 @@ fn normalized_openai_compatible_credentials(
             normalize_base_url(config.openai_base_url.as_deref())
                 .ok()
                 .flatten(),
-            normalize_model(config.openai_model.as_deref()).ok().flatten(),
+            normalize_model(config.openai_model.as_deref())
+                .ok()
+                .flatten(),
         ) {
             credentials.push(StoredOpenAiCompatibleCredential {
                 id: "legacy-openai-compatible".to_string(),
@@ -692,7 +719,10 @@ fn expand_env_vars(s: &str) -> String {
     use std::ffi::OsString;
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
-    let wide: Vec<u16> = OsString::from(s).encode_wide().chain(std::iter::once(0)).collect();
+    let wide: Vec<u16> = OsString::from(s)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
 
     // First call to get required buffer size
     let size = unsafe {
@@ -898,9 +928,7 @@ fn find_claude_binary() -> Result<String, String> {
                 .join("pnpm")
                 .join("claude.cmd"),
             // Scoop
-            home.join("scoop")
-                .join("shims")
-                .join("claude.cmd"),
+            home.join("scoop").join("shims").join("claude.cmd"),
             // Standard Node.js install
             PathBuf::from(r"C:\Program Files\nodejs\claude.cmd"),
         ];
@@ -916,14 +944,20 @@ fn find_claude_binary() -> Result<String, String> {
 }
 
 #[cfg(any(test, not(target_os = "windows")))]
-fn unix_claude_candidate_paths(home: &std::path::Path, pnpm_home: Option<std::ffi::OsString>) -> Vec<PathBuf> {
+fn unix_claude_candidate_paths(
+    home: &std::path::Path,
+    pnpm_home: Option<std::ffi::OsString>,
+) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Some(pnpm_home) = pnpm_home.filter(|value| !value.is_empty()) {
         paths.push(PathBuf::from(pnpm_home).join("claude"));
     }
     paths.extend([
         home.join("Library").join("pnpm").join("claude"),
-        home.join(".local").join("share").join("pnpm").join("claude"),
+        home.join(".local")
+            .join("share")
+            .join("pnpm")
+            .join("claude"),
         home.join(".pnpm").join("claude"),
         home.join(".claude").join("local").join("claude"),
         home.join(".npm-global").join("bin").join("claude"),
@@ -990,9 +1024,9 @@ fn unix_shell_manager_candidate_paths(home: &std::path::Path) -> Vec<PathBuf> {
         paths.push(unix_claude_path_from_npm_prefix(npm_prefix));
     }
 
-    if let Some(yarn_bin) = run_login_shell_command(
-        "command -v yarn >/dev/null 2>&1 && yarn global bin 2>/dev/null",
-    ) {
+    if let Some(yarn_bin) =
+        run_login_shell_command("command -v yarn >/dev/null 2>&1 && yarn global bin 2>/dev/null")
+    {
         paths.push(unix_claude_path_from_bin_dir(yarn_bin));
     }
 
@@ -1005,16 +1039,31 @@ fn unix_shell_manager_candidate_paths(home: &std::path::Path) -> Vec<PathBuf> {
 fn unix_known_pnpm_claude_paths(home: &std::path::Path) -> Vec<PathBuf> {
     vec![
         home.join("Library").join("pnpm").join("claude"),
-        home.join("Library").join("pnpm").join("global").join("bin").join("claude"),
-        home.join(".local").join("share").join("pnpm").join("claude"),
-        home.join(".local").join("share").join("pnpm").join("global").join("bin").join("claude"),
+        home.join("Library")
+            .join("pnpm")
+            .join("global")
+            .join("bin")
+            .join("claude"),
+        home.join(".local")
+            .join("share")
+            .join("pnpm")
+            .join("claude"),
+        home.join(".local")
+            .join("share")
+            .join("pnpm")
+            .join("global")
+            .join("bin")
+            .join("claude"),
         home.join(".pnpm").join("claude"),
         home.join(".pnpm").join("global").join("bin").join("claude"),
     ]
 }
 
 #[cfg(any(test, not(target_os = "windows")))]
-fn unix_extra_tool_dirs(home: &std::path::Path, pnpm_home: Option<std::ffi::OsString>) -> Vec<PathBuf> {
+fn unix_extra_tool_dirs(
+    home: &std::path::Path,
+    pnpm_home: Option<std::ffi::OsString>,
+) -> Vec<PathBuf> {
     let mut dirs = vec![
         home.join(".local").join("bin"),
         home.join(".cargo").join("bin"),
@@ -1022,7 +1071,11 @@ fn unix_extra_tool_dirs(home: &std::path::Path, pnpm_home: Option<std::ffi::OsSt
         home.join("Library").join("pnpm"),
         home.join("Library").join("pnpm").join("global").join("bin"),
         home.join(".local").join("share").join("pnpm"),
-        home.join(".local").join("share").join("pnpm").join("global").join("bin"),
+        home.join(".local")
+            .join("share")
+            .join("pnpm")
+            .join("global")
+            .join("bin"),
         home.join(".pnpm"),
         home.join(".pnpm").join("global").join("bin"),
         "/opt/homebrew/bin".into(),
@@ -1209,7 +1262,6 @@ fn resolve_cmd_to_node(program: &str) -> (String, Vec<String>) {
 fn new_sync_command(program: &str) -> std::process::Command {
     #[cfg(target_os = "windows")]
     {
-
         let (resolved, prefix) = resolve_cmd_to_node(program);
         let mut c = std::process::Command::new(&resolved);
         c.creation_flags(CREATE_NO_WINDOW);
@@ -1235,7 +1287,6 @@ fn create_command(
 
     #[cfg(target_os = "windows")]
     let mut cmd = {
-
         let (resolved, prefix) = resolve_cmd_to_node(clean_program.as_ref());
         let mut c = Command::new(&resolved);
         c.creation_flags(CREATE_NO_WINDOW);
@@ -1344,8 +1395,7 @@ fn create_command(
                     if let Some(nvm_bin_path) = candidates.first() {
                         let nvm_bin_str = nvm_bin_path.to_string_lossy();
                         if !current_path.contains(nvm_bin_str.as_ref()) {
-                            current_path =
-                                format!("{}{}{}", nvm_bin_str, sep, current_path);
+                            current_path = format!("{}{}{}", nvm_bin_str, sep, current_path);
                         }
                     }
                 }
@@ -1515,8 +1565,7 @@ async fn spawn_claude_process(
                 }
 
                 if msg.get("type").and_then(|v| v.as_str()) == Some("result") {
-                    let is_success =
-                        msg.get("subtype").and_then(|v| v.as_str()) == Some("success");
+                    let is_success = msg.get("subtype").and_then(|v| v.as_str()) == Some("success");
                     if let Ok(mut guard) = result_success_stdout.lock() {
                         *guard = Some(is_success);
                     }
@@ -1907,7 +1956,6 @@ pub async fn install_claude_cli(window: WebviewWindow) -> Result<(), String> {
     };
     #[cfg(target_os = "windows")]
     let mut cmd = {
-
         let mut c = tokio::process::Command::new("powershell");
         c.creation_flags(CREATE_NO_WINDOW);
         c.args([
@@ -2011,7 +2059,6 @@ pub async fn login_claude(window: WebviewWindow) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     let mut cmd = {
-
         let (resolved, prefix) = resolve_cmd_to_node(&binary_path);
         let mut c = tokio::process::Command::new(&resolved);
         c.creation_flags(CREATE_NO_WINDOW);
@@ -2135,7 +2182,7 @@ fn common_claude_args() -> Vec<String> {
 // ─── Tauri Commands ───
 
 fn direct_provider_system_prompt() -> String {
-    [
+    let mut lines = vec![
         "You are an AI assistant integrated into ClaudePrism, a LaTeX document editor.",
         "Help the user write, revise, and reason about academic documents.",
         "Preserve existing LaTeX structure unless the user asks for a rewrite.",
@@ -2145,11 +2192,17 @@ fn direct_provider_system_prompt() -> String {
         "Use Read before non-trivial edits, use Edit for precise replacements, and use Write only when creating or fully replacing a file.",
         "PDF attachments may have extracted text sidecars next to them, named like paper.pdf.txt. Read the sidecar when inspecting a PDF.",
         "For multi-step writing or editing tasks, use TodoWrite to keep a short plan with at most one in_progress item.",
-        "If you prefer Claude/Codex-style task tools, TaskCreate, TaskUpdate, and TaskList are available as a lightweight session task list.",
+        "Use AskUserQuestion when you need the user to choose between concrete options before continuing.",
+        "Use EnterPlanMode for complex implementation planning, and ExitPlanMode when you need user approval before implementing a plan.",
+        "Use Skill to load installed project/global SKILL.md guidance before applying a domain-specific skill.",
+        "If you prefer Claude/Codex-style task tools, TaskCreate, TaskGet, TaskUpdate, TaskList, and TaskStop are available as a lightweight session task list.",
         "ToolSearch can be used to inspect the currently available local tool names; it does not install external tools.",
         "Do not claim a file was changed unless a tool result confirms it.",
-    ]
-    .join("\n")
+    ];
+    if cfg!(target_os = "windows") {
+        lines.push("On Windows, prefer PowerShell for terminal operations unless the user explicitly asks for Bash/cmd syntax.");
+    }
+    lines.join("\n")
 }
 
 fn direct_provider_no_tools_system_prompt() -> String {
@@ -2372,6 +2425,22 @@ fn direct_provider_tools() -> serde_json::Value {
         {
             "type": "function",
             "function": {
+                "name": "TaskGet",
+                "description": "Read one task from the current direct-provider session task list.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "taskId": { "type": "string", "description": "Task id returned by TaskCreate or TaskList." },
+                        "task_id": { "type": "string", "description": "Alias for taskId." },
+                        "id": { "type": "string", "description": "Alias for taskId." }
+                    },
+                    "required": ["taskId"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "TaskList",
                 "description": "List lightweight tasks in the current direct-provider session.",
                 "parameters": {
@@ -2383,6 +2452,194 @@ fn direct_provider_tools() -> serde_json::Value {
                             "description": "Optional status filter."
                         }
                     }
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "TaskStop",
+                "description": "Stop or complete a lightweight task in the current direct-provider session.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "taskId": { "type": "string", "description": "Task id returned by TaskCreate or TaskList." },
+                        "task_id": { "type": "string", "description": "Alias for taskId." },
+                        "id": { "type": "string", "description": "Alias for taskId." },
+                        "reason": { "type": "string", "description": "Optional reason for stopping the task." }
+                    },
+                    "required": ["taskId"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "AskUserQuestion",
+                "description": "Ask the user one or more multiple-choice questions when you need a preference, clarification, or decision before continuing.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "questions": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "header": { "type": "string", "description": "Short label for the question." },
+                                    "id": { "type": "string", "description": "Stable snake_case identifier." },
+                                    "question": { "type": "string", "description": "Question shown to the user." },
+                                    "multiSelect": { "type": "boolean", "description": "Whether multiple options can be selected." },
+                                    "options": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "label": { "type": "string" },
+                                                "description": { "type": "string" },
+                                                "preview": { "type": "string" }
+                                            },
+                                            "required": ["label", "description"]
+                                        }
+                                    }
+                                },
+                                "required": ["question", "options"]
+                            }
+                        }
+                    },
+                    "required": ["questions"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "EnterPlanMode",
+                "description": "Enter planning mode for a complex implementation. Use this before editing when the approach should be designed first.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "reason": { "type": "string", "description": "Why planning mode is useful." }
+                    }
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "ExitPlanMode",
+                "description": "Present a plan to the user for approval before implementation. ClaudePrism will pause the direct-provider session until the user responds.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "plan": { "type": "string", "description": "The implementation plan to show the user." }
+                    },
+                    "required": ["plan"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "Skill",
+                "description": "Load installed project/global SKILL.md guidance by skill name or folder. If no skill is provided, lists available skills.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "skill": { "type": "string", "description": "Skill folder/name to load." },
+                        "name": { "type": "string", "description": "Alias for skill." },
+                        "command": { "type": "string", "description": "Slash command or skill name, for example /biopython." }
+                    }
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "Agent",
+                "description": "Request a sub-agent. ClaudePrism direct-provider sessions expose this for compatibility; when sub-agents are unavailable, continue the work inline.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "prompt": { "type": "string", "description": "Task for the sub-agent." },
+                        "description": { "type": "string", "description": "Short task description." },
+                        "subagent_type": { "type": "string", "description": "Requested agent type." }
+                    },
+                    "required": ["prompt"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "WebFetch",
+                "description": "Fetch a public URL and return readable text. Authenticated/private pages may fail.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": { "type": "string", "description": "Public http(s) URL to fetch." },
+                        "prompt": { "type": "string", "description": "Optional extraction instruction." }
+                    },
+                    "required": ["url"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "WebSearch",
+                "description": "Search the web. ClaudePrism direct-provider sessions expose this for compatibility; use WebFetch when you already have URLs.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "description": "Search query." },
+                        "allowed_domains": { "type": "array", "items": { "type": "string" } },
+                        "blocked_domains": { "type": "array", "items": { "type": "string" } }
+                    },
+                    "required": ["query"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "ListMcpResources",
+                "description": "List MCP resources. ClaudePrism direct-provider sessions currently expose this as a compatibility shim.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "server": { "type": "string", "description": "Optional MCP server name." }
+                    }
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "ReadMcpResource",
+                "description": "Read an MCP resource. ClaudePrism direct-provider sessions currently expose this as a compatibility shim.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "server": { "type": "string", "description": "MCP server name." },
+                        "uri": { "type": "string", "description": "Resource URI." }
+                    },
+                    "required": ["server", "uri"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "PowerShell",
+                "description": "Run a PowerShell command in the current project directory. Prefer this for Windows terminal work; use dedicated file tools for reading, writing, editing, and searching files.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": { "type": "string", "description": "PowerShell command to run in the project directory." },
+                        "description": { "type": "string", "description": "Short description of why the command is needed." },
+                        "timeout_ms": { "type": "integer", "description": "Optional timeout in milliseconds. Defaults to 120000." }
+                    },
+                    "required": ["command"]
                 }
             }
         },
@@ -2409,12 +2666,10 @@ fn direct_provider_functions() -> serde_json::Value {
     let Some(tools) = direct_provider_tools().as_array().cloned() else {
         return json!([]);
     };
-    json!(
-        tools
-            .into_iter()
-            .filter_map(|tool| tool.get("function").cloned())
-            .collect::<Vec<_>>()
-    )
+    json!(tools
+        .into_iter()
+        .filter_map(|tool| tool.get("function").cloned())
+        .collect::<Vec<_>>())
 }
 
 fn openai_chat_completions_url(base_url: &str) -> String {
@@ -2535,8 +2790,12 @@ async fn verify_openai_compatible_credential(
         return Err(openai_compatible_verification_error(status, &response_text));
     }
 
-    let response_json: serde_json::Value = serde_json::from_str(&response_text)
-        .map_err(|err| format!("Provider returned invalid JSON during verification: {}", err))?;
+    let response_json: serde_json::Value = serde_json::from_str(&response_text).map_err(|err| {
+        format!(
+            "Provider returned invalid JSON during verification: {}",
+            err
+        )
+    })?;
     if response_json.pointer("/choices/0/message").is_none()
         && response_json.pointer("/choices/0/text").is_none()
     {
@@ -2567,7 +2826,10 @@ fn usage_u64(usage: &serde_json::Value, keys: &[&str]) -> Option<u64> {
 }
 
 fn json_usage(value: &serde_json::Value) -> serde_json::Value {
-    let usage = value.get("usage").filter(|usage| !usage.is_null()).unwrap_or(value);
+    let usage = value
+        .get("usage")
+        .filter(|usage| !usage.is_null())
+        .unwrap_or(value);
     let total_tokens = usage_u64(usage, &["total_tokens", "total_token_count"]);
     let mut input_tokens = usage_u64(
         usage,
@@ -2852,7 +3114,7 @@ async fn persist_direct_task_state(
 fn is_direct_task_mutation_tool(name: &str) -> bool {
     matches!(
         canonical_direct_tool_name(name),
-        Some("TaskCreate" | "TaskUpdate")
+        Some("TaskCreate" | "TaskUpdate" | "TaskStop")
     )
 }
 
@@ -3234,10 +3496,18 @@ fn truncate_tool_content(content: String, max_chars: usize) -> String {
         return content;
     }
     let truncated: String = content.chars().take(max_chars).collect();
-    format!("{}\n\n[Output truncated after {} characters]", truncated, max_chars)
+    format!(
+        "{}\n\n[Output truncated after {} characters]",
+        truncated, max_chars
+    )
 }
 
-fn apply_exact_edit(content: &str, old: &str, new: &str, replace_all: bool) -> Result<String, String> {
+fn apply_exact_edit(
+    content: &str,
+    old: &str,
+    new: &str,
+    replace_all: bool,
+) -> Result<String, String> {
     if old.is_empty() {
         return Err("old_string cannot be empty".to_string());
     }
@@ -3268,7 +3538,11 @@ fn skip_direct_provider_dir(path: &Path) -> bool {
     )
 }
 
-fn collect_project_files(dir: &Path, files: &mut Vec<PathBuf>, max_files: usize) -> Result<(), String> {
+fn collect_project_files(
+    dir: &Path,
+    files: &mut Vec<PathBuf>,
+    max_files: usize,
+) -> Result<(), String> {
     if files.len() >= max_files {
         return Ok(());
     }
@@ -3407,9 +3681,11 @@ fn execute_direct_write(project_root: &Path, input: &serde_json::Value) -> Resul
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create parent directory: {}", e))?;
     }
-    std::fs::write(&path, content)
-        .map_err(|e| format!("Failed to write {}: {}", file_path, e))?;
-    Ok(format!("Wrote {}", relative_project_path(project_root, &path)))
+    std::fs::write(&path, content).map_err(|e| format!("Failed to write {}: {}", file_path, e))?;
+    Ok(format!(
+        "Wrote {}",
+        relative_project_path(project_root, &path)
+    ))
 }
 
 fn execute_direct_edit(project_root: &Path, input: &serde_json::Value) -> Result<String, String> {
@@ -3424,12 +3700,17 @@ fn execute_direct_edit(project_root: &Path, input: &serde_json::Value) -> Result
     let content = std::fs::read_to_string(&path)
         .map_err(|e| format!("Failed to read {}: {}", file_path, e))?;
     let updated = apply_exact_edit(&content, &old, &new, replace_all)?;
-    std::fs::write(&path, updated)
-        .map_err(|e| format!("Failed to write {}: {}", file_path, e))?;
-    Ok(format!("Edited {}", relative_project_path(project_root, &path)))
+    std::fs::write(&path, updated).map_err(|e| format!("Failed to write {}: {}", file_path, e))?;
+    Ok(format!(
+        "Edited {}",
+        relative_project_path(project_root, &path)
+    ))
 }
 
-fn execute_direct_multiedit(project_root: &Path, input: &serde_json::Value) -> Result<String, String> {
+fn execute_direct_multiedit(
+    project_root: &Path,
+    input: &serde_json::Value,
+) -> Result<String, String> {
     let file_path = tool_path_value(input)?;
     let edits = input
         .get("edits")
@@ -3454,8 +3735,7 @@ fn execute_direct_multiedit(project_root: &Path, input: &serde_json::Value) -> R
         content = apply_exact_edit(&content, &old, &new, replace_all)
             .map_err(|e| format!("Edit {}: {}", idx + 1, e))?;
     }
-    std::fs::write(&path, content)
-        .map_err(|e| format!("Failed to write {}: {}", file_path, e))?;
+    std::fs::write(&path, content).map_err(|e| format!("Failed to write {}: {}", file_path, e))?;
     Ok(format!(
         "Applied {} edits to {}",
         edits.len(),
@@ -3537,7 +3817,11 @@ fn execute_direct_glob(project_root: &Path, input: &serde_json::Value) -> Result
 
 fn looks_like_text_file(path: &Path) -> bool {
     matches!(
-        path.extension().and_then(|v| v.to_str()).unwrap_or("").to_ascii_lowercase().as_str(),
+        path.extension()
+            .and_then(|v| v.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .as_str(),
         "tex"
             | "bib"
             | "sty"
@@ -3649,8 +3933,8 @@ fn execute_direct_todowrite(input: &serde_json::Value) -> Result<String, String>
     for (idx, todo) in todos.iter().enumerate() {
         let content = required_tool_string(todo, "content")
             .map_err(|e| format!("Todo {}: {}", idx + 1, e))?;
-        let status = required_tool_string(todo, "status")
-            .map_err(|e| format!("Todo {}: {}", idx + 1, e))?;
+        let status =
+            required_tool_string(todo, "status").map_err(|e| format!("Todo {}: {}", idx + 1, e))?;
         if !matches!(status.as_str(), "pending" | "in_progress" | "completed") {
             return Err(format!(
                 "Todo {}: status must be pending, in_progress, or completed",
@@ -3666,7 +3950,11 @@ fn execute_direct_todowrite(input: &serde_json::Value) -> Result<String, String>
     let mut output = if lines.is_empty() {
         "Todo list cleared".to_string()
     } else {
-        format!("Todo list updated ({} items).\n{}", todos.len(), lines.join("\n"))
+        format!(
+            "Todo list updated ({} items).\n{}",
+            todos.len(),
+            lines.join("\n")
+        )
     };
     if in_progress_count > 1 {
         output.push_str("\n\nNote: Keep at most one todo in_progress at a time.");
@@ -3677,18 +3965,48 @@ fn execute_direct_todowrite(input: &serde_json::Value) -> Result<String, String>
 fn direct_tool_catalog() -> Vec<(&'static str, &'static str)> {
     vec![
         ("Read", "Read a UTF-8 text file from the current project."),
-        ("Write", "Create or replace a UTF-8 text file in the current project."),
+        (
+            "Write",
+            "Create or replace a UTF-8 text file in the current project.",
+        ),
         ("Edit", "Replace an exact string in a UTF-8 text file."),
-        ("MultiEdit", "Apply multiple exact string replacements to one file."),
+        (
+            "MultiEdit",
+            "Apply multiple exact string replacements to one file.",
+        ),
         ("LS", "List files and directories in a project directory."),
         ("Glob", "List project files matching a wildcard pattern."),
         ("Grep", "Search project files for a literal substring."),
         ("TodoWrite", "Update a concise multi-step plan."),
         ("TaskCreate", "Create a lightweight session task."),
+        ("TaskGet", "Read a lightweight session task."),
         ("TaskUpdate", "Update a lightweight session task."),
         ("TaskList", "List lightweight session tasks."),
+        ("TaskStop", "Stop or complete a lightweight session task."),
+        ("AskUserQuestion", "Ask the user multiple-choice questions."),
+        ("EnterPlanMode", "Enter planning mode for complex work."),
+        (
+            "ExitPlanMode",
+            "Present a plan and pause for user approval.",
+        ),
+        ("Skill", "Load installed SKILL.md guidance."),
+        ("Agent", "Sub-agent compatibility shim."),
+        ("WebFetch", "Fetch a public URL."),
+        ("WebSearch", "Web search compatibility shim."),
+        (
+            "ListMcpResources",
+            "MCP resource listing compatibility shim.",
+        ),
+        ("ReadMcpResource", "MCP resource read compatibility shim."),
+        (
+            "PowerShell",
+            "Run a PowerShell command in the project directory.",
+        ),
         ("ToolSearch", "Inspect available local tool names."),
-        ("Bash", "Run a shell command in the current project directory."),
+        (
+            "Bash",
+            "Run a shell command in the current project directory.",
+        ),
     ]
 }
 
@@ -3705,6 +4023,13 @@ fn canonical_direct_tool_name(name: &str) -> Option<&'static str> {
             let tool_normalized = tool_name.to_ascii_lowercase();
             (tool_normalized == normalized).then_some(tool_name)
         })
+}
+
+fn is_direct_ui_pause_tool(name: &str) -> bool {
+    matches!(
+        canonical_direct_tool_name(name),
+        Some("AskUserQuestion") | Some("ExitPlanMode")
+    )
 }
 
 fn execute_direct_toolsearch(input: &serde_json::Value) -> Result<String, String> {
@@ -3762,7 +4087,10 @@ fn execute_direct_toolsearch(input: &serde_json::Value) -> Result<String, String
         .collect::<Vec<_>>();
 
     if matches.is_empty() {
-        Ok("No matching local tools found. Available core tools include Read, Edit, TodoWrite, TaskCreate, TaskUpdate, TaskList, and Bash.".to_string())
+        Ok(format!(
+            "No matching local tools found. Available core tools include {}.",
+            DIRECT_PROVIDER_TOOL_NAMES.join(", ")
+        ))
     } else {
         Ok(format!("Available local tools:\n{}", matches.join("\n")))
     }
@@ -3771,9 +4099,7 @@ fn execute_direct_toolsearch(input: &serde_json::Value) -> Result<String, String
 fn normalize_direct_task_status(status: &str) -> Option<&'static str> {
     match status.trim().to_ascii_lowercase().as_str() {
         "pending" | "todo" | "open" => Some("pending"),
-        "in_progress" | "in-progress" | "in progress" | "active" | "working" => {
-            Some("in_progress")
-        }
+        "in_progress" | "in-progress" | "in progress" | "active" | "working" => Some("in_progress"),
         "completed" | "complete" | "done" | "resolved" => Some("completed"),
         "deleted" | "delete" | "remove" | "removed" => Some("deleted"),
         _ => None,
@@ -3811,7 +4137,9 @@ async fn execute_direct_task_create(
     input: &serde_json::Value,
 ) -> Result<String, String> {
     let subject = required_tool_string(input, "subject")?.trim().to_string();
-    let description = required_tool_string(input, "description")?.trim().to_string();
+    let description = required_tool_string(input, "description")?
+        .trim()
+        .to_string();
     if subject.is_empty() {
         return Err("subject cannot be empty".to_string());
     }
@@ -3855,8 +4183,9 @@ async fn execute_direct_task_update(
     };
 
     if let Some(status) = optional_tool_string(input, "status") {
-        let normalized = normalize_direct_task_status(&status)
-            .ok_or_else(|| "status must be pending, in_progress, completed, or deleted".to_string())?;
+        let normalized = normalize_direct_task_status(&status).ok_or_else(|| {
+            "status must be pending, in_progress, completed, or deleted".to_string()
+        })?;
         if normalized == "deleted" {
             let task = tasks.remove(index);
             return Ok(format!("Task deleted: {}", format_direct_task(&task)));
@@ -3926,7 +4255,50 @@ async fn execute_direct_task_list(
     }
 }
 
-async fn execute_direct_bash(project_root: &Path, input: &serde_json::Value) -> Result<String, String> {
+async fn execute_direct_task_get(
+    state: &ClaudeProcessState,
+    session_id: &str,
+    input: &serde_json::Value,
+) -> Result<String, String> {
+    let task_id = required_tool_string_any(input, &["taskId", "task_id", "id"])?;
+    let task_lists = state.direct_task_lists.lock().await;
+    let tasks = task_lists.get(session_id).cloned().unwrap_or_default();
+    let Some(task) = tasks.iter().find(|task| task.id == task_id) else {
+        return Err(format!(
+            "Task not found: {}. Use TaskList to see current tasks.",
+            task_id
+        ));
+    };
+    Ok(format_direct_task(task))
+}
+
+async fn execute_direct_task_stop(
+    state: &ClaudeProcessState,
+    session_id: &str,
+    input: &serde_json::Value,
+) -> Result<String, String> {
+    let task_id = required_tool_string_any(input, &["taskId", "task_id", "id"])?;
+    let reason = optional_tool_string(input, "reason");
+    let mut task_lists = state.direct_task_lists.lock().await;
+    let tasks = task_lists.entry(session_id.to_string()).or_default();
+    let Some(task) = tasks.iter_mut().find(|task| task.id == task_id) else {
+        return Err(format!(
+            "Task not found: {}. Use TaskList to see current tasks.",
+            task_id
+        ));
+    };
+    task.status = "completed".to_string();
+    let mut output = format!("Task stopped: {}", format_direct_task(task));
+    if let Some(reason) = reason {
+        output.push_str(&format!("\nReason: {}", reason));
+    }
+    Ok(output)
+}
+
+async fn execute_direct_bash(
+    project_root: &Path,
+    input: &serde_json::Value,
+) -> Result<String, String> {
     let command = required_tool_string(input, "command")?;
     if command.trim().is_empty() {
         return Err("command cannot be empty".to_string());
@@ -3944,13 +4316,10 @@ async fn execute_direct_bash(project_root: &Path, input: &serde_json::Value) -> 
     let cwd = project_root.to_string_lossy().to_string();
     let mut cmd = create_command(shell, args, &cwd, None);
     cmd.kill_on_drop(true);
-    let output = tokio::time::timeout(
-        std::time::Duration::from_millis(timeout_ms),
-        cmd.output(),
-    )
-    .await
-    .map_err(|_| format!("Command timed out after {}ms", timeout_ms))?
-    .map_err(|e| format!("Failed to run command: {}", e))?;
+    let output = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), cmd.output())
+        .await
+        .map_err(|_| format!("Command timed out after {}ms", timeout_ms))?
+        .map_err(|e| format!("Failed to run command: {}", e))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -3961,6 +4330,322 @@ async fn execute_direct_bash(project_root: &Path, input: &serde_json::Value) -> 
             command, exit_code, stdout, stderr
         ),
         30000,
+    ))
+}
+
+async fn execute_direct_powershell(
+    project_root: &Path,
+    input: &serde_json::Value,
+) -> Result<String, String> {
+    let command = required_tool_string(input, "command")?;
+    if command.trim().is_empty() {
+        return Err("command cannot be empty".to_string());
+    }
+    let timeout_ms = input
+        .get("timeout_ms")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(120_000)
+        .clamp(1_000, 300_000);
+
+    #[cfg(target_os = "windows")]
+    let (shell, args) = (
+        "powershell.exe",
+        vec![
+            "-NoLogo".to_string(),
+            "-NoProfile".to_string(),
+            "-NonInteractive".to_string(),
+            "-ExecutionPolicy".to_string(),
+            "Bypass".to_string(),
+            "-Command".to_string(),
+            command.clone(),
+        ],
+    );
+    #[cfg(not(target_os = "windows"))]
+    let (shell, args) = (
+        "pwsh",
+        vec![
+            "-NoLogo".to_string(),
+            "-NoProfile".to_string(),
+            "-NonInteractive".to_string(),
+            "-Command".to_string(),
+            command.clone(),
+        ],
+    );
+
+    let cwd = project_root.to_string_lossy().to_string();
+    let mut cmd = create_command(shell, args, &cwd, None);
+    cmd.kill_on_drop(true);
+    let output = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), cmd.output())
+        .await
+        .map_err(|_| format!("PowerShell command timed out after {}ms", timeout_ms))?
+        .map_err(|e| format!("Failed to run PowerShell command: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let exit_code = output.status.code().unwrap_or(-1);
+    Ok(truncate_tool_content(
+        format!(
+            "PS> {}\nexit_code: {}\n\nstdout:\n{}\n\nstderr:\n{}",
+            command, exit_code, stdout, stderr
+        ),
+        30000,
+    ))
+}
+
+fn strip_html_to_text(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut in_tag = false;
+    let mut last_was_space = false;
+    let mut entity = String::new();
+    let mut in_entity = false;
+
+    for ch in input.chars() {
+        if in_tag {
+            if ch == '>' {
+                in_tag = false;
+            }
+            continue;
+        }
+        if ch == '<' {
+            in_tag = true;
+            if !last_was_space {
+                out.push(' ');
+                last_was_space = true;
+            }
+            continue;
+        }
+        if in_entity {
+            if ch == ';' {
+                let decoded = match entity.as_str() {
+                    "amp" => '&',
+                    "lt" => '<',
+                    "gt" => '>',
+                    "quot" => '"',
+                    "apos" => '\'',
+                    "nbsp" => ' ',
+                    _ => ' ',
+                };
+                out.push(decoded);
+                last_was_space = decoded.is_whitespace();
+                entity.clear();
+                in_entity = false;
+            } else if entity.len() < 12 {
+                entity.push(ch);
+            } else {
+                entity.clear();
+                in_entity = false;
+            }
+            continue;
+        }
+        if ch == '&' {
+            in_entity = true;
+            entity.clear();
+            continue;
+        }
+        if ch.is_whitespace() {
+            if !last_was_space {
+                out.push(' ');
+                last_was_space = true;
+            }
+        } else {
+            out.push(ch);
+            last_was_space = false;
+        }
+    }
+    out.trim().to_string()
+}
+
+async fn execute_direct_webfetch(input: &serde_json::Value) -> Result<String, String> {
+    let url = required_tool_string(input, "url")?;
+    let lower = url.to_ascii_lowercase();
+    if !(lower.starts_with("https://") || lower.starts_with("http://")) {
+        return Err("WebFetch URL must start with http:// or https://".to_string());
+    }
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("Failed to create WebFetch client: {}", e))?;
+    let response = client
+        .get(&url)
+        .header("User-Agent", "ClaudePrism/1.0 direct-provider WebFetch")
+        .send()
+        .await
+        .map_err(|e| format!("WebFetch failed: {}", e))?;
+    let status = response.status();
+    let final_url = response.url().to_string();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let body = response
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read WebFetch response: {}", e))?;
+    if !status.is_success() {
+        return Err(truncate_tool_content(
+            format!("WebFetch HTTP {} for {}\n{}", status, final_url, body),
+            12000,
+        ));
+    }
+    let text = if content_type.to_ascii_lowercase().contains("html") {
+        strip_html_to_text(&body)
+    } else {
+        body
+    };
+    let prompt_note = optional_tool_string(input, "prompt")
+        .map(|prompt| format!("\nExtraction prompt: {}", prompt))
+        .unwrap_or_default();
+    Ok(truncate_tool_content(
+        format!(
+            "[WebFetch {}]\nURL: {}\nContent-Type: {}{}\n\n{}",
+            status, final_url, content_type, prompt_note, text
+        ),
+        30000,
+    ))
+}
+
+fn direct_skill_dirs(project_root: &Path) -> Vec<PathBuf> {
+    let mut dirs = vec![project_root.join(".claude").join("skills")];
+    if let Some(home) = dirs::home_dir() {
+        dirs.push(home.join(".claude").join("skills"));
+    }
+    dirs
+}
+
+fn normalize_skill_key(value: &str) -> String {
+    value
+        .trim()
+        .trim_start_matches('/')
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
+        .collect()
+}
+
+fn skill_display_name_from_content(content: &str) -> Option<String> {
+    for line in content.lines().take(30) {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("name:") {
+            return Some(rest.trim().trim_matches('"').trim_matches('\'').to_string());
+        }
+        if let Some(rest) = trimmed.strip_prefix("# ") {
+            return Some(rest.trim().to_string());
+        }
+    }
+    None
+}
+
+fn available_direct_skills(project_root: &Path) -> Vec<(String, String, PathBuf)> {
+    let mut seen = HashSet::new();
+    let mut skills = Vec::new();
+    for dir in direct_skill_dirs(project_root) {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let skill_md = path.join("SKILL.md");
+            if !skill_md.exists() {
+                continue;
+            }
+            let folder = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("")
+                .to_string();
+            if !seen.insert(folder.clone()) {
+                continue;
+            }
+            let name = std::fs::read_to_string(&skill_md)
+                .ok()
+                .and_then(|content| skill_display_name_from_content(&content))
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| folder.clone());
+            skills.push((folder, name, skill_md));
+        }
+    }
+    skills.sort_by(|a, b| a.1.cmp(&b.1));
+    skills
+}
+
+fn execute_direct_skill(project_root: &Path, input: &serde_json::Value) -> Result<String, String> {
+    let requested = optional_tool_string(input, "skill")
+        .or_else(|| optional_tool_string(input, "name"))
+        .or_else(|| optional_tool_string(input, "command"));
+    let skills = available_direct_skills(project_root);
+    let Some(requested) = requested else {
+        if skills.is_empty() {
+            return Ok(
+                "No installed skills found in .claude/skills or ~/.claude/skills.".to_string(),
+            );
+        }
+        let lines = skills
+            .iter()
+            .map(|(folder, name, _)| format!("- /{}: {}", folder, name))
+            .collect::<Vec<_>>();
+        return Ok(format!("Installed skills:\n{}", lines.join("\n")));
+    };
+    let key = normalize_skill_key(&requested);
+    let Some((folder, name, skill_md)) = skills.into_iter().find(|(folder, name, _)| {
+        normalize_skill_key(folder) == key || normalize_skill_key(name) == key
+    }) else {
+        return Err(format!(
+            "Skill '{}' not found. Use Skill without a skill name to list installed skills.",
+            requested
+        ));
+    };
+    let content = std::fs::read_to_string(&skill_md)
+        .map_err(|e| format!("Failed to read skill {}: {}", folder, e))?;
+    Ok(truncate_tool_content(
+        format!("[Skill: {} ({})]\n{}", name, folder, content),
+        30000,
+    ))
+}
+
+fn execute_direct_enter_plan_mode(input: &serde_json::Value) -> Result<String, String> {
+    let reason = optional_tool_string(input, "reason")
+        .unwrap_or_else(|| "Complex work should be planned before implementation.".to_string());
+    Ok(format!(
+        "Plan mode entered for this direct-provider turn.\nReason: {}\nUse Read/LS/Grep to gather context, then call ExitPlanMode with a concrete plan when ready for user approval.",
+        reason
+    ))
+}
+
+fn execute_direct_agent(input: &serde_json::Value) -> Result<String, String> {
+    let prompt = required_tool_string_any(input, &["prompt", "description", "task"])?;
+    let agent_type = optional_tool_string(input, "subagent_type")
+        .or_else(|| optional_tool_string(input, "agent_type"))
+        .unwrap_or_else(|| "general-purpose".to_string());
+    Ok(format!(
+        "Sub-agent '{}' is not running as a separate process in ClaudePrism direct-provider mode yet. Continue this task inline using the available tools.\nRequested task:\n{}",
+        agent_type, prompt
+    ))
+}
+
+fn execute_direct_websearch(input: &serde_json::Value) -> Result<String, String> {
+    let query = required_tool_string(input, "query")?;
+    Ok(format!(
+        "WebSearch is exposed for Claude Code compatibility, but ClaudePrism direct-provider mode does not have a search backend configured yet. Use WebFetch if you have URLs, or ask the user for sources.\nQuery: {}",
+        query
+    ))
+}
+
+fn execute_direct_list_mcp_resources(_input: &serde_json::Value) -> Result<String, String> {
+    Ok("MCP resource listing is not connected to ClaudePrism direct-provider mode yet. Use project files, installed skills, or Claude Code provider mode for MCP-backed resources.".to_string())
+}
+
+fn execute_direct_read_mcp_resource(input: &serde_json::Value) -> Result<String, String> {
+    let server = required_tool_string(input, "server")?;
+    let uri = required_tool_string(input, "uri")?;
+    Ok(format!(
+        "MCP resource reading is not connected to ClaudePrism direct-provider mode yet.\nRequested server: {}\nRequested URI: {}",
+        server, uri
     ))
 }
 
@@ -3984,12 +4669,38 @@ async fn execute_direct_provider_tool(
         "TaskCreate" | "taskcreate" | "task_create" => {
             execute_direct_task_create(state, session_id, input).await
         }
+        "TaskGet" | "taskget" | "task_get" => {
+            execute_direct_task_get(state, session_id, input).await
+        }
         "TaskUpdate" | "taskupdate" | "task_update" => {
             execute_direct_task_update(state, session_id, input).await
         }
         "TaskList" | "tasklist" | "task_list" => {
             execute_direct_task_list(state, session_id, input).await
         }
+        "TaskStop" | "taskstop" | "task_stop" => {
+            execute_direct_task_stop(state, session_id, input).await
+        }
+        "AskUserQuestion" | "askuserquestion" | "ask_user_question" => Err(
+            "AskUserQuestion is handled by the ClaudePrism UI. Wait for the user's next message."
+                .to_string(),
+        ),
+        "EnterPlanMode" | "enterplanmode" | "enter_plan_mode" => execute_direct_enter_plan_mode(input),
+        "ExitPlanMode" | "exitplanmode" | "exit_plan_mode" => Err(
+            "ExitPlanMode is handled by the ClaudePrism UI. Wait for the user's approval or revision."
+                .to_string(),
+        ),
+        "Skill" | "skill" => execute_direct_skill(project_root, input),
+        "Agent" | "agent" | "Task" | "task" => execute_direct_agent(input),
+        "WebFetch" | "webfetch" | "web_fetch" => execute_direct_webfetch(input).await,
+        "WebSearch" | "websearch" | "web_search" => execute_direct_websearch(input),
+        "ListMcpResources" | "listmcpresources" | "list_mcp_resources" => {
+            execute_direct_list_mcp_resources(input)
+        }
+        "ReadMcpResource" | "readmcpresource" | "read_mcp_resource" => {
+            execute_direct_read_mcp_resource(input)
+        }
+        "PowerShell" | "powershell" | "pwsh" => execute_direct_powershell(project_root, input).await,
         "Bash" | "bash" => execute_direct_bash(project_root, input).await,
         other => Err(format!("Unsupported tool: {}", other)),
     };
@@ -4165,12 +4876,8 @@ fn direct_reasoning_from_openai_message(message: &serde_json::Value) -> String {
         }
     }
 
-    claude_reasoning_from_content_blocks(
-        message
-            .get("content")
-            .unwrap_or(&serde_json::Value::Null),
-    )
-    .unwrap_or_default()
+    claude_reasoning_from_content_blocks(message.get("content").unwrap_or(&serde_json::Value::Null))
+        .unwrap_or_default()
 }
 
 fn sanitize_direct_messages_for_reasoning_history(
@@ -4206,11 +4913,8 @@ fn direct_chat_response_from_value(
         .pointer("/choices/0/message")
         .cloned()
         .unwrap_or_else(|| json!({ "role": "assistant", "content": content.clone() }));
-    let message = sanitize_direct_assistant_message_for_history(
-        message,
-        &reasoning,
-        reasoning_history_mode,
-    );
+    let message =
+        sanitize_direct_assistant_message_for_history(message, &reasoning, reasoning_history_mode);
     DirectChatResponse {
         message,
         content,
@@ -4270,12 +4974,7 @@ fn direct_stream_reasoning_delta(delta: &serde_json::Value) -> String {
     String::new()
 }
 
-fn emit_direct_streaming_delta(
-    window: &WebviewWindow,
-    tab_id: &str,
-    text: &str,
-    reasoning: &str,
-) {
+fn emit_direct_streaming_delta(window: &WebviewWindow, tab_id: &str, text: &str, reasoning: &str) {
     if text.is_empty() && reasoning.is_empty() {
         return;
     }
@@ -4310,7 +5009,9 @@ fn direct_tool_calls_from_stream(
             if call.name.trim().is_empty() {
                 return None;
             }
-            let id = call.id.unwrap_or_else(|| format!("toolu_stream_{}", idx + 1));
+            let id = call
+                .id
+                .unwrap_or_else(|| format!("toolu_stream_{}", idx + 1));
             let input = serde_json::from_str::<serde_json::Value>(&call.arguments)
                 .unwrap_or_else(|_| json!({ "_raw_arguments": call.arguments }));
             Some(DirectToolCall {
@@ -4344,7 +5045,10 @@ fn direct_message_from_parts(
             object.insert("reasoning_content".to_string(), json!(reasoning));
         }
     }
-    if let Some(tool_call) = tool_calls.iter().find(|tool_call| tool_call.legacy_function_call) {
+    if let Some(tool_call) = tool_calls
+        .iter()
+        .find(|tool_call| tool_call.legacy_function_call)
+    {
         if let Some(object) = message.as_object_mut() {
             object.insert(
                 "function_call".to_string(),
@@ -4358,19 +5062,17 @@ fn direct_message_from_parts(
         if let Some(object) = message.as_object_mut() {
             object.insert(
                 "tool_calls".to_string(),
-                json!(
-                    tool_calls
-                        .iter()
-                        .map(|tool_call| json!({
-                            "id": tool_call.id,
-                            "type": "function",
-                            "function": {
-                                "name": tool_call.name,
-                                "arguments": tool_call.input.to_string(),
-                            },
-                        }))
-                        .collect::<Vec<_>>()
-                ),
+                json!(tool_calls
+                    .iter()
+                    .map(|tool_call| json!({
+                        "id": tool_call.id,
+                        "type": "function",
+                        "function": {
+                            "name": tool_call.name,
+                            "arguments": tool_call.input.to_string(),
+                        },
+                    }))
+                    .collect::<Vec<_>>()),
             );
         }
     }
@@ -4411,7 +5113,9 @@ fn add_direct_request_tooling(request_body: &mut serde_json::Value, mode: Direct
     }
 }
 
-fn direct_messages_for_legacy_functions(messages: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
+fn direct_messages_for_legacy_functions(
+    messages: Vec<serde_json::Value>,
+) -> Vec<serde_json::Value> {
     let mut tool_names: HashMap<String, String> = HashMap::new();
     let mut converted = Vec::new();
 
@@ -4630,7 +5334,13 @@ async fn send_openai_compatible_chat_request(
                         err.message
                     );
                     send_openai_compatible_with_legacy_functions(
-                        client, credential, messages, window, tab_id, state, process_key,
+                        client,
+                        credential,
+                        messages,
+                        window,
+                        tab_id,
+                        state,
+                        process_key,
                     )
                     .await
                 }
@@ -4643,7 +5353,13 @@ async fn send_openai_compatible_chat_request(
                 err.message
             );
             send_openai_compatible_with_legacy_functions(
-                client, credential, messages, window, tab_id, state, process_key,
+                client,
+                credential,
+                messages,
+                window,
+                tab_id,
+                state,
+                process_key,
             )
             .await
         }
@@ -4693,7 +5409,13 @@ async fn send_openai_compatible_with_legacy_functions(
                         err.message
                     );
                     send_openai_compatible_without_tools(
-                        client, credential, messages, window, tab_id, state, process_key,
+                        client,
+                        credential,
+                        messages,
+                        window,
+                        tab_id,
+                        state,
+                        process_key,
                     )
                     .await
                 }
@@ -4706,7 +5428,13 @@ async fn send_openai_compatible_with_legacy_functions(
                 err.message
             );
             send_openai_compatible_without_tools(
-                client, credential, messages, window, tab_id, state, process_key,
+                client,
+                credential,
+                messages,
+                window,
+                tab_id,
+                state,
+                process_key,
             )
             .await
         }
@@ -4801,12 +5529,11 @@ async fn send_openai_compatible_non_streaming_chat_request(
         });
     }
 
-    let response = serde_json::from_str(&response_text).map_err(|err| {
-        DirectProviderRequestFailure {
+    let response =
+        serde_json::from_str(&response_text).map_err(|err| DirectProviderRequestFailure {
             message: format!("Provider returned invalid JSON: {}", err),
             can_retry_without_tools: false,
-        }
-    })?;
+        })?;
     Ok(direct_chat_response_from_value(
         response,
         direct_reasoning_history_mode(credential),
@@ -4964,9 +5691,7 @@ async fn send_openai_compatible_streaming_chat_request(
                 if let Some(name) = function_call.get("name").and_then(|v| v.as_str()) {
                     entry.name.push_str(name);
                 }
-                if let Some(arguments) =
-                    function_call.get("arguments").and_then(|v| v.as_str())
-                {
+                if let Some(arguments) = function_call.get("arguments").and_then(|v| v.as_str()) {
                     entry.arguments.push_str(arguments);
                 }
             }
@@ -5016,7 +5741,7 @@ async fn execute_openai_compatible_provider(
         "session_id": session_id,
         "model": credential.model.clone(),
         "cwd": project_path.clone(),
-        "tools": ["Read", "Write", "Edit", "MultiEdit", "LS", "Glob", "Grep", "TodoWrite", "ToolSearch", "TaskCreate", "TaskUpdate", "TaskList", "Bash"],
+        "tools": DIRECT_PROVIDER_TOOL_NAMES,
     });
     let state = window.state::<ClaudeProcessState>();
     clear_direct_provider_cancelled(&state, &process_key).await;
@@ -5207,6 +5932,47 @@ async fn execute_openai_compatible_provider(
         if tool_calls.is_empty() {
             final_content = content;
             break;
+        }
+
+        if tool_calls
+            .iter()
+            .any(|tool_call| is_direct_ui_pause_tool(&tool_call.name))
+        {
+            let mut tool_result_blocks = Vec::new();
+            for tool_call in &tool_calls {
+                let message = match canonical_direct_tool_name(&tool_call.name) {
+                    Some("AskUserQuestion") => {
+                        "Waiting for the user to answer in the ClaudePrism UI.".to_string()
+                    }
+                    Some("ExitPlanMode") => {
+                        "Waiting for the user to approve or revise the plan in the ClaudePrism UI."
+                            .to_string()
+                    }
+                    _ => "Tool execution paused because the assistant requested user input."
+                        .to_string(),
+                };
+                let (block, tool_message) = direct_tool_result_values(tool_call, message, true);
+                tool_result_blocks.push(block);
+                messages.push(tool_message);
+            }
+
+            let tool_result_event = json!({
+                "type": "user",
+                "message": {
+                    "content": tool_result_blocks,
+                },
+            });
+            emit_and_persist_direct_output(
+                &window,
+                &project_path,
+                &session_id,
+                &tab_id,
+                &tool_result_event,
+            );
+            cache_direct_provider_messages(&state, &session_id, &messages).await;
+            clear_direct_provider_cancelled(&state, &process_key).await;
+            emit_direct_complete(&window, &tab_id, false);
+            return Ok(());
         }
 
         let mut tool_result_blocks = Vec::new();
@@ -5958,8 +6724,10 @@ mod tests {
 
     #[test]
     fn test_with_prompt_transport_always_includes_print_flag() {
-        let (args, stdin_payload) =
-            with_prompt_transport(vec!["--resume".to_string(), "abc".to_string()], "hello 文件".into());
+        let (args, stdin_payload) = with_prompt_transport(
+            vec!["--resume".to_string(), "abc".to_string()],
+            "hello 文件".into(),
+        );
         assert!(args.contains(&"-p".to_string()));
         #[cfg(target_os = "windows")]
         {
@@ -6366,7 +7134,9 @@ mod tests {
         )
         .await;
         assert!(!edit.is_error);
-        assert!(std::fs::read_to_string(&main).unwrap().contains("New Title"));
+        assert!(std::fs::read_to_string(&main)
+            .unwrap()
+            .contains("New Title"));
 
         let grep = execute_test_direct_provider_tool(
             &root,
@@ -6447,8 +7217,8 @@ mod tests {
         std::fs::write(root.join("chapters").join("intro.tex"), "intro").unwrap();
         std::fs::write(root.join("notes.md"), "notes").unwrap();
 
-        let glob = execute_test_direct_provider_tool(&root, "Glob", &json!({ "pattern": "*.tex" }))
-            .await;
+        let glob =
+            execute_test_direct_provider_tool(&root, "Glob", &json!({ "pattern": "*.tex" })).await;
         assert!(!glob.is_error);
         assert!(glob.content.contains("main.tex"));
         assert!(glob.content.contains("chapters/intro.tex"));
@@ -6468,8 +7238,8 @@ mod tests {
         assert!(ls.content.contains("chapters/"));
         assert!(ls.content.contains("main.tex"));
 
-        let nested = execute_test_direct_provider_tool(&root, "LS", &json!({ "path": "chapters" }))
-            .await;
+        let nested =
+            execute_test_direct_provider_tool(&root, "LS", &json!({ "path": "chapters" })).await;
         assert!(!nested.is_error);
         assert!(nested.content.contains("chapters/intro.tex"));
     }
@@ -6545,8 +7315,8 @@ mod tests {
         assert!(!created.is_error);
         assert!(created.content.contains("task-1"));
 
-        let listed = execute_direct_provider_tool(&state, "session-a", &root, "TaskList", &json!({}))
-            .await;
+        let listed =
+            execute_direct_provider_tool(&state, "session-a", &root, "TaskList", &json!({})).await;
         assert!(!listed.is_error);
         assert!(listed.content.contains("Inspect paper draft"));
         assert!(listed.content.contains("[pending]"));
@@ -6572,6 +7342,90 @@ mod tests {
         .await;
         assert!(!completed.is_error);
         assert!(completed.content.contains("[completed]"));
+    }
+
+    #[tokio::test]
+    async fn test_direct_provider_task_get_and_stop_are_available() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = canonical_project_root(dir.path().to_str().unwrap()).unwrap();
+        let state = ClaudeProcessState::default();
+
+        let created = execute_direct_provider_tool(
+            &state,
+            "session-a",
+            &root,
+            "TaskCreate",
+            &json!({
+                "subject": "Follow up",
+                "description": "Check task get and stop",
+            }),
+        )
+        .await;
+        assert!(!created.is_error);
+
+        let got = execute_direct_provider_tool(
+            &state,
+            "session-a",
+            &root,
+            "TaskGet",
+            &json!({ "taskId": "task-1" }),
+        )
+        .await;
+        assert!(!got.is_error);
+        assert!(got.content.contains("Follow up"));
+
+        let stopped = execute_direct_provider_tool(
+            &state,
+            "session-a",
+            &root,
+            "TaskStop",
+            &json!({ "taskId": "task-1", "reason": "Done enough" }),
+        )
+        .await;
+        assert!(!stopped.is_error);
+        assert!(stopped.content.contains("[completed]"));
+        assert!(stopped.content.contains("Done enough"));
+    }
+
+    #[tokio::test]
+    async fn test_direct_provider_skill_tool_loads_project_skill() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir
+            .path()
+            .join(".claude")
+            .join("skills")
+            .join("paper-helper");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: Paper Helper\n---\n\n# Paper Helper\n\nUse concise academic prose.",
+        )
+        .unwrap();
+        let root = canonical_project_root(dir.path().to_str().unwrap()).unwrap();
+
+        let listed = execute_test_direct_provider_tool(&root, "Skill", &json!({})).await;
+        assert!(!listed.is_error);
+        assert!(listed.content.contains("/paper-helper"));
+
+        let loaded =
+            execute_test_direct_provider_tool(&root, "Skill", &json!({ "skill": "Paper Helper" }))
+                .await;
+        assert!(!loaded.is_error);
+        assert!(loaded.content.contains("Use concise academic prose"));
+    }
+
+    #[test]
+    fn test_direct_provider_extended_tool_aliases_are_canonical() {
+        assert_eq!(canonical_direct_tool_name("PowerShell"), Some("PowerShell"));
+        assert_eq!(canonical_direct_tool_name("web_search"), Some("WebSearch"));
+        assert_eq!(canonical_direct_tool_name("TaskGet"), Some("TaskGet"));
+        assert_eq!(
+            canonical_direct_tool_name("ReadMcpResource"),
+            Some("ReadMcpResource")
+        );
+        assert!(is_direct_ui_pause_tool("AskUserQuestion"));
+        assert!(is_direct_ui_pause_tool("ExitPlanMode"));
+        assert!(!is_direct_ui_pause_tool("EnterPlanMode"));
     }
 
     #[test]
@@ -6633,8 +7487,8 @@ mod tests {
             );
         }
 
-        let listed = execute_direct_provider_tool(&state, "session-a", &root, "TaskList", &json!({}))
-            .await;
+        let listed =
+            execute_direct_provider_tool(&state, "session-a", &root, "TaskList", &json!({})).await;
 
         assert!(!listed.is_error);
         assert!(listed.content.contains("Resume task"));
@@ -6774,8 +7628,7 @@ mod tests {
         );
 
         let calls = direct_tool_calls_from_stream(calls);
-        let message =
-            direct_message_from_parts("", "", &calls, DirectReasoningHistoryMode::Strip);
+        let message = direct_message_from_parts("", "", &calls, DirectReasoningHistoryMode::Strip);
 
         assert_eq!(calls.len(), 1);
         assert!(calls[0].legacy_function_call);
@@ -6847,10 +7700,8 @@ mod tests {
             }]
         });
 
-        let parsed = direct_chat_response_from_value(
-            response,
-            DirectReasoningHistoryMode::Preserve,
-        );
+        let parsed =
+            direct_chat_response_from_value(response, DirectReasoningHistoryMode::Preserve);
 
         assert_eq!(parsed.reasoning, "Need to inspect the source file first.");
         assert_eq!(
@@ -6900,7 +7751,8 @@ mod tests {
             }]
         });
 
-        let parsed = direct_chat_response_from_value(response, DirectReasoningHistoryMode::Preserve);
+        let parsed =
+            direct_chat_response_from_value(response, DirectReasoningHistoryMode::Preserve);
 
         assert_eq!(parsed.reasoning, "Now synthesize the inspected file.");
         assert_eq!(
@@ -6937,7 +7789,10 @@ mod tests {
         let messages = load_direct_provider_messages_from_path(&session_path).unwrap();
 
         assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0]["reasoning_content"], "Need to read main.tex first.");
+        assert_eq!(
+            messages[0]["reasoning_content"],
+            "Need to read main.tex first."
+        );
         assert_eq!(messages[0]["tool_calls"][0]["function"]["name"], "Read");
     }
 
@@ -7026,9 +7881,7 @@ mod tests {
             model: "deepseek/deepseek-v4-pro".to_string(),
         };
 
-        assert!(
-            direct_reasoning_history_mode(&deepseek) == DirectReasoningHistoryMode::Preserve
-        );
+        assert!(direct_reasoning_history_mode(&deepseek) == DirectReasoningHistoryMode::Preserve);
         assert!(
             direct_reasoning_history_mode(&proxied_deepseek)
                 == DirectReasoningHistoryMode::Preserve
@@ -7102,12 +7955,11 @@ mod tests {
             json!({ "role": "tool", "tool_call_id": "call-1", "content": "main.tex contents" }),
         ];
 
-        let function_messages =
-            direct_messages_for_tool_capability(
-                &messages,
-                DirectToolRequestMode::Functions,
-                DirectReasoningHistoryMode::Strip,
-            );
+        let function_messages = direct_messages_for_tool_capability(
+            &messages,
+            DirectToolRequestMode::Functions,
+            DirectReasoningHistoryMode::Strip,
+        );
 
         assert!(function_messages[1].get("tool_calls").is_none());
         assert_eq!(function_messages[1]["function_call"]["name"], "Read");
@@ -7133,13 +7985,17 @@ mod tests {
     #[test]
     fn test_unix_claude_candidate_paths_include_pnpm_locations() {
         let home = PathBuf::from("/Users/test");
-        let paths = unix_claude_candidate_paths(
-            &home,
-            Some(std::ffi::OsString::from("/custom/pnpm")),
-        );
+        let paths =
+            unix_claude_candidate_paths(&home, Some(std::ffi::OsString::from("/custom/pnpm")));
         assert!(paths.contains(&PathBuf::from("/custom/pnpm").join("claude")));
         assert!(paths.contains(&home.join("Library").join("pnpm").join("claude")));
-        assert!(paths.contains(&home.join(".local").join("share").join("pnpm").join("claude")));
+        assert!(paths.contains(
+            &home
+                .join(".local")
+                .join("share")
+                .join("pnpm")
+                .join("claude")
+        ));
         assert!(paths.contains(&home.join(".pnpm").join("claude")));
         assert!(paths.contains(&home.join(".claude").join("local").join("claude")));
     }
@@ -7173,7 +8029,13 @@ mod tests {
                 .join("bin")
                 .join("claude")
         ));
-        assert!(paths.contains(&home.join(".local").join("share").join("pnpm").join("claude")));
+        assert!(paths.contains(
+            &home
+                .join(".local")
+                .join("share")
+                .join("pnpm")
+                .join("claude")
+        ));
         assert!(paths.contains(
             &home
                 .join(".local")
@@ -7184,9 +8046,7 @@ mod tests {
                 .join("claude")
         ));
         assert!(paths.contains(&home.join(".pnpm").join("claude")));
-        assert!(paths.contains(
-            &home.join(".pnpm").join("global").join("bin").join("claude")
-        ));
+        assert!(paths.contains(&home.join(".pnpm").join("global").join("bin").join("claude")));
     }
 
     #[test]

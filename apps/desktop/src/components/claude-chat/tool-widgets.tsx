@@ -37,12 +37,18 @@ export const ToolWidget: FC<ToolWidgetProps> = ({ toolUse, toolResult }) => {
     return <ReadWidget input={toolUse.input} result={toolResult} />;
   if (name === "bash")
     return <BashWidget input={toolUse.input} result={toolResult} />;
+  if (name === "powershell" || name === "pwsh")
+    return (
+      <BashWidget input={toolUse.input} result={toolResult} prefix="PS>" />
+    );
   if (name === "glob")
     return <GlobWidget input={toolUse.input} result={toolResult} />;
   if (name === "grep")
     return <GrepWidget input={toolUse.input} result={toolResult} />;
   if (name === "askuserquestion")
     return <AskUserQuestionWidget input={toolUse.input} result={toolResult} />;
+  if (name === "exitplanmode")
+    return <ExitPlanModeWidget input={toolUse.input} result={toolResult} />;
   if (name === "todowrite")
     return <TodoWriteWidget input={toolUse.input} result={toolResult} />;
 
@@ -160,9 +166,14 @@ const ReadWidget: FC<{ input: any; result?: ContentBlock }> = ({
 
 // ─── Bash Widget ───
 
-const BashWidget: FC<{ input: any; result?: ContentBlock }> = ({
+const BashWidget: FC<{
+  input: any;
+  result?: ContentBlock;
+  prefix?: string;
+}> = ({
   input,
   result,
+  prefix = "$",
 }) => {
   const [expanded, setExpanded] = useState(false);
   const command = input?.command || input?.description || "";
@@ -179,7 +190,7 @@ const BashWidget: FC<{ input: any; result?: ContentBlock }> = ({
         <StatusIcon result={result} />
         <TerminalIcon className="size-3.5 shrink-0 text-green-400" />
         <code className="min-w-0 truncate text-green-300 text-xs">
-          $ {truncate(command, 80)}
+          {prefix} {truncate(command, 80)}
         </code>
         {result &&
           (expanded ? (
@@ -355,6 +366,78 @@ const AskUserQuestionWidget: FC<{ input: any; result?: ContentBlock }> = ({
           </div>
         ))}
       </div>
+    </div>
+  );
+};
+
+// ExitPlanMode Widget
+
+const ExitPlanModeWidget: FC<{ input: any; result?: ContentBlock }> = ({
+  input,
+  result,
+}) => {
+  const [answered, setAnswered] = useState(false);
+  const isStreaming = useClaudeChatStore((s) => s.isStreaming);
+  const needsApproval =
+    !answered && !isStreaming && (!result || result.is_error);
+  const plan = input?.plan || input?.content || "";
+
+  const sendPlanResponse = (text: string) => {
+    const { sendPrompt, isStreaming } = useClaudeChatStore.getState();
+    if (isStreaming) return;
+    setAnswered(true);
+    sendPrompt(text);
+  };
+
+  return (
+    <div
+      className={`my-1.5 rounded-lg border text-sm ${
+        needsApproval
+          ? "border-amber-500/40 bg-amber-500/10"
+          : "border-amber-500/20 bg-amber-500/5"
+      }`}
+    >
+      <div className="flex items-center gap-2 px-3 py-2">
+        <SparklesIcon className="size-3.5 text-amber-500" />
+        <span className="font-medium text-amber-700 dark:text-amber-300">
+          {needsApproval
+            ? "Plan needs approval"
+            : answered
+              ? "Plan response sent"
+              : "Plan handled"}
+        </span>
+      </div>
+      {plan && (
+        <div className="border-amber-500/20 border-t px-3 py-2">
+          <pre className="max-h-56 overflow-auto whitespace-pre-wrap text-foreground text-xs leading-relaxed">
+            {plan}
+          </pre>
+        </div>
+      )}
+      {needsApproval && (
+        <div className="flex flex-wrap gap-2 border-amber-500/20 border-t px-3 py-2">
+          <button
+            type="button"
+            className="rounded-md bg-amber-500 px-2.5 py-1 font-medium text-background text-xs hover:bg-amber-500/90"
+            onClick={() =>
+              sendPlanResponse("Approved. Continue implementing the plan.")
+            }
+          >
+            Approve
+          </button>
+          <button
+            type="button"
+            className="rounded-md border border-amber-500/30 px-2.5 py-1 text-amber-700 text-xs hover:bg-amber-500/10 dark:text-amber-300"
+            onClick={() =>
+              sendPlanResponse(
+                "Revise the plan before implementing. Keep it concise and address any missing risks.",
+              )
+            }
+          >
+            Revise
+          </button>
+        </div>
+      )}
     </div>
   );
 };

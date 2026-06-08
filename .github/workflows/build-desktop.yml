@@ -509,26 +509,11 @@ jobs:
           TECTONIC_DEP_BACKEND: vcpkg
           CXXFLAGS: "-std=c++17"
           CFLAGS: ""
-        shell: bash
         run: |
-          # Fix vcpkg graphite2: globalize hidden symbols so tectonic can link them
-          # objcopy doesn't work directly on .a archives — must extract, patch, repack
-          VCPKG_GR2="$HOME/vcpkg/installed/x64-linux/lib/libgraphite2.a"
-          if [ -f "$VCPKG_GR2" ]; then
-            WORK=$(mktemp -d)
-            cd "$WORK"
-            ar x "$VCPKG_GR2"
-            for obj in *.o; do
-              [ -f "$obj" ] || continue
-              nm "$obj" 2>/dev/null | { grep ' t gr_\| d gr_' || true; } | awk '{print $3}' > syms.txt
-              if [ -s syms.txt ]; then
-                objcopy --globalize-symbols=syms.txt "$obj"
-              fi
-            done
-            ar rcs "$VCPKG_GR2" *.o
-            cd /home/runner/work/claude-prism/claude-prism
-            rm -rf "$WORK"
-          fi
+          # vcpkg builds graphite2 with STV_HIDDEN on gr_* symbols.
+          # rust-lld treats hidden symbol refs as hard errors; ld.bfd does not.
+          # Switch to ld.bfd for linking.
+          export RUSTFLAGS="-C linker=gcc -C link-arg=-fuse-ld=bfd"
           pnpm --filter @claude-prism/desktop tauri build --target x86_64-unknown-linux-gnu
 
       - name: Collect updater artifacts

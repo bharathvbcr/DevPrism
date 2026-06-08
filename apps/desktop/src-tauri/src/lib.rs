@@ -202,6 +202,129 @@ fn create_new_window(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
+fn apply_windows_titlebar_theme(window: &tauri::WebviewWindow, dark: bool) -> Result<(), String> {
+    use std::ffi::c_void;
+
+    #[link(name = "dwmapi")]
+    extern "system" {
+        #[link_name = "DwmSetWindowAttribute"]
+        fn dwm_set_window_attribute(
+            hwnd: isize,
+            dwattribute: u32,
+            pvattribute: *const c_void,
+            cbattribute: u32,
+        ) -> i32;
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        #[link_name = "SetWindowPos"]
+        fn set_window_pos(
+            hwnd: isize,
+            hwnd_insert_after: isize,
+            x: i32,
+            y: i32,
+            cx: i32,
+            cy: i32,
+            flags: u32,
+        ) -> i32;
+    }
+
+    const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
+    const SWP_NOSIZE: u32 = 0x0001;
+    const SWP_NOMOVE: u32 = 0x0002;
+    const SWP_NOZORDER: u32 = 0x0004;
+    const SWP_NOACTIVATE: u32 = 0x0010;
+    const SWP_FRAMECHANGED: u32 = 0x0020;
+
+    let hwnd = window
+        .hwnd()
+        .map_err(|e| format!("Failed to resolve native window handle: {}", e))?;
+    let hwnd = hwnd.0 as isize;
+    let dark_value: i32 = if dark { 1 } else { 0 };
+    let attr_size = std::mem::size_of_val(&dark_value) as u32;
+
+    let mut result = unsafe {
+        dwm_set_window_attribute(
+            hwnd,
+            DWMWA_USE_IMMERSIVE_DARK_MODE,
+            &dark_value as *const _ as *const _,
+            attr_size,
+        )
+    };
+    if result < 0 {
+        // Older Windows 10 builds used attribute 19 before Microsoft documented 20.
+        result = unsafe {
+            dwm_set_window_attribute(
+                hwnd,
+                19,
+                &dark_value as *const _ as *const _,
+                attr_size,
+            )
+        };
+    }
+
+    // Windows 11 honors explicit caption/text colors more reliably than the
+    // immersive flag alone, especially after runtime theme switches.
+    const DWMWA_CAPTION_COLOR: u32 = 35;
+    const DWMWA_TEXT_COLOR: u32 = 36;
+    let caption_color: u32 = if dark { 0x0010_1010 } else { 0x00F9_F9F9 };
+    let text_color: u32 = if dark { 0x00FF_FFFF } else { 0x0000_0000 };
+    unsafe {
+        let _ = dwm_set_window_attribute(
+            hwnd,
+            DWMWA_CAPTION_COLOR,
+            &caption_color as *const _ as *const _,
+            std::mem::size_of_val(&caption_color) as u32,
+        );
+        let _ = dwm_set_window_attribute(
+            hwnd,
+            DWMWA_TEXT_COLOR,
+            &text_color as *const _ as *const _,
+            std::mem::size_of_val(&text_color) as u32,
+        );
+        let _ = set_window_pos(
+            hwnd,
+            0,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
+    }
+
+    if result < 0 {
+        return Err(format!(
+            "Failed to update Windows title bar theme: HRESULT 0x{:08X}",
+            result as u32
+        ));
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+fn set_native_window_theme(window: tauri::WebviewWindow, theme: String) -> Result<(), String> {
+    let theme = theme.trim().to_ascii_lowercase();
+    let dark = theme == "dark";
+    let tauri_theme = if dark {
+        tauri::Theme::Dark
+    } else {
+        tauri::Theme::Light
+    };
+
+    window
+        .set_theme(Some(tauri_theme))
+        .map_err(|e| format!("Failed to set window theme: {}", e))?;
+
+    #[cfg(target_os = "windows")]
+    apply_windows_titlebar_theme(&window, dark)?;
+
+    Ok(())
+}
+
 #[tauri::command]
 fn allow_project_directory(app: tauri::AppHandle, root_path: String) -> Result<(), String> {
     let fs_scope = app.fs_scope();
@@ -471,6 +594,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             create_new_window,
+            set_native_window_theme,
             allow_project_directory,
             list_default_projects,
             detect_editors,

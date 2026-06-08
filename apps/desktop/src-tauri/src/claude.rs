@@ -405,16 +405,14 @@ pub async fn save_anthropic_api_key(
         let label = credential_label
             .as_deref()
             .map(strip_nul)
-            .map(str::trim)
+            .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
-            .map(str::to_string)
             .unwrap_or_else(|| model.clone());
         let credential_id = credential_id
             .as_deref()
             .map(strip_nul)
-            .map(str::trim)
+            .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
-            .map(str::to_string)
             .or_else(|| {
                 config
                     .openai_credentials

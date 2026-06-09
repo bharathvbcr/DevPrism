@@ -447,12 +447,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
-            autoconf autoconf-archive automake libtool pkg-config
+            autoconf autoconf-archive automake libtool pkg-config mold
 
-      # Static linking via vcpkg — avoids runtime dependency on system ICU/harfbuzz.
-      # Without this, the binary links against the build host's libicuuc.so.70
-      # (Ubuntu 22.04) and fails on distros shipping newer ICU (e.g. Ubuntu 25.10
-      # with libicuuc.so.76). Mirrors the macOS approach (commit 9566956).
+      # vcpkg provides ICU/harfbuzz/graphite2/freetype/fontconfig as dynamic libs.
+      # This avoids runtime dependency on system ICU version (issue #91).
+      # graphite2 overlay fixes hidden symbol visibility for rust-lld compat.
       - name: Setup vcpkg
         run: |
           git clone --depth 1 https://github.com/microsoft/vcpkg $HOME/vcpkg
@@ -464,7 +463,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/vcpkg/installed
-          key: vcpkg-linux-x64-v1
+          key: vcpkg-linux-x64-mold-v1
 
       - name: Install Linux dependencies (vcpkg)
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
@@ -472,6 +471,7 @@ jobs:
           VCPKG_BINARY_SOURCES: "clear"
         run: |
           $HOME/vcpkg/vcpkg install \
+            --overlay-ports=$GITHUB_WORKSPACE/.github/vcpkg-overlays \
             "harfbuzz[graphite2]:x64-linux" \
             fontconfig:x64-linux \
             freetype:x64-linux \
@@ -482,7 +482,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ~/vcpkg/installed
-          key: vcpkg-linux-x64-v1
+          key: vcpkg-linux-x64-mold-v1
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -508,7 +508,18 @@ jobs:
           TECTONIC_DEP_BACKEND: vcpkg
           CXXFLAGS: "-std=c++17"
           CFLAGS: ""
-        run: pnpm --filter @claude-prism/desktop tauri build --target x86_64-unknown-linux-gnu
+          # mold handles both graphite2 hidden symbols and Rust version scripts.
+          # Prepend vcpkg lib path so ICU/harfbuzz from vcpkg are found before
+          # system versions (prevents ICU version suffix mismatch).
+          RUSTFLAGS: "-C link-arg=-fuse-ld=mold -C link-arg=-L${{ env.VCPKG_ROOT }}/installed/x64-linux/lib"
+        run: |
+          # Move system ICU .so out of the way so linker finds vcpkg's ICU first.
+          # System ICU (v70/74) has different version suffix than vcpkg ICU (v78).
+          sudo mkdir -p /usr/lib/x86_64-linux-gnu/icu-system-backup
+          sudo mv /usr/lib/x86_64-linux-gnu/libicu*.so* /usr/lib/x86_64-linux-gnu/icu-system-backup/ 2>/dev/null || true
+          pnpm --filter @claude-prism/desktop tauri build --target x86_64-unknown-linux-gnu
+          # Restore system ICU (needed for other tools)
+          sudo mv /usr/lib/x86_64-linux-gnu/icu-system-backup/libicu*.so* /usr/lib/x86_64-linux-gnu/ 2>/dev/null || true
 
       - name: Collect updater artifacts
         id: collect

@@ -36,6 +36,12 @@ interface ClaudeErrorPayload {
   data: string;
 }
 
+interface ClaudeSessionInfo {
+  session_id: string;
+  title: string;
+  last_modified: number;
+}
+
 /**
  * Hook that manages Tauri event listeners for Claude CLI streaming output.
  *
@@ -386,10 +392,37 @@ export function useClaudeEvents() {
       lastErrorRef.current.delete(tabId);
       directProviderTabRef.current.delete(tabId);
 
+      const completedSessionId = tab.sessionId;
       chatStore._setStreaming(tabId, false);
 
       // Snapshot after Claude edit
       const projectPath = useDocumentStore.getState().projectRoot;
+      if (projectPath && completedSessionId) {
+        void (async () => {
+          try {
+            const sessions = await invoke<ClaudeSessionInfo[]>(
+              "list_claude_sessions",
+              {
+                projectPath,
+                generateTitles: true,
+              },
+            );
+            const session = sessions.find(
+              (item) => item.session_id === completedSessionId,
+            );
+            if (session?.title) {
+              useClaudeChatStore
+                .getState()
+                ._setSessionTitle(completedSessionId, session.title);
+            }
+          } catch (err) {
+            log.warn("failed to refresh completed session title", {
+              error: String(err),
+            });
+          }
+        })();
+      }
+
       if (projectPath) {
         try {
           await useHistoryStore

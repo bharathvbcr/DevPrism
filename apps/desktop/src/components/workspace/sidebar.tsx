@@ -74,6 +74,8 @@ import { UvSetupDialog } from "@/components/uv-setup";
 import { createLogger } from "@/lib/debug/logger";
 
 const log = createLogger("sidebar");
+const FILES_AUTO_REFRESH_INTERVAL_MS = 12_000;
+const FILES_REFRESH_MIN_SPIN_MS = 400;
 
 // ─── Table of Contents ───
 
@@ -232,11 +234,72 @@ export function Sidebar() {
   const refreshFiles = useDocumentStore((s) => s.refreshFiles);
   const projectRoot = useDocumentStore((s) => s.projectRoot);
   const folders = useDocumentStore((s) => s.folders);
+  const [isRefreshingFiles, setIsRefreshingFiles] = useState(false);
+  const refreshFilesInFlightRef = useRef<Promise<void> | null>(null);
   const { theme, setTheme } = useTheme();
   const projectName = useMemo(() => {
     const normalized = projectRoot?.replace(/[\\/]+$/, "");
     return normalized?.split(/[/\\]/).pop() || "Desktop";
   }, [projectRoot]);
+
+  const runRefreshFiles = useCallback(
+    async ({ showSpinner = true }: { showSpinner?: boolean } = {}) => {
+      if (!projectRoot) return;
+      if (refreshFilesInFlightRef.current) {
+        await refreshFilesInFlightRef.current;
+        return;
+      }
+
+      const startedAt = Date.now();
+      if (showSpinner) setIsRefreshingFiles(true);
+
+      const refreshTask = (async () => {
+        try {
+          await refreshFiles();
+        } catch (err) {
+          log.error("Refresh files failed", { error: String(err) });
+        } finally {
+          if (showSpinner) {
+            const elapsed = Date.now() - startedAt;
+            if (elapsed < FILES_REFRESH_MIN_SPIN_MS) {
+              await new Promise((resolve) =>
+                window.setTimeout(resolve, FILES_REFRESH_MIN_SPIN_MS - elapsed),
+              );
+            }
+            setIsRefreshingFiles(false);
+          }
+          refreshFilesInFlightRef.current = null;
+        }
+      })();
+
+      refreshFilesInFlightRef.current = refreshTask;
+      await refreshTask;
+    },
+    [projectRoot, refreshFiles],
+  );
+
+  useEffect(() => {
+    if (!projectRoot) return;
+
+    const refreshIfVisible = () => {
+      if (document.visibilityState === "visible") {
+        void runRefreshFiles({ showSpinner: false });
+      }
+    };
+
+    const intervalId = window.setInterval(
+      refreshIfVisible,
+      FILES_AUTO_REFRESH_INTERVAL_MS,
+    );
+    window.addEventListener("focus", refreshIfVisible);
+    document.addEventListener("visibilitychange", refreshIfVisible);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", refreshIfVisible);
+      document.removeEventListener("visibilitychange", refreshIfVisible);
+    };
+  }, [projectRoot, runRefreshFiles]);
 
   // ─── Native OS file drop (Tauri onDragDropEvent) ───
   const sidebarFilesRef = useRef<HTMLDivElement>(null);
@@ -701,9 +764,12 @@ export function Sidebar() {
                   size="icon"
                   className="size-5"
                   title="Refresh"
-                  onClick={() => refreshFiles()}
+                  disabled={isRefreshingFiles}
+                  onClick={() => void runRefreshFiles()}
                 >
-                  <RefreshCwIcon className="size-3" />
+                  <RefreshCwIcon
+                    className={cn("size-3", isRefreshingFiles && "animate-spin")}
+                  />
                 </Button>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>

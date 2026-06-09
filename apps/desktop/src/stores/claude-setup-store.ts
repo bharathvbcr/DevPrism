@@ -74,6 +74,7 @@ interface ClaudeSetupState {
   ) => Promise<boolean>;
   clearApiKey: () => Promise<boolean>;
   listApiCredentials: () => Promise<void>;
+  deleteApiCredential: (credentialId: string) => Promise<boolean>;
   setActiveApiCredential: (credentialId: string) => Promise<boolean>;
   fetchProviderModels: (apiKey: string, baseUrl: string) => Promise<string[]>;
   toggleInstallLogs: () => void;
@@ -390,6 +391,19 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
         credentials[0]?.id ??
         null,
     }));
+  },
+
+  deleteApiCredential: async (credentialId: string) => {
+    try {
+      await invoke("delete_openai_compatible_credential", {
+        credentialId,
+      });
+      await get().checkStatus();
+      return true;
+    } catch (err: any) {
+      set({ error: err?.message || String(err) });
+      return false;
+    }
   },
 
   setActiveApiCredential: async (credentialId: string) => {

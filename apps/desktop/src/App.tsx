@@ -139,7 +139,7 @@ function WorkspaceWithClaude() {
           return;
         }
 
-        current.resumeSession(latest.session_id).catch((err) => {
+        current.resumeSession(latest.session_id, latest.title).catch((err) => {
           log.warn("Failed to auto-resume latest chat session", {
             sessionId: latest.session_id,
             error: String(err),

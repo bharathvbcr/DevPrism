@@ -493,7 +493,7 @@ interface ClaudeChatState {
   cancelExecution: () => Promise<void>;
   clearMessages: () => void;
   newSession: () => void;
-  resumeSession: (sessionId: string) => Promise<void>;
+  resumeSession: (sessionId: string, title?: string) => Promise<void>;
 
   // Tab actions
   createTab: () => string;
@@ -507,6 +507,7 @@ interface ClaudeChatState {
   // Internal actions (called by event hook, routed by tabId)
   _appendMessage: (tabId: string, msg: ClaudeStreamMessage) => void;
   _setSessionId: (tabId: string, id: string) => void;
+  _setSessionTitle: (sessionId: string, title: string) => void;
   _setStreaming: (tabId: string, streaming: boolean) => void;
   _setError: (tabId: string, error: string | null) => void;
   _cancelledByUser: boolean;
@@ -801,7 +802,24 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
 
   newSession: () => {
     log.info("Starting new session");
-    const { activeTabId } = get();
+    const { activeTabId, tabs } = get();
+    const activeTab = tabs.find((t) => t.id === activeTabId);
+    if (activeTab?.isStreaming) {
+      const id = nextTabId();
+      const newTab = makeDefaultTab(id);
+      set({
+        tabs: [...tabs, newTab],
+        activeTabId: id,
+        messages: newTab.messages,
+        sessionId: newTab.sessionId,
+        isStreaming: newTab.isStreaming,
+        error: newTab.error,
+        totalInputTokens: newTab.totalInputTokens,
+        totalOutputTokens: newTab.totalOutputTokens,
+      });
+      return;
+    }
+
     set((s) =>
       applyTabUpdate(s, activeTabId, {
         messages: [],
@@ -816,9 +834,51 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     );
   },
 
-  resumeSession: async (sessionId: string) => {
+  resumeSession: async (sessionId: string, title?: string) => {
     log.info(`Resuming session: ${sessionId.slice(0, 8)}`);
-    const { activeTabId } = get();
+    const sessionTitle = title?.trim() || undefined;
+    const state = get();
+    let { activeTabId } = state;
+    let { tabs } = state;
+    const existingTab = tabs.find((tab) => tab.sessionId === sessionId);
+
+    if (existingTab) {
+      const nextTitle = sessionTitle ?? existingTab.title;
+      activeTabId = existingTab.id;
+      const nextTabs = tabs.map((tab) =>
+        tab.id === existingTab.id ? { ...tab, title: nextTitle } : tab,
+      );
+      set({
+        tabs: nextTabs,
+        activeTabId: existingTab.id,
+        messages: existingTab.messages,
+        sessionId: existingTab.sessionId,
+        isStreaming: existingTab.isStreaming,
+        error: existingTab.error,
+        totalInputTokens: existingTab.totalInputTokens,
+        totalOutputTokens: existingTab.totalOutputTokens,
+      });
+      if (existingTab.isStreaming) return;
+    } else {
+      const activeTab = tabs.find((tab) => tab.id === activeTabId);
+      if (activeTab?.isStreaming) {
+        const id = nextTabId();
+        const newTab = makeDefaultTab(id);
+        tabs = [...tabs, newTab];
+        activeTabId = id;
+        set({
+          tabs,
+          activeTabId,
+          messages: newTab.messages,
+          sessionId: newTab.sessionId,
+          isStreaming: newTab.isStreaming,
+          error: newTab.error,
+          totalInputTokens: newTab.totalInputTokens,
+          totalOutputTokens: newTab.totalOutputTokens,
+        });
+      }
+    }
+
     const projectPath = useDocumentStore.getState().projectRoot;
 
     // Reset state with new session ID
@@ -831,6 +891,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         isStreaming: false,
         totalInputTokens: 0,
         totalOutputTokens: 0,
+        title: sessionTitle ?? "New Chat",
       }),
     );
 
@@ -862,7 +923,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
           ...applyTabUpdate(s, activeTabId, {
             messages,
             providerKey,
-            title: titleForMessages(messages) ?? "New Chat",
+            title: sessionTitle ?? titleForMessages(messages) ?? "New Chat",
             totalInputTokens: totals.inputTokens,
             totalOutputTokens: totals.outputTokens,
           }),
@@ -1006,6 +1067,16 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
 
   _setSessionId: (tabId: string, id: string) => {
     set((state) => applyTabUpdate(state, tabId, { sessionId: id }));
+  },
+
+  _setSessionTitle: (sessionId: string, title: string) => {
+    const cleanTitle = title.trim();
+    if (!cleanTitle) return;
+    set((state) => ({
+      tabs: state.tabs.map((tab) =>
+        tab.sessionId === sessionId ? { ...tab, title: cleanTitle } : tab,
+      ),
+    }));
   },
 
   _setStreaming: (tabId: string, streaming: boolean) => {

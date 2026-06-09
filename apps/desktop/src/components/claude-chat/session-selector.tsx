@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   HistoryIcon,
@@ -58,10 +58,20 @@ export function SessionSelector() {
   );
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const sessionId = useClaudeChatStore((s) => s.sessionId);
-  const isStreaming = useClaudeChatStore((s) => s.isStreaming);
+  const tabs = useClaudeChatStore((s) => s.tabs);
   const newSession = useClaudeChatStore((s) => s.newSession);
   const resumeSession = useClaudeChatStore((s) => s.resumeSession);
+  const setSessionTitle = useClaudeChatStore((s) => s._setSessionTitle);
   const projectRoot = useDocumentStore((s) => s.projectRoot);
+  const streamingSessionIds = useMemo(
+    () =>
+      new Set(
+        tabs
+          .filter((tab) => tab.isStreaming && tab.sessionId)
+          .map((tab) => tab.sessionId as string),
+      ),
+    [tabs],
+  );
 
   const loadSessions = useCallback(async () => {
     if (!projectRoot) return;
@@ -73,13 +83,16 @@ export function SessionSelector() {
       });
       log.debug("loaded sessions", { count: result.length });
       setSessions(result);
+      for (const session of result) {
+        setSessionTitle(session.session_id, session.title);
+      }
     } catch (err) {
       log.error("Failed to load sessions", { error: String(err) });
       setSessions([]);
     } finally {
       setIsLoading(false);
     }
-  }, [projectRoot]);
+  }, [projectRoot, setSessionTitle]);
 
   const handleOpenChange = useCallback(
     (open: boolean) => {
@@ -91,18 +104,18 @@ export function SessionSelector() {
   );
 
   const handleSelectSession = useCallback(
-    (sid: string) => {
-      if (isStreaming) return;
-      if (sid === sessionId) return;
-      log.debug(`selecting session: ${sid}`);
-      resumeSession(sid);
+    (session: ClaudeSessionInfo) => {
+      if (deletingId === session.session_id) return;
+      if (session.session_id === sessionId) return;
+      log.debug(`selecting session: ${session.session_id}`);
+      resumeSession(session.session_id, session.title);
     },
-    [isStreaming, sessionId, resumeSession],
+    [deletingId, sessionId, resumeSession],
   );
 
   const handleDeleteSession = useCallback(
     async (sid: string) => {
-      if (isStreaming || deletingId || !projectRoot) return;
+      if (deletingId || !projectRoot || streamingSessionIds.has(sid)) return;
 
       setDeleteError(null);
       setDeletingId(sid);
@@ -128,13 +141,12 @@ export function SessionSelector() {
         setDeletingId((current) => (current === sid ? null : current));
       }
     },
-    [deletingId, isStreaming, newSession, projectRoot, sessionId],
+    [deletingId, newSession, projectRoot, sessionId, streamingSessionIds],
   );
 
   const handleNewChat = useCallback(() => {
-    if (isStreaming) return;
     newSession();
-  }, [isStreaming, newSession]);
+  }, [newSession]);
 
   return (
     <>
@@ -158,7 +170,7 @@ export function SessionSelector() {
         >
           <DropdownMenuLabel>Sessions</DropdownMenuLabel>
 
-          <DropdownMenuItem onSelect={handleNewChat} disabled={isStreaming}>
+          <DropdownMenuItem onSelect={handleNewChat}>
             <PlusIcon className="size-4" />
             <span>New Chat</span>
           </DropdownMenuItem>
@@ -174,46 +186,62 @@ export function SessionSelector() {
               No previous sessions
             </div>
           ) : (
-            sessions.map((session) => (
-              <DropdownMenuItem
-                key={session.session_id}
-                onSelect={() => handleSelectSession(session.session_id)}
-                disabled={isStreaming || deletingId === session.session_id}
-                className="group flex items-start gap-2"
-              >
-                <div className="flex min-w-0 flex-1 flex-col">
-                  <span className="truncate text-sm">{session.title}</span>
-                  <span className="text-muted-foreground text-xs">
-                    {formatRelativeTime(session.last_modified)}
-                  </span>
-                </div>
-                <div className="flex shrink-0 items-center gap-1">
-                  {session.session_id === sessionId && (
-                    <CheckIcon className="size-4 text-primary" />
-                  )}
-                  <button
-                    type="button"
-                    className="flex size-6 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    aria-label={`Delete ${session.title}`}
-                    title="Delete session"
-                    disabled={isStreaming || deletingId === session.session_id}
-                    onPointerDown={(event) => event.stopPropagation()}
-                    onClick={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      setDeleteError(null);
-                      setDeleteTarget(session);
-                    }}
-                  >
-                    {deletingId === session.session_id ? (
-                      <Loader2Icon className="size-3.5 animate-spin" />
+            sessions.map((session) => {
+              const sessionIsStreaming = streamingSessionIds.has(
+                session.session_id,
+              );
+              return (
+                <DropdownMenuItem
+                  key={session.session_id}
+                  onSelect={() => handleSelectSession(session)}
+                  disabled={deletingId === session.session_id}
+                  className="group flex items-start gap-2"
+                >
+                  <div className="flex min-w-0 flex-1 flex-col">
+                    <span className="truncate text-sm">{session.title}</span>
+                    <span className="text-muted-foreground text-xs">
+                      {formatRelativeTime(session.last_modified)}
+                    </span>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    {sessionIsStreaming ? (
+                      <Loader2Icon className="size-4 animate-spin text-primary" />
                     ) : (
-                      <Trash2Icon className="size-3.5" />
+                      session.session_id === sessionId && (
+                        <CheckIcon className="size-4 text-primary" />
+                      )
                     )}
-                  </button>
-                </div>
-              </DropdownMenuItem>
-            ))
+                    <button
+                      type="button"
+                      className="flex size-6 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40"
+                      aria-label={`Delete ${session.title}`}
+                      title={
+                        sessionIsStreaming
+                          ? "Cannot delete a running session"
+                          : "Delete session"
+                      }
+                      disabled={
+                        sessionIsStreaming ||
+                        deletingId === session.session_id
+                      }
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setDeleteError(null);
+                        setDeleteTarget(session);
+                      }}
+                    >
+                      {deletingId === session.session_id ? (
+                        <Loader2Icon className="size-3.5 animate-spin" />
+                      ) : (
+                        <Trash2Icon className="size-3.5" />
+                      )}
+                    </button>
+                  </div>
+                </DropdownMenuItem>
+              );
+            })
           )}
         </DropdownMenuContent>
       </DropdownMenu>
@@ -259,7 +287,11 @@ export function SessionSelector() {
                   void handleDeleteSession(deleteTarget.session_id);
                 }
               }}
-              disabled={!deleteTarget || !!deletingId}
+              disabled={
+                !deleteTarget ||
+                !!deletingId ||
+                streamingSessionIds.has(deleteTarget.session_id)
+              }
             >
               {deletingId ? (
                 <Loader2Icon className="size-3.5 animate-spin" />

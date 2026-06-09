@@ -7,14 +7,10 @@ import { useDocumentStore } from "@/stores/document-store";
 import { useClaudeChatStore } from "@/stores/claude-chat-store";
 import { ProjectPicker } from "@/components/project-picker";
 import { WorkspaceLayout } from "@/components/workspace/workspace-layout";
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import {
-  ScientificSkillsOnboarding,
-  shouldShowOnboarding,
-} from "@/components/scientific-skills/scientific-skills-onboarding";
 import { useUvSetupStore } from "@/stores/uv-setup-store";
 import { ErrorFallback } from "@/components/error-fallback";
 import { createLogger } from "@/lib/debug/logger";
@@ -26,6 +22,12 @@ const LazyDebugPage = lazy(() =>
     default: m.DebugPage,
   })),
 );
+
+interface ClaudeSessionInfo {
+  session_id: string;
+  title: string;
+  last_modified: number;
+}
 
 function NativeWindowThemeBridge() {
   const { resolvedTheme, theme } = useTheme();
@@ -75,7 +77,7 @@ function NativeWindowThemeBridge() {
 function WorkspaceWithClaude() {
   const projectRoot = useDocumentStore((s) => s.projectRoot);
   const initialized = useDocumentStore((s) => s.initialized);
-  const [showSkillsOnboarding, setShowSkillsOnboarding] = useState(false);
+  const autoResumedProjectRef = useRef<string | null>(null);
 
   // Update window title
   useEffect(() => {
@@ -84,16 +86,6 @@ function WorkspaceWithClaude() {
       getCurrentWindow().setTitle(`${name} - ClaudePrism`);
     }
   }, [projectRoot]);
-
-  // Show scientific skills onboarding on first launch
-  useEffect(() => {
-    if (!initialized) return;
-    if (shouldShowOnboarding()) {
-      // Small delay so the workspace renders first
-      const timer = setTimeout(() => setShowSkillsOnboarding(true), 800);
-      return () => clearTimeout(timer);
-    }
-  }, [initialized]);
 
   // Auto-setup Python venv when project opens
   useEffect(() => {
@@ -112,6 +104,50 @@ function WorkspaceWithClaude() {
       });
   }, [initialized, projectRoot]);
 
+  // Open the most recent chat when entering a project.
+  useEffect(() => {
+    if (!initialized || !projectRoot) return;
+    if (autoResumedProjectRef.current === projectRoot) return;
+
+    const chatState = useClaudeChatStore.getState();
+    if (chatState.pendingInitialPrompt) return;
+
+    autoResumedProjectRef.current = projectRoot;
+    let cancelled = false;
+
+    invoke<ClaudeSessionInfo[]>("list_claude_sessions", {
+      projectPath: projectRoot,
+    })
+      .then((sessions) => {
+        if (cancelled || sessions.length === 0) return;
+        const latest = sessions
+          .slice()
+          .sort((a, b) => b.last_modified - a.last_modified)[0];
+        if (!latest?.session_id) return;
+
+        const current = useClaudeChatStore.getState();
+        if (
+          current.pendingInitialPrompt ||
+          current.isStreaming ||
+          current.sessionId ||
+          current.messages.length > 0
+        ) {
+          return;
+        }
+
+        void current.resumeSession(latest.session_id);
+      })
+      .catch((err) => {
+        log.warn("Failed to auto-resume latest chat session", {
+          error: String(err),
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [initialized, projectRoot]);
+
   // Consume pending initial prompt from project wizard
   useEffect(() => {
     if (!initialized) return;
@@ -127,16 +163,7 @@ function WorkspaceWithClaude() {
     return () => clearTimeout(timer);
   }, [initialized]);
 
-  return (
-    <>
-      <WorkspaceLayout />
-      {showSkillsOnboarding && (
-        <ScientificSkillsOnboarding
-          onClose={() => setShowSkillsOnboarding(false)}
-        />
-      )}
-    </>
-  );
+  return <WorkspaceLayout />;
 }
 
 export function App({ onReady }: { onReady?: () => void }) {

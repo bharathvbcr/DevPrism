@@ -7390,7 +7390,106 @@ pub async fn migrate_project_sessions(
     Ok(())
 }
 
-/// Clean raw user message text into a display title.
+fn truncate_session_title(text: &str, max_chars: usize) -> String {
+    if text.chars().count() > max_chars {
+        let truncated: String = text.chars().take(max_chars.saturating_sub(3)).collect();
+        format!("{}...", truncated)
+    } else {
+        text.to_string()
+    }
+}
+
+fn normalize_title_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn is_noise_title_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+
+    let lower = trimmed.to_lowercase();
+    lower.starts_with("template:")
+        || lower.starts_with("file:")
+        || lower.starts_with("reference files")
+        || lower == "what i want to create"
+        || lower.starts_with("(extracted text")
+        || lower.starts_with("attachments/")
+        || lower.starts_with("the file currently contains")
+        || (lower.starts_with("new ") && lower.contains(" project"))
+}
+
+fn extract_marked_request_body(text: &str) -> Option<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let marker_index = lines
+        .iter()
+        .position(|line| line.trim().eq_ignore_ascii_case("what i want to create"))?;
+
+    let mut selected = Vec::new();
+    for line in lines.iter().skip(marker_index + 1) {
+        let trimmed = line.trim();
+        if trimmed.eq_ignore_ascii_case("reference files") {
+            break;
+        }
+        if is_noise_title_line(trimmed) {
+            continue;
+        }
+        selected.push(trimmed);
+        if selected.join(" ").chars().count() >= 120 {
+            break;
+        }
+    }
+
+    let body = normalize_title_whitespace(&selected.join(" "));
+    if body.is_empty() {
+        None
+    } else {
+        Some(body)
+    }
+}
+
+fn first_meaningful_title_line(text: &str) -> Option<String> {
+    text.lines()
+        .map(str::trim)
+        .find(|line| !is_noise_title_line(line))
+        .map(normalize_title_whitespace)
+        .filter(|line| !line.is_empty())
+}
+
+fn summarize_session_title(text: &str) -> Option<String> {
+    let source = extract_marked_request_body(text).or_else(|| first_meaningful_title_line(text))?;
+    let normalized = normalize_title_whitespace(&source);
+    let lower = normalized.to_lowercase();
+
+    let research_prefix = [
+        "a research paper for ",
+        "research paper for ",
+        "a research paper on ",
+        "research paper on ",
+        "a research paper about ",
+        "research paper about ",
+    ]
+    .into_iter()
+    .find(|prefix| lower.starts_with(prefix));
+
+    let summary = if let Some(prefix) = research_prefix {
+        let topic = normalized[prefix.len()..].trim();
+        if topic.is_empty() {
+            "Research Paper".to_string()
+        } else {
+            format!("Research Paper: {}", truncate_session_title(topic, 56))
+        }
+    } else if lower.contains("research paper") {
+        truncate_session_title(&normalized, 80)
+    } else {
+        truncate_session_title(&normalized, 80)
+    };
+
+    Some(summary)
+}
+
+/// Clean raw user message text into a summarized display title.
 fn clean_user_message_title(text: &str) -> Option<String> {
     // Skip IDE context tags
     if text.starts_with("<ide_") || text.starts_with("<system-reminder>") {
@@ -7418,14 +7517,7 @@ fn clean_user_message_title(text: &str) -> Option<String> {
         return None;
     }
 
-    let title = if clean.chars().count() > 80 {
-        let truncated: String = clean.chars().take(77).collect();
-        format!("{}...", truncated)
-    } else {
-        clean.to_string()
-    };
-
-    Some(title)
+    summarize_session_title(clean)
 }
 
 /// Extract the first valid user message from a JSONL session file.
@@ -7817,6 +7909,16 @@ mod tests {
         let text = "[Currently open file: main.tex]\n\nFix the bibliography";
         let result = clean_user_message_title(text);
         assert_eq!(result, Some("Fix the bibliography".to_string()));
+    }
+
+    #[test]
+    fn test_clean_user_message_title_summarizes_project_wizard_prompt() {
+        let text = "New IEEE Conference Paper Project\nTemplate: IEEEtran\nFile: main.tex\nThe file currently contains only the LaTeX preamble.\nWhat I want to create\nA research paper for vllm acceleration on FastGraphVID and GraphSTM\nReference Files\nattachments/Very_Long_File_Name.pdf\n(extracted text:";
+        let result = clean_user_message_title(text);
+        assert_eq!(
+            result,
+            Some("Research Paper: vllm acceleration on FastGraphVID and GraphSTM".to_string())
+        );
     }
 
     #[test]

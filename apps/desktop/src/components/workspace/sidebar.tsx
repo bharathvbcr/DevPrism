@@ -768,7 +768,10 @@ export function Sidebar() {
                   onClick={() => void runRefreshFiles()}
                 >
                   <RefreshCwIcon
-                    className={cn("size-3", isRefreshingFiles && "animate-spin")}
+                    className={cn(
+                      "size-3",
+                      isRefreshingFiles && "animate-spin",
+                    )}
                   />
                 </Button>
                 <DropdownMenu>

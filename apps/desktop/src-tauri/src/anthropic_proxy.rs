@@ -202,11 +202,11 @@ async fn handle_messages(
         .timeout(std::time::Duration::from_secs(300))
         .build()
         .map_err(|err| format!("Failed to create provider client: {}", err))?;
-    let response = client
+    let request = client
         .post(openai_chat_completions_url(&credential.base_url))
-        .bearer_auth(&credential.api_key)
         .header("Content-Type", "application/json")
-        .body(openai_request.to_string())
+        .body(openai_request.to_string());
+    let response = with_optional_bearer_auth(request, &credential.api_key)
         .send()
         .await
         .map_err(|err| format!("Provider request failed: {}", err))?;
@@ -870,6 +870,17 @@ fn openai_chat_completions_url(base_url: &str) -> String {
         format!("{}/chat/completions", clean)
     } else {
         format!("{}/v1/chat/completions", clean)
+    }
+}
+
+fn with_optional_bearer_auth(
+    request: reqwest::RequestBuilder,
+    api_key: &str,
+) -> reqwest::RequestBuilder {
+    if api_key.trim().is_empty() {
+        request
+    } else {
+        request.bearer_auth(api_key)
     }
 }
 

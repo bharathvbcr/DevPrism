@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { getProviderDisplayName } from "@/lib/provider-icons";
+import {
+  getProviderDisplayName,
+  getProviderIconSrc,
+} from "@/lib/provider-icons";
 
 describe("getProviderDisplayName", () => {
   it("derives provider names from old custom labels", () => {
@@ -28,5 +31,16 @@ describe("getProviderDisplayName", () => {
         model: "acme-large",
       }),
     ).toBe("Acme AI");
+  });
+
+  it("recognizes local Ollama endpoints", () => {
+    const provider = {
+      label: "Custom OpenAI API",
+      baseUrl: "http://localhost:11434/v1",
+      model: "llama3.2",
+    };
+
+    expect(getProviderDisplayName(provider)).toBe("Ollama");
+    expect(getProviderIconSrc(provider)).toContain("ollama");
   });
 });

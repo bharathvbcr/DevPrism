@@ -106,7 +106,11 @@ function WorkspaceWithClaude() {
 
   // Open the most recent chat when entering a project.
   useEffect(() => {
-    if (!initialized || !projectRoot) return;
+    if (!projectRoot) {
+      autoResumedProjectRef.current = null;
+      return;
+    }
+    if (!initialized) return;
     if (autoResumedProjectRef.current === projectRoot) return;
 
     const chatState = useClaudeChatStore.getState();
@@ -117,25 +121,30 @@ function WorkspaceWithClaude() {
 
     invoke<ClaudeSessionInfo[]>("list_claude_sessions", {
       projectPath: projectRoot,
+      generateTitles: false,
     })
       .then((sessions) => {
-        if (cancelled || sessions.length === 0) return;
+        if (cancelled) return;
         const latest = sessions
           .slice()
           .sort((a, b) => b.last_modified - a.last_modified)[0];
-        if (!latest?.session_id) return;
 
         const current = useClaudeChatStore.getState();
-        if (
-          current.pendingInitialPrompt ||
-          current.isStreaming ||
-          current.sessionId ||
-          current.messages.length > 0
-        ) {
+        if (current.pendingInitialPrompt || current.isStreaming) {
           return;
         }
 
-        void current.resumeSession(latest.session_id);
+        if (!latest?.session_id) {
+          current.newSession();
+          return;
+        }
+
+        current.resumeSession(latest.session_id).catch((err) => {
+          log.warn("Failed to auto-resume latest chat session", {
+            sessionId: latest.session_id,
+            error: String(err),
+          });
+        });
       })
       .catch((err) => {
         log.warn("Failed to auto-resume latest chat session", {

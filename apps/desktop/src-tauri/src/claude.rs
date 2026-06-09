@@ -31,7 +31,7 @@ struct StoredClaudeCredential {
     base_url: Option<String>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct StoredOpenAiCompatibleCredential {
     id: String,
     label: String,
@@ -73,6 +73,12 @@ const DIRECT_PROVIDER_MAX_TOOL_TURNS_ENV: &str = "CLAUDE_PRISM_DIRECT_PROVIDER_M
 const DIRECT_PROVIDER_CONVERGE_TURN_ENV: &str = "CLAUDE_PRISM_DIRECT_PROVIDER_CONVERGE_TURN";
 const DIRECT_PROVIDER_DEFAULT_MAX_TOOL_TURNS: u64 = 100;
 const DIRECT_PROVIDER_PROJECT_CONTEXT_HEADER: &str = "[ClaudePrism project context]";
+const DIRECT_PROVIDER_COMPACT_THRESHOLD_CHARS: usize = 120_000;
+const DIRECT_PROVIDER_COMPACT_RETAIN_CHARS: usize = 48_000;
+const DIRECT_PROVIDER_MAX_COMPACT_RETRIES: usize = 3;
+const DIRECT_PROVIDER_PTL_RETRY_MARKER: &str =
+    "[earlier conversation truncated for compaction retry]";
+const MAX_MODEL_SESSION_TITLE_GENERATIONS_PER_LIST: usize = 12;
 const DIRECT_PROVIDER_TOOL_NAMES: &[&str] = &[
     "Read",
     "Write",
@@ -2281,7 +2287,7 @@ fn common_claude_args() -> Vec<String> {
 // ─── Tauri Commands ───
 
 fn direct_provider_system_prompt() -> String {
-    let mut lines = vec![
+    let lines = vec![
         "You are an AI assistant integrated into ClaudePrism, a LaTeX document editor.",
         "Help the user write, revise, and reason about academic documents.",
         "Preserve existing LaTeX structure unless the user asks for a rewrite.",
@@ -6074,6 +6080,628 @@ fn direct_messages_for_legacy_functions(
     converted
 }
 
+fn direct_message_rough_chars(message: &serde_json::Value) -> usize {
+    message.to_string().chars().count()
+}
+
+fn direct_messages_rough_chars(messages: &[serde_json::Value]) -> usize {
+    messages.iter().map(direct_message_rough_chars).sum()
+}
+
+fn direct_message_role(message: &serde_json::Value) -> Option<&str> {
+    message.get("role").and_then(|v| v.as_str())
+}
+
+fn is_direct_tool_result_message(message: &serde_json::Value) -> bool {
+    matches!(
+        direct_message_role(message),
+        Some("tool") | Some("function")
+    )
+}
+
+fn direct_tool_call_ids(message: &serde_json::Value) -> Vec<String> {
+    if direct_message_role(message) != Some("assistant") {
+        return Vec::new();
+    }
+
+    let mut ids = message
+        .get("tool_calls")
+        .and_then(|v| v.as_array())
+        .map(|calls| {
+            calls
+                .iter()
+                .filter_map(|call| call.get("id").and_then(|v| v.as_str()))
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    if message.get("function_call").is_some() {
+        ids.push("function_call_1".to_string());
+    }
+
+    ids
+}
+
+fn direct_tool_result_ids(message: &serde_json::Value) -> Vec<String> {
+    match direct_message_role(message) {
+        Some("tool") => message
+            .get("tool_call_id")
+            .and_then(|v| v.as_str())
+            .map(|id| vec![id.to_string()])
+            .unwrap_or_default(),
+        Some("function") => vec!["function_call_1".to_string()],
+        _ => Vec::new(),
+    }
+}
+
+fn compactable_direct_message_groups(
+    messages: &[serde_json::Value],
+) -> Vec<Vec<serde_json::Value>> {
+    let mut groups: Vec<Vec<serde_json::Value>> = Vec::new();
+    let mut current: Vec<serde_json::Value> = Vec::new();
+
+    for message in messages {
+        if direct_message_role(message) == Some("assistant") && !current.is_empty() {
+            groups.push(current);
+            current = vec![message.clone()];
+        } else {
+            current.push(message.clone());
+        }
+    }
+
+    if !current.is_empty() {
+        groups.push(current);
+    }
+
+    groups
+}
+
+fn adjust_direct_keep_start_for_api_invariants(
+    messages: &[serde_json::Value],
+    start_index: usize,
+) -> usize {
+    if start_index == 0 || start_index >= messages.len() {
+        return start_index;
+    }
+
+    let mut adjusted_index = start_index;
+    let tool_result_ids = messages[start_index..]
+        .iter()
+        .flat_map(direct_tool_result_ids)
+        .collect::<Vec<_>>();
+
+    if !tool_result_ids.is_empty() {
+        let kept_tool_call_ids = messages[adjusted_index..]
+            .iter()
+            .flat_map(direct_tool_call_ids)
+            .collect::<HashSet<_>>();
+        let mut needed_tool_call_ids = tool_result_ids
+            .into_iter()
+            .filter(|id| !kept_tool_call_ids.contains(id))
+            .collect::<HashSet<_>>();
+
+        for i in (0..adjusted_index).rev() {
+            if needed_tool_call_ids.is_empty() {
+                break;
+            }
+            let ids = direct_tool_call_ids(&messages[i]);
+            if ids.iter().any(|id| needed_tool_call_ids.contains(id)) {
+                adjusted_index = i;
+                for id in ids {
+                    needed_tool_call_ids.remove(&id);
+                }
+            }
+        }
+    }
+
+    while adjusted_index > 0 && is_direct_tool_result_message(&messages[adjusted_index]) {
+        adjusted_index -= 1;
+    }
+
+    adjusted_index
+}
+
+struct DirectCompactionPlan {
+    system_messages: Vec<serde_json::Value>,
+    summary_messages: Vec<serde_json::Value>,
+    retained_messages: Vec<serde_json::Value>,
+}
+
+fn build_direct_compaction_plan(messages: &[serde_json::Value]) -> Option<DirectCompactionPlan> {
+    if direct_messages_rough_chars(messages) <= DIRECT_PROVIDER_COMPACT_THRESHOLD_CHARS {
+        return None;
+    }
+
+    let system_count = messages
+        .iter()
+        .take_while(|message| direct_message_role(message) == Some("system"))
+        .count();
+    let (system_messages, conversation) = messages.split_at(system_count);
+    if conversation.len() < 8 {
+        return None;
+    }
+
+    let groups = compactable_direct_message_groups(conversation);
+    if groups.len() < 4 {
+        return None;
+    }
+
+    let mut retain_group_start = groups.len();
+    let mut retained_chars = 0_usize;
+    while retain_group_start > 0 {
+        let group_chars = direct_messages_rough_chars(&groups[retain_group_start - 1]);
+        if retained_chars > 0 && retained_chars + group_chars > DIRECT_PROVIDER_COMPACT_RETAIN_CHARS
+        {
+            break;
+        }
+        retained_chars += group_chars;
+        retain_group_start -= 1;
+    }
+
+    let keep_start = groups
+        .iter()
+        .take(retain_group_start)
+        .map(Vec::len)
+        .sum::<usize>();
+    let keep_start = adjust_direct_keep_start_for_api_invariants(conversation, keep_start);
+    if keep_start == 0 || keep_start >= conversation.len() {
+        return None;
+    }
+
+    Some(DirectCompactionPlan {
+        system_messages: system_messages.to_vec(),
+        summary_messages: conversation[..keep_start].to_vec(),
+        retained_messages: conversation[keep_start..].to_vec(),
+    })
+}
+
+fn direct_compact_prompt() -> String {
+    [
+        "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.",
+        "",
+        "- Do NOT use Read, Bash, Grep, Glob, Edit, Write, or ANY other tool.",
+        "- You already have all the context you need in the conversation above.",
+        "- Tool calls will be REJECTED and will waste your only turn; you will fail the task.",
+        "- Your entire response must be plain text: an <analysis> block followed by a <summary> block.",
+        "",
+        "Your task is to create a detailed summary of this conversation. This summary will be placed at the start of a continuing session; newer messages that build on this context will follow after your summary (you do not see them here). Summarize thoroughly so that someone reading only your summary and then the newer messages can fully understand what happened and continue the work.",
+        "",
+        "Before providing your final summary, wrap your analysis in <analysis> tags to organize your thoughts and ensure you have covered all necessary points. In your analysis process:",
+        "",
+        "1. Chronologically analyze each message and section of the conversation. For each section thoroughly identify:",
+        "   - The user's explicit requests and intents",
+        "   - Your approach to addressing the user's requests",
+        "   - Key decisions, technical concepts and code patterns",
+        "   - Specific details like:",
+        "     - file names",
+        "     - full code snippets",
+        "     - function signatures",
+        "     - file edits",
+        "   - Errors that you ran into and how you fixed them",
+        "   - Pay special attention to specific user feedback that you received, especially if the user told you to do something differently.",
+        "2. Double-check for technical accuracy and completeness, addressing each required element thoroughly.",
+        "",
+        "Your summary should include the following sections:",
+        "",
+        "1. Primary Request and Intent: Capture the user's explicit requests and intents in detail",
+        "2. Key Technical Concepts: List important technical concepts, technologies, and frameworks discussed.",
+        "3. Files and Code Sections: Enumerate specific files and code sections examined, modified, or created. Include full code snippets where applicable and include a summary of why this file read or edit is important.",
+        "4. Errors and fixes: List errors encountered and how they were fixed.",
+        "5. Problem Solving: Document problems solved and any ongoing troubleshooting efforts.",
+        "6. All user messages: List ALL user messages that are not tool results.",
+        "7. Pending Tasks: Outline any pending tasks.",
+        "8. Work Completed: Describe what was accomplished by the end of this portion.",
+        "9. Context for Continuing Work: Summarize any context, decisions, or state that would be needed to understand and continue the work in subsequent messages.",
+        "",
+        "Here's an example of how your output should be structured:",
+        "",
+        "<example>",
+        "<analysis>",
+        "[Your thought process, ensuring all points are covered thoroughly and accurately]",
+        "</analysis>",
+        "",
+        "<summary>",
+        "1. Primary Request and Intent:",
+        "   [Detailed description]",
+        "",
+        "2. Key Technical Concepts:",
+        "   - [Concept 1]",
+        "   - [Concept 2]",
+        "",
+        "3. Files and Code Sections:",
+        "   - [File Name 1]",
+        "      - [Summary of why this file is important]",
+        "      - [Important Code Snippet]",
+        "",
+        "4. Errors and fixes:",
+        "    - [Error description]:",
+        "      - [How you fixed it]",
+        "",
+        "5. Problem Solving:",
+        "   [Description]",
+        "",
+        "6. All user messages:",
+        "    - [Detailed non tool use user message]",
+        "",
+        "7. Pending Tasks:",
+        "   - [Task 1]",
+        "",
+        "8. Work Completed:",
+        "   [Description of what was accomplished]",
+        "",
+        "9. Context for Continuing Work:",
+        "   [Key context, decisions, or state needed to continue the work]",
+        "",
+        "</summary>",
+        "</example>",
+        "",
+        "Please provide your summary following this structure, ensuring precision and thoroughness.",
+        "",
+        "REMINDER: Do NOT call any tools. Respond with plain text only: an <analysis> block followed by a <summary> block. Tool calls will be rejected and you will fail the task.",
+    ]
+    .join("\n")
+}
+
+fn strip_direct_xml_section(input: &str, tag: &str) -> String {
+    let open = format!("<{}>", tag);
+    let close = format!("</{}>", tag);
+    let mut output = input.to_string();
+    while let Some(start) = output.find(&open) {
+        let content_start = start + open.len();
+        let Some(end_offset) = output[content_start..].find(&close) else {
+            break;
+        };
+        let end = content_start + end_offset + close.len();
+        output.replace_range(start..end, "");
+    }
+    output
+}
+
+fn direct_xml_section(input: &str, tag: &str) -> Option<String> {
+    let open = format!("<{}>", tag);
+    let close = format!("</{}>", tag);
+    let start = input.find(&open)? + open.len();
+    let end = input[start..].find(&close)? + start;
+    Some(input[start..end].trim().to_string())
+}
+
+fn direct_collapse_blank_lines(input: &str) -> String {
+    let mut output = input.to_string();
+    while output.contains("\n\n\n") {
+        output = output.replace("\n\n\n", "\n\n");
+    }
+    output
+}
+
+fn direct_format_compact_summary(summary: &str) -> String {
+    let without_analysis = strip_direct_xml_section(summary, "analysis");
+    let formatted = if let Some(summary_section) = direct_xml_section(&without_analysis, "summary")
+    {
+        format!("Summary:\n{}", summary_section)
+    } else {
+        without_analysis
+    };
+    direct_collapse_blank_lines(&formatted).trim().to_string()
+}
+
+fn direct_compact_user_summary_message(summary: &str) -> String {
+    format!(
+        "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\n{}\n\nRecent messages are preserved verbatim.\n\nContinue the conversation from where it left off without asking the user any further questions. Resume directly; do not acknowledge the summary, do not recap what was happening, and do not preface with \"I'll continue\" or similar. Pick up the last task as if the break never happened.",
+        direct_format_compact_summary(summary)
+    )
+}
+
+fn direct_compact_summary_request_messages(
+    summary_messages: &[serde_json::Value],
+) -> Vec<serde_json::Value> {
+    let mut messages = vec![json!({
+        "role": "system",
+        "content": "You are a conversation compaction agent. Produce only the requested compact summary text. Do not call tools.",
+    })];
+    messages.extend(summary_messages.iter().cloned());
+    messages.push(json!({
+        "role": "user",
+        "content": direct_compact_prompt(),
+    }));
+    messages
+}
+
+fn direct_provider_error_looks_prompt_too_long(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("prompt too long")
+        || lower.contains("context_length_exceeded")
+        || lower.contains("context length")
+        || lower.contains("maximum context")
+        || lower.contains("token limit")
+        || lower.contains("too many tokens")
+        || lower.contains("request too large")
+        || lower.contains("http 413")
+}
+
+fn truncate_direct_compact_head_for_retry(
+    messages: &[serde_json::Value],
+) -> Option<Vec<serde_json::Value>> {
+    let input = if messages
+        .first()
+        .and_then(|message| message.get("content"))
+        .and_then(|content| content.as_str())
+        == Some(DIRECT_PROVIDER_PTL_RETRY_MARKER)
+    {
+        &messages[1..]
+    } else {
+        messages
+    };
+
+    let groups = compactable_direct_message_groups(input);
+    if groups.len() < 2 {
+        return None;
+    }
+
+    let drop_count = std::cmp::max(1, groups.len() / 5).min(groups.len() - 1);
+    let mut sliced = groups[drop_count..]
+        .iter()
+        .flatten()
+        .cloned()
+        .collect::<Vec<_>>();
+    if sliced
+        .first()
+        .map(|message| direct_message_role(message) == Some("assistant"))
+        .unwrap_or(false)
+    {
+        sliced.insert(
+            0,
+            json!({
+                "role": "user",
+                "content": DIRECT_PROVIDER_PTL_RETRY_MARKER,
+            }),
+        );
+    }
+    Some(sliced)
+}
+
+fn direct_message_content_for_toolless_history(message: &serde_json::Value) -> String {
+    let Some(content) = message.get("content") else {
+        return String::new();
+    };
+    if content.is_null() {
+        return String::new();
+    }
+    content
+        .as_str()
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| content.to_string())
+}
+
+fn direct_tool_call_descriptions(message: &serde_json::Value) -> Vec<String> {
+    let mut descriptions = message
+        .get("tool_calls")
+        .and_then(|v| v.as_array())
+        .map(|calls| {
+            calls
+                .iter()
+                .filter_map(|call| {
+                    let name = call.pointer("/function/name")?.as_str()?;
+                    let arguments = call
+                        .pointer("/function/arguments")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    Some(if arguments.trim().is_empty() {
+                        name.to_string()
+                    } else {
+                        format!(
+                            "{}({})",
+                            name,
+                            truncate_tool_content(arguments.to_string(), 600)
+                        )
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    if let Some(function_call) = message.get("function_call") {
+        if let Some(name) = function_call.get("name").and_then(|v| v.as_str()) {
+            let arguments = function_call
+                .get("arguments")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            descriptions.push(if arguments.trim().is_empty() {
+                name.to_string()
+            } else {
+                format!(
+                    "{}({})",
+                    name,
+                    truncate_tool_content(arguments.to_string(), 600)
+                )
+            });
+        }
+    }
+
+    descriptions
+}
+
+fn direct_messages_without_tooling_from_sanitized(
+    messages: Vec<serde_json::Value>,
+) -> Vec<serde_json::Value> {
+    let mut sanitized = Vec::new();
+    for mut message in messages {
+        match direct_message_role(&message) {
+            Some("assistant") => {
+                let tool_descriptions = direct_tool_call_descriptions(&message);
+                let existing_content = direct_message_content_for_toolless_history(&message);
+                if let Some(object) = message.as_object_mut() {
+                    object.remove("tool_calls");
+                    object.remove("function_call");
+                    if !tool_descriptions.is_empty() {
+                        let tool_text = format!(
+                            "[Assistant requested tool calls]\n- {}",
+                            tool_descriptions.join("\n- ")
+                        );
+                        let content = if existing_content.trim().is_empty() {
+                            tool_text
+                        } else {
+                            format!("{}\n\n{}", existing_content, tool_text)
+                        };
+                        object.insert("content".to_string(), json!(content));
+                    } else if object.get("content").map(|v| v.is_null()).unwrap_or(false) {
+                        object.insert("content".to_string(), json!(""));
+                    }
+                }
+                sanitized.push(message);
+            }
+            Some("tool") => {
+                let tool_call_id = message
+                    .get("tool_call_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let content = direct_message_content_for_toolless_history(&message);
+                sanitized.push(json!({
+                    "role": "user",
+                    "content": format!(
+                        "[Previous tool result {}]\n{}",
+                        tool_call_id,
+                        content
+                    ),
+                }));
+            }
+            Some("function") => {
+                let name = message
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("function");
+                let content = direct_message_content_for_toolless_history(&message);
+                sanitized.push(json!({
+                    "role": "user",
+                    "content": format!(
+                        "[Previous function result {}]\n{}",
+                        name,
+                        content
+                    ),
+                }));
+            }
+            _ => sanitized.push(message),
+        }
+    }
+    sanitized
+}
+
+fn direct_messages_without_tooling(
+    messages: &[serde_json::Value],
+    reasoning_history_mode: DirectReasoningHistoryMode,
+) -> Vec<serde_json::Value> {
+    let messages = sanitize_direct_messages_for_reasoning_history(messages, reasoning_history_mode);
+    direct_messages_without_tooling_from_sanitized(messages)
+}
+
+async fn send_openai_compatible_raw_no_tools_chat_request(
+    client: &reqwest::Client,
+    credential: &StoredOpenAiCompatibleCredential,
+    messages: &[serde_json::Value],
+) -> Result<DirectChatResponse, DirectProviderRequestFailure> {
+    let request_messages =
+        direct_messages_without_tooling(messages, direct_reasoning_history_mode(credential));
+    let request_body = json!({
+        "model": credential.model.clone(),
+        "messages": request_messages,
+        "stream": false,
+    });
+
+    let response = client
+        .post(openai_chat_completions_url(&credential.base_url))
+        .bearer_auth(&credential.api_key)
+        .header("Content-Type", "application/json")
+        .body(request_body.to_string())
+        .send()
+        .await
+        .map_err(|err| DirectProviderRequestFailure {
+            message: format!("Provider request failed: {}", err),
+            can_retry_without_tools: false,
+        })?;
+
+    let status = response.status();
+    let response_text = response
+        .text()
+        .await
+        .map_err(|err| DirectProviderRequestFailure {
+            message: format!("Failed to read provider response: {}", err),
+            can_retry_without_tools: false,
+        })?;
+
+    if !status.is_success() {
+        return Err(DirectProviderRequestFailure {
+            message: format!("Provider returned HTTP {}: {}", status, response_text),
+            can_retry_without_tools: false,
+        });
+    }
+
+    let response =
+        serde_json::from_str(&response_text).map_err(|err| DirectProviderRequestFailure {
+            message: format!("Provider returned invalid JSON: {}", err),
+            can_retry_without_tools: false,
+        })?;
+    Ok(direct_chat_response_from_value(
+        response,
+        direct_reasoning_history_mode(credential),
+    ))
+}
+
+async fn compact_direct_request_messages_with_provider(
+    client: &reqwest::Client,
+    credential: &StoredOpenAiCompatibleCredential,
+    messages: &[serde_json::Value],
+) -> Result<Vec<serde_json::Value>, String> {
+    let Some(plan) = build_direct_compaction_plan(messages) else {
+        return Ok(messages.to_vec());
+    };
+
+    let mut summary_messages = plan.summary_messages.clone();
+    for attempt in 0..=DIRECT_PROVIDER_MAX_COMPACT_RETRIES {
+        let compact_request_messages = direct_compact_summary_request_messages(&summary_messages);
+        match send_openai_compatible_raw_no_tools_chat_request(
+            client,
+            credential,
+            &compact_request_messages,
+        )
+        .await
+        {
+            Ok(response) => {
+                let summary = if response.content.trim().is_empty() {
+                    response.reasoning.trim().to_string()
+                } else {
+                    response.content.trim().to_string()
+                };
+                if summary.is_empty() {
+                    return Err("Context compaction returned an empty summary".to_string());
+                }
+                let mut compacted = plan.system_messages.clone();
+                compacted.push(json!({
+                    "role": "user",
+                    "content": direct_compact_user_summary_message(&summary),
+                }));
+                compacted.extend(plan.retained_messages.iter().cloned());
+                if direct_messages_rough_chars(&compacted) < direct_messages_rough_chars(messages) {
+                    return Ok(compacted);
+                }
+                return Ok(messages.to_vec());
+            }
+            Err(err)
+                if attempt < DIRECT_PROVIDER_MAX_COMPACT_RETRIES
+                    && direct_provider_error_looks_prompt_too_long(&err.message) =>
+            {
+                let Some(truncated) = truncate_direct_compact_head_for_retry(&summary_messages)
+                else {
+                    return Err(format!("Context compaction failed: {}", err.message));
+                };
+                summary_messages = truncated;
+            }
+            Err(err) => return Err(format!("Context compaction failed: {}", err.message)),
+        }
+    }
+
+    Ok(messages.to_vec())
+}
+
 fn direct_messages_for_tool_capability(
     messages: &[serde_json::Value],
     mode: DirectToolRequestMode,
@@ -6115,49 +6743,7 @@ fn direct_messages_for_tool_capability(
         return direct_messages_for_legacy_functions(messages);
     }
 
-    let mut sanitized = Vec::new();
-    for mut message in messages {
-        match message.get("role").and_then(|v| v.as_str()) {
-            Some("assistant") => {
-                if let Some(object) = message.as_object_mut() {
-                    object.remove("tool_calls");
-                    if object.get("content").map(|v| v.is_null()).unwrap_or(false) {
-                        object.insert(
-                            "content".to_string(),
-                            json!("[Assistant requested a tool call, but this provider endpoint does not support tool calls.]"),
-                        );
-                    }
-                }
-                sanitized.push(message);
-            }
-            Some("tool") => {
-                let tool_call_id = message
-                    .get("tool_call_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
-                let content = message
-                    .get("content")
-                    .and_then(|v| v.as_str())
-                    .map(|v| v.to_string())
-                    .unwrap_or_else(|| {
-                        message
-                            .get("content")
-                            .map(|v| v.to_string())
-                            .unwrap_or_default()
-                    });
-                sanitized.push(json!({
-                    "role": "user",
-                    "content": format!(
-                        "[Previous tool result {}]\n{}",
-                        tool_call_id,
-                        content
-                    ),
-                }));
-            }
-            _ => sanitized.push(message),
-        }
-    }
-    sanitized
+    direct_messages_without_tooling_from_sanitized(messages)
 }
 
 async fn send_openai_compatible_chat_request(
@@ -6357,8 +6943,14 @@ async fn send_openai_compatible_non_streaming_chat_request(
     messages: &[serde_json::Value],
     mode: DirectToolRequestMode,
 ) -> Result<DirectChatResponse, DirectProviderRequestFailure> {
+    let messages = compact_direct_request_messages_with_provider(client, credential, messages)
+        .await
+        .unwrap_or_else(|err| {
+            eprintln!("[direct-provider] context compaction skipped: {}", err);
+            messages.to_vec()
+        });
     let request_messages = direct_messages_for_tool_capability(
-        messages,
+        &messages,
         mode,
         direct_reasoning_history_mode(credential),
     );
@@ -6418,8 +7010,14 @@ async fn send_openai_compatible_streaming_chat_request(
     process_key: &str,
     mode: DirectToolRequestMode,
 ) -> Result<DirectChatResponse, DirectStreamFailure> {
+    let messages = compact_direct_request_messages_with_provider(client, credential, messages)
+        .await
+        .unwrap_or_else(|err| {
+            eprintln!("[direct-provider] context compaction skipped: {}", err);
+            messages.to_vec()
+        });
     let request_messages = direct_messages_for_tool_capability(
-        messages,
+        &messages,
         mode,
         direct_reasoning_history_mode(credential),
     );
@@ -7269,6 +7867,21 @@ pub struct ClaudeSessionInfo {
     pub last_modified: i64,
 }
 
+#[derive(serde::Deserialize, serde::Serialize)]
+struct SessionTitleCache {
+    title: String,
+    source_modified: i64,
+    generated_at: i64,
+}
+
+struct SessionCandidate {
+    session_id: String,
+    path: PathBuf,
+    fallback_title: String,
+    title: Option<String>,
+    last_modified: i64,
+}
+
 /// Resolve the Claude Code sessions directory for a given project path.
 /// Claude Code encodes paths by replacing all non-alphanumeric characters with '-'.
 /// e.g. "/Users/dev/my_project" → "-Users-dev-my-project"
@@ -7397,6 +8010,68 @@ fn truncate_session_title(text: &str, max_chars: usize) -> String {
     } else {
         text.to_string()
     }
+}
+
+fn session_title_cache_path(session_path: &Path) -> PathBuf {
+    session_path.with_extension("title.json")
+}
+
+fn sanitize_model_session_title(title: &str) -> Option<String> {
+    let title = title
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())?
+        .trim_matches(|c| matches!(c, '"' | '\'' | '`' | '“' | '”' | '‘' | '’'))
+        .trim();
+    let title = title
+        .strip_prefix("Title:")
+        .or_else(|| title.strip_prefix("title:"))
+        .or_else(|| title.strip_prefix("标题:"))
+        .unwrap_or(title)
+        .trim();
+    let title = normalize_title_whitespace(title);
+    let lower = title.to_lowercase();
+    if title.is_empty()
+        || lower == "new chat"
+        || lower == "untitled"
+        || lower == "untitled session"
+        || lower == "conversation summary"
+        || lower == "chat summary"
+    {
+        return None;
+    }
+
+    Some(truncate_session_title(&title, 72))
+}
+
+fn read_session_title_cache(session_path: &Path, source_modified: i64) -> Option<String> {
+    let cache_path = session_title_cache_path(session_path);
+    let content = std::fs::read_to_string(cache_path).ok()?;
+    let cache = serde_json::from_str::<SessionTitleCache>(&content).ok()?;
+    if cache.source_modified != source_modified {
+        return None;
+    }
+    sanitize_model_session_title(&cache.title)
+}
+
+fn write_session_title_cache(
+    session_path: &Path,
+    source_modified: i64,
+    title: &str,
+) -> Result<(), String> {
+    let cache_path = session_title_cache_path(session_path);
+    let Some(title) = sanitize_model_session_title(title) else {
+        return Ok(());
+    };
+    let cache = SessionTitleCache {
+        title,
+        source_modified,
+        generated_at: chrono::Utc::now().timestamp(),
+    };
+    let content = serde_json::to_string_pretty(&cache)
+        .map_err(|e| format!("Failed to serialize session title cache: {}", e))?;
+    std::fs::write(cache_path, content)
+        .map_err(|e| format!("Failed to write session title cache: {}", e))
 }
 
 fn normalize_title_whitespace(text: &str) -> String {
@@ -7578,8 +8253,138 @@ fn extract_first_user_message(path: &PathBuf) -> (Option<String>, Option<String>
     (None, None)
 }
 
+fn title_text_from_message_content(content: &serde_json::Value) -> Option<String> {
+    if let Some(text) = content.as_str() {
+        return Some(text.to_string());
+    }
+
+    let blocks = content.as_array()?;
+    let mut parts = Vec::new();
+    for block in blocks {
+        if block.get("type").and_then(|v| v.as_str()) != Some("text") {
+            continue;
+        }
+        if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+            parts.push(text.trim());
+        }
+    }
+
+    let text = normalize_title_whitespace(&parts.join("\n"));
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+fn session_excerpt_for_model_title(path: &Path) -> Option<String> {
+    let file = std::fs::File::open(path).ok()?;
+    let reader = std::io::BufReader::new(file);
+    use std::io::BufRead;
+
+    let mut lines = Vec::new();
+    let mut total_chars = 0usize;
+    for line in reader.lines().map_while(Result::ok) {
+        let Ok(entry) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        let Some(kind) = entry.get("type").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if kind != "user" && kind != "assistant" {
+            continue;
+        }
+        let Some(content) = entry
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .or_else(|| entry.get("content"))
+        else {
+            continue;
+        };
+        let Some(mut text) = title_text_from_message_content(content) else {
+            continue;
+        };
+        text = text.trim().to_string();
+        if text.is_empty()
+            || text.starts_with("<ide_")
+            || text.starts_with("<system-reminder>")
+            || text.starts_with("<command-name>")
+            || text.starts_with("<local-command-stdout>")
+        {
+            continue;
+        }
+
+        let speaker = if kind == "user" { "User" } else { "Assistant" };
+        let text = truncate_tool_content(text, 1400);
+        let entry = format!("{}: {}", speaker, text);
+        total_chars += entry.chars().count();
+        lines.push(entry);
+        if lines.len() >= 8 || total_chars >= 6000 {
+            break;
+        }
+    }
+
+    let excerpt = lines.join("\n\n");
+    if excerpt.trim().is_empty() {
+        None
+    } else {
+        Some(excerpt)
+    }
+}
+
+fn session_title_credential_from_config(
+    config: &ClaudePrismAuthConfig,
+) -> Option<StoredOpenAiCompatibleCredential> {
+    let credentials = normalized_openai_compatible_credentials(config);
+    if let Some(active_id) = config.active_openai_credential_id.as_deref() {
+        if let Some(credential) = credentials
+            .iter()
+            .find(|credential| credential.id == active_id)
+            .cloned()
+        {
+            return Some(credential);
+        }
+    }
+
+    credentials.into_iter().next()
+}
+
+async fn generate_model_session_title(
+    client: &reqwest::Client,
+    credential: &StoredOpenAiCompatibleCredential,
+    excerpt: &str,
+) -> Result<Option<String>, String> {
+    let messages = vec![
+        json!({
+            "role": "system",
+            "content": "You generate concise chat history titles. Return only the title text, with no quotes, no markdown, and no explanation.",
+        }),
+        json!({
+            "role": "user",
+            "content": format!(
+                "Summarize this chat as a short history title. Use the user's language when obvious. Prefer a task/topic summary over copying the first sentence. Keep it under 8 English words or 16 Chinese characters. Avoid generic titles like New Chat or Research Paper.\n\nConversation excerpt:\n{}",
+                excerpt
+            ),
+        }),
+    ];
+
+    let response = send_openai_compatible_raw_no_tools_chat_request(client, credential, &messages)
+        .await
+        .map_err(|err| err.message)?;
+    let title = if response.content.trim().is_empty() {
+        response.reasoning.trim()
+    } else {
+        response.content.trim()
+    };
+
+    Ok(sanitize_model_session_title(title))
+}
+
 #[tauri::command]
-pub async fn list_claude_sessions(project_path: String) -> Result<Vec<ClaudeSessionInfo>, String> {
+pub async fn list_claude_sessions(
+    project_path: String,
+    generate_titles: Option<bool>,
+) -> Result<Vec<ClaudeSessionInfo>, String> {
     eprintln!(
         "[session] list_claude_sessions called with project_path={}",
         project_path
@@ -7596,7 +8401,7 @@ pub async fn list_claude_sessions(project_path: String) -> Result<Vec<ClaudeSess
         return Ok(Vec::new());
     }
 
-    let mut sessions = Vec::new();
+    let mut candidates = Vec::new();
     let entries = std::fs::read_dir(&sessions_dir)
         .map_err(|e| format!("Failed to read sessions directory: {}", e))?;
 
@@ -7627,14 +8432,80 @@ pub async fn list_claude_sessions(project_path: String) -> Result<Vec<ClaudeSess
             .unwrap_or(0);
 
         let (first_message, _timestamp) = extract_first_user_message(&path);
-        let title = first_message.unwrap_or_else(|| "Untitled session".to_string());
+        let fallback_title = first_message.unwrap_or_else(|| "Untitled session".to_string());
+        let title = read_session_title_cache(&path, modified);
 
-        sessions.push(ClaudeSessionInfo {
+        candidates.push(SessionCandidate {
             session_id,
+            path,
+            fallback_title,
             title,
             last_modified: modified,
         });
     }
+
+    candidates.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
+
+    let should_generate_titles = generate_titles.unwrap_or(true);
+    let title_credential = should_generate_titles
+        .then(|| {
+            read_claude_prism_auth_config()
+                .ok()
+                .and_then(|config| session_title_credential_from_config(&config))
+        })
+        .flatten();
+    let title_client = title_credential.as_ref().and_then(|_| {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(8))
+            .build()
+            .ok()
+    });
+
+    if should_generate_titles {
+        if let (Some(client), Some(credential)) = (title_client.as_ref(), title_credential.as_ref())
+        {
+            for candidate in candidates
+                .iter_mut()
+                .filter(|candidate| candidate.title.is_none())
+                .take(MAX_MODEL_SESSION_TITLE_GENERATIONS_PER_LIST)
+            {
+                let Some(excerpt) = session_excerpt_for_model_title(&candidate.path) else {
+                    continue;
+                };
+                match generate_model_session_title(client, credential, &excerpt).await {
+                    Ok(Some(title)) => {
+                        if let Err(err) = write_session_title_cache(
+                            &candidate.path,
+                            candidate.last_modified,
+                            &title,
+                        ) {
+                            eprintln!(
+                                "[session] failed to cache model title for {}: {}",
+                                candidate.session_id, err
+                            );
+                        }
+                        candidate.title = Some(title);
+                    }
+                    Ok(None) => {}
+                    Err(err) => {
+                        eprintln!(
+                            "[session] failed to generate model title for {}: {}",
+                            candidate.session_id, err
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    let mut sessions: Vec<ClaudeSessionInfo> = candidates
+        .into_iter()
+        .map(|candidate| ClaudeSessionInfo {
+            session_id: candidate.session_id,
+            title: candidate.title.unwrap_or(candidate.fallback_title),
+            last_modified: candidate.last_modified,
+        })
+        .collect();
 
     sessions.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
 
@@ -7729,6 +8600,7 @@ pub async fn delete_claude_session(project_path: String, session_id: String) -> 
 
     std::fs::remove_file(&canonical_session_path)
         .map_err(|e| format!("Failed to delete session: {}", e))?;
+    let _ = std::fs::remove_file(session_title_cache_path(&canonical_session_path));
 
     Ok(())
 }
@@ -8399,6 +9271,42 @@ mod tests {
         let (title, ts) = extract_first_user_message(&pb);
         assert_eq!(title.unwrap(), "Add a new section");
         assert_eq!(ts.unwrap(), "2024-01-02T00:00:00Z");
+    }
+
+    #[test]
+    fn test_sanitize_model_session_title_strips_wrappers() {
+        let title = sanitize_model_session_title("`Title: FastVID Paper Revision`\nignored")
+            .expect("title should be accepted");
+        assert_eq!(title, "FastVID Paper Revision");
+    }
+
+    #[test]
+    fn test_session_title_cache_requires_matching_source_modified() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        std::fs::write(&path, "").unwrap();
+
+        write_session_title_cache(&path, 10, "Aftershock Modeling").unwrap();
+        assert_eq!(
+            read_session_title_cache(&path, 10).unwrap(),
+            "Aftershock Modeling"
+        );
+        assert!(read_session_title_cache(&path, 11).is_none());
+    }
+
+    #[test]
+    fn test_session_excerpt_for_model_title_collects_displayable_turns() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let lines = r#"{"type":"user","message":{"content":"<ide_context>skip"}}
+{"type":"user","message":{"content":[{"type":"text","text":"Please rewrite the FlashVID related work"}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"I will compare FlashVID with FastVID."}]}}"#;
+        std::fs::write(&path, lines).unwrap();
+
+        let excerpt = session_excerpt_for_model_title(&path).expect("excerpt should exist");
+        assert!(!excerpt.contains("<ide_context>"));
+        assert!(excerpt.contains("User: Please rewrite"));
+        assert!(excerpt.contains("Assistant: I will compare"));
     }
 
     // --- direct provider tools ---
@@ -9275,6 +10183,135 @@ mod tests {
             deepseek_messages[1]["reasoning_content"],
             "Need to read main.tex first."
         );
+    }
+
+    #[test]
+    fn test_direct_provider_context_compaction_keeps_recent_messages() {
+        let mut messages = vec![json!({
+            "role": "system",
+            "content": direct_provider_system_prompt(),
+        })];
+        for index in 0..80 {
+            messages.push(json!({
+                "role": "user",
+                "content": format!("older request {} {}", index, "x".repeat(1600)),
+            }));
+            messages.push(json!({
+                "role": "assistant",
+                "content": format!("older response {} {}", index, "y".repeat(1600)),
+            }));
+        }
+        messages.push(json!({ "role": "user", "content": "latest request" }));
+
+        let plan = build_direct_compaction_plan(&messages).unwrap();
+        let mut compacted = plan.system_messages;
+        compacted.push(json!({
+            "role": "user",
+            "content": direct_compact_user_summary_message("<summary>Older work summary.</summary>"),
+        }));
+        compacted.extend(plan.retained_messages);
+
+        assert!(compacted.len() < messages.len());
+        assert_eq!(compacted[0]["role"], "system");
+        assert!(compacted[1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("This session is being continued"));
+        assert_eq!(compacted.last().unwrap()["content"], "latest request");
+    }
+
+    #[test]
+    fn test_direct_provider_context_compaction_does_not_start_tail_with_tool_result() {
+        let mut messages = vec![json!({
+            "role": "system",
+            "content": direct_provider_system_prompt(),
+        })];
+        for index in 0..90 {
+            messages.push(json!({
+                "role": "user",
+                "content": format!("request {} {}", index, "x".repeat(1200)),
+            }));
+            messages.push(json!({
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": format!("call-{}", index),
+                    "type": "function",
+                    "function": {
+                        "name": "Read",
+                        "arguments": "{\"file_path\":\"main.tex\"}"
+                    }
+                }]
+            }));
+            messages.push(json!({
+                "role": "tool",
+                "tool_call_id": format!("call-{}", index),
+                "content": format!("tool result {} {}", index, "z".repeat(1200)),
+            }));
+        }
+        messages.push(json!({ "role": "user", "content": "latest request" }));
+
+        let plan = build_direct_compaction_plan(&messages).unwrap();
+        let mut compacted = plan.system_messages;
+        compacted.push(json!({
+            "role": "user",
+            "content": direct_compact_user_summary_message("<summary>Older work summary.</summary>"),
+        }));
+        compacted.extend(plan.retained_messages);
+        let first_after_summary = compacted.get(2).unwrap();
+
+        assert!(compacted.len() < messages.len());
+        assert!(!is_direct_tool_result_message(first_after_summary));
+    }
+
+    #[test]
+    fn test_direct_provider_compact_summary_strips_analysis() {
+        let formatted = direct_compact_user_summary_message(
+            "<analysis>scratchpad that should not persist</analysis><summary>1. Primary Request and Intent:\n   Keep the paper context.</summary>",
+        );
+
+        assert!(formatted.contains("Summary:\n1. Primary Request and Intent"));
+        assert!(formatted.contains("Recent messages are preserved verbatim."));
+        assert!(!formatted.contains("scratchpad"));
+        assert!(!formatted.contains("<summary>"));
+    }
+
+    #[test]
+    fn test_direct_provider_no_tools_history_preserves_tool_call_details() {
+        let messages = vec![
+            json!({
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {
+                        "name": "Read",
+                        "arguments": "{\"file_path\":\"main.tex\"}"
+                    }
+                }]
+            }),
+            json!({
+                "role": "tool",
+                "tool_call_id": "call-1",
+                "content": "main.tex contents",
+            }),
+        ];
+
+        let converted =
+            direct_messages_without_tooling(&messages, DirectReasoningHistoryMode::Strip);
+
+        assert_eq!(converted[0]["role"], "assistant");
+        assert!(converted[0].get("tool_calls").is_none());
+        assert!(converted[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Read({\"file_path\":\"main.tex\"})"));
+        assert_eq!(converted[1]["role"], "user");
+        assert!(converted[1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("main.tex contents"));
     }
 
     #[test]

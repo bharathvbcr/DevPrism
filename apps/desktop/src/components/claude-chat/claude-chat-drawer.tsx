@@ -13,7 +13,7 @@ import { ChatMessages } from "./chat-messages";
 import { ChatComposer } from "./chat-composer";
 import { ChatTabBar } from "./chat-tab-bar";
 
-const MIN_HEIGHT = 150;
+const MIN_HEIGHT = 260;
 const DEFAULT_HEIGHT = 360;
 
 export function ClaudeChatDrawer() {
@@ -43,11 +43,14 @@ export function ClaudeChatDrawer() {
     if (shouldOpen && !isOpen) {
       setIsOpen(true);
       const parent = containerRef.current?.parentElement;
-      const maxHeight = parent ? parent.clientHeight * 0.5 : 400;
-      setHeight(maxHeight);
-      heightRef.current = maxHeight;
+      const maxHeight = parent
+        ? Math.max(MIN_HEIGHT, parent.clientHeight * 0.5)
+        : 400;
+      const nextHeight = Math.max(maxHeight, MIN_HEIGHT);
+      setHeight(nextHeight);
+      heightRef.current = nextHeight;
       if (panelRef.current) {
-        panelRef.current.style.height = `${maxHeight}px`;
+        panelRef.current.style.height = `${nextHeight}px`;
       }
     }
   }, [anyStreaming, isOpen, pendingAttachments]);
@@ -66,7 +69,9 @@ export function ClaudeChatDrawer() {
       const handleMouseMove = (e: MouseEvent) => {
         hasDraggedRef.current = true;
         const parent = containerRef.current?.parentElement;
-        const maxHeight = parent ? parent.clientHeight * 0.5 : 400;
+        const maxHeight = parent
+          ? Math.max(MIN_HEIGHT, parent.clientHeight * 0.5)
+          : 400;
         const delta = startY - e.clientY;
         const newHeight = Math.min(
           Math.max(startHeight + delta, MIN_HEIGHT),
@@ -108,7 +113,12 @@ export function ClaudeChatDrawer() {
       const dims = getExpandedDimensions();
       return { height: dims.height, maxWidth: dims.width, borderRadius: 0 };
     }
-    return { height, maxWidth: 672, borderRadius: 24 };
+    return {
+      height: Math.max(height, MIN_HEIGHT),
+      minHeight: MIN_HEIGHT,
+      maxWidth: 672,
+      borderRadius: 24,
+    };
   };
 
   return (

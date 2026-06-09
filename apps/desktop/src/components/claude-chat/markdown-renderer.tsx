@@ -92,6 +92,48 @@ export const MarkdownRenderer: FC<MarkdownRendererProps> = ({
         pre({ children }) {
           return <>{children}</>;
         },
+        table({ children, node, ...props }) {
+          return (
+            <div className="my-3 w-full overflow-x-auto rounded-lg border border-border">
+              <table
+                className="m-0 w-full border-collapse text-left text-sm"
+                {...props}
+              >
+                {children}
+              </table>
+            </div>
+          );
+        },
+        thead({ children, node, ...props }) {
+          return (
+            <thead className="bg-muted/70" {...props}>
+              {children}
+            </thead>
+          );
+        },
+        th({ children, node, ...props }) {
+          return (
+            <th
+              className="border-border border-r border-b px-3 py-2 font-medium text-foreground last:border-r-0"
+              {...props}
+            >
+              {children}
+            </th>
+          );
+        },
+        td({ children, node, ...props }) {
+          return (
+            <td
+              className="border-border border-t border-r px-3 py-2 align-top text-foreground last:border-r-0"
+              {...props}
+            >
+              {children}
+            </td>
+          );
+        },
+        hr({ node, ...props }) {
+          return <hr className="my-5 border-border border-t" {...props} />;
+        },
         code({ className: codeClassName, children, node, ...props }) {
           const match = /language-(\w+)/.exec(codeClassName || "");
           const language = match?.[1];

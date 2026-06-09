@@ -1,9 +1,10 @@
+use crate::anthropic_proxy::{start_openai_anthropic_proxy, OpenAiProxyCredential};
 use serde_json::json;
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{Emitter, Manager, WebviewWindow};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -57,63 +58,13 @@ pub struct OpenAiCompatibleCredentialInfo {
     model: String,
 }
 
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
-struct DirectTask {
-    id: String,
-    subject: String,
-    description: String,
-    active_form: Option<String>,
-    status: String,
-    owner: Option<String>,
-}
-
 const PROVIDER_CLAUDE_CODE: &str = "claude-code";
 const PROVIDER_OPENAI_COMPATIBLE: &str = "openai-compatible";
-const DIRECT_PROVIDER_MAX_TOOL_TURNS_ENV: &str = "CLAUDE_PRISM_DIRECT_PROVIDER_MAX_TOOL_TURNS";
-const DIRECT_PROVIDER_CONVERGE_TURN_ENV: &str = "CLAUDE_PRISM_DIRECT_PROVIDER_CONVERGE_TURN";
-const DIRECT_PROVIDER_DEFAULT_MAX_TOOL_TURNS: u64 = 100;
-const DIRECT_PROVIDER_PROJECT_CONTEXT_HEADER: &str = "[ClaudePrism project context]";
-const DIRECT_PROVIDER_COMPACT_THRESHOLD_CHARS: usize = 120_000;
-const DIRECT_PROVIDER_COMPACT_RETAIN_CHARS: usize = 48_000;
-const DIRECT_PROVIDER_MAX_COMPACT_RETRIES: usize = 3;
-const DIRECT_PROVIDER_PTL_RETRY_MARKER: &str =
-    "[earlier conversation truncated for compaction retry]";
 const MAX_MODEL_SESSION_TITLE_GENERATIONS_PER_LIST: usize = 12;
-const DIRECT_PROVIDER_TOOL_NAMES: &[&str] = &[
-    "Read",
-    "Write",
-    "Edit",
-    "MultiEdit",
-    "LS",
-    "Glob",
-    "Grep",
-    "TodoWrite",
-    "ToolSearch",
-    "TaskCreate",
-    "TaskGet",
-    "TaskUpdate",
-    "TaskList",
-    "TaskStop",
-    "TaskOutput",
-    "AskUserQuestion",
-    "EnterPlanMode",
-    "ExitPlanMode",
-    "EnterWorktree",
-    "ExitWorktree",
-    "Skill",
-    "Agent",
-    "NotebookEdit",
-    "WebFetch",
-    "WebSearch",
-    "ListMcpResources",
-    "ReadMcpResource",
-    "Config",
-    "Sleep",
-];
 
 /// Check if an environment variable should be explicitly passed to child processes.
 ///
-/// NOTE: This is NOT a true whitelist — we do NOT call `env_clear()`, so the
+/// NOTE: This is NOT a true whitelist 鈥?we do NOT call `env_clear()`, so the
 /// child inherits the full parent environment.  This helper only identifies vars
 /// that we *explicitly* re-set via `cmd.env()` to guarantee they are present
 /// even when other per-key overrides are applied (e.g. prepending to PATH).
@@ -292,6 +243,27 @@ fn normalize_model(value: Option<&str>) -> Result<Option<String>, String> {
     }
 
     Ok(Some(clean))
+}
+
+fn is_claude_model_selector(value: &str) -> bool {
+    let model = value.trim().to_ascii_lowercase();
+    if model.starts_with("claude") {
+        return true;
+    }
+
+    matches!(model.as_str(), "sonnet" | "opus" | "haiku" | "opusplan")
+}
+
+fn normalize_provider_model_override(value: Option<&str>) -> Result<Option<String>, String> {
+    let Some(model) = normalize_model(value)? else {
+        return Ok(None);
+    };
+
+    if is_claude_model_selector(&model) {
+        return Ok(None);
+    }
+
+    Ok(Some(model))
 }
 
 fn known_proxy_mismatch_error(provider: &str, base_url: Option<&str>) -> Option<String> {
@@ -717,6 +689,71 @@ pub async fn list_openai_compatible_credentials(
 }
 
 #[tauri::command]
+pub async fn delete_openai_compatible_credential(credential_id: String) -> Result<(), String> {
+    let credential_id = strip_nul(&credential_id).trim().to_string();
+    if credential_id.is_empty() {
+        return Err("Provider credential id is empty".to_string());
+    }
+
+    let mut config = read_claude_prism_auth_config_for_update()?;
+    if credential_id == "legacy-openai-compatible" && config.openai_credentials.is_empty() {
+        if config.openai_api_key.is_none()
+            && config.openai_base_url.is_none()
+            && config.openai_model.is_none()
+        {
+            return Err("Configured provider credential not found".to_string());
+        }
+        config.openai_api_key = None;
+        config.openai_base_url = None;
+        config.openai_model = None;
+        config.active_openai_credential_id = None;
+        config.provider = Some(PROVIDER_CLAUDE_CODE.to_string());
+        return write_claude_prism_auth_config(&config);
+    }
+
+    let before_len = config.openai_credentials.len();
+    config
+        .openai_credentials
+        .retain(|credential| credential.id != credential_id);
+    if config.openai_credentials.len() == before_len {
+        return Err("Configured provider credential not found".to_string());
+    }
+
+    let current_provider_is_openai = normalize_provider(config.provider.as_deref())
+        .map(|provider| provider == PROVIDER_OPENAI_COMPATIBLE)
+        .unwrap_or(false);
+    let active_id = config.active_openai_credential_id.as_deref();
+    let active_was_deleted = active_id == Some(&credential_id);
+    let active_is_missing = current_provider_is_openai
+        && active_id
+            .map(|id| {
+                normalized_openai_compatible_credentials(&config)
+                    .iter()
+                    .all(|credential| credential.id != id)
+            })
+            .unwrap_or(true);
+    let deleted_active = active_was_deleted || active_is_missing;
+
+    if deleted_active {
+        if let Some(next) = config.openai_credentials.first() {
+            config.provider = Some(PROVIDER_OPENAI_COMPATIBLE.to_string());
+            config.active_openai_credential_id = Some(next.id.clone());
+            config.openai_api_key = Some(next.api_key.clone());
+            config.openai_base_url = Some(next.base_url.clone());
+            config.openai_model = Some(next.model.clone());
+        } else {
+            config.provider = Some(PROVIDER_CLAUDE_CODE.to_string());
+            config.active_openai_credential_id = None;
+            config.openai_api_key = None;
+            config.openai_base_url = None;
+            config.openai_model = None;
+        }
+    }
+
+    write_claude_prism_auth_config(&config)
+}
+
+#[tauri::command]
 pub async fn set_active_openai_compatible_credential(credential_id: String) -> Result<(), String> {
     let mut config = read_claude_prism_auth_config_for_update()?;
     let credential = normalized_openai_compatible_credentials(&config)
@@ -743,20 +780,12 @@ use std::os::windows::process::CommandExt;
 #[derive(Clone)]
 pub struct ClaudeProcessState {
     pub processes: Arc<Mutex<HashMap<String, Child>>>,
-    direct_sessions: Arc<Mutex<HashMap<String, Vec<serde_json::Value>>>>,
-    direct_cancellations: Arc<Mutex<HashSet<String>>>,
-    direct_task_lists: Arc<Mutex<HashMap<String, Vec<DirectTask>>>>,
-    direct_workdirs: Arc<Mutex<HashMap<String, PathBuf>>>,
 }
 
 impl Default for ClaudeProcessState {
     fn default() -> Self {
         Self {
             processes: Arc::new(Mutex::new(HashMap::new())),
-            direct_sessions: Arc::new(Mutex::new(HashMap::new())),
-            direct_cancellations: Arc::new(Mutex::new(HashSet::new())),
-            direct_task_lists: Arc::new(Mutex::new(HashMap::new())),
-            direct_workdirs: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -855,8 +884,7 @@ fn expand_env_vars(s: &str) -> String {
 }
 
 /// Discover the claude binary on the system.
-/// Search order: ~/.local/bin → NVM_BIN → which → registry PATH (Windows) →
-/// login shell (Unix) → npm/nvm global → standard paths → user-specific paths.
+/// Search order: ~/.local/bin 鈫?NVM_BIN 鈫?which 鈫?registry PATH (Windows) 鈫?/// login shell (Unix) 鈫?npm/nvm global 鈫?standard paths 鈫?user-specific paths.
 /// Returns Err if not found.
 fn find_claude_binary() -> Result<String, String> {
     // 1. Check the native installer's default location first
@@ -1339,7 +1367,7 @@ fn resolve_cmd_to_node(program: &str) -> (String, Vec<String>) {
         .join("claude-code")
         .join("cli.js");
     if cli_js.exists() {
-        // Find node.exe — prefer one next to the .cmd, then fall back to PATH
+        // Find node.exe 鈥?prefer one next to the .cmd, then fall back to PATH
         let node = {
             let local_node = cmd_dir.join("node.exe");
             if local_node.exists() {
@@ -1416,7 +1444,7 @@ fn create_command(
     cmd.env_remove("CLAUDECODE");
     cmd.env_remove("CLAUDE_AGENT_SDK_VERSION");
     for (key, _) in std::env::vars() {
-        // Keep CLAUDE_CODE_GIT_BASH_PATH — Claude Code needs it on Windows to locate git-bash
+        // Keep CLAUDE_CODE_GIT_BASH_PATH 鈥?Claude Code needs it on Windows to locate git-bash
         if key == "CLAUDE_CODE_GIT_BASH_PATH" {
             continue;
         }
@@ -1537,7 +1565,7 @@ fn with_prompt_transport(mut args: Vec<String>, prompt: String) -> (Vec<String>,
     }
 }
 
-// ─── Event payloads (include tab_id for multi-tab routing) ───
+// 鈹€鈹€鈹€ Event payloads (include tab_id for multi-tab routing) 鈹€鈹€鈹€
 
 #[derive(Clone, serde::Serialize)]
 struct ClaudeOutputEvent {
@@ -1557,6 +1585,13 @@ struct ClaudeErrorEvent {
     data: String,
 }
 
+#[derive(Clone)]
+struct SpawnProviderMetadata {
+    provider: &'static str,
+    provider_credential_id: String,
+    model: String,
+}
+
 /// Spawn the Claude CLI process and stream output via Tauri events.
 /// Events are emitted only to the originating window, tagged with tab_id.
 async fn spawn_claude_process(
@@ -1564,6 +1599,7 @@ async fn spawn_claude_process(
     mut cmd: Command,
     tab_id: String,
     stdin_payload: Option<String>,
+    provider_metadata: Option<SpawnProviderMetadata>,
 ) -> Result<(), String> {
     let window_label = window.label().to_string();
     let process_key = format!("{}:{}", window_label, tab_id);
@@ -1627,20 +1663,21 @@ async fn spawn_claude_process(
 
     let start_time = std::time::Instant::now();
 
-    // Spawn stdout streaming task — emit only to the originating window
+    // Spawn stdout streaming task 鈥?emit only to the originating window
     let win_stdout = window.clone();
     let session_id_stdout = session_id_holder.clone();
     let result_success_stdout = result_success_holder.clone();
     let tab_id_stdout = tab_id.clone();
+    let provider_metadata_stdout = provider_metadata.clone();
     let stdout_task = tokio::spawn(async move {
         let mut lines = stdout_reader.lines();
         let mut line_count: u64 = 0;
-        while let Ok(Some(line)) = lines.next_line().await {
+        while let Ok(Some(mut line)) = lines.next_line().await {
             line_count += 1;
             let elapsed = start_time.elapsed().as_secs_f64();
 
             // Parse for system:init to extract session_id
-            if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
+            if let Ok(mut msg) = serde_json::from_str::<serde_json::Value>(&line) {
                 let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("?");
                 let msg_sub = msg.get("subtype").and_then(|v| v.as_str()).unwrap_or("");
                 eprintln!(
@@ -1660,6 +1697,23 @@ async fn spawn_claude_process(
                         if let Ok(mut guard) = session_id_stdout.lock() {
                             *guard = Some(sid.to_string());
                         }
+                    }
+                    if let Some(metadata) = provider_metadata_stdout.as_ref() {
+                        if let Some(object) = msg.as_object_mut() {
+                            object.insert(
+                                "provider".to_string(),
+                                serde_json::Value::String(metadata.provider.to_string()),
+                            );
+                            object.insert(
+                                "provider_credential_id".to_string(),
+                                serde_json::Value::String(metadata.provider_credential_id.clone()),
+                            );
+                            object.insert(
+                                "model".to_string(),
+                                serde_json::Value::String(metadata.model.clone()),
+                            );
+                        }
+                        line = msg.to_string();
                     }
                 }
 
@@ -1688,7 +1742,7 @@ async fn spawn_claude_process(
         );
     });
 
-    // Spawn stderr streaming task — emit only to the originating window
+    // Spawn stderr streaming task 鈥?emit only to the originating window
     let win_stderr = window.clone();
     let tab_id_stderr = tab_id.clone();
     let stderr_task = tokio::spawn(async move {
@@ -1710,7 +1764,7 @@ async fn spawn_claude_process(
         }
     });
 
-    // Spawn wait task — wait for process completion
+    // Spawn wait task 鈥?wait for process completion
     let process_arc_wait = process_arc.clone();
     let win_wait = window;
     let process_key_wait = process_key;
@@ -1772,7 +1826,7 @@ async fn spawn_claude_process(
     Ok(())
 }
 
-// ─── Setup / Status Commands ───
+// 鈹€鈹€鈹€ Setup / Status Commands 鈹€鈹€鈹€
 
 #[derive(serde::Serialize)]
 pub struct ClaudeStatus {
@@ -1812,9 +1866,9 @@ fn find_git_bash() -> Option<String> {
         }
     }
 
-    // 3. git on PATH → derive bash.exe location
+    // 3. git on PATH 鈫?derive bash.exe location
     if let Ok(git_path) = which::which("git") {
-        // git.exe is typically at Git/cmd/git.exe → bash.exe at Git/bin/bash.exe
+        // git.exe is typically at Git/cmd/git.exe 鈫?bash.exe at Git/bin/bash.exe
         if let Some(cmd_dir) = git_path.parent() {
             if let Some(git_root) = cmd_dir.parent() {
                 let bash = git_root.join("bin").join("bash.exe");
@@ -1850,7 +1904,7 @@ pub async fn check_claude_status() -> Result<ClaudeStatus, String> {
         });
     }
 
-    // On Windows, check for Git for Windows first — Claude Code requires it.
+    // On Windows, check for Git for Windows first 鈥?Claude Code requires it.
     #[cfg(target_os = "windows")]
     let missing_git = find_git_bash().is_none();
     #[cfg(not(target_os = "windows"))]
@@ -1882,7 +1936,7 @@ pub async fn check_claude_status() -> Result<ClaudeStatus, String> {
             Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
         }
         _ => {
-            // Binary found but doesn't work — on Windows this is often because
+            // Binary found but doesn't work 鈥?on Windows this is often because
             // Git for Windows is missing (Claude Code needs git-bash).
             return Ok(ClaudeStatus {
                 installed: false,
@@ -1906,7 +1960,7 @@ pub async fn check_claude_status() -> Result<ClaudeStatus, String> {
     let (authenticated, account_email) = match auth_output {
         Ok(output) if output.status.success() => {
             let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            // Parse for email — claude auth status outputs account info
+            // Parse for email 鈥?claude auth status outputs account info
             let email = stdout.lines().find(|line| line.contains('@')).map(|line| {
                 // Extract email-like substring
                 line.split_whitespace()
@@ -2009,7 +2063,7 @@ async fn ensure_local_dirs(window: &WebviewWindow) -> Result<(), String> {
         return Ok(());
     }
 
-    // Need elevation — use osascript directly for reliability
+    // Need elevation 鈥?use osascript directly for reliability
     let user = std::env::var("USER").unwrap_or_default();
     let local_dir = home.join(".local");
     let script = build_elevation_script(&required_dirs, &user, &local_dir);
@@ -2243,7 +2297,7 @@ pub async fn login_claude(window: WebviewWindow) -> Result<(), String> {
             Ok(Ok(status)) => status.success(),
             Ok(Err(_)) => false,
             Err(_) => {
-                // Timeout — kill the stuck process
+                // Timeout 鈥?kill the stuck process
                 let _ = child_for_timeout.lock().await.kill().await;
                 false
             }
@@ -2268,7 +2322,7 @@ fn common_claude_args() -> Vec<String> {
             "Follow these rules strictly:\n",
             "1. PLANNING FIRST: Before making changes, use TodoWrite to create a step-by-step plan. ",
             "Break large tasks into small, incremental steps (one section or one logical unit per step).\n",
-            "2. INCREMENTAL EDITS: Use the Edit tool to make small, targeted changes — one step at a time. ",
+            "2. INCREMENTAL EDITS: Use the Edit tool to make small, targeted changes 鈥?one step at a time. ",
             "NEVER write or rewrite an entire file at once. Always prefer editing existing content over replacing it wholesale.\n",
             "3. STEP BY STEP: After each edit, mark the todo item as completed, then proceed to the next step. ",
             "This lets the user review changes incrementally.\n",
@@ -2284,671 +2338,7 @@ fn common_claude_args() -> Vec<String> {
     ]
 }
 
-// ─── Tauri Commands ───
-
-fn direct_provider_system_prompt() -> String {
-    let lines = vec![
-        "You are an AI assistant integrated into ClaudePrism, a LaTeX document editor.",
-        "Help the user write, revise, and reason about academic documents.",
-        "Preserve existing LaTeX structure unless the user asks for a rewrite.",
-        "Use proper LaTeX sectioning, citations, labels, references, and bibliography conventions.",
-        "You can inspect and edit files through the provided tools. Prefer relative paths inside the current project.",
-        "Use LS or Glob to understand the project layout before editing unfamiliar files.",
-        "Use Read before non-trivial edits, use Edit for precise replacements, and use Write only when creating or fully replacing a file.",
-        "PDF attachments may have extracted text sidecars next to them, named like paper.pdf.txt. Read the sidecar when inspecting a PDF.",
-        "For multi-step writing or editing tasks, use TodoWrite to keep a short plan with at most one in_progress item.",
-        "Use AskUserQuestion when you need the user to choose between concrete options before continuing.",
-        "Use EnterPlanMode for complex implementation planning, and ExitPlanMode when you need user approval before implementing a plan.",
-        "Skill workflow: for domain-specific work (data analysis, paper writing, LaTeX packages, biology, chemistry, plotting, notebooks, or any task that names a skill), call Skill first. If a listed skill matches the user's request, invoking Skill before answering is a blocking requirement. If you do not know the exact skill name, call Skill with no arguments to list installed skills, then call Skill with the matching /folder or name. Never mention that you are using a skill unless you actually called Skill. Follow the loaded SKILL.md before using its conventions; do not invent skill behavior that was not loaded.",
-        "Use Agent for focused sub-agent style investigation; direct-provider mode runs it through the same selected provider model.",
-        "Use NotebookEdit for Jupyter notebooks rather than raw JSON string edits.",
-        "Use EnterWorktree/ExitWorktree when you need an isolated git worktree; subsequent tools run from the active worktree.",
-        "Direct-provider mode cannot run shell commands automatically. Use file, search, notebook, task, skill, and web tools; when command execution is truly needed, write the command for the user to run or ask them to switch to Claude Code.",
-        "If you prefer Claude/Codex-style task tools, TaskCreate, TaskGet, TaskUpdate, TaskList, TaskOutput, and TaskStop are available as a lightweight session task list.",
-        "ToolSearch can be used to inspect the currently available local tool names; it does not install external tools.",
-        "Do not claim a file was changed unless a tool result confirms it.",
-    ];
-    lines.join("\n")
-}
-
-fn direct_provider_no_tools_system_prompt() -> String {
-    [
-        "You are an AI assistant integrated into ClaudePrism, a LaTeX document editor.",
-        "Help the user write, revise, and reason about academic documents.",
-        "Preserve existing LaTeX structure unless the user asks for a rewrite.",
-        "Use proper LaTeX sectioning, citations, labels, references, and bibliography conventions.",
-        "This provider endpoint does not support tool calls in ClaudePrism. Do not claim to read, edit, or run files directly.",
-        "When file changes are needed, provide precise patches, replacement snippets, or step-by-step commands for the user.",
-    ]
-    .join("\n")
-}
-
-fn direct_provider_system_prompt_for_project(project_root: &Path) -> String {
-    format!(
-        "{}\n\n{}",
-        direct_provider_system_prompt(),
-        direct_provider_project_context(project_root)
-    )
-}
-
-fn direct_provider_project_context(project_root: &Path) -> String {
-    let mut lines = vec![
-        DIRECT_PROVIDER_PROJECT_CONTEXT_HEADER.to_string(),
-        format!("Project root: {}", project_root.display()),
-    ];
-
-    if project_root.join(".venv").is_dir() {
-        lines.push("Python: project .venv is present. Direct-provider tools can edit scripts and notebooks, but they do not execute shell commands; ask the user to run `python` or `uv pip install <package>` when execution is needed.".to_string());
-    } else {
-        lines.push("Python: no project .venv is present yet. If Python work is needed, ask the user to set up the Python Environment or use available system Python carefully.".to_string());
-    }
-
-    let skills = available_direct_skills(project_root);
-    if skills.is_empty() {
-        lines.push(
-            "Installed skills: none found in project .claude/skills or global ~/.claude/skills."
-                .to_string(),
-        );
-    } else {
-        lines.push("Installed skills available through the Skill tool. For domain-specific tasks, load the matching skill before applying its workflow:".to_string());
-        for (folder, name, skill_md) in skills.iter().take(80) {
-            let description = std::fs::read_to_string(skill_md)
-                .ok()
-                .and_then(|content| skill_description_from_content(&content))
-                .map(|description| format!(" - {}", description))
-                .unwrap_or_default();
-            lines.push(format!("- /{}: {}{}", folder, name, description));
-        }
-        if skills.len() > 80 {
-            lines.push(format!(
-                "- ... {} more skills omitted; call Skill with no arguments to list all.",
-                skills.len() - 80
-            ));
-        }
-    }
-
-    lines.join("\n")
-}
-
-fn direct_provider_prompt_for_mode(
-    mode: DirectToolRequestMode,
-    existing_system_prompt: Option<&str>,
-) -> String {
-    let base = if mode == DirectToolRequestMode::None {
-        direct_provider_no_tools_system_prompt()
-    } else {
-        direct_provider_system_prompt()
-    };
-
-    if mode == DirectToolRequestMode::Functions {
-        if let Some(context) =
-            existing_system_prompt.and_then(direct_provider_existing_project_context)
-        {
-            return format!("{}\n\n{}", base, context);
-        }
-    }
-
-    base
-}
-
-fn direct_provider_existing_project_context(prompt: &str) -> Option<&str> {
-    prompt
-        .find(DIRECT_PROVIDER_PROJECT_CONTEXT_HEADER)
-        .map(|index| &prompt[index..])
-}
-
-fn parse_optional_direct_turn_limit(value: &str) -> Option<u64> {
-    let value = value.trim();
-    if value.is_empty()
-        || value.eq_ignore_ascii_case("0")
-        || value.eq_ignore_ascii_case("none")
-        || value.eq_ignore_ascii_case("false")
-        || value.eq_ignore_ascii_case("off")
-    {
-        return None;
-    }
-
-    value.parse::<u64>().ok().filter(|turns| *turns > 0)
-}
-
-fn parse_optional_direct_turn_limit_env(name: &str) -> Option<u64> {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| parse_optional_direct_turn_limit(&value))
-}
-
-fn direct_provider_max_tool_turns() -> u64 {
-    parse_optional_direct_turn_limit_env(DIRECT_PROVIDER_MAX_TOOL_TURNS_ENV)
-        .unwrap_or(DIRECT_PROVIDER_DEFAULT_MAX_TOOL_TURNS)
-        .clamp(1, DIRECT_PROVIDER_DEFAULT_MAX_TOOL_TURNS)
-}
-
-fn direct_provider_converge_turn_for(
-    max_tool_turns: u64,
-    explicit_converge_turn: Option<u64>,
-) -> Option<u64> {
-    if let Some(turn) = explicit_converge_turn {
-        return Some(turn.clamp(1, max_tool_turns));
-    }
-    max_tool_turns.checked_sub(2).filter(|turns| *turns > 0)
-}
-
-fn direct_provider_converge_turn(max_tool_turns: u64) -> Option<u64> {
-    direct_provider_converge_turn_for(
-        max_tool_turns,
-        parse_optional_direct_turn_limit_env(DIRECT_PROVIDER_CONVERGE_TURN_ENV),
-    )
-}
-
-fn direct_provider_tools() -> serde_json::Value {
-    json!([
-        {
-            "type": "function",
-            "function": {
-                "name": "Read",
-                "description": "Read a UTF-8 text file from the current project. For PDFs, reads the ClaudePrism extracted text sidecar at <file>.pdf.txt when available.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "file_path": { "type": "string", "description": "Project-relative or absolute file path." },
-                        "offset": { "type": "integer", "description": "Optional 1-based line offset." },
-                        "limit": { "type": "integer", "description": "Optional maximum number of lines to return." }
-                    },
-                    "required": ["file_path"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "Write",
-                "description": "Create or replace a UTF-8 text file in the current project.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "file_path": { "type": "string", "description": "Project-relative or absolute file path." },
-                        "content": { "type": "string", "description": "Complete file contents to write." }
-                    },
-                    "required": ["file_path", "content"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "Edit",
-                "description": "Replace an exact string in a UTF-8 text file.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "file_path": { "type": "string", "description": "Project-relative or absolute file path." },
-                        "old_string": { "type": "string", "description": "Exact text to replace." },
-                        "new_string": { "type": "string", "description": "Replacement text." },
-                        "replace_all": { "type": "boolean", "description": "Replace all matches instead of requiring a single match." }
-                    },
-                    "required": ["file_path", "old_string", "new_string"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "MultiEdit",
-                "description": "Apply multiple exact string replacements to one UTF-8 text file.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "file_path": { "type": "string", "description": "Project-relative or absolute file path." },
-                        "edits": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "old_string": { "type": "string" },
-                                    "new_string": { "type": "string" },
-                                    "replace_all": { "type": "boolean" }
-                                },
-                                "required": ["old_string", "new_string"]
-                            }
-                        }
-                    },
-                    "required": ["file_path", "edits"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "LS",
-                "description": "List files and directories in a project directory.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": { "type": "string", "description": "Optional project-relative directory to list. Defaults to the project root." }
-                    }
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "Glob",
-                "description": "List project files matching a simple wildcard pattern such as *.tex or chapters/*.tex.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "pattern": { "type": "string", "description": "Wildcard pattern. * and ? are supported." },
-                        "path": { "type": "string", "description": "Optional project-relative directory to search." }
-                    },
-                    "required": ["pattern"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "Grep",
-                "description": "Search UTF-8 project files for a literal substring.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "pattern": { "type": "string", "description": "Literal text to search for." },
-                        "path": { "type": "string", "description": "Optional project-relative file or directory to search." },
-                        "glob": { "type": "string", "description": "Optional wildcard filter, for example *.tex." },
-                        "case_sensitive": { "type": "boolean", "description": "Whether matching is case-sensitive. Defaults to false." }
-                    },
-                    "required": ["pattern"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "TodoWrite",
-                "description": "Update the current session todo list for multi-step work. Keep at most one item in_progress.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "todos": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "content": { "type": "string", "description": "Concise task description." },
-                                    "status": {
-                                        "type": "string",
-                                        "enum": ["pending", "in_progress", "completed"],
-                                        "description": "Current task status."
-                                    },
-                                    "activeForm": { "type": "string", "description": "Present-tense form used while the task is active." }
-                                },
-                                "required": ["content", "status"]
-                            }
-                        }
-                    },
-                    "required": ["todos"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "ToolSearch",
-                "description": "Inspect the local tool names available in this ClaudePrism direct-provider session. Supports queries like select:TaskCreate,TaskUpdate,TaskList.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": { "type": "string", "description": "Search text, or select:<comma-separated tool names> to check exact availability." }
-                    },
-                    "required": ["query"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "TaskCreate",
-                "description": "Create a lightweight task in the current direct-provider session task list.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "subject": { "type": "string", "description": "Brief task title." },
-                        "description": { "type": "string", "description": "What needs to be done." },
-                        "activeForm": { "type": "string", "description": "Present-tense form while the task is active." },
-                        "metadata": { "type": "object", "description": "Optional metadata; accepted for compatibility." }
-                    },
-                    "required": ["subject", "description"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "TaskUpdate",
-                "description": "Update a task in the current direct-provider session task list.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "taskId": { "type": "string", "description": "Task id returned by TaskCreate." },
-                        "task_id": { "type": "string", "description": "Alias for taskId." },
-                        "subject": { "type": "string", "description": "Updated task title." },
-                        "description": { "type": "string", "description": "Updated task description." },
-                        "activeForm": { "type": "string", "description": "Present-tense active form." },
-                        "status": {
-                            "type": "string",
-                            "enum": ["pending", "in_progress", "completed", "deleted"],
-                            "description": "Updated task status."
-                        },
-                        "owner": { "type": "string", "description": "Optional assignee name." }
-                    },
-                    "required": ["taskId"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "TaskGet",
-                "description": "Read one task from the current direct-provider session task list.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "taskId": { "type": "string", "description": "Task id returned by TaskCreate or TaskList." },
-                        "task_id": { "type": "string", "description": "Alias for taskId." },
-                        "id": { "type": "string", "description": "Alias for taskId." }
-                    },
-                    "required": ["taskId"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "TaskList",
-                "description": "List lightweight tasks in the current direct-provider session.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "status": {
-                            "type": "string",
-                            "enum": ["pending", "in_progress", "completed"],
-                            "description": "Optional status filter."
-                        }
-                    }
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "TaskStop",
-                "description": "Stop or complete a lightweight task in the current direct-provider session.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "taskId": { "type": "string", "description": "Task id returned by TaskCreate or TaskList." },
-                        "task_id": { "type": "string", "description": "Alias for taskId." },
-                        "id": { "type": "string", "description": "Alias for taskId." },
-                        "reason": { "type": "string", "description": "Optional reason for stopping the task." }
-                    },
-                    "required": ["taskId"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "TaskOutput",
-                "description": "Read the current output/status for a lightweight direct-provider task. This aliases TaskGet for Claude Code compatibility.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "taskId": { "type": "string", "description": "Task id returned by TaskCreate or TaskList." },
-                        "task_id": { "type": "string", "description": "Alias for taskId." },
-                        "id": { "type": "string", "description": "Alias for taskId." }
-                    },
-                    "required": ["taskId"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "AskUserQuestion",
-                "description": "Ask the user one or more multiple-choice questions when you need a preference, clarification, or decision before continuing.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "questions": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "header": { "type": "string", "description": "Short label for the question." },
-                                    "id": { "type": "string", "description": "Stable snake_case identifier." },
-                                    "question": { "type": "string", "description": "Question shown to the user." },
-                                    "multiSelect": { "type": "boolean", "description": "Whether multiple options can be selected." },
-                                    "options": {
-                                        "type": "array",
-                                        "items": {
-                                            "type": "object",
-                                            "properties": {
-                                                "label": { "type": "string" },
-                                                "description": { "type": "string" },
-                                                "preview": { "type": "string" }
-                                            },
-                                            "required": ["label", "description"]
-                                        }
-                                    }
-                                },
-                                "required": ["question", "options"]
-                            }
-                        }
-                    },
-                    "required": ["questions"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "EnterPlanMode",
-                "description": "Enter planning mode for a complex implementation. Use this before editing when the approach should be designed first.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "reason": { "type": "string", "description": "Why planning mode is useful." }
-                    }
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "ExitPlanMode",
-                "description": "Present a plan to the user for approval before implementation. ClaudePrism will pause the direct-provider session until the user responds.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "plan": { "type": "string", "description": "The implementation plan to show the user." }
-                    },
-                    "required": ["plan"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "EnterWorktree",
-                "description": "Create an isolated git worktree and switch this direct-provider session into it. Subsequent file and project tools run from the worktree.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "name": { "type": "string", "description": "Optional short worktree name using letters, digits, dots, underscores, and dashes." }
-                    }
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "ExitWorktree",
-                "description": "Switch this direct-provider session back to the original project directory.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {}
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "Skill",
-                "description": "Load installed project/global SKILL.md guidance by skill name or folder. If no skill is provided, list available skills. When a listed skill matches the user's task, calling Skill before answering is required; do not guess unlisted skills.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "skill": { "type": "string", "description": "Skill folder/name to load." },
-                        "name": { "type": "string", "description": "Alias for skill." },
-                        "command": { "type": "string", "description": "Slash command or skill name, for example /biopython." },
-                        "args": { "type": "string", "description": "Optional arguments mentioned by the user; currently provided as context only." }
-                    }
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "Agent",
-                "description": "Request a sub-agent. ClaudePrism direct-provider sessions expose this for compatibility; when sub-agents are unavailable, continue the work inline.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "prompt": { "type": "string", "description": "Task for the sub-agent." },
-                        "description": { "type": "string", "description": "Short task description." },
-                        "task": { "type": "string", "description": "Alias for prompt." },
-                        "subagent_type": { "type": "string", "description": "Requested agent type." }
-                    }
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "NotebookEdit",
-                "description": "Edit a Jupyter .ipynb notebook cell by id or cell-N index. Use this instead of raw JSON edits for notebooks.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "notebook_path": { "type": "string", "description": "Path to the .ipynb notebook." },
-                        "file_path": { "type": "string", "description": "Alias for notebook_path." },
-                        "cell_id": { "type": "string", "description": "Cell id or cell-N index. Omit when inserting at the beginning." },
-                        "new_source": { "type": "string", "description": "New source for replace/insert. Can be empty for delete." },
-                        "cell_type": { "type": "string", "enum": ["code", "markdown"], "description": "Cell type for insert or conversion." },
-                        "edit_mode": { "type": "string", "enum": ["replace", "insert", "delete"], "description": "Defaults to replace." }
-                    }
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "WebFetch",
-                "description": "Fetch a public URL and return readable text. Authenticated/private pages may fail.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "url": { "type": "string", "description": "Public http(s) URL to fetch." },
-                        "prompt": { "type": "string", "description": "Optional extraction instruction." }
-                    },
-                    "required": ["url"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "Config",
-                "description": "Inspect direct-provider runtime configuration for this session.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "action": { "type": "string", "enum": ["get", "list"], "description": "Defaults to get." }
-                    }
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "Sleep",
-                "description": "Wait briefly before continuing, useful when polling a command or generated file.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "seconds": { "type": "number", "description": "Seconds to sleep, capped at 30." },
-                        "duration_ms": { "type": "integer", "description": "Milliseconds to sleep, capped at 30000." }
-                    }
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "WebSearch",
-                "description": "Search the web. ClaudePrism direct-provider sessions expose this for compatibility; use WebFetch when you already have URLs.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": { "type": "string", "description": "Search query." },
-                        "max_chars": { "type": "integer", "description": "Maximum characters to return. Defaults to 12000." },
-                        "allowed_domains": { "type": "array", "items": { "type": "string" } },
-                        "blocked_domains": { "type": "array", "items": { "type": "string" } }
-                    },
-                    "required": ["query"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "ListMcpResources",
-                "description": "List MCP resources. ClaudePrism direct-provider sessions currently expose this as a compatibility shim.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "server": { "type": "string", "description": "Optional MCP server name." }
-                    }
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "ReadMcpResource",
-                "description": "Read an MCP resource. ClaudePrism direct-provider sessions currently expose this as a compatibility shim.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "server": { "type": "string", "description": "MCP server name." },
-                        "uri": { "type": "string", "description": "Resource URI." }
-                    },
-                    "required": ["server", "uri"]
-                }
-            }
-        }
-    ])
-}
-
-fn direct_provider_functions() -> serde_json::Value {
-    let Some(tools) = direct_provider_tools().as_array().cloned() else {
-        return json!([]);
-    };
-    json!(tools
-        .into_iter()
-        .filter_map(|tool| tool.get("function").cloned())
-        .collect::<Vec<_>>())
-}
+// 鈹€鈹€鈹€ Tauri Commands 鈹€鈹€鈹€
 
 fn openai_chat_completions_url(base_url: &str) -> String {
     let clean = base_url.trim_end_matches('/');
@@ -3086,3524 +2476,14 @@ async fn verify_openai_compatible_credential(
     Ok(())
 }
 
-fn direct_reasoning_history_mode(
-    credential: &StoredOpenAiCompatibleCredential,
-) -> DirectReasoningHistoryMode {
-    let base_url = credential.base_url.to_ascii_lowercase();
-    let model = credential.model.to_ascii_lowercase();
-    if base_url.contains("api.deepseek.com") || model.contains("deepseek") {
-        DirectReasoningHistoryMode::Preserve
-    } else {
-        DirectReasoningHistoryMode::Strip
-    }
-}
-
-fn usage_u64(usage: &serde_json::Value, keys: &[&str]) -> Option<u64> {
-    keys.iter()
-        .find_map(|key| usage.get(*key).and_then(|v| v.as_u64()))
-}
-
-fn json_usage(value: &serde_json::Value) -> serde_json::Value {
-    let usage = value
-        .get("usage")
-        .filter(|usage| !usage.is_null())
-        .unwrap_or(value);
-    let total_tokens = usage_u64(usage, &["total_tokens", "total_token_count"]);
-    let mut input_tokens = usage_u64(
-        usage,
-        &[
-            "prompt_tokens",
-            "input_tokens",
-            "prompt_token_count",
-            "input_token_count",
-        ],
-    );
-    let mut output_tokens = usage_u64(
-        usage,
-        &[
-            "completion_tokens",
-            "output_tokens",
-            "completion_token_count",
-            "output_token_count",
-        ],
-    );
-
-    if let (Some(total), Some(input), None) = (total_tokens, input_tokens, output_tokens) {
-        output_tokens = total.checked_sub(input);
-    }
-    if let (Some(total), None, Some(output)) = (total_tokens, input_tokens, output_tokens) {
-        input_tokens = total.checked_sub(output);
-    }
-
-    let input_tokens = input_tokens.unwrap_or(0);
-    let output_tokens = output_tokens.unwrap_or(0);
-    json!({
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-    })
-}
-
-fn usage_has_tokens(usage: &serde_json::Value) -> bool {
-    usage
-        .get("input_tokens")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0)
-        > 0
-        || usage
-            .get("output_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0)
-            > 0
-}
-
-#[derive(Clone)]
-struct DirectToolCall {
-    id: String,
-    name: String,
-    input: serde_json::Value,
-    legacy_function_call: bool,
-}
-
-struct DirectToolOutput {
-    content: String,
-    is_error: bool,
-}
-
-struct DirectChatResponse {
-    message: serde_json::Value,
-    content: String,
-    reasoning: String,
-    tool_calls: Vec<DirectToolCall>,
-    usage: serde_json::Value,
-    streamed_text: bool,
-}
-
-fn direct_tool_result_values(
-    tool_call: &DirectToolCall,
-    content: String,
-    is_error: bool,
-) -> (serde_json::Value, serde_json::Value) {
-    let block = json!({
-        "type": "tool_result",
-        "tool_use_id": tool_call.id,
-        "content": content.clone(),
-        "is_error": is_error,
-    });
-    let message = if tool_call.legacy_function_call {
-        json!({
-            "role": "function",
-            "name": tool_call.name,
-            "content": content,
-        })
-    } else {
-        json!({
-            "role": "tool",
-            "tool_call_id": tool_call.id,
-            "content": content,
-        })
-    };
-    (block, message)
-}
-
-#[derive(Default)]
-struct DirectStreamingToolCall {
-    id: Option<String>,
-    name: String,
-    arguments: String,
-    legacy_function_call: bool,
-}
-
-struct DirectStreamFailure {
-    message: String,
-    can_retry_non_streaming: bool,
-    can_retry_without_tools: bool,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum DirectToolRequestMode {
-    Tools,
-    Functions,
-    None,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum DirectReasoningHistoryMode {
-    Strip,
-    Preserve,
-}
-
-fn emit_direct_output(window: &WebviewWindow, tab_id: &str, event: &serde_json::Value) {
-    let _ = window.emit(
-        "claude-output",
-        ClaudeOutputEvent {
-            tab_id: tab_id.to_string(),
-            data: event.to_string(),
-        },
-    );
-}
-
-fn emit_direct_error(window: &WebviewWindow, tab_id: &str, message: impl Into<String>) {
-    let _ = window.emit(
-        "claude-error",
-        ClaudeErrorEvent {
-            tab_id: tab_id.to_string(),
-            data: message.into(),
-        },
-    );
-}
-
-fn emit_direct_complete(window: &WebviewWindow, tab_id: &str, success: bool) {
-    let _ = window.emit(
-        "claude-complete",
-        ClaudeCompleteEvent {
-            tab_id: tab_id.to_string(),
-            success,
-        },
-    );
-}
-
-fn session_event_with_timestamp(event: &serde_json::Value) -> serde_json::Value {
-    let mut event = event.clone();
-    if let Some(object) = event.as_object_mut() {
-        object
-            .entry("timestamp".to_string())
-            .or_insert_with(|| json!(chrono::Utc::now().to_rfc3339()));
-    }
-    event
-}
-
-fn valid_session_id(session_id: &str) -> bool {
-    !session_id.is_empty()
-        && session_id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-')
-}
-
-fn append_direct_session_event(
-    project_path: &str,
-    session_id: &str,
-    event: &serde_json::Value,
-) -> Result<(), String> {
-    if !valid_session_id(session_id) {
-        return Err("Invalid session id".to_string());
-    }
-
-    let sessions_dir = get_sessions_dir(project_path)?;
-    std::fs::create_dir_all(&sessions_dir)
-        .map_err(|e| format!("Failed to create sessions directory: {}", e))?;
-    let session_path = sessions_dir.join(format!("{}.jsonl", session_id));
-    let event = session_event_with_timestamp(event);
-    let line = serde_json::to_string(&event)
-        .map_err(|e| format!("Failed to serialize session event: {}", e))?;
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&session_path)
-        .map_err(|e| format!("Failed to open session file: {}", e))?;
-    writeln!(file, "{}", line).map_err(|e| format!("Failed to write session event: {}", e))
-}
-
-fn emit_and_persist_direct_output(
-    window: &WebviewWindow,
-    project_path: &str,
-    session_id: &str,
-    tab_id: &str,
-    event: &serde_json::Value,
-) {
-    emit_direct_output(window, tab_id, event);
-    if let Err(err) = append_direct_session_event(project_path, session_id, event) {
-        eprintln!("[direct-provider] failed to persist session event: {}", err);
-    }
-}
-
-fn direct_task_state_event(tasks: &[DirectTask]) -> serde_json::Value {
-    json!({
-        "type": "direct_task_state",
-        "tasks": tasks,
-    })
-}
-
-fn load_direct_task_state_from_path(session_path: &Path) -> Result<Vec<DirectTask>, String> {
-    if !session_path.exists() {
-        return Ok(Vec::new());
-    }
-
-    let file = std::fs::File::open(session_path)
-        .map_err(|e| format!("Failed to open session file: {}", e))?;
-    let reader = std::io::BufReader::new(file);
-    use std::io::BufRead;
-
-    let mut latest_tasks = Vec::new();
-    for line in reader.lines().map_while(Result::ok) {
-        let Ok(entry) = serde_json::from_str::<serde_json::Value>(&line) else {
-            continue;
-        };
-        if entry.get("type").and_then(|v| v.as_str()) != Some("direct_task_state") {
-            continue;
-        }
-        let Some(tasks) = entry.get("tasks") else {
-            continue;
-        };
-        if let Ok(parsed) = serde_json::from_value::<Vec<DirectTask>>(tasks.clone()) {
-            latest_tasks = parsed;
-        }
-    }
-
-    Ok(latest_tasks)
-}
-
-fn load_direct_task_state(project_path: &str, session_id: &str) -> Result<Vec<DirectTask>, String> {
-    if !valid_session_id(session_id) {
-        return Ok(Vec::new());
-    }
-    let sessions_dir = get_sessions_dir(project_path)?;
-    let session_path = sessions_dir.join(format!("{}.jsonl", session_id));
-    load_direct_task_state_from_path(&session_path)
-}
-
-async fn hydrate_direct_task_state(
-    state: &ClaudeProcessState,
-    project_path: &str,
-    session_id: &str,
-) {
-    let mut task_lists = state.direct_task_lists.lock().await;
-    if task_lists.contains_key(session_id) {
-        return;
-    }
-    let tasks = load_direct_task_state(project_path, session_id).unwrap_or_default();
-    task_lists.insert(session_id.to_string(), tasks);
-}
-
-async fn persist_direct_task_state(
-    state: &ClaudeProcessState,
-    project_path: &str,
-    session_id: &str,
-) {
-    let tasks = {
-        let task_lists = state.direct_task_lists.lock().await;
-        task_lists.get(session_id).cloned().unwrap_or_default()
-    };
-    let event = direct_task_state_event(&tasks);
-    if let Err(err) = append_direct_session_event(project_path, session_id, &event) {
-        eprintln!("[direct-provider] failed to persist task state: {}", err);
-    }
-}
-
-fn direct_workdir_state_event(cwd: &Path) -> serde_json::Value {
-    json!({
-        "type": "direct_workdir_state",
-        "cwd": cwd.to_string_lossy(),
-    })
-}
-
-fn load_direct_workdir_state_from_path(
-    session_path: &Path,
-    fallback: &Path,
-) -> Result<PathBuf, String> {
-    if !session_path.exists() {
-        return Ok(fallback.to_path_buf());
-    }
-
-    let file = std::fs::File::open(session_path)
-        .map_err(|e| format!("Failed to open session file: {}", e))?;
-    let reader = std::io::BufReader::new(file);
-    use std::io::BufRead;
-
-    let mut latest = fallback.to_path_buf();
-    for line in reader.lines().map_while(Result::ok) {
-        let Ok(entry) = serde_json::from_str::<serde_json::Value>(&line) else {
-            continue;
-        };
-        if entry.get("type").and_then(|v| v.as_str()) != Some("direct_workdir_state") {
-            continue;
-        }
-        let Some(cwd) = entry.get("cwd").and_then(|v| v.as_str()) else {
-            continue;
-        };
-        let path = PathBuf::from(strip_nul(cwd).trim());
-        if path.is_dir() {
-            latest = path;
-        }
-    }
-
-    Ok(latest)
-}
-
-fn load_direct_workdir_state(
-    project_path: &str,
-    session_id: &str,
-    fallback: &Path,
-) -> Result<PathBuf, String> {
-    if !valid_session_id(session_id) {
-        return Ok(fallback.to_path_buf());
-    }
-    let sessions_dir = get_sessions_dir(project_path)?;
-    let session_path = sessions_dir.join(format!("{}.jsonl", session_id));
-    load_direct_workdir_state_from_path(&session_path, fallback)
-}
-
-async fn hydrate_direct_workdir_state(
-    state: &ClaudeProcessState,
-    project_path: &str,
-    session_id: &str,
-    fallback: &Path,
-) {
-    let mut workdirs = state.direct_workdirs.lock().await;
-    if workdirs.contains_key(session_id) {
-        return;
-    }
-    let cwd = load_direct_workdir_state(project_path, session_id, fallback)
-        .unwrap_or_else(|_| fallback.to_path_buf());
-    workdirs.insert(session_id.to_string(), cwd);
-}
-
-async fn direct_session_root(
-    state: &ClaudeProcessState,
-    session_id: &str,
-    fallback: &Path,
-) -> PathBuf {
-    let workdirs = state.direct_workdirs.lock().await;
-    workdirs
-        .get(session_id)
-        .filter(|path| path.is_dir())
-        .cloned()
-        .unwrap_or_else(|| fallback.to_path_buf())
-}
-
-async fn set_direct_session_root(state: &ClaudeProcessState, session_id: &str, cwd: PathBuf) {
-    let mut workdirs = state.direct_workdirs.lock().await;
-    workdirs.insert(session_id.to_string(), cwd);
-}
-
-async fn persist_direct_workdir_state(
-    state: &ClaudeProcessState,
-    project_path: &str,
-    session_id: &str,
-    fallback: &Path,
-) {
-    let cwd = direct_session_root(state, session_id, fallback).await;
-    let event = direct_workdir_state_event(&cwd);
-    if let Err(err) = append_direct_session_event(project_path, session_id, &event) {
-        eprintln!("[direct-provider] failed to persist workdir state: {}", err);
-    }
-}
-
-fn is_direct_task_mutation_tool(name: &str) -> bool {
-    matches!(
-        canonical_direct_tool_name(name),
-        Some("TaskCreate" | "TaskUpdate" | "TaskStop")
-    )
-}
-
-fn is_direct_workdir_mutation_tool(name: &str) -> bool {
-    matches!(
-        canonical_direct_tool_name(name),
-        Some("EnterWorktree" | "ExitWorktree")
-    )
-}
-
-async fn direct_provider_cancelled(state: &ClaudeProcessState, process_key: &str) -> bool {
-    state
-        .direct_cancellations
-        .lock()
-        .await
-        .contains(process_key)
-}
-
-async fn clear_direct_provider_cancelled(state: &ClaudeProcessState, process_key: &str) {
-    state.direct_cancellations.lock().await.remove(process_key);
-}
-
-async fn cache_direct_provider_messages(
-    state: &ClaudeProcessState,
-    session_id: &str,
-    messages: &[serde_json::Value],
-) {
-    let mut sessions = state.direct_sessions.lock().await;
-    sessions.insert(session_id.to_string(), messages.to_vec());
-}
-
-async fn finish_direct_provider_cancelled(
-    window: &WebviewWindow,
-    project_path: &str,
-    session_id: &str,
-    tab_id: &str,
-    state: &ClaudeProcessState,
-    process_key: &str,
-    started: std::time::Instant,
-    turns: u64,
-    usage: &serde_json::Value,
-    messages: &[serde_json::Value],
-) {
-    cache_direct_provider_messages(state, session_id, messages).await;
-    let elapsed_ms = started.elapsed().as_millis() as u64;
-    let result = json!({
-        "type": "result",
-        "subtype": "cancelled",
-        "is_error": true,
-        "result": "Cancelled by user.",
-        "duration_ms": elapsed_ms,
-        "duration_api_ms": elapsed_ms,
-        "num_turns": turns,
-        "usage": usage,
-    });
-    emit_and_persist_direct_output(window, project_path, session_id, tab_id, &result);
-    clear_direct_provider_cancelled(state, process_key).await;
-    emit_direct_complete(window, tab_id, false);
-}
-
-fn claude_text_from_content_blocks(content: &serde_json::Value) -> Option<String> {
-    if let Some(text) = content.as_str() {
-        return Some(text.to_string());
-    }
-
-    let blocks = content.as_array()?;
-    let text = blocks
-        .iter()
-        .filter(|block| block.get("type").and_then(|v| v.as_str()) == Some("text"))
-        .filter_map(|block| block.get("text").and_then(|v| v.as_str()))
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    if text.trim().is_empty() {
-        None
-    } else {
-        Some(text)
-    }
-}
-
-fn claude_reasoning_from_content_blocks(content: &serde_json::Value) -> Option<String> {
-    let blocks = content.as_array()?;
-    let reasoning = blocks
-        .iter()
-        .filter(|block| {
-            matches!(
-                block.get("type").and_then(|v| v.as_str()),
-                Some("thinking") | Some("reasoning") | Some("reasoning_text")
-            )
-        })
-        .filter_map(|block| {
-            block
-                .get("thinking")
-                .and_then(|v| v.as_str())
-                .or_else(|| block.get("text").and_then(|v| v.as_str()))
-                .or_else(|| block.get("content").and_then(|v| v.as_str()))
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    if reasoning.trim().is_empty() {
-        None
-    } else {
-        Some(reasoning)
-    }
-}
-
-fn load_direct_provider_messages(
-    project_path: &str,
-    session_id: &str,
-) -> Result<Vec<serde_json::Value>, String> {
-    if !valid_session_id(session_id) {
-        return Ok(Vec::new());
-    }
-
-    let sessions_dir = get_sessions_dir(project_path)?;
-    let session_path = sessions_dir.join(format!("{}.jsonl", session_id));
-    load_direct_provider_messages_from_path(&session_path)
-}
-
-fn load_direct_provider_messages_from_path(
-    session_path: &Path,
-) -> Result<Vec<serde_json::Value>, String> {
-    if !session_path.exists() {
-        return Ok(Vec::new());
-    }
-
-    let file = std::fs::File::open(session_path)
-        .map_err(|e| format!("Failed to open session file: {}", e))?;
-    let reader = std::io::BufReader::new(file);
-    use std::io::BufRead;
-
-    let mut messages = Vec::new();
-    for line in reader.lines().map_while(Result::ok) {
-        let Ok(entry) = serde_json::from_str::<serde_json::Value>(&line) else {
-            continue;
-        };
-        match entry.get("type").and_then(|v| v.as_str()) {
-            Some("user") => {
-                let Some(content) = entry.pointer("/message/content") else {
-                    continue;
-                };
-                if let Some(blocks) = content.as_array() {
-                    let tool_results: Vec<serde_json::Value> = blocks
-                        .iter()
-                        .filter(|block| {
-                            block.get("type").and_then(|v| v.as_str()) == Some("tool_result")
-                        })
-                        .filter_map(|block| {
-                            let tool_call_id = block.get("tool_use_id")?.as_str()?;
-                            let content = block
-                                .get("content")
-                                .and_then(|v| v.as_str())
-                                .map(|v| v.to_string())
-                                .unwrap_or_else(|| {
-                                    block
-                                        .get("content")
-                                        .map(|v| v.to_string())
-                                        .unwrap_or_default()
-                                });
-                            Some(json!({
-                                "role": "tool",
-                                "tool_call_id": tool_call_id,
-                                "content": content,
-                            }))
-                        })
-                        .collect();
-                    if !tool_results.is_empty() {
-                        messages.extend(tool_results);
-                        continue;
-                    }
-                }
-
-                if let Some(text) = claude_text_from_content_blocks(content) {
-                    messages.push(json!({ "role": "user", "content": text }));
-                }
-            }
-            Some("assistant") => {
-                let Some(content) = entry.pointer("/message/content") else {
-                    continue;
-                };
-                let Some(blocks) = content.as_array() else {
-                    continue;
-                };
-
-                let text = blocks
-                    .iter()
-                    .filter(|block| block.get("type").and_then(|v| v.as_str()) == Some("text"))
-                    .filter_map(|block| block.get("text").and_then(|v| v.as_str()))
-                    .collect::<Vec<_>>()
-                    .join("\n\n");
-                let tool_calls: Vec<serde_json::Value> = blocks
-                    .iter()
-                    .filter(|block| block.get("type").and_then(|v| v.as_str()) == Some("tool_use"))
-                    .filter_map(|block| {
-                        let id = block.get("id")?.as_str()?;
-                        let name = block.get("name")?.as_str()?;
-                        let input = block.get("input").cloned().unwrap_or_else(|| json!({}));
-                        Some(json!({
-                            "id": id,
-                            "type": "function",
-                            "function": {
-                                "name": name,
-                                "arguments": input.to_string(),
-                            }
-                        }))
-                    })
-                    .collect();
-
-                if text.trim().is_empty() && tool_calls.is_empty() {
-                    continue;
-                }
-
-                let mut message = json!({
-                    "role": "assistant",
-                    "content": if text.trim().is_empty() { serde_json::Value::Null } else { json!(text) },
-                });
-                if !tool_calls.is_empty() {
-                    if let Some(object) = message.as_object_mut() {
-                        object.insert("tool_calls".to_string(), json!(tool_calls));
-                    }
-                }
-                if let Some(reasoning) = claude_reasoning_from_content_blocks(content) {
-                    if let Some(object) = message.as_object_mut() {
-                        object.insert("reasoning_content".to_string(), json!(reasoning));
-                    }
-                }
-                messages.push(message);
-            }
-            _ => {}
-        }
-    }
-
-    Ok(messages)
-}
-
-fn lexical_normalize(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
-            }
-            other => normalized.push(other.as_os_str()),
-        }
-    }
-    normalized
-}
-
-fn canonical_project_root(project_path: &str) -> Result<PathBuf, String> {
-    let root = PathBuf::from(strip_nul(project_path).trim());
-    let root = root
-        .canonicalize()
-        .map_err(|e| format!("Failed to resolve project path: {}", e))?;
-    if !root.is_dir() {
-        return Err("Project path is not a directory".to_string());
-    }
-    Ok(root)
-}
-
-fn tool_path_value(input: &serde_json::Value) -> Result<String, String> {
-    for key in ["file_path", "path"] {
-        if let Some(value) = input.get(key).and_then(|v| v.as_str()) {
-            let clean = strip_nul(value).trim().to_string();
-            if !clean.is_empty() {
-                return Ok(clean);
-            }
-        }
-    }
-    Err("Missing file_path".to_string())
-}
-
-fn required_tool_string(input: &serde_json::Value, key: &str) -> Result<String, String> {
-    input
-        .get(key)
-        .and_then(|v| v.as_str())
-        .map(|value| strip_nul(value).into_owned())
-        .ok_or_else(|| format!("Missing {}", key))
-}
-
-fn optional_tool_string(input: &serde_json::Value, key: &str) -> Option<String> {
-    input
-        .get(key)
-        .and_then(|v| v.as_str())
-        .map(|value| strip_nul(value).trim().to_string())
-        .filter(|value| !value.is_empty())
-}
-
-fn optional_tool_string_any(input: &serde_json::Value, keys: &[&str]) -> Option<String> {
-    keys.iter().find_map(|key| optional_tool_string(input, key))
-}
-
-fn required_tool_string_any(input: &serde_json::Value, keys: &[&str]) -> Result<String, String> {
-    optional_tool_string_any(input, keys).ok_or_else(|| format!("Missing {}", keys[0]))
-}
-
-fn optional_tool_usize(input: &serde_json::Value, key: &str) -> Option<usize> {
-    input
-        .get(key)
-        .and_then(|v| v.as_u64())
-        .and_then(|value| usize::try_from(value).ok())
-}
-
-fn resolve_project_tool_path(project_root: &Path, requested: &str) -> Result<PathBuf, String> {
-    let clean = strip_nul(requested).trim().trim_matches('"').to_string();
-    if clean.is_empty() {
-        return Err("Path is empty".to_string());
-    }
-    let canonical_root = project_root
-        .canonicalize()
-        .map_err(|e| format!("Failed to resolve project root: {}", e))?;
-
-    let requested_path = PathBuf::from(&clean);
-    let candidate = if requested_path.is_absolute() {
-        requested_path
-    } else {
-        canonical_root.join(requested_path)
-    };
-    let normalized = lexical_normalize(&candidate);
-    if !normalized.starts_with(&canonical_root) {
-        return Err("Refusing to access a path outside the project".to_string());
-    }
-    Ok(normalized)
-}
-
-fn ensure_existing_project_tool_path(
-    project_root: &Path,
-    requested: &str,
-) -> Result<PathBuf, String> {
-    let resolved = resolve_project_tool_path(project_root, requested)?;
-    let canonical_root = project_root
-        .canonicalize()
-        .map_err(|e| format!("Failed to resolve project root: {}", e))?;
-    let canonical = resolved
-        .canonicalize()
-        .map_err(|e| format!("Failed to resolve path: {}", e))?;
-    if !canonical.starts_with(&canonical_root) {
-        return Err("Refusing to access a path outside the project".to_string());
-    }
-    Ok(canonical)
-}
-
-fn nearest_existing_parent(path: &Path) -> Option<PathBuf> {
-    let mut current = path.to_path_buf();
-    loop {
-        if current.exists() {
-            return Some(current);
-        }
-        if !current.pop() {
-            return None;
-        }
-    }
-}
-
-fn ensure_writable_project_tool_path(
-    project_root: &Path,
-    requested: &str,
-) -> Result<PathBuf, String> {
-    let canonical_root = project_root
-        .canonicalize()
-        .map_err(|e| format!("Failed to resolve project root: {}", e))?;
-    let resolved = resolve_project_tool_path(project_root, requested)?;
-    reject_writable_symlink_components(&canonical_root, &resolved)?;
-    if resolved.exists() {
-        let canonical = resolved
-            .canonicalize()
-            .map_err(|e| format!("Failed to resolve path: {}", e))?;
-        if !canonical.starts_with(&canonical_root) {
-            return Err("Refusing to write outside the project".to_string());
-        }
-        return Ok(canonical);
-    }
-
-    let parent = resolved
-        .parent()
-        .ok_or_else(|| "Path has no parent directory".to_string())?;
-    let existing_parent = nearest_existing_parent(parent)
-        .ok_or_else(|| "Could not resolve parent directory".to_string())?;
-    let canonical_parent = existing_parent
-        .canonicalize()
-        .map_err(|e| format!("Failed to resolve parent directory: {}", e))?;
-    if !canonical_parent.starts_with(&canonical_root) {
-        return Err("Refusing to write outside the project".to_string());
-    }
-    Ok(resolved)
-}
-
-fn reject_writable_symlink_components(project_root: &Path, resolved: &Path) -> Result<(), String> {
-    let relative = resolved
-        .strip_prefix(project_root)
-        .map_err(|_| "Refusing to write outside the project".to_string())?;
-    let mut current = project_root.to_path_buf();
-
-    for component in relative.components() {
-        match component {
-            Component::Normal(part) => {
-                current.push(part);
-                match std::fs::symlink_metadata(&current) {
-                    Ok(metadata) => {
-                        if metadata.file_type().is_symlink() {
-                            return Err("Refusing to write through a symlink inside the project"
-                                .to_string());
-                        }
-                    }
-                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => break,
-                    Err(err) => {
-                        return Err(format!("Failed to inspect project path: {}", err));
-                    }
-                }
-            }
-            Component::CurDir => {}
-            _ => return Err("Refusing to write outside the project".to_string()),
-        }
-    }
-
-    Ok(())
-}
-
-fn relative_project_path(project_root: &Path, path: &Path) -> String {
-    path.strip_prefix(project_root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .replace('\\', "/")
-}
-
-fn truncate_tool_content(content: String, max_chars: usize) -> String {
-    if content.chars().count() <= max_chars {
-        return content;
-    }
-    let truncated: String = content.chars().take(max_chars).collect();
-    format!(
-        "{}\n\n[Output truncated after {} characters]",
-        truncated, max_chars
-    )
-}
-
-fn apply_exact_edit(
-    content: &str,
-    old: &str,
-    new: &str,
-    replace_all: bool,
-) -> Result<String, String> {
-    if old.is_empty() {
-        return Err("old_string cannot be empty".to_string());
-    }
-    let count = content.matches(old).count();
-    if count == 0 {
-        return Err("old_string was not found".to_string());
-    }
-    if count > 1 && !replace_all {
-        return Err(format!(
-            "old_string matched {} times; set replace_all=true or provide a more specific old_string",
-            count
-        ));
-    }
-    if replace_all {
-        Ok(content.replace(old, new))
-    } else {
-        Ok(content.replacen(old, new, 1))
-    }
-}
-
-fn skip_direct_provider_dir(path: &Path) -> bool {
-    let Some(name) = path.file_name().and_then(|v| v.to_str()) else {
-        return false;
-    };
-    matches!(
-        name,
-        ".git" | "node_modules" | "target" | "dist" | "build" | ".venv" | ".prism" | ".claudeprism"
-    )
-}
-
-fn collect_project_files(
-    dir: &Path,
-    files: &mut Vec<PathBuf>,
-    max_files: usize,
-) -> Result<(), String> {
-    if files.len() >= max_files {
-        return Ok(());
-    }
-    if skip_direct_provider_dir(dir) {
-        return Ok(());
-    }
-    let entries = std::fs::read_dir(dir)
-        .map_err(|e| format!("Failed to read directory {}: {}", dir.display(), e))?;
-    for entry in entries.flatten() {
-        if files.len() >= max_files {
-            break;
-        }
-        let path = entry.path();
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        if file_type.is_dir() {
-            collect_project_files(&path, files, max_files)?;
-        } else if file_type.is_file() {
-            files.push(path);
-        }
-    }
-    Ok(())
-}
-
-fn wildcard_match(pattern: &str, text: &str) -> bool {
-    let pattern = pattern.as_bytes();
-    let text = text.as_bytes();
-    let mut dp = vec![vec![false; text.len() + 1]; pattern.len() + 1];
-    dp[0][0] = true;
-    for i in 1..=pattern.len() {
-        if pattern[i - 1] == b'*' {
-            dp[i][0] = dp[i - 1][0];
-        }
-    }
-    for i in 1..=pattern.len() {
-        for j in 1..=text.len() {
-            dp[i][j] = match pattern[i - 1] {
-                b'*' => dp[i - 1][j] || dp[i][j - 1],
-                b'?' => dp[i - 1][j - 1],
-                ch => ch == text[j - 1] && dp[i - 1][j - 1],
-            };
-        }
-    }
-    dp[pattern.len()][text.len()]
-}
-
-fn is_pdf_file_path(path: &Path) -> bool {
-    path.extension()
-        .and_then(|value| value.to_str())
-        .map(|value| value.eq_ignore_ascii_case("pdf"))
-        .unwrap_or(false)
-}
-
-fn pdf_text_sidecar_path(path: &Path) -> PathBuf {
-    let mut sidecar = path.as_os_str().to_os_string();
-    sidecar.push(".txt");
-    PathBuf::from(sidecar)
-}
-
-fn execute_direct_read(project_root: &Path, input: &serde_json::Value) -> Result<String, String> {
-    let file_path = tool_path_value(input)?;
-    let path = ensure_existing_project_tool_path(project_root, &file_path)?;
-    let mut read_path = path.clone();
-    let mut read_note = None;
-
-    if is_pdf_file_path(&path) {
-        let sidecar = pdf_text_sidecar_path(&path);
-        let pdf_display_path = relative_project_path(project_root, &path);
-        let sidecar_display_path = relative_project_path(project_root, &sidecar);
-
-        if sidecar.exists() {
-            let canonical_sidecar = sidecar
-                .canonicalize()
-                .map_err(|e| format!("Failed to resolve PDF text sidecar: {}", e))?;
-            if !canonical_sidecar.starts_with(project_root) {
-                return Err("Refusing to read PDF text sidecar outside the project".to_string());
-            }
-            read_note = Some(format!(
-                "[PDF text sidecar for {}: {}]",
-                pdf_display_path, sidecar_display_path
-            ));
-            read_path = canonical_sidecar;
-        } else {
-            return Ok(format!(
-                "[{}]\nPDF files are binary. ClaudePrism can read extracted PDF text when the sidecar exists at {}. Mention or attach this PDF in the chat composer to generate the sidecar, then read {}.",
-                pdf_display_path, sidecar_display_path, sidecar_display_path
-            ));
-        }
-    }
-
-    let content = std::fs::read_to_string(&read_path)
-        .map_err(|e| format!("Failed to read {}: {}", file_path, e))?;
-    let offset = optional_tool_usize(input, "offset").unwrap_or(1).max(1);
-    let limit = optional_tool_usize(input, "limit");
-    let lines: Vec<&str> = content.lines().collect();
-    let selected = lines
-        .iter()
-        .skip(offset.saturating_sub(1))
-        .take(limit.unwrap_or(lines.len()))
-        .copied()
-        .collect::<Vec<_>>()
-        .join("\n");
-    let display_path = relative_project_path(project_root, &read_path);
-    let body = if offset > 1 || limit.is_some() {
-        format!(
-            "{}[{} lines {}-{}]\n{}",
-            read_note
-                .as_ref()
-                .map(|note| format!("{}\n", note))
-                .unwrap_or_default(),
-            display_path,
-            offset,
-            offset + selected.lines().count().saturating_sub(1),
-            selected
-        )
-    } else {
-        format!(
-            "{}[{}]\n{}",
-            read_note
-                .as_ref()
-                .map(|note| format!("{}\n", note))
-                .unwrap_or_default(),
-            display_path,
-            content
-        )
-    };
-    Ok(truncate_tool_content(body, 20000))
-}
-
-fn execute_direct_write(project_root: &Path, input: &serde_json::Value) -> Result<String, String> {
-    let file_path = tool_path_value(input)?;
-    let content = required_tool_string(input, "content")?;
-    let path = ensure_writable_project_tool_path(project_root, &file_path)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create parent directory: {}", e))?;
-    }
-    std::fs::write(&path, content).map_err(|e| format!("Failed to write {}: {}", file_path, e))?;
-    Ok(format!(
-        "Wrote {}",
-        relative_project_path(project_root, &path)
-    ))
-}
-
-fn execute_direct_edit(project_root: &Path, input: &serde_json::Value) -> Result<String, String> {
-    let file_path = tool_path_value(input)?;
-    let old = required_tool_string(input, "old_string")?;
-    let new = required_tool_string(input, "new_string")?;
-    let replace_all = input
-        .get("replace_all")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let path = ensure_existing_project_tool_path(project_root, &file_path)?;
-    let content = std::fs::read_to_string(&path)
-        .map_err(|e| format!("Failed to read {}: {}", file_path, e))?;
-    let updated = apply_exact_edit(&content, &old, &new, replace_all)?;
-    std::fs::write(&path, updated).map_err(|e| format!("Failed to write {}: {}", file_path, e))?;
-    Ok(format!(
-        "Edited {}",
-        relative_project_path(project_root, &path)
-    ))
-}
-
-fn execute_direct_multiedit(
-    project_root: &Path,
-    input: &serde_json::Value,
-) -> Result<String, String> {
-    let file_path = tool_path_value(input)?;
-    let edits = input
-        .get("edits")
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| "Missing edits".to_string())?;
-    if edits.is_empty() {
-        return Err("edits cannot be empty".to_string());
-    }
-
-    let path = ensure_existing_project_tool_path(project_root, &file_path)?;
-    let mut content = std::fs::read_to_string(&path)
-        .map_err(|e| format!("Failed to read {}: {}", file_path, e))?;
-    for (idx, edit) in edits.iter().enumerate() {
-        let old = required_tool_string(edit, "old_string")
-            .map_err(|e| format!("Edit {}: {}", idx + 1, e))?;
-        let new = required_tool_string(edit, "new_string")
-            .map_err(|e| format!("Edit {}: {}", idx + 1, e))?;
-        let replace_all = edit
-            .get("replace_all")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        content = apply_exact_edit(&content, &old, &new, replace_all)
-            .map_err(|e| format!("Edit {}: {}", idx + 1, e))?;
-    }
-    std::fs::write(&path, content).map_err(|e| format!("Failed to write {}: {}", file_path, e))?;
-    Ok(format!(
-        "Applied {} edits to {}",
-        edits.len(),
-        relative_project_path(project_root, &path)
-    ))
-}
-
-fn execute_direct_ls(project_root: &Path, input: &serde_json::Value) -> Result<String, String> {
-    let base = optional_tool_string(input, "path")
-        .or_else(|| optional_tool_string(input, "file_path"))
-        .map(|path| ensure_existing_project_tool_path(project_root, &path))
-        .transpose()?
-        .unwrap_or_else(|| project_root.to_path_buf());
-    if !base.is_dir() {
-        return Err("LS path must be a directory".to_string());
-    }
-
-    let mut entries = Vec::new();
-    let read_dir = std::fs::read_dir(&base)
-        .map_err(|e| format!("Failed to list {}: {}", base.display(), e))?;
-    for entry in read_dir.flatten() {
-        let path = entry.path();
-        if skip_direct_provider_dir(&path) {
-            continue;
-        }
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        let mut rel = relative_project_path(project_root, &path);
-        if file_type.is_dir() {
-            rel.push('/');
-        }
-        entries.push(rel);
-    }
-    entries.sort();
-    entries.truncate(200);
-
-    let display_path = relative_project_path(project_root, &base);
-    if entries.is_empty() {
-        Ok(format!("[{}]\nNo entries", display_path))
-    } else {
-        Ok(format!("[{}]\n{}", display_path, entries.join("\n")))
-    }
-}
-
-fn execute_direct_glob(project_root: &Path, input: &serde_json::Value) -> Result<String, String> {
-    let pattern = required_tool_string(input, "pattern")?;
-    let base = optional_tool_string(input, "path")
-        .map(|path| ensure_existing_project_tool_path(project_root, &path))
-        .transpose()?
-        .unwrap_or_else(|| project_root.to_path_buf());
-    if !base.is_dir() {
-        return Err("Glob path must be a directory".to_string());
-    }
-
-    let mut files = Vec::new();
-    collect_project_files(&base, &mut files, 2000)?;
-    let pattern = pattern.replace('\\', "/");
-    let mut matches = files
-        .into_iter()
-        .filter_map(|path| {
-            let rel = relative_project_path(project_root, &path);
-            let name = path.file_name()?.to_str()?;
-            if wildcard_match(&pattern, &rel) || wildcard_match(&pattern, name) {
-                Some(rel)
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>();
-    matches.sort();
-    matches.truncate(200);
-    if matches.is_empty() {
-        Ok("No files matched".to_string())
-    } else {
-        Ok(matches.join("\n"))
-    }
-}
-
-fn looks_like_text_file(path: &Path) -> bool {
-    matches!(
-        path.extension()
-            .and_then(|v| v.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase()
-            .as_str(),
-        "tex"
-            | "bib"
-            | "sty"
-            | "cls"
-            | "md"
-            | "txt"
-            | "json"
-            | "yaml"
-            | "yml"
-            | "toml"
-            | "rs"
-            | "ts"
-            | "tsx"
-            | "js"
-            | "jsx"
-            | "py"
-            | "sh"
-            | "ps1"
-            | "html"
-            | "css"
-            | "csv"
-    )
-}
-
-fn execute_direct_grep(project_root: &Path, input: &serde_json::Value) -> Result<String, String> {
-    let pattern = required_tool_string(input, "pattern")?;
-    if pattern.is_empty() {
-        return Err("pattern cannot be empty".to_string());
-    }
-    let case_sensitive = input
-        .get("case_sensitive")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let glob_filter = optional_tool_string(input, "glob").map(|value| value.replace('\\', "/"));
-    let base = optional_tool_string(input, "path")
-        .map(|path| ensure_existing_project_tool_path(project_root, &path))
-        .transpose()?
-        .unwrap_or_else(|| project_root.to_path_buf());
-
-    let mut files = Vec::new();
-    if base.is_file() {
-        files.push(base);
-    } else {
-        collect_project_files(&base, &mut files, 4000)?;
-    }
-
-    let needle = if case_sensitive {
-        pattern.clone()
-    } else {
-        pattern.to_lowercase()
-    };
-    let mut results = Vec::new();
-    for path in files {
-        if results.len() >= 200 {
-            break;
-        }
-        if !looks_like_text_file(&path) {
-            continue;
-        }
-        let rel = relative_project_path(project_root, &path);
-        if let Some(glob) = &glob_filter {
-            let name = path.file_name().and_then(|v| v.to_str()).unwrap_or("");
-            if !wildcard_match(glob, &rel) && !wildcard_match(glob, name) {
-                continue;
-            }
-        }
-        let Ok(metadata) = std::fs::metadata(&path) else {
-            continue;
-        };
-        if metadata.len() > 2_000_000 {
-            continue;
-        }
-        let Ok(content) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        for (idx, line) in content.lines().enumerate() {
-            let haystack = if case_sensitive {
-                line.to_string()
-            } else {
-                line.to_lowercase()
-            };
-            if haystack.contains(&needle) {
-                results.push(format!("{}:{}:{}", rel, idx + 1, line.trim_end()));
-                if results.len() >= 200 {
-                    break;
-                }
-            }
-        }
-    }
-
-    if results.is_empty() {
-        Ok("No matches found".to_string())
-    } else {
-        Ok(results.join("\n"))
-    }
-}
-
-fn execute_direct_todowrite(input: &serde_json::Value) -> Result<String, String> {
-    let todos = input
-        .get("todos")
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| "Missing todos".to_string())?;
-    if todos.len() > 100 {
-        return Err("Todo list cannot exceed 100 items".to_string());
-    }
-
-    let mut in_progress_count = 0_usize;
-    let mut lines = Vec::new();
-    for (idx, todo) in todos.iter().enumerate() {
-        let content = required_tool_string(todo, "content")
-            .map_err(|e| format!("Todo {}: {}", idx + 1, e))?;
-        let status =
-            required_tool_string(todo, "status").map_err(|e| format!("Todo {}: {}", idx + 1, e))?;
-        if !matches!(status.as_str(), "pending" | "in_progress" | "completed") {
-            return Err(format!(
-                "Todo {}: status must be pending, in_progress, or completed",
-                idx + 1
-            ));
-        }
-        if status == "in_progress" {
-            in_progress_count += 1;
-        }
-        lines.push(format!("{}. [{}] {}", idx + 1, status, content));
-    }
-
-    let mut output = if lines.is_empty() {
-        "Todo list cleared".to_string()
-    } else {
-        format!(
-            "Todo list updated ({} items).\n{}",
-            todos.len(),
-            lines.join("\n")
-        )
-    };
-    if in_progress_count > 1 {
-        output.push_str("\n\nNote: Keep at most one todo in_progress at a time.");
-    }
-    Ok(output)
-}
-
-fn direct_tool_catalog() -> Vec<(&'static str, &'static str)> {
-    vec![
-        ("Read", "Read a UTF-8 text file from the current project."),
-        (
-            "Write",
-            "Create or replace a UTF-8 text file in the current project.",
-        ),
-        ("Edit", "Replace an exact string in a UTF-8 text file."),
-        (
-            "MultiEdit",
-            "Apply multiple exact string replacements to one file.",
-        ),
-        ("LS", "List files and directories in a project directory."),
-        ("Glob", "List project files matching a wildcard pattern."),
-        ("Grep", "Search project files for a literal substring."),
-        ("TodoWrite", "Update a concise multi-step plan."),
-        ("TaskCreate", "Create a lightweight session task."),
-        ("TaskGet", "Read a lightweight session task."),
-        ("TaskUpdate", "Update a lightweight session task."),
-        ("TaskList", "List lightweight session tasks."),
-        ("TaskStop", "Stop or complete a lightweight session task."),
-        ("TaskOutput", "Read lightweight task output/status."),
-        ("AskUserQuestion", "Ask the user multiple-choice questions."),
-        ("EnterPlanMode", "Enter planning mode for complex work."),
-        (
-            "ExitPlanMode",
-            "Present a plan and pause for user approval.",
-        ),
-        ("EnterWorktree", "Create and switch into a git worktree."),
-        (
-            "ExitWorktree",
-            "Switch back to the original project directory.",
-        ),
-        ("Skill", "Load installed SKILL.md guidance."),
-        (
-            "Agent",
-            "Run a focused sub-agent loop with the selected provider.",
-        ),
-        ("NotebookEdit", "Edit Jupyter notebook cells safely."),
-        ("WebFetch", "Fetch a public URL."),
-        (
-            "WebSearch",
-            "Search the web and return readable result text.",
-        ),
-        (
-            "ListMcpResources",
-            "MCP resource listing compatibility shim.",
-        ),
-        ("ReadMcpResource", "MCP resource read compatibility shim."),
-        ("Config", "Inspect direct-provider runtime configuration."),
-        ("Sleep", "Pause briefly before continuing."),
-        ("ToolSearch", "Inspect available local tool names."),
-    ]
-}
-
-fn canonical_direct_tool_name(name: &str) -> Option<&'static str> {
-    let normalized = name
-        .trim()
-        .chars()
-        .filter(|c| *c != '_' && *c != '-' && !c.is_whitespace())
-        .collect::<String>()
-        .to_ascii_lowercase();
-    direct_tool_catalog()
-        .into_iter()
-        .find_map(|(tool_name, _)| {
-            let tool_normalized = tool_name.to_ascii_lowercase();
-            (tool_normalized == normalized).then_some(tool_name)
-        })
-}
-
-fn is_direct_ui_pause_tool(name: &str) -> bool {
-    matches!(
-        canonical_direct_tool_name(name),
-        Some("AskUserQuestion") | Some("ExitPlanMode")
-    )
-}
-
-fn execute_direct_toolsearch(input: &serde_json::Value) -> Result<String, String> {
-    let query = required_tool_string(input, "query")?;
-    let trimmed = query.trim();
-    let catalog = direct_tool_catalog();
-
-    if trimmed.to_ascii_lowercase().starts_with("select:") {
-        let selection = &trimmed["select:".len()..];
-        let requested = selection
-            .split(',')
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .collect::<Vec<_>>();
-        if requested.is_empty() {
-            return Err("select: query did not include any tool names".to_string());
-        }
-
-        let mut found = Vec::new();
-        let mut missing = Vec::new();
-        for tool_name in requested {
-            if let Some(canonical) = canonical_direct_tool_name(tool_name) {
-                found.push(canonical.to_string());
-            } else {
-                missing.push(tool_name.to_string());
-            }
-        }
-
-        let mut lines = Vec::new();
-        if !found.is_empty() {
-            lines.push(format!("Selected tools: {}", found.join(", ")));
-        }
-        if !missing.is_empty() {
-            lines.push(format!("Missing tools: {}", missing.join(", ")));
-        }
-        lines.push("Selected tools are already available in this direct-provider session; no installation step is needed.".to_string());
-        return Ok(lines.join("\n"));
-    }
-
-    let terms = trimmed
-        .to_ascii_lowercase()
-        .split_whitespace()
-        .map(|value| value.to_string())
-        .collect::<Vec<_>>();
-    let matches = catalog
-        .into_iter()
-        .filter(|(name, description)| {
-            if terms.is_empty() {
-                return true;
-            }
-            let haystack = format!("{} {}", name, description).to_ascii_lowercase();
-            terms.iter().all(|term| haystack.contains(term))
-        })
-        .map(|(name, description)| format!("- {}: {}", name, description))
-        .collect::<Vec<_>>();
-
-    if matches.is_empty() {
-        Ok(format!(
-            "No matching local tools found. Available core tools include {}.",
-            DIRECT_PROVIDER_TOOL_NAMES.join(", ")
-        ))
-    } else {
-        Ok(format!("Available local tools:\n{}", matches.join("\n")))
-    }
-}
-
-fn normalize_direct_task_status(status: &str) -> Option<&'static str> {
-    match status.trim().to_ascii_lowercase().as_str() {
-        "pending" | "todo" | "open" => Some("pending"),
-        "in_progress" | "in-progress" | "in progress" | "active" | "working" => Some("in_progress"),
-        "completed" | "complete" | "done" | "resolved" => Some("completed"),
-        "deleted" | "delete" | "remove" | "removed" => Some("deleted"),
-        _ => None,
-    }
-}
-
-fn next_direct_task_id(tasks: &[DirectTask]) -> String {
-    let next = tasks
-        .iter()
-        .filter_map(|task| task.id.strip_prefix("task-"))
-        .filter_map(|suffix| suffix.parse::<u64>().ok())
-        .max()
-        .unwrap_or(0)
-        + 1;
-    format!("task-{}", next)
-}
-
-fn format_direct_task(task: &DirectTask) -> String {
-    let mut parts = vec![format!(
-        "{} [{}] {} - {}",
-        task.id, task.status, task.subject, task.description
-    )];
-    if let Some(owner) = &task.owner {
-        parts.push(format!("owner: {}", owner));
-    }
-    if let Some(active_form) = &task.active_form {
-        parts.push(format!("activeForm: {}", active_form));
-    }
-    parts.join(" | ")
-}
-
-async fn execute_direct_task_create(
-    state: &ClaudeProcessState,
-    session_id: &str,
-    input: &serde_json::Value,
-) -> Result<String, String> {
-    let subject = required_tool_string(input, "subject")?.trim().to_string();
-    let description = required_tool_string(input, "description")?
-        .trim()
-        .to_string();
-    if subject.is_empty() {
-        return Err("subject cannot be empty".to_string());
-    }
-    if description.is_empty() {
-        return Err("description cannot be empty".to_string());
-    }
-
-    let active_form = optional_tool_string_any(input, &["activeForm", "active_form"]);
-    let mut task_lists = state.direct_task_lists.lock().await;
-    let tasks = task_lists.entry(session_id.to_string()).or_default();
-    let id = next_direct_task_id(tasks);
-    let task = DirectTask {
-        id: id.clone(),
-        subject,
-        description,
-        active_form,
-        status: "pending".to_string(),
-        owner: None,
-    };
-    let line = format_direct_task(&task);
-    tasks.push(task);
-    Ok(format!(
-        "Task created: {}\nUse TaskUpdate to change status or TaskList to review the session task list.",
-        line
-    ))
-}
-
-async fn execute_direct_task_update(
-    state: &ClaudeProcessState,
-    session_id: &str,
-    input: &serde_json::Value,
-) -> Result<String, String> {
-    let task_id = required_tool_string_any(input, &["taskId", "task_id", "id"])?;
-    let mut task_lists = state.direct_task_lists.lock().await;
-    let tasks = task_lists.entry(session_id.to_string()).or_default();
-    let Some(index) = tasks.iter().position(|task| task.id == task_id) else {
-        return Err(format!(
-            "Task not found: {}. Use TaskList to see current tasks or TaskCreate to add one.",
-            task_id
-        ));
-    };
-
-    if let Some(status) = optional_tool_string(input, "status") {
-        let normalized = normalize_direct_task_status(&status).ok_or_else(|| {
-            "status must be pending, in_progress, completed, or deleted".to_string()
-        })?;
-        if normalized == "deleted" {
-            let task = tasks.remove(index);
-            return Ok(format!("Task deleted: {}", format_direct_task(&task)));
-        }
-        tasks[index].status = normalized.to_string();
-    }
-    if let Some(subject) = optional_tool_string(input, "subject") {
-        tasks[index].subject = subject;
-    }
-    if let Some(description) = optional_tool_string(input, "description") {
-        tasks[index].description = description;
-    }
-    if let Some(active_form) = optional_tool_string_any(input, &["activeForm", "active_form"]) {
-        tasks[index].active_form = Some(active_form);
-    }
-    if let Some(owner) = optional_tool_string(input, "owner") {
-        tasks[index].owner = Some(owner);
-    }
-
-    let in_progress_count = tasks
-        .iter()
-        .filter(|task| task.status == "in_progress")
-        .count();
-    let mut output = format!("Task updated: {}", format_direct_task(&tasks[index]));
-    if tasks[index].status == "completed" {
-        output.push_str("\nTask completed. Call TaskList to check remaining work.");
-    }
-    if in_progress_count > 1 {
-        output.push_str("\nNote: keep at most one task in_progress at a time.");
-    }
-    Ok(output)
-}
-
-async fn execute_direct_task_list(
-    state: &ClaudeProcessState,
-    session_id: &str,
-    input: &serde_json::Value,
-) -> Result<String, String> {
-    let status_filter = optional_tool_string(input, "status")
-        .map(|status| {
-            normalize_direct_task_status(&status)
-                .filter(|status| *status != "deleted")
-                .ok_or_else(|| "status must be pending, in_progress, or completed".to_string())
-        })
-        .transpose()?;
-    let task_lists = state.direct_task_lists.lock().await;
-    let tasks = task_lists.get(session_id).cloned().unwrap_or_default();
-    if tasks.is_empty() {
-        return Ok("No tasks in this direct-provider session. Use TodoWrite for a concise checklist or TaskCreate to add lightweight tasks.".to_string());
-    }
-
-    let lines = tasks
-        .iter()
-        .filter(|task| {
-            status_filter
-                .map(|status| task.status == status)
-                .unwrap_or(true)
-        })
-        .map(format_direct_task)
-        .collect::<Vec<_>>();
-
-    if lines.is_empty() {
-        let status = status_filter.unwrap_or("requested");
-        Ok(format!("No tasks match status: {}", status))
-    } else {
-        Ok(format!("Session tasks:\n{}", lines.join("\n")))
-    }
-}
-
-async fn execute_direct_task_get(
-    state: &ClaudeProcessState,
-    session_id: &str,
-    input: &serde_json::Value,
-) -> Result<String, String> {
-    let task_id = required_tool_string_any(input, &["taskId", "task_id", "id"])?;
-    let task_lists = state.direct_task_lists.lock().await;
-    let tasks = task_lists.get(session_id).cloned().unwrap_or_default();
-    let Some(task) = tasks.iter().find(|task| task.id == task_id) else {
-        return Err(format!(
-            "Task not found: {}. Use TaskList to see current tasks.",
-            task_id
-        ));
-    };
-    Ok(format_direct_task(task))
-}
-
-async fn execute_direct_task_stop(
-    state: &ClaudeProcessState,
-    session_id: &str,
-    input: &serde_json::Value,
-) -> Result<String, String> {
-    let task_id = required_tool_string_any(input, &["taskId", "task_id", "id"])?;
-    let reason = optional_tool_string(input, "reason");
-    let mut task_lists = state.direct_task_lists.lock().await;
-    let tasks = task_lists.entry(session_id.to_string()).or_default();
-    let Some(task) = tasks.iter_mut().find(|task| task.id == task_id) else {
-        return Err(format!(
-            "Task not found: {}. Use TaskList to see current tasks.",
-            task_id
-        ));
-    };
-    task.status = "completed".to_string();
-    let mut output = format!("Task stopped: {}", format_direct_task(task));
-    if let Some(reason) = reason {
-        output.push_str(&format!("\nReason: {}", reason));
-    }
-    Ok(output)
-}
-
-async fn execute_direct_task_output(
-    state: &ClaudeProcessState,
-    session_id: &str,
-    input: &serde_json::Value,
-) -> Result<String, String> {
-    execute_direct_task_get(state, session_id, input).await
-}
-
-fn notebook_cell_index(cells: &[serde_json::Value], cell_id: &str) -> Option<usize> {
-    if let Some(index) = cells
-        .iter()
-        .position(|cell| cell.get("id").and_then(|v| v.as_str()) == Some(cell_id))
-    {
-        return Some(index);
-    }
-    let numeric = cell_id
-        .strip_prefix("cell-")
-        .unwrap_or(cell_id)
-        .parse::<usize>()
-        .ok()?;
-    (numeric < cells.len()).then_some(numeric)
-}
-
-fn notebook_supports_cell_ids(notebook: &serde_json::Value) -> bool {
-    let nbformat = notebook
-        .get("nbformat")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(4);
-    let minor = notebook
-        .get("nbformat_minor")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    nbformat > 4 || (nbformat == 4 && minor >= 5)
-}
-
-fn execute_direct_notebook_edit(
-    project_root: &Path,
-    input: &serde_json::Value,
-) -> Result<String, String> {
-    let notebook_path = optional_tool_string(input, "notebook_path")
-        .or_else(|| optional_tool_string(input, "file_path"))
-        .ok_or_else(|| "Missing notebook_path".to_string())?;
-    let path = ensure_existing_project_tool_path(project_root, &notebook_path)?;
-    if path
-        .extension()
-        .and_then(|v| v.to_str())
-        .map(|value| !value.eq_ignore_ascii_case("ipynb"))
-        .unwrap_or(true)
-    {
-        return Err("NotebookEdit only supports .ipynb files".to_string());
-    }
-
-    let edit_mode =
-        optional_tool_string(input, "edit_mode").unwrap_or_else(|| "replace".to_string());
-    if !matches!(edit_mode.as_str(), "replace" | "insert" | "delete") {
-        return Err("edit_mode must be replace, insert, or delete".to_string());
-    }
-    let new_source = optional_tool_string(input, "new_source").unwrap_or_default();
-    let cell_type = optional_tool_string(input, "cell_type");
-    if let Some(cell_type) = &cell_type {
-        if !matches!(cell_type.as_str(), "code" | "markdown") {
-            return Err("cell_type must be code or markdown".to_string());
-        }
-    }
-
-    let original =
-        std::fs::read_to_string(&path).map_err(|e| format!("Failed to read notebook: {}", e))?;
-    let mut notebook: serde_json::Value = serde_json::from_str(&original)
-        .map_err(|e| format!("Notebook is not valid JSON: {}", e))?;
-    let supports_ids = notebook_supports_cell_ids(&notebook);
-    let cells = notebook
-        .get_mut("cells")
-        .and_then(|v| v.as_array_mut())
-        .ok_or_else(|| "Notebook JSON does not contain a cells array".to_string())?;
-
-    let cell_id = optional_tool_string(input, "cell_id");
-    let index = match (edit_mode.as_str(), cell_id.as_deref()) {
-        ("insert", Some(id)) => notebook_cell_index(cells, id)
-            .map(|idx| idx + 1)
-            .ok_or_else(|| format!("Cell not found: {}", id))?,
-        ("insert", None) => 0,
-        (_, Some(id)) => {
-            notebook_cell_index(cells, id).ok_or_else(|| format!("Cell not found: {}", id))?
-        }
-        (_, None) => {
-            return Err("cell_id is required unless edit_mode is insert".to_string());
-        }
-    };
-
-    if edit_mode == "delete" {
-        if index >= cells.len() {
-            return Err(format!("Cell index {} is out of bounds", index));
-        }
-        cells.remove(index);
-    } else if edit_mode == "insert" {
-        let final_cell_type = cell_type.unwrap_or_else(|| "code".to_string());
-        let mut cell = if final_cell_type == "markdown" {
-            json!({
-                "cell_type": "markdown",
-                "metadata": {},
-                "source": new_source,
-            })
-        } else {
-            json!({
-                "cell_type": "code",
-                "execution_count": null,
-                "metadata": {},
-                "outputs": [],
-                "source": new_source,
-            })
-        };
-        if supports_ids {
-            if let Some(object) = cell.as_object_mut() {
-                let generated_id = uuid::Uuid::new_v4()
-                    .to_string()
-                    .replace('-', "")
-                    .chars()
-                    .take(12)
-                    .collect::<String>();
-                object.insert("id".to_string(), json!(generated_id));
-            }
-        }
-        if index > cells.len() {
-            return Err(format!("Cell index {} is out of bounds", index));
-        }
-        cells.insert(index, cell);
-    } else {
-        if index >= cells.len() {
-            return Err(format!("Cell index {} is out of bounds", index));
-        }
-        let cell = cells
-            .get_mut(index)
-            .and_then(|v| v.as_object_mut())
-            .ok_or_else(|| "Target notebook cell is not an object".to_string())?;
-        cell.insert("source".to_string(), json!(new_source));
-        if let Some(cell_type) = cell_type {
-            cell.insert("cell_type".to_string(), json!(cell_type));
-        }
-        if cell.get("cell_type").and_then(|v| v.as_str()) == Some("code") {
-            cell.insert("execution_count".to_string(), serde_json::Value::Null);
-            cell.insert("outputs".to_string(), json!([]));
-        }
-    }
-
-    let updated = serde_json::to_string_pretty(&notebook)
-        .map_err(|e| format!("Failed to serialize notebook: {}", e))?;
-    std::fs::write(&path, updated).map_err(|e| format!("Failed to write notebook: {}", e))?;
-    Ok(format!(
-        "{} cell {} in {}",
-        match edit_mode.as_str() {
-            "insert" => "Inserted",
-            "delete" => "Deleted",
-            _ => "Updated",
-        },
-        index,
-        relative_project_path(project_root, &path)
-    ))
-}
-
-async fn run_direct_command_collect(
-    program: &str,
-    args: Vec<String>,
-    cwd: &Path,
-    timeout_ms: u64,
-) -> Result<(i32, String, String), String> {
-    let cwd_string = cwd.to_string_lossy().to_string();
-    let mut cmd = create_command(program, args, &cwd_string, None);
-    cmd.kill_on_drop(true);
-    let output = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), cmd.output())
-        .await
-        .map_err(|_| format!("Command timed out after {}ms", timeout_ms))?
-        .map_err(|e| format!("Failed to run {}: {}", program, e))?;
-    Ok((
-        output.status.code().unwrap_or(-1),
-        String::from_utf8_lossy(&output.stdout).to_string(),
-        String::from_utf8_lossy(&output.stderr).to_string(),
-    ))
-}
-
-fn sanitize_worktree_slug(input: Option<String>, session_id: &str) -> String {
-    let raw = input.unwrap_or_else(|| {
-        let short = session_id.chars().take(8).collect::<String>();
-        format!("session-{}", short)
-    });
-    let mut slug = raw
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
-                ch
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .trim_matches('-')
-        .chars()
-        .take(64)
-        .collect::<String>();
-    if slug.is_empty() {
-        slug = "worktree".to_string();
-    }
-    slug
-}
-
-async fn execute_direct_enter_worktree(
-    state: &ClaudeProcessState,
-    session_id: &str,
-    current_root: &Path,
-    input: &serde_json::Value,
-) -> Result<String, String> {
-    let (code, stdout, stderr) = run_direct_command_collect(
-        "git",
-        vec![
-            "-C".to_string(),
-            current_root.to_string_lossy().to_string(),
-            "rev-parse".to_string(),
-            "--show-toplevel".to_string(),
-        ],
-        current_root,
-        30_000,
-    )
-    .await?;
-    if code != 0 {
-        return Err(format!(
-            "Current directory is not a git repository: {}",
-            stderr
-        ));
-    }
-    let repo_root = PathBuf::from(stdout.trim())
-        .canonicalize()
-        .map_err(|e| format!("Failed to resolve git root: {}", e))?;
-    let repo_name = repo_root
-        .file_name()
-        .and_then(|v| v.to_str())
-        .unwrap_or("repo");
-    let parent = repo_root
-        .parent()
-        .ok_or_else(|| "Git root has no parent directory".to_string())?;
-    let slug = sanitize_worktree_slug(optional_tool_string(input, "name"), session_id);
-    let worktree_dir = parent.join(format!("{}-claudeprism-worktrees", repo_name));
-    std::fs::create_dir_all(&worktree_dir)
-        .map_err(|e| format!("Failed to create worktree directory: {}", e))?;
-    let worktree_path = worktree_dir.join(&slug);
-    if worktree_path.exists() {
-        return Err(format!(
-            "Worktree path already exists: {}",
-            worktree_path.display()
-        ));
-    }
-    let branch_name = format!("claude-prism/{}", slug);
-    let args = vec![
-        "-C".to_string(),
-        repo_root.to_string_lossy().to_string(),
-        "worktree".to_string(),
-        "add".to_string(),
-        "-b".to_string(),
-        branch_name.clone(),
-        worktree_path.to_string_lossy().to_string(),
-        "HEAD".to_string(),
-    ];
-    let (code, stdout, stderr) =
-        run_direct_command_collect("git", args, &repo_root, 120_000).await?;
-    if code != 0 {
-        return Err(format!(
-            "Failed to create worktree branch {}.\nstdout:\n{}\nstderr:\n{}",
-            branch_name, stdout, stderr
-        ));
-    }
-    let active = worktree_path
-        .canonicalize()
-        .unwrap_or_else(|_| worktree_path.clone());
-    set_direct_session_root(state, session_id, active.clone()).await;
-    Ok(format!(
-        "Created and entered worktree {}\nBranch: {}\nSubsequent direct-provider tools now run from this worktree.",
-        active.display(),
-        branch_name
-    ))
-}
-
-async fn execute_direct_exit_worktree(
-    state: &ClaudeProcessState,
-    session_id: &str,
-    original_project_root: &Path,
-) -> Result<String, String> {
-    set_direct_session_root(state, session_id, original_project_root.to_path_buf()).await;
-    Ok(format!(
-        "Exited worktree. Subsequent direct-provider tools now run from {}.",
-        original_project_root.display()
-    ))
-}
-
-fn execute_direct_config(
-    project_root: &Path,
-    credential: Option<&StoredOpenAiCompatibleCredential>,
-) -> Result<String, String> {
-    let provider = credential
-        .map(|credential| {
-            format!(
-                "{}\nmodel: {}\nbase_url: {}",
-                credential.label, credential.model, credential.base_url
-            )
-        })
-        .unwrap_or_else(|| "No direct provider credential in this tool context.".to_string());
-    Ok(format!(
-        "ClaudePrism direct-provider runtime\ncwd: {}\nprovider: {}",
-        project_root.display(),
-        provider
-    ))
-}
-
-async fn execute_direct_sleep(input: &serde_json::Value) -> Result<String, String> {
-    let duration_ms = input
-        .get("duration_ms")
-        .and_then(|v| v.as_u64())
-        .or_else(|| {
-            input
-                .get("seconds")
-                .and_then(|v| v.as_f64())
-                .map(|seconds| (seconds * 1000.0).max(0.0) as u64)
-        })
-        .unwrap_or(1000)
-        .clamp(0, 30_000);
-    tokio::time::sleep(std::time::Duration::from_millis(duration_ms)).await;
-    Ok(format!("Slept for {}ms", duration_ms))
-}
-
-fn strip_html_to_text(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut in_tag = false;
-    let mut last_was_space = false;
-    let mut entity = String::new();
-    let mut in_entity = false;
-
-    for ch in input.chars() {
-        if in_tag {
-            if ch == '>' {
-                in_tag = false;
-            }
-            continue;
-        }
-        if ch == '<' {
-            in_tag = true;
-            if !last_was_space {
-                out.push(' ');
-                last_was_space = true;
-            }
-            continue;
-        }
-        if in_entity {
-            if ch == ';' {
-                let decoded = match entity.as_str() {
-                    "amp" => '&',
-                    "lt" => '<',
-                    "gt" => '>',
-                    "quot" => '"',
-                    "apos" => '\'',
-                    "nbsp" => ' ',
-                    _ => ' ',
-                };
-                out.push(decoded);
-                last_was_space = decoded.is_whitespace();
-                entity.clear();
-                in_entity = false;
-            } else if entity.len() < 12 {
-                entity.push(ch);
-            } else {
-                entity.clear();
-                in_entity = false;
-            }
-            continue;
-        }
-        if ch == '&' {
-            in_entity = true;
-            entity.clear();
-            continue;
-        }
-        if ch.is_whitespace() {
-            if !last_was_space {
-                out.push(' ');
-                last_was_space = true;
-            }
-        } else {
-            out.push(ch);
-            last_was_space = false;
-        }
-    }
-    out.trim().to_string()
-}
-
-async fn execute_direct_webfetch(input: &serde_json::Value) -> Result<String, String> {
-    let url = required_tool_string(input, "url")?;
-    let lower = url.to_ascii_lowercase();
-    if !(lower.starts_with("https://") || lower.starts_with("http://")) {
-        return Err("WebFetch URL must start with http:// or https://".to_string());
-    }
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::limited(5))
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| format!("Failed to create WebFetch client: {}", e))?;
-    let response = client
-        .get(&url)
-        .header("User-Agent", "ClaudePrism/1.0 direct-provider WebFetch")
-        .send()
-        .await
-        .map_err(|e| format!("WebFetch failed: {}", e))?;
-    let status = response.status();
-    let final_url = response.url().to_string();
-    let content_type = response
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-    let body = response
-        .text()
-        .await
-        .map_err(|e| format!("Failed to read WebFetch response: {}", e))?;
-    if !status.is_success() {
-        return Err(truncate_tool_content(
-            format!("WebFetch HTTP {} for {}\n{}", status, final_url, body),
-            12000,
-        ));
-    }
-    let text = if content_type.to_ascii_lowercase().contains("html") {
-        strip_html_to_text(&body)
-    } else {
-        body
-    };
-    let prompt_note = optional_tool_string(input, "prompt")
-        .map(|prompt| format!("\nExtraction prompt: {}", prompt))
-        .unwrap_or_default();
-    Ok(truncate_tool_content(
-        format!(
-            "[WebFetch {}]\nURL: {}\nContent-Type: {}{}\n\n{}",
-            status, final_url, content_type, prompt_note, text
-        ),
-        30000,
-    ))
-}
-
-fn percent_encode_query(input: &str) -> String {
-    let mut encoded = String::new();
-    for byte in input.as_bytes() {
-        match *byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                encoded.push(*byte as char)
-            }
-            b' ' => encoded.push('+'),
-            other => encoded.push_str(&format!("%{:02X}", other)),
-        }
-    }
-    encoded
-}
-
-async fn execute_direct_websearch(input: &serde_json::Value) -> Result<String, String> {
-    let query = required_tool_string(input, "query")?;
-    let max_chars = optional_tool_usize(input, "max_chars")
-        .unwrap_or(12000)
-        .clamp(1000, 30000);
-    let url = format!(
-        "https://duckduckgo.com/html/?q={}",
-        percent_encode_query(&query)
-    );
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::limited(5))
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| format!("Failed to create WebSearch client: {}", e))?;
-    let response = client
-        .get(&url)
-        .header("User-Agent", "ClaudePrism/1.0 direct-provider WebSearch")
-        .send()
-        .await
-        .map_err(|e| format!("WebSearch failed: {}", e))?;
-    let status = response.status();
-    let body = response
-        .text()
-        .await
-        .map_err(|e| format!("Failed to read WebSearch response: {}", e))?;
-    if !status.is_success() {
-        return Err(truncate_tool_content(
-            format!("WebSearch HTTP {} for query '{}'\n{}", status, query, body),
-            max_chars,
-        ));
-    }
-    let text = strip_html_to_text(&body);
-    Ok(truncate_tool_content(
-        format!("[WebSearch]\nQuery: {}\nSource: {}\n\n{}", query, url, text),
-        max_chars,
-    ))
-}
-
-fn direct_skill_dirs(project_root: &Path) -> Vec<PathBuf> {
-    let mut dirs = vec![project_root.join(".claude").join("skills")];
-    if let Some(home) = dirs::home_dir() {
-        dirs.push(home.join(".claude").join("skills"));
-    }
-    dirs
-}
-
-fn normalize_skill_key(value: &str) -> String {
-    value
-        .trim()
-        .trim_start_matches('/')
-        .to_ascii_lowercase()
-        .chars()
-        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
-        .collect()
-}
-
-fn skill_display_name_from_content(content: &str) -> Option<String> {
-    for line in content.lines().take(30) {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("name:") {
-            return Some(rest.trim().trim_matches('"').trim_matches('\'').to_string());
-        }
-        if let Some(rest) = trimmed.strip_prefix("# ") {
-            return Some(rest.trim().to_string());
-        }
-    }
-    None
-}
-
-fn skill_description_from_content(content: &str) -> Option<String> {
-    for line in content.lines().take(60) {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("description:") {
-            let description = rest
-                .trim()
-                .trim_matches('"')
-                .trim_matches('\'')
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ");
-            if description.is_empty() {
-                return None;
-            }
-            let truncated: String = description.chars().take(180).collect();
-            return Some(if description.chars().count() > 180 {
-                format!("{}...", truncated)
-            } else {
-                truncated
-            });
-        }
-    }
-    None
-}
-
-fn available_direct_skills(project_root: &Path) -> Vec<(String, String, PathBuf)> {
-    let mut seen = HashSet::new();
-    let mut skills = Vec::new();
-    for dir in direct_skill_dirs(project_root) {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let skill_md = path.join("SKILL.md");
-            if !skill_md.exists() {
-                continue;
-            }
-            let folder = path
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("")
-                .to_string();
-            if !seen.insert(folder.clone()) {
-                continue;
-            }
-            let name = std::fs::read_to_string(&skill_md)
-                .ok()
-                .and_then(|content| skill_display_name_from_content(&content))
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| folder.clone());
-            skills.push((folder, name, skill_md));
-        }
-    }
-    skills.sort_by(|a, b| a.1.cmp(&b.1));
-    skills
-}
-
-fn execute_direct_skill(project_root: &Path, input: &serde_json::Value) -> Result<String, String> {
-    let requested = optional_tool_string(input, "skill")
-        .or_else(|| optional_tool_string(input, "name"))
-        .or_else(|| optional_tool_string(input, "command"));
-    let skills = available_direct_skills(project_root);
-    let Some(requested) = requested else {
-        if skills.is_empty() {
-            return Ok(
-                "No installed skills found in .claude/skills or ~/.claude/skills.".to_string(),
-            );
-        }
-        let lines = skills
-            .iter()
-            .map(|(folder, name, _)| format!("- /{}: {}", folder, name))
-            .collect::<Vec<_>>();
-        return Ok(format!("Installed skills:\n{}", lines.join("\n")));
-    };
-    let key = normalize_skill_key(&requested);
-    let Some((folder, name, skill_md)) = skills.into_iter().find(|(folder, name, _)| {
-        normalize_skill_key(folder) == key || normalize_skill_key(name) == key
-    }) else {
-        return Err(format!(
-            "Skill '{}' not found. Use Skill without a skill name to list installed skills.",
-            requested
-        ));
-    };
-    let content = std::fs::read_to_string(&skill_md)
-        .map_err(|e| format!("Failed to read skill {}: {}", folder, e))?;
-    Ok(truncate_tool_content(
-        format!("[Skill: {} ({})]\n{}", name, folder, content),
-        30000,
-    ))
-}
-
-fn execute_direct_enter_plan_mode(input: &serde_json::Value) -> Result<String, String> {
-    let reason = optional_tool_string(input, "reason")
-        .unwrap_or_else(|| "Complex work should be planned before implementation.".to_string());
-    Ok(format!(
-        "Plan mode entered for this direct-provider turn.\nReason: {}\nUse Read/LS/Grep to gather context, then call ExitPlanMode with a concrete plan when ready for user approval.",
-        reason
-    ))
-}
-
-async fn send_openai_compatible_agent_chat_request(
+async fn send_openai_compatible_no_tools_text_request(
     client: &reqwest::Client,
     credential: &StoredOpenAiCompatibleCredential,
     messages: &[serde_json::Value],
-) -> Result<DirectChatResponse, String> {
-    match send_openai_compatible_non_streaming_chat_request(
-        client,
-        credential,
-        messages,
-        DirectToolRequestMode::Tools,
-    )
-    .await
-    {
-        Ok(response) => Ok(response),
-        Err(err) if err.can_retry_without_tools => {
-            match send_openai_compatible_non_streaming_chat_request(
-                client,
-                credential,
-                messages,
-                DirectToolRequestMode::Functions,
-            )
-            .await
-            {
-                Ok(response) => Ok(response),
-                Err(err) if err.can_retry_without_tools => {
-                    send_openai_compatible_non_streaming_chat_request(
-                        client,
-                        credential,
-                        messages,
-                        DirectToolRequestMode::None,
-                    )
-                    .await
-                    .map_err(|err| err.message)
-                }
-                Err(err) => Err(err.message),
-            }
-        }
-        Err(err) => Err(err.message),
-    }
-}
-
-async fn execute_direct_agent(
-    state: &ClaudeProcessState,
-    session_id: &str,
-    original_project_root: &Path,
-    current_project_root: &Path,
-    input: &serde_json::Value,
-    client: Option<&reqwest::Client>,
-    credential: Option<&StoredOpenAiCompatibleCredential>,
-    agent_depth: usize,
-) -> Result<String, String> {
-    let prompt = required_tool_string_any(input, &["prompt", "description", "task"])?;
-    let agent_type = optional_tool_string(input, "subagent_type")
-        .or_else(|| optional_tool_string(input, "agent_type"))
-        .unwrap_or_else(|| "general-purpose".to_string());
-    let Some(client) = client else {
-        return Err("Agent requires an active direct-provider client.".to_string());
-    };
-    let Some(credential) = credential else {
-        return Err("Agent requires an active direct-provider credential.".to_string());
-    };
-    if agent_depth >= 2 {
-        return Err("Nested Agent depth exceeded; continue inline instead.".to_string());
-    }
-
-    let mut messages = vec![
-        json!({
-            "role": "system",
-            "content": format!(
-                "{}\n\nYou are running as a focused sub-agent of type '{}'. Work independently, use tools when needed, do not ask the user questions, and return a concise final report with evidence.",
-                direct_provider_system_prompt_for_project(current_project_root),
-                agent_type
-            ),
-        }),
-        json!({
-            "role": "user",
-            "content": prompt.clone(),
-        }),
-    ];
-
-    let mut final_report = String::new();
-    for turn in 1..=6 {
-        let response = send_openai_compatible_agent_chat_request(client, credential, &messages)
-            .await
-            .map_err(|e| format!("Agent provider request failed: {}", e))?;
-        let content = response.content.trim().to_string();
-        let reasoning = response.reasoning.trim().to_string();
-        let tool_calls = response.tool_calls;
-        messages.push(response.message);
-
-        if tool_calls.is_empty() {
-            final_report = if content.is_empty() {
-                reasoning
-            } else {
-                content
-            };
-            break;
-        }
-
-        let mut tool_messages = Vec::new();
-        for tool_call in tool_calls {
-            if is_direct_ui_pause_tool(&tool_call.name) {
-                let (_, message) = direct_tool_result_values(
-                    &tool_call,
-                    "Sub-agents cannot pause for UI interaction; return the best answer from available context.".to_string(),
-                    true,
-                );
-                tool_messages.push(message);
-                continue;
-            }
-            let active_root = direct_session_root(state, session_id, current_project_root).await;
-            let output = execute_direct_provider_tool_without_agent(
-                state,
-                session_id,
-                original_project_root,
-                &active_root,
-                &tool_call.name,
-                &tool_call.input,
-                Some(credential),
-            )
-            .await;
-            let (_, message) =
-                direct_tool_result_values(&tool_call, output.content, output.is_error);
-            tool_messages.push(message);
-        }
-        messages.extend(tool_messages);
-        if turn == 6 {
-            final_report = "Agent stopped after 6 tool turns without a final answer.".to_string();
-        }
-    }
-
-    Ok(truncate_tool_content(
-        format!(
-            "[Agent: {}]\nTask:\n{}\n\nResult:\n{}",
-            agent_type, prompt, final_report
-        ),
-        30000,
-    ))
-}
-
-fn execute_direct_list_mcp_resources(_input: &serde_json::Value) -> Result<String, String> {
-    Ok("MCP resource listing is not connected to ClaudePrism direct-provider mode yet. Use project files, installed skills, or Claude Code provider mode for MCP-backed resources.".to_string())
-}
-
-fn execute_direct_read_mcp_resource(input: &serde_json::Value) -> Result<String, String> {
-    let server = required_tool_string(input, "server")?;
-    let uri = required_tool_string(input, "uri")?;
-    Ok(format!(
-        "MCP resource reading is not connected to ClaudePrism direct-provider mode yet.\nRequested server: {}\nRequested URI: {}",
-        server, uri
-    ))
-}
-
-async fn execute_direct_provider_tool_without_agent(
-    state: &ClaudeProcessState,
-    session_id: &str,
-    original_project_root: &Path,
-    project_root: &Path,
-    name: &str,
-    input: &serde_json::Value,
-    credential: Option<&StoredOpenAiCompatibleCredential>,
-) -> DirectToolOutput {
-    let result = match name {
-        "Read" | "read" => execute_direct_read(project_root, input),
-        "Write" | "write" => execute_direct_write(project_root, input),
-        "Edit" | "edit" => execute_direct_edit(project_root, input),
-        "MultiEdit" | "multiedit" => execute_direct_multiedit(project_root, input),
-        "NotebookEdit" | "notebookedit" | "notebook_edit" => {
-            execute_direct_notebook_edit(project_root, input)
-        }
-        "LS" | "ls" | "List" | "list" => execute_direct_ls(project_root, input),
-        "Glob" | "glob" => execute_direct_glob(project_root, input),
-        "Grep" | "grep" => execute_direct_grep(project_root, input),
-        "TodoWrite" | "todowrite" | "todo_write" => execute_direct_todowrite(input),
-        "ToolSearch" | "toolsearch" | "tool_search" => execute_direct_toolsearch(input),
-        "TaskCreate" | "taskcreate" | "task_create" => {
-            execute_direct_task_create(state, session_id, input).await
-        }
-        "TaskGet" | "taskget" | "task_get" => {
-            execute_direct_task_get(state, session_id, input).await
-        }
-        "TaskUpdate" | "taskupdate" | "task_update" => {
-            execute_direct_task_update(state, session_id, input).await
-        }
-        "TaskList" | "tasklist" | "task_list" => {
-            execute_direct_task_list(state, session_id, input).await
-        }
-        "TaskStop" | "taskstop" | "task_stop" => {
-            execute_direct_task_stop(state, session_id, input).await
-        }
-        "TaskOutput" | "taskoutput" | "task_output" => {
-            execute_direct_task_output(state, session_id, input).await
-        }
-        "AskUserQuestion" | "askuserquestion" | "ask_user_question" => Err(
-            "AskUserQuestion is handled by the ClaudePrism UI. Wait for the user's next message."
-                .to_string(),
-        ),
-        "EnterPlanMode" | "enterplanmode" | "enter_plan_mode" => {
-            execute_direct_enter_plan_mode(input)
-        }
-        "ExitPlanMode" | "exitplanmode" | "exit_plan_mode" => Err(
-            "ExitPlanMode is handled by the ClaudePrism UI. Wait for the user's approval or revision."
-                .to_string(),
-        ),
-        "EnterWorktree" | "enterworktree" | "enter_worktree" => {
-            execute_direct_enter_worktree(state, session_id, project_root, input).await
-        }
-        "ExitWorktree" | "exitworktree" | "exit_worktree" => {
-            execute_direct_exit_worktree(state, session_id, original_project_root).await
-        }
-        "Skill" | "skill" => execute_direct_skill(project_root, input),
-        "Agent" | "agent" | "Task" | "task" => {
-            Err("Nested Agent calls are disabled inside a direct-provider Agent.".to_string())
-        }
-        "WebFetch" | "webfetch" | "web_fetch" => execute_direct_webfetch(input).await,
-        "WebSearch" | "websearch" | "web_search" => execute_direct_websearch(input).await,
-        "ListMcpResources" | "listmcpresources" | "list_mcp_resources" => {
-            execute_direct_list_mcp_resources(input)
-        }
-        "ReadMcpResource" | "readmcpresource" | "read_mcp_resource" => {
-            execute_direct_read_mcp_resource(input)
-        }
-        "Config" | "config" => execute_direct_config(project_root, credential),
-        "Sleep" | "sleep" => execute_direct_sleep(input).await,
-        "PowerShell" | "powershell" | "pwsh" | "Bash" | "bash" => Err(
-            "Shell tools are disabled for OpenAI-compatible/direct providers. Switch to Claude Code or run the command manually."
-                .to_string(),
-        ),
-        other => Err(format!("Unsupported tool: {}", other)),
-    };
-
-    match result {
-        Ok(content) => DirectToolOutput {
-            content,
-            is_error: false,
-        },
-        Err(content) => DirectToolOutput {
-            content,
-            is_error: true,
-        },
-    }
-}
-
-fn parse_direct_tool_arguments(arguments: &serde_json::Value) -> serde_json::Value {
-    if let Some(arguments) = arguments.as_str() {
-        return serde_json::from_str::<serde_json::Value>(arguments)
-            .unwrap_or_else(|_| json!({ "_raw_arguments": arguments }));
-    }
-    if arguments.is_object() {
-        return arguments.clone();
-    }
-    json!({})
-}
-
-fn parse_direct_tool_calls(response: &serde_json::Value) -> Vec<DirectToolCall> {
-    let calls: Vec<DirectToolCall> = response
-        .pointer("/choices/0/message/tool_calls")
-        .and_then(|v| v.as_array())
-        .map(|calls| {
-            calls
-                .iter()
-                .enumerate()
-                .filter_map(|(idx, call)| {
-                    let name = call.pointer("/function/name")?.as_str()?.to_string();
-                    let id = call
-                        .get("id")
-                        .and_then(|v| v.as_str())
-                        .map(|value| value.to_string())
-                        .unwrap_or_else(|| format!("toolu_{}", idx + 1));
-                    let input = call
-                        .pointer("/function/arguments")
-                        .map(parse_direct_tool_arguments)
-                        .unwrap_or_else(|| json!({}));
-                    Some(DirectToolCall {
-                        id,
-                        name,
-                        input,
-                        legacy_function_call: false,
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    if !calls.is_empty() {
-        return calls;
-    }
-
-    response
-        .pointer("/choices/0/message/function_call")
-        .and_then(|call| {
-            let name = call.get("name")?.as_str()?.to_string();
-            let input = call
-                .get("arguments")
-                .map(parse_direct_tool_arguments)
-                .unwrap_or_else(|| json!({}));
-            Some(vec![DirectToolCall {
-                id: "function_call_1".to_string(),
-                name,
-                input,
-                legacy_function_call: true,
-            }])
-        })
-        .unwrap_or_default()
-}
-
-fn direct_assistant_content(response: &serde_json::Value) -> String {
-    let Some(content) = response.pointer("/choices/0/message/content") else {
-        return String::new();
-    };
-    if let Some(text) = content.as_str() {
-        return text.to_string();
-    }
-    if let Some(parts) = content.as_array() {
-        return parts
-            .iter()
-            .filter_map(|part| {
-                part.get("text")
-                    .and_then(|v| v.as_str())
-                    .or_else(|| part.get("content").and_then(|v| v.as_str()))
-            })
-            .collect::<Vec<_>>()
-            .join("\n\n");
-    }
-    String::new()
-}
-
-fn direct_assistant_reasoning(response: &serde_json::Value) -> String {
-    let Some(message) = response.pointer("/choices/0/message") else {
-        return String::new();
-    };
-
-    for key in ["reasoning_content", "reasoning", "reasoning_text"] {
-        if let Some(text) = message.get(key).and_then(|v| v.as_str()) {
-            return text.to_string();
-        }
-    }
-
-    if let Some(parts) = message.get("content").and_then(|v| v.as_array()) {
-        return parts
-            .iter()
-            .filter(|part| {
-                matches!(
-                    part.get("type").and_then(|v| v.as_str()),
-                    Some("reasoning") | Some("thinking") | Some("reasoning_text")
-                )
-            })
-            .filter_map(|part| {
-                part.get("text")
-                    .and_then(|v| v.as_str())
-                    .or_else(|| part.get("content").and_then(|v| v.as_str()))
-            })
-            .collect::<Vec<_>>()
-            .join("\n\n");
-    }
-
-    String::new()
-}
-
-fn sanitize_direct_assistant_message_for_history(
-    mut message: serde_json::Value,
-    reasoning: &str,
-    reasoning_history_mode: DirectReasoningHistoryMode,
-) -> serde_json::Value {
-    let Some(object) = message.as_object_mut() else {
-        return message;
-    };
-
-    let preserve_reasoning = reasoning_history_mode == DirectReasoningHistoryMode::Preserve;
-
-    if preserve_reasoning && !reasoning.trim().is_empty() {
-        object
-            .entry("reasoning_content".to_string())
-            .or_insert_with(|| json!(reasoning));
-    }
-
-    if !preserve_reasoning {
-        object.remove("reasoning_content");
-    }
-    object.remove("reasoning");
-    object.remove("reasoning_text");
-
-    if let Some(content) = object.get_mut("content") {
-        if let Some(parts) = content.as_array_mut() {
-            parts.retain(|part| {
-                !matches!(
-                    part.get("type").and_then(|v| v.as_str()),
-                    Some("reasoning") | Some("thinking") | Some("reasoning_text")
-                )
-            });
-        }
-    }
-
-    message
-}
-
-fn direct_reasoning_from_openai_message(message: &serde_json::Value) -> String {
-    for key in ["reasoning_content", "reasoning", "reasoning_text"] {
-        if let Some(text) = message.get(key).and_then(|v| v.as_str()) {
-            return text.to_string();
-        }
-    }
-
-    claude_reasoning_from_content_blocks(message.get("content").unwrap_or(&serde_json::Value::Null))
-        .unwrap_or_default()
-}
-
-fn sanitize_direct_messages_for_reasoning_history(
-    messages: &[serde_json::Value],
-    reasoning_history_mode: DirectReasoningHistoryMode,
-) -> Vec<serde_json::Value> {
-    messages
-        .iter()
-        .cloned()
-        .map(|message| {
-            if message.get("role").and_then(|v| v.as_str()) != Some("assistant") {
-                return message;
-            }
-            let reasoning = direct_reasoning_from_openai_message(&message);
-            sanitize_direct_assistant_message_for_history(
-                message,
-                &reasoning,
-                reasoning_history_mode,
-            )
-        })
-        .collect()
-}
-
-fn direct_chat_response_from_value(
-    response: serde_json::Value,
-    reasoning_history_mode: DirectReasoningHistoryMode,
-) -> DirectChatResponse {
-    let content = direct_assistant_content(&response);
-    let reasoning = direct_assistant_reasoning(&response);
-    let tool_calls = parse_direct_tool_calls(&response);
-    let usage = json_usage(&response);
-    let message = response
-        .pointer("/choices/0/message")
-        .cloned()
-        .unwrap_or_else(|| json!({ "role": "assistant", "content": content.clone() }));
-    let message =
-        sanitize_direct_assistant_message_for_history(message, &reasoning, reasoning_history_mode);
-    DirectChatResponse {
-        message,
-        content,
-        reasoning,
-        tool_calls,
-        usage,
-        streamed_text: false,
-    }
-}
-
-fn direct_stream_text_delta(delta: &serde_json::Value) -> String {
-    let Some(content) = delta.get("content") else {
-        return String::new();
-    };
-    if let Some(text) = content.as_str() {
-        return text.to_string();
-    }
-    if let Some(parts) = content.as_array() {
-        return parts
-            .iter()
-            .filter_map(|part| {
-                part.get("text")
-                    .and_then(|v| v.as_str())
-                    .or_else(|| part.get("content").and_then(|v| v.as_str()))
-            })
-            .collect::<Vec<_>>()
-            .join("");
-    }
-    String::new()
-}
-
-fn direct_stream_reasoning_delta(delta: &serde_json::Value) -> String {
-    for key in ["reasoning_content", "reasoning", "reasoning_text"] {
-        if let Some(text) = delta.get(key).and_then(|v| v.as_str()) {
-            return text.to_string();
-        }
-    }
-
-    if let Some(parts) = delta.get("content").and_then(|v| v.as_array()) {
-        return parts
-            .iter()
-            .filter(|part| {
-                matches!(
-                    part.get("type").and_then(|v| v.as_str()),
-                    Some("reasoning") | Some("thinking") | Some("reasoning_text")
-                )
-            })
-            .filter_map(|part| {
-                part.get("text")
-                    .and_then(|v| v.as_str())
-                    .or_else(|| part.get("content").and_then(|v| v.as_str()))
-            })
-            .collect::<Vec<_>>()
-            .join("");
-    }
-
-    String::new()
-}
-
-fn emit_direct_streaming_delta(window: &WebviewWindow, tab_id: &str, text: &str, reasoning: &str) {
-    if text.is_empty() && reasoning.is_empty() {
-        return;
-    }
-    let mut blocks = Vec::new();
-    if !reasoning.is_empty() {
-        blocks.push(json!({ "type": "thinking", "thinking": reasoning }));
-    }
-    if !text.is_empty() {
-        blocks.push(json!({ "type": "text", "text": text }));
-    }
-    emit_direct_output(
-        window,
-        tab_id,
-        &json!({
-            "type": "assistant",
-            "subtype": "streaming_delta",
-            "message": {
-                "content": blocks,
-            },
-        }),
-    );
-}
-
-fn direct_tool_calls_from_stream(
-    calls: HashMap<usize, DirectStreamingToolCall>,
-) -> Vec<DirectToolCall> {
-    let mut indexed = calls.into_iter().collect::<Vec<_>>();
-    indexed.sort_by_key(|(idx, _)| *idx);
-    indexed
-        .into_iter()
-        .filter_map(|(idx, call)| {
-            if call.name.trim().is_empty() {
-                return None;
-            }
-            let id = call
-                .id
-                .unwrap_or_else(|| format!("toolu_stream_{}", idx + 1));
-            let input = serde_json::from_str::<serde_json::Value>(&call.arguments)
-                .unwrap_or_else(|_| json!({ "_raw_arguments": call.arguments }));
-            Some(DirectToolCall {
-                id,
-                name: call.name,
-                input,
-                legacy_function_call: call.legacy_function_call,
-            })
-        })
-        .collect()
-}
-
-fn direct_message_from_parts(
-    content: &str,
-    reasoning: &str,
-    tool_calls: &[DirectToolCall],
-    reasoning_history_mode: DirectReasoningHistoryMode,
-) -> serde_json::Value {
-    let mut message = json!({
-        "role": "assistant",
-        "content": if content.trim().is_empty() {
-            serde_json::Value::Null
-        } else {
-            json!(content)
-        },
-    });
-    if reasoning_history_mode == DirectReasoningHistoryMode::Preserve
-        && !reasoning.trim().is_empty()
-    {
-        if let Some(object) = message.as_object_mut() {
-            object.insert("reasoning_content".to_string(), json!(reasoning));
-        }
-    }
-    if let Some(tool_call) = tool_calls
-        .iter()
-        .find(|tool_call| tool_call.legacy_function_call)
-    {
-        if let Some(object) = message.as_object_mut() {
-            object.insert(
-                "function_call".to_string(),
-                json!({
-                    "name": tool_call.name,
-                    "arguments": tool_call.input.to_string(),
-                }),
-            );
-        }
-    } else if !tool_calls.is_empty() {
-        if let Some(object) = message.as_object_mut() {
-            object.insert(
-                "tool_calls".to_string(),
-                json!(tool_calls
-                    .iter()
-                    .map(|tool_call| json!({
-                        "id": tool_call.id,
-                        "type": "function",
-                        "function": {
-                            "name": tool_call.name,
-                            "arguments": tool_call.input.to_string(),
-                        },
-                    }))
-                    .collect::<Vec<_>>()),
-            );
-        }
-    }
-    message
-}
-
-fn provider_error_allows_toolless_retry(status: reqwest::StatusCode, body: &str) -> bool {
-    if !(status == reqwest::StatusCode::BAD_REQUEST
-        || status == reqwest::StatusCode::UNPROCESSABLE_ENTITY
-        || status == reqwest::StatusCode::NOT_FOUND
-        || status == reqwest::StatusCode::METHOD_NOT_ALLOWED)
-    {
-        return false;
-    }
-    let body = body.to_ascii_lowercase();
-    body.contains("tool")
-        || body.contains("tools")
-        || body.contains("function")
-        || body.contains("tool_choice")
-        || body.contains("unsupported parameter")
-        || body.contains("unknown parameter")
-}
-
-fn add_direct_request_tooling(request_body: &mut serde_json::Value, mode: DirectToolRequestMode) {
-    let Some(object) = request_body.as_object_mut() else {
-        return;
-    };
-    match mode {
-        DirectToolRequestMode::Tools => {
-            object.insert("tools".to_string(), direct_provider_tools());
-            object.insert("tool_choice".to_string(), json!("auto"));
-        }
-        DirectToolRequestMode::Functions => {
-            object.insert("functions".to_string(), direct_provider_functions());
-            object.insert("function_call".to_string(), json!("auto"));
-        }
-        DirectToolRequestMode::None => {}
-    }
-}
-
-fn direct_messages_for_legacy_functions(
-    messages: Vec<serde_json::Value>,
-) -> Vec<serde_json::Value> {
-    let mut tool_names: HashMap<String, String> = HashMap::new();
-    let mut converted = Vec::new();
-
-    for mut message in messages {
-        match message.get("role").and_then(|v| v.as_str()) {
-            Some("assistant") => {
-                if let Some(tool_calls) = message.get("tool_calls").and_then(|v| v.as_array()) {
-                    for tool_call in tool_calls {
-                        if let (Some(id), Some(name)) = (
-                            tool_call.get("id").and_then(|v| v.as_str()),
-                            tool_call.pointer("/function/name").and_then(|v| v.as_str()),
-                        ) {
-                            tool_names.insert(id.to_string(), name.to_string());
-                        }
-                    }
-
-                    if let Some((name, arguments)) = tool_calls.first().map(|first| {
-                        let name = first
-                            .pointer("/function/name")
-                            .and_then(|v| v.as_str())
-                            .map(|v| v.to_string())
-                            .unwrap_or_else(|| "tool".to_string());
-                        let arguments = first
-                            .pointer("/function/arguments")
-                            .and_then(|v| v.as_str())
-                            .map(|v| v.to_string())
-                            .unwrap_or_else(|| {
-                                first
-                                    .pointer("/function/arguments")
-                                    .map(|v| v.to_string())
-                                    .unwrap_or_else(|| "{}".to_string())
-                            });
-                        (name, arguments)
-                    }) {
-                        if let Some(object) = message.as_object_mut() {
-                            object.remove("tool_calls");
-                            object.insert(
-                                "function_call".to_string(),
-                                json!({
-                                    "name": name,
-                                    "arguments": arguments,
-                                }),
-                            );
-                            if object.get("content").is_none() {
-                                object.insert("content".to_string(), serde_json::Value::Null);
-                            }
-                        }
-                    }
-                }
-                converted.push(message);
-            }
-            Some("tool") => {
-                let tool_call_id = message
-                    .get("tool_call_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let name = tool_names
-                    .get(tool_call_id)
-                    .cloned()
-                    .unwrap_or_else(|| "tool_result".to_string());
-                let content = message
-                    .get("content")
-                    .and_then(|v| v.as_str())
-                    .map(|v| v.to_string())
-                    .unwrap_or_else(|| {
-                        message
-                            .get("content")
-                            .map(|v| v.to_string())
-                            .unwrap_or_default()
-                    });
-                converted.push(json!({
-                    "role": "function",
-                    "name": name,
-                    "content": content,
-                }));
-            }
-            _ => converted.push(message),
-        }
-    }
-
-    converted
-}
-
-fn direct_message_rough_chars(message: &serde_json::Value) -> usize {
-    message.to_string().chars().count()
-}
-
-fn direct_messages_rough_chars(messages: &[serde_json::Value]) -> usize {
-    messages.iter().map(direct_message_rough_chars).sum()
-}
-
-fn direct_message_role(message: &serde_json::Value) -> Option<&str> {
-    message.get("role").and_then(|v| v.as_str())
-}
-
-fn is_direct_tool_result_message(message: &serde_json::Value) -> bool {
-    matches!(
-        direct_message_role(message),
-        Some("tool") | Some("function")
-    )
-}
-
-fn direct_tool_call_ids(message: &serde_json::Value) -> Vec<String> {
-    if direct_message_role(message) != Some("assistant") {
-        return Vec::new();
-    }
-
-    let mut ids = message
-        .get("tool_calls")
-        .and_then(|v| v.as_array())
-        .map(|calls| {
-            calls
-                .iter()
-                .filter_map(|call| call.get("id").and_then(|v| v.as_str()))
-                .map(|id| id.to_string())
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
-    if message.get("function_call").is_some() {
-        ids.push("function_call_1".to_string());
-    }
-
-    ids
-}
-
-fn direct_tool_result_ids(message: &serde_json::Value) -> Vec<String> {
-    match direct_message_role(message) {
-        Some("tool") => message
-            .get("tool_call_id")
-            .and_then(|v| v.as_str())
-            .map(|id| vec![id.to_string()])
-            .unwrap_or_default(),
-        Some("function") => vec!["function_call_1".to_string()],
-        _ => Vec::new(),
-    }
-}
-
-fn compactable_direct_message_groups(
-    messages: &[serde_json::Value],
-) -> Vec<Vec<serde_json::Value>> {
-    let mut groups: Vec<Vec<serde_json::Value>> = Vec::new();
-    let mut current: Vec<serde_json::Value> = Vec::new();
-
-    for message in messages {
-        if direct_message_role(message) == Some("assistant") && !current.is_empty() {
-            groups.push(current);
-            current = vec![message.clone()];
-        } else {
-            current.push(message.clone());
-        }
-    }
-
-    if !current.is_empty() {
-        groups.push(current);
-    }
-
-    groups
-}
-
-fn adjust_direct_keep_start_for_api_invariants(
-    messages: &[serde_json::Value],
-    start_index: usize,
-) -> usize {
-    if start_index == 0 || start_index >= messages.len() {
-        return start_index;
-    }
-
-    let mut adjusted_index = start_index;
-    let tool_result_ids = messages[start_index..]
-        .iter()
-        .flat_map(direct_tool_result_ids)
-        .collect::<Vec<_>>();
-
-    if !tool_result_ids.is_empty() {
-        let kept_tool_call_ids = messages[adjusted_index..]
-            .iter()
-            .flat_map(direct_tool_call_ids)
-            .collect::<HashSet<_>>();
-        let mut needed_tool_call_ids = tool_result_ids
-            .into_iter()
-            .filter(|id| !kept_tool_call_ids.contains(id))
-            .collect::<HashSet<_>>();
-
-        for i in (0..adjusted_index).rev() {
-            if needed_tool_call_ids.is_empty() {
-                break;
-            }
-            let ids = direct_tool_call_ids(&messages[i]);
-            if ids.iter().any(|id| needed_tool_call_ids.contains(id)) {
-                adjusted_index = i;
-                for id in ids {
-                    needed_tool_call_ids.remove(&id);
-                }
-            }
-        }
-    }
-
-    while adjusted_index > 0 && is_direct_tool_result_message(&messages[adjusted_index]) {
-        adjusted_index -= 1;
-    }
-
-    adjusted_index
-}
-
-struct DirectCompactionPlan {
-    system_messages: Vec<serde_json::Value>,
-    summary_messages: Vec<serde_json::Value>,
-    retained_messages: Vec<serde_json::Value>,
-}
-
-fn build_direct_compaction_plan(messages: &[serde_json::Value]) -> Option<DirectCompactionPlan> {
-    if direct_messages_rough_chars(messages) <= DIRECT_PROVIDER_COMPACT_THRESHOLD_CHARS {
-        return None;
-    }
-
-    let system_count = messages
-        .iter()
-        .take_while(|message| direct_message_role(message) == Some("system"))
-        .count();
-    let (system_messages, conversation) = messages.split_at(system_count);
-    if conversation.len() < 8 {
-        return None;
-    }
-
-    let groups = compactable_direct_message_groups(conversation);
-    if groups.len() < 4 {
-        return None;
-    }
-
-    let mut retain_group_start = groups.len();
-    let mut retained_chars = 0_usize;
-    while retain_group_start > 0 {
-        let group_chars = direct_messages_rough_chars(&groups[retain_group_start - 1]);
-        if retained_chars > 0 && retained_chars + group_chars > DIRECT_PROVIDER_COMPACT_RETAIN_CHARS
-        {
-            break;
-        }
-        retained_chars += group_chars;
-        retain_group_start -= 1;
-    }
-
-    let keep_start = groups
-        .iter()
-        .take(retain_group_start)
-        .map(Vec::len)
-        .sum::<usize>();
-    let keep_start = adjust_direct_keep_start_for_api_invariants(conversation, keep_start);
-    if keep_start == 0 || keep_start >= conversation.len() {
-        return None;
-    }
-
-    Some(DirectCompactionPlan {
-        system_messages: system_messages.to_vec(),
-        summary_messages: conversation[..keep_start].to_vec(),
-        retained_messages: conversation[keep_start..].to_vec(),
-    })
-}
-
-fn direct_compact_prompt() -> String {
-    [
-        "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.",
-        "",
-        "- Do NOT use Read, Bash, Grep, Glob, Edit, Write, or ANY other tool.",
-        "- You already have all the context you need in the conversation above.",
-        "- Tool calls will be REJECTED and will waste your only turn; you will fail the task.",
-        "- Your entire response must be plain text: an <analysis> block followed by a <summary> block.",
-        "",
-        "Your task is to create a detailed summary of this conversation. This summary will be placed at the start of a continuing session; newer messages that build on this context will follow after your summary (you do not see them here). Summarize thoroughly so that someone reading only your summary and then the newer messages can fully understand what happened and continue the work.",
-        "",
-        "Before providing your final summary, wrap your analysis in <analysis> tags to organize your thoughts and ensure you have covered all necessary points. In your analysis process:",
-        "",
-        "1. Chronologically analyze each message and section of the conversation. For each section thoroughly identify:",
-        "   - The user's explicit requests and intents",
-        "   - Your approach to addressing the user's requests",
-        "   - Key decisions, technical concepts and code patterns",
-        "   - Specific details like:",
-        "     - file names",
-        "     - full code snippets",
-        "     - function signatures",
-        "     - file edits",
-        "   - Errors that you ran into and how you fixed them",
-        "   - Pay special attention to specific user feedback that you received, especially if the user told you to do something differently.",
-        "2. Double-check for technical accuracy and completeness, addressing each required element thoroughly.",
-        "",
-        "Your summary should include the following sections:",
-        "",
-        "1. Primary Request and Intent: Capture the user's explicit requests and intents in detail",
-        "2. Key Technical Concepts: List important technical concepts, technologies, and frameworks discussed.",
-        "3. Files and Code Sections: Enumerate specific files and code sections examined, modified, or created. Include full code snippets where applicable and include a summary of why this file read or edit is important.",
-        "4. Errors and fixes: List errors encountered and how they were fixed.",
-        "5. Problem Solving: Document problems solved and any ongoing troubleshooting efforts.",
-        "6. All user messages: List ALL user messages that are not tool results.",
-        "7. Pending Tasks: Outline any pending tasks.",
-        "8. Work Completed: Describe what was accomplished by the end of this portion.",
-        "9. Context for Continuing Work: Summarize any context, decisions, or state that would be needed to understand and continue the work in subsequent messages.",
-        "",
-        "Here's an example of how your output should be structured:",
-        "",
-        "<example>",
-        "<analysis>",
-        "[Your thought process, ensuring all points are covered thoroughly and accurately]",
-        "</analysis>",
-        "",
-        "<summary>",
-        "1. Primary Request and Intent:",
-        "   [Detailed description]",
-        "",
-        "2. Key Technical Concepts:",
-        "   - [Concept 1]",
-        "   - [Concept 2]",
-        "",
-        "3. Files and Code Sections:",
-        "   - [File Name 1]",
-        "      - [Summary of why this file is important]",
-        "      - [Important Code Snippet]",
-        "",
-        "4. Errors and fixes:",
-        "    - [Error description]:",
-        "      - [How you fixed it]",
-        "",
-        "5. Problem Solving:",
-        "   [Description]",
-        "",
-        "6. All user messages:",
-        "    - [Detailed non tool use user message]",
-        "",
-        "7. Pending Tasks:",
-        "   - [Task 1]",
-        "",
-        "8. Work Completed:",
-        "   [Description of what was accomplished]",
-        "",
-        "9. Context for Continuing Work:",
-        "   [Key context, decisions, or state needed to continue the work]",
-        "",
-        "</summary>",
-        "</example>",
-        "",
-        "Please provide your summary following this structure, ensuring precision and thoroughness.",
-        "",
-        "REMINDER: Do NOT call any tools. Respond with plain text only: an <analysis> block followed by a <summary> block. Tool calls will be rejected and you will fail the task.",
-    ]
-    .join("\n")
-}
-
-fn strip_direct_xml_section(input: &str, tag: &str) -> String {
-    let open = format!("<{}>", tag);
-    let close = format!("</{}>", tag);
-    let mut output = input.to_string();
-    while let Some(start) = output.find(&open) {
-        let content_start = start + open.len();
-        let Some(end_offset) = output[content_start..].find(&close) else {
-            break;
-        };
-        let end = content_start + end_offset + close.len();
-        output.replace_range(start..end, "");
-    }
-    output
-}
-
-fn direct_xml_section(input: &str, tag: &str) -> Option<String> {
-    let open = format!("<{}>", tag);
-    let close = format!("</{}>", tag);
-    let start = input.find(&open)? + open.len();
-    let end = input[start..].find(&close)? + start;
-    Some(input[start..end].trim().to_string())
-}
-
-fn direct_collapse_blank_lines(input: &str) -> String {
-    let mut output = input.to_string();
-    while output.contains("\n\n\n") {
-        output = output.replace("\n\n\n", "\n\n");
-    }
-    output
-}
-
-fn direct_format_compact_summary(summary: &str) -> String {
-    let without_analysis = strip_direct_xml_section(summary, "analysis");
-    let formatted = if let Some(summary_section) = direct_xml_section(&without_analysis, "summary")
-    {
-        format!("Summary:\n{}", summary_section)
-    } else {
-        without_analysis
-    };
-    direct_collapse_blank_lines(&formatted).trim().to_string()
-}
-
-fn direct_compact_user_summary_message(summary: &str) -> String {
-    format!(
-        "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\n{}\n\nRecent messages are preserved verbatim.\n\nContinue the conversation from where it left off without asking the user any further questions. Resume directly; do not acknowledge the summary, do not recap what was happening, and do not preface with \"I'll continue\" or similar. Pick up the last task as if the break never happened.",
-        direct_format_compact_summary(summary)
-    )
-}
-
-fn direct_compact_summary_request_messages(
-    summary_messages: &[serde_json::Value],
-) -> Vec<serde_json::Value> {
-    let mut messages = vec![json!({
-        "role": "system",
-        "content": "You are a conversation compaction agent. Produce only the requested compact summary text. Do not call tools.",
-    })];
-    messages.extend(summary_messages.iter().cloned());
-    messages.push(json!({
-        "role": "user",
-        "content": direct_compact_prompt(),
-    }));
-    messages
-}
-
-fn direct_provider_error_looks_prompt_too_long(message: &str) -> bool {
-    let lower = message.to_ascii_lowercase();
-    lower.contains("prompt too long")
-        || lower.contains("context_length_exceeded")
-        || lower.contains("context length")
-        || lower.contains("maximum context")
-        || lower.contains("token limit")
-        || lower.contains("too many tokens")
-        || lower.contains("request too large")
-        || lower.contains("http 413")
-}
-
-fn truncate_direct_compact_head_for_retry(
-    messages: &[serde_json::Value],
-) -> Option<Vec<serde_json::Value>> {
-    let input = if messages
-        .first()
-        .and_then(|message| message.get("content"))
-        .and_then(|content| content.as_str())
-        == Some(DIRECT_PROVIDER_PTL_RETRY_MARKER)
-    {
-        &messages[1..]
-    } else {
-        messages
-    };
-
-    let groups = compactable_direct_message_groups(input);
-    if groups.len() < 2 {
-        return None;
-    }
-
-    let drop_count = std::cmp::max(1, groups.len() / 5).min(groups.len() - 1);
-    let mut sliced = groups[drop_count..]
-        .iter()
-        .flatten()
-        .cloned()
-        .collect::<Vec<_>>();
-    if sliced
-        .first()
-        .map(|message| direct_message_role(message) == Some("assistant"))
-        .unwrap_or(false)
-    {
-        sliced.insert(
-            0,
-            json!({
-                "role": "user",
-                "content": DIRECT_PROVIDER_PTL_RETRY_MARKER,
-            }),
-        );
-    }
-    Some(sliced)
-}
-
-fn direct_message_content_for_toolless_history(message: &serde_json::Value) -> String {
-    let Some(content) = message.get("content") else {
-        return String::new();
-    };
-    if content.is_null() {
-        return String::new();
-    }
-    content
-        .as_str()
-        .map(|v| v.to_string())
-        .unwrap_or_else(|| content.to_string())
-}
-
-fn direct_tool_call_descriptions(message: &serde_json::Value) -> Vec<String> {
-    let mut descriptions = message
-        .get("tool_calls")
-        .and_then(|v| v.as_array())
-        .map(|calls| {
-            calls
-                .iter()
-                .filter_map(|call| {
-                    let name = call.pointer("/function/name")?.as_str()?;
-                    let arguments = call
-                        .pointer("/function/arguments")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    Some(if arguments.trim().is_empty() {
-                        name.to_string()
-                    } else {
-                        format!(
-                            "{}({})",
-                            name,
-                            truncate_tool_content(arguments.to_string(), 600)
-                        )
-                    })
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
-    if let Some(function_call) = message.get("function_call") {
-        if let Some(name) = function_call.get("name").and_then(|v| v.as_str()) {
-            let arguments = function_call
-                .get("arguments")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            descriptions.push(if arguments.trim().is_empty() {
-                name.to_string()
-            } else {
-                format!(
-                    "{}({})",
-                    name,
-                    truncate_tool_content(arguments.to_string(), 600)
-                )
-            });
-        }
-    }
-
-    descriptions
-}
-
-fn direct_messages_without_tooling_from_sanitized(
-    messages: Vec<serde_json::Value>,
-) -> Vec<serde_json::Value> {
-    let mut sanitized = Vec::new();
-    for mut message in messages {
-        match direct_message_role(&message) {
-            Some("assistant") => {
-                let tool_descriptions = direct_tool_call_descriptions(&message);
-                let existing_content = direct_message_content_for_toolless_history(&message);
-                if let Some(object) = message.as_object_mut() {
-                    object.remove("tool_calls");
-                    object.remove("function_call");
-                    if !tool_descriptions.is_empty() {
-                        let tool_text = format!(
-                            "[Assistant requested tool calls]\n- {}",
-                            tool_descriptions.join("\n- ")
-                        );
-                        let content = if existing_content.trim().is_empty() {
-                            tool_text
-                        } else {
-                            format!("{}\n\n{}", existing_content, tool_text)
-                        };
-                        object.insert("content".to_string(), json!(content));
-                    } else if object.get("content").map(|v| v.is_null()).unwrap_or(false) {
-                        object.insert("content".to_string(), json!(""));
-                    }
-                }
-                sanitized.push(message);
-            }
-            Some("tool") => {
-                let tool_call_id = message
-                    .get("tool_call_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
-                let content = direct_message_content_for_toolless_history(&message);
-                sanitized.push(json!({
-                    "role": "user",
-                    "content": format!(
-                        "[Previous tool result {}]\n{}",
-                        tool_call_id,
-                        content
-                    ),
-                }));
-            }
-            Some("function") => {
-                let name = message
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("function");
-                let content = direct_message_content_for_toolless_history(&message);
-                sanitized.push(json!({
-                    "role": "user",
-                    "content": format!(
-                        "[Previous function result {}]\n{}",
-                        name,
-                        content
-                    ),
-                }));
-            }
-            _ => sanitized.push(message),
-        }
-    }
-    sanitized
-}
-
-fn direct_messages_without_tooling(
-    messages: &[serde_json::Value],
-    reasoning_history_mode: DirectReasoningHistoryMode,
-) -> Vec<serde_json::Value> {
-    let messages = sanitize_direct_messages_for_reasoning_history(messages, reasoning_history_mode);
-    direct_messages_without_tooling_from_sanitized(messages)
-}
-
-async fn send_openai_compatible_raw_no_tools_chat_request(
-    client: &reqwest::Client,
-    credential: &StoredOpenAiCompatibleCredential,
-    messages: &[serde_json::Value],
-) -> Result<DirectChatResponse, DirectProviderRequestFailure> {
-    let request_messages =
-        direct_messages_without_tooling(messages, direct_reasoning_history_mode(credential));
+) -> Result<(String, String), String> {
     let request_body = json!({
         "model": credential.model.clone(),
-        "messages": request_messages,
+        "messages": messages,
         "stream": false,
     });
 
@@ -6614,1021 +2494,87 @@ async fn send_openai_compatible_raw_no_tools_chat_request(
         .body(request_body.to_string())
         .send()
         .await
-        .map_err(|err| DirectProviderRequestFailure {
-            message: format!("Provider request failed: {}", err),
-            can_retry_without_tools: false,
-        })?;
+        .map_err(|err| format!("Provider request failed: {}", err))?;
 
     let status = response.status();
     let response_text = response
         .text()
         .await
-        .map_err(|err| DirectProviderRequestFailure {
-            message: format!("Failed to read provider response: {}", err),
-            can_retry_without_tools: false,
-        })?;
-
+        .map_err(|err| format!("Failed to read provider response: {}", err))?;
     if !status.is_success() {
-        return Err(DirectProviderRequestFailure {
-            message: format!("Provider returned HTTP {}: {}", status, response_text),
-            can_retry_without_tools: false,
-        });
+        return Err(format!(
+            "Provider returned HTTP {}: {}",
+            status, response_text
+        ));
     }
 
-    let response =
-        serde_json::from_str(&response_text).map_err(|err| DirectProviderRequestFailure {
-            message: format!("Provider returned invalid JSON: {}", err),
-            can_retry_without_tools: false,
-        })?;
-    Ok(direct_chat_response_from_value(
-        response,
-        direct_reasoning_history_mode(credential),
-    ))
+    let response: serde_json::Value = serde_json::from_str(&response_text)
+        .map_err(|err| format!("Provider returned invalid JSON: {}", err))?;
+    let message = response.pointer("/choices/0/message");
+    let content = message
+        .and_then(|message| message.get("content"))
+        .and_then(|value| value.as_str())
+        .or_else(|| {
+            response
+                .pointer("/choices/0/text")
+                .and_then(|value| value.as_str())
+        })
+        .unwrap_or_default()
+        .to_string();
+    let reasoning = message
+        .and_then(|message| {
+            message
+                .get("reasoning_content")
+                .or_else(|| message.get("reasoning"))
+        })
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .to_string();
+
+    Ok((content, reasoning))
 }
 
-async fn compact_direct_request_messages_with_provider(
-    client: &reqwest::Client,
-    credential: &StoredOpenAiCompatibleCredential,
-    messages: &[serde_json::Value],
-) -> Result<Vec<serde_json::Value>, String> {
-    let Some(plan) = build_direct_compaction_plan(messages) else {
-        return Ok(messages.to_vec());
-    };
-
-    let mut summary_messages = plan.summary_messages.clone();
-    for attempt in 0..=DIRECT_PROVIDER_MAX_COMPACT_RETRIES {
-        let compact_request_messages = direct_compact_summary_request_messages(&summary_messages);
-        match send_openai_compatible_raw_no_tools_chat_request(
-            client,
-            credential,
-            &compact_request_messages,
-        )
-        .await
-        {
-            Ok(response) => {
-                let summary = if response.content.trim().is_empty() {
-                    response.reasoning.trim().to_string()
-                } else {
-                    response.content.trim().to_string()
-                };
-                if summary.is_empty() {
-                    return Err("Context compaction returned an empty summary".to_string());
-                }
-                let mut compacted = plan.system_messages.clone();
-                compacted.push(json!({
-                    "role": "user",
-                    "content": direct_compact_user_summary_message(&summary),
-                }));
-                compacted.extend(plan.retained_messages.iter().cloned());
-                if direct_messages_rough_chars(&compacted) < direct_messages_rough_chars(messages) {
-                    return Ok(compacted);
-                }
-                return Ok(messages.to_vec());
-            }
-            Err(err)
-                if attempt < DIRECT_PROVIDER_MAX_COMPACT_RETRIES
-                    && direct_provider_error_looks_prompt_too_long(&err.message) =>
-            {
-                let Some(truncated) = truncate_direct_compact_head_for_retry(&summary_messages)
-                else {
-                    return Err(format!("Context compaction failed: {}", err.message));
-                };
-                summary_messages = truncated;
-            }
-            Err(err) => return Err(format!("Context compaction failed: {}", err.message)),
-        }
-    }
-
-    Ok(messages.to_vec())
-}
-
-fn direct_messages_for_tool_capability(
-    messages: &[serde_json::Value],
-    mode: DirectToolRequestMode,
-    reasoning_history_mode: DirectReasoningHistoryMode,
-) -> Vec<serde_json::Value> {
-    let messages = sanitize_direct_messages_for_reasoning_history(messages, reasoning_history_mode);
-
-    if mode == DirectToolRequestMode::Tools {
-        return messages;
-    }
-
-    let mut messages = messages;
-    for message in &mut messages {
-        let role = message.get("role").and_then(|v| v.as_str());
-        if role == Some("system") {
-            if let Some(object) = message.as_object_mut() {
-                let existing = object.get("content").and_then(|value| value.as_str());
-                let prompt = direct_provider_prompt_for_mode(mode, existing);
-                object.insert("content".to_string(), json!(prompt));
-            }
-            break;
-        }
-    }
-
-    if !messages
-        .iter()
-        .any(|message| message.get("role").and_then(|v| v.as_str()) == Some("system"))
-    {
-        messages.insert(
-            0,
-            json!({
-                "role": "system",
-                "content": direct_provider_prompt_for_mode(mode, None),
-            }),
-        );
-    }
-
-    if mode == DirectToolRequestMode::Functions {
-        return direct_messages_for_legacy_functions(messages);
-    }
-
-    direct_messages_without_tooling_from_sanitized(messages)
-}
-
-async fn send_openai_compatible_chat_request(
-    client: &reqwest::Client,
-    credential: &StoredOpenAiCompatibleCredential,
-    messages: &[serde_json::Value],
-    window: &WebviewWindow,
-    tab_id: &str,
-    state: &ClaudeProcessState,
-    process_key: &str,
-) -> Result<DirectChatResponse, String> {
-    match send_openai_compatible_streaming_chat_request(
-        client,
-        credential,
-        messages,
-        window,
-        tab_id,
-        state,
-        process_key,
-        DirectToolRequestMode::Tools,
-    )
-    .await
-    {
-        Ok(response) => Ok(response),
-        Err(err) if err.can_retry_non_streaming => {
-            eprintln!(
-                "[direct-provider] streaming request failed, retrying non-streaming: {}",
-                err.message
-            );
-            match send_openai_compatible_non_streaming_chat_request(
-                client,
-                credential,
-                messages,
-                DirectToolRequestMode::Tools,
-            )
-            .await
-            {
-                Ok(response) => Ok(response),
-                Err(err) if err.can_retry_without_tools => {
-                    eprintln!(
-                        "[direct-provider] provider rejected modern tools, retrying legacy functions: {}",
-                        err.message
-                    );
-                    send_openai_compatible_with_legacy_functions(
-                        client,
-                        credential,
-                        messages,
-                        window,
-                        tab_id,
-                        state,
-                        process_key,
-                    )
-                    .await
-                }
-                Err(err) => Err(err.message),
-            }
-        }
-        Err(err) if err.can_retry_without_tools => {
-            eprintln!(
-                "[direct-provider] provider rejected streaming tools, retrying legacy functions: {}",
-                err.message
-            );
-            send_openai_compatible_with_legacy_functions(
-                client,
-                credential,
-                messages,
-                window,
-                tab_id,
-                state,
-                process_key,
-            )
-            .await
-        }
-        Err(err) => Err(err.message),
-    }
-}
-
-async fn send_openai_compatible_with_legacy_functions(
-    client: &reqwest::Client,
-    credential: &StoredOpenAiCompatibleCredential,
-    messages: &[serde_json::Value],
-    window: &WebviewWindow,
-    tab_id: &str,
-    state: &ClaudeProcessState,
-    process_key: &str,
-) -> Result<DirectChatResponse, String> {
-    match send_openai_compatible_streaming_chat_request(
-        client,
-        credential,
-        messages,
-        window,
-        tab_id,
-        state,
-        process_key,
-        DirectToolRequestMode::Functions,
-    )
-    .await
-    {
-        Ok(response) => Ok(response),
-        Err(err) if err.can_retry_non_streaming => {
-            eprintln!(
-                "[direct-provider] legacy function streaming failed, retrying non-streaming: {}",
-                err.message
-            );
-            match send_openai_compatible_non_streaming_chat_request(
-                client,
-                credential,
-                messages,
-                DirectToolRequestMode::Functions,
-            )
-            .await
-            {
-                Ok(response) => Ok(response),
-                Err(err) if err.can_retry_without_tools => {
-                    eprintln!(
-                        "[direct-provider] provider rejected legacy functions, retrying without tools: {}",
-                        err.message
-                    );
-                    send_openai_compatible_without_tools(
-                        client,
-                        credential,
-                        messages,
-                        window,
-                        tab_id,
-                        state,
-                        process_key,
-                    )
-                    .await
-                }
-                Err(err) => Err(err.message),
-            }
-        }
-        Err(err) if err.can_retry_without_tools => {
-            eprintln!(
-                "[direct-provider] provider rejected legacy function streaming, retrying without tools: {}",
-                err.message
-            );
-            send_openai_compatible_without_tools(
-                client,
-                credential,
-                messages,
-                window,
-                tab_id,
-                state,
-                process_key,
-            )
-            .await
-        }
-        Err(err) => Err(err.message),
-    }
-}
-
-async fn send_openai_compatible_without_tools(
-    client: &reqwest::Client,
-    credential: &StoredOpenAiCompatibleCredential,
-    messages: &[serde_json::Value],
-    window: &WebviewWindow,
-    tab_id: &str,
-    state: &ClaudeProcessState,
-    process_key: &str,
-) -> Result<DirectChatResponse, String> {
-    match send_openai_compatible_streaming_chat_request(
-        client,
-        credential,
-        messages,
-        window,
-        tab_id,
-        state,
-        process_key,
-        DirectToolRequestMode::None,
-    )
-    .await
-    {
-        Ok(response) => Ok(response),
-        Err(err) if err.can_retry_non_streaming => {
-            send_openai_compatible_non_streaming_chat_request(
-                client,
-                credential,
-                messages,
-                DirectToolRequestMode::None,
-            )
-            .await
-            .map_err(|err| err.message)
-        }
-        Err(err) => Err(err.message),
-    }
-}
-
-struct DirectProviderRequestFailure {
-    message: String,
-    can_retry_without_tools: bool,
-}
-
-async fn send_openai_compatible_non_streaming_chat_request(
-    client: &reqwest::Client,
-    credential: &StoredOpenAiCompatibleCredential,
-    messages: &[serde_json::Value],
-    mode: DirectToolRequestMode,
-) -> Result<DirectChatResponse, DirectProviderRequestFailure> {
-    let messages = compact_direct_request_messages_with_provider(client, credential, messages)
-        .await
-        .unwrap_or_else(|err| {
-            eprintln!("[direct-provider] context compaction skipped: {}", err);
-            messages.to_vec()
-        });
-    let request_messages = direct_messages_for_tool_capability(
-        &messages,
-        mode,
-        direct_reasoning_history_mode(credential),
-    );
-    let mut request_body = json!({
-        "model": credential.model.clone(),
-        "messages": request_messages,
-        "stream": false,
-    });
-    add_direct_request_tooling(&mut request_body, mode);
-
-    let response = client
-        .post(openai_chat_completions_url(&credential.base_url))
-        .bearer_auth(&credential.api_key)
-        .header("Content-Type", "application/json")
-        .body(request_body.to_string())
-        .send()
-        .await
-        .map_err(|err| DirectProviderRequestFailure {
-            message: format!("Provider request failed: {}", err),
-            can_retry_without_tools: false,
-        })?;
-
-    let status = response.status();
-    let response_text = response
-        .text()
-        .await
-        .map_err(|err| DirectProviderRequestFailure {
-            message: format!("Failed to read provider response: {}", err),
-            can_retry_without_tools: false,
-        })?;
-
-    if !status.is_success() {
-        return Err(DirectProviderRequestFailure {
-            message: format!("Provider returned HTTP {}: {}", status, response_text),
-            can_retry_without_tools: provider_error_allows_toolless_retry(status, &response_text),
-        });
-    }
-
-    let response =
-        serde_json::from_str(&response_text).map_err(|err| DirectProviderRequestFailure {
-            message: format!("Provider returned invalid JSON: {}", err),
-            can_retry_without_tools: false,
-        })?;
-    Ok(direct_chat_response_from_value(
-        response,
-        direct_reasoning_history_mode(credential),
-    ))
-}
-
-async fn send_openai_compatible_streaming_chat_request(
-    client: &reqwest::Client,
-    credential: &StoredOpenAiCompatibleCredential,
-    messages: &[serde_json::Value],
-    window: &WebviewWindow,
-    tab_id: &str,
-    state: &ClaudeProcessState,
-    process_key: &str,
-    mode: DirectToolRequestMode,
-) -> Result<DirectChatResponse, DirectStreamFailure> {
-    let messages = compact_direct_request_messages_with_provider(client, credential, messages)
-        .await
-        .unwrap_or_else(|err| {
-            eprintln!("[direct-provider] context compaction skipped: {}", err);
-            messages.to_vec()
-        });
-    let request_messages = direct_messages_for_tool_capability(
-        &messages,
-        mode,
-        direct_reasoning_history_mode(credential),
-    );
-    let mut request_body = json!({
-        "model": credential.model.clone(),
-        "messages": request_messages,
-        "stream": true,
-    });
-    add_direct_request_tooling(&mut request_body, mode);
-
-    let mut response = client
-        .post(openai_chat_completions_url(&credential.base_url))
-        .bearer_auth(&credential.api_key)
-        .header("Content-Type", "application/json")
-        .body(request_body.to_string())
-        .send()
-        .await
-        .map_err(|err| DirectStreamFailure {
-            message: format!("Provider request failed: {}", err),
-            can_retry_non_streaming: true,
-            can_retry_without_tools: false,
-        })?;
-
-    let status = response.status();
-    if !status.is_success() {
-        let response_text = response.text().await.unwrap_or_default();
-        return Err(DirectStreamFailure {
-            message: format!("Provider returned HTTP {}: {}", status, response_text),
-            can_retry_non_streaming: true,
-            can_retry_without_tools: provider_error_allows_toolless_retry(status, &response_text),
-        });
-    }
-
-    let mut buffer = String::new();
-    let mut content = String::new();
-    let mut reasoning = String::new();
-    let mut tool_calls: HashMap<usize, DirectStreamingToolCall> = HashMap::new();
-    let mut usage = json!({ "input_tokens": 0, "output_tokens": 0 });
-    let mut streamed_text = false;
-
-    while let Some(chunk) = response.chunk().await.map_err(|err| DirectStreamFailure {
-        message: format!("Failed to read provider stream: {}", err),
-        can_retry_non_streaming: false,
-        can_retry_without_tools: false,
-    })? {
-        if direct_provider_cancelled(state, process_key).await {
-            return Err(DirectStreamFailure {
-                message: "Direct provider request cancelled".to_string(),
-                can_retry_non_streaming: false,
-                can_retry_without_tools: false,
-            });
-        }
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
-        while let Some(pos) = buffer.find('\n') {
-            let line = buffer[..pos].trim_end_matches('\r').trim().to_string();
-            buffer = buffer[pos + 1..].to_string();
-            if line.is_empty() || !line.starts_with("data:") {
-                continue;
-            }
-            let data = line.trim_start_matches("data:").trim();
-            if data == "[DONE]" {
-                let tool_calls = direct_tool_calls_from_stream(tool_calls);
-                let message = direct_message_from_parts(
-                    &content,
-                    &reasoning,
-                    &tool_calls,
-                    direct_reasoning_history_mode(credential),
-                );
-                return Ok(DirectChatResponse {
-                    message,
-                    content,
-                    reasoning,
-                    tool_calls,
-                    usage,
-                    streamed_text,
-                });
-            }
-
-            let value = serde_json::from_str::<serde_json::Value>(data).map_err(|err| {
-                DirectStreamFailure {
-                    message: format!("Provider returned invalid stream JSON: {}", err),
-                    can_retry_non_streaming: false,
-                    can_retry_without_tools: false,
-                }
-            })?;
-            if value.get("usage").is_some() {
-                let next_usage = json_usage(&value);
-                if usage_has_tokens(&next_usage) {
-                    usage = next_usage;
-                }
-            }
-            let Some(delta) = value.pointer("/choices/0/delta") else {
-                continue;
-            };
-
-            let text_delta = direct_stream_text_delta(delta);
-            let reasoning_delta = direct_stream_reasoning_delta(delta);
-            if !text_delta.is_empty() {
-                content.push_str(&text_delta);
-                streamed_text = true;
-            }
-            if !reasoning_delta.is_empty() {
-                reasoning.push_str(&reasoning_delta);
-                streamed_text = true;
-            }
-            emit_direct_streaming_delta(window, tab_id, &text_delta, &reasoning_delta);
-
-            if let Some(calls) = delta.get("tool_calls").and_then(|v| v.as_array()) {
-                for (fallback_idx, call) in calls.iter().enumerate() {
-                    let idx = call
-                        .get("index")
-                        .and_then(|v| v.as_u64())
-                        .and_then(|v| usize::try_from(v).ok())
-                        .unwrap_or(fallback_idx);
-                    let entry = tool_calls.entry(idx).or_default();
-                    if let Some(id) = call.get("id").and_then(|v| v.as_str()) {
-                        if !id.is_empty() {
-                            entry.id = Some(id.to_string());
-                        }
-                    }
-                    if let Some(name) = call.pointer("/function/name").and_then(|v| v.as_str()) {
-                        entry.name.push_str(name);
-                    }
-                    if let Some(arguments) =
-                        call.pointer("/function/arguments").and_then(|v| v.as_str())
-                    {
-                        entry.arguments.push_str(arguments);
-                    }
-                }
-            }
-            if let Some(function_call) = delta.get("function_call") {
-                let entry = tool_calls.entry(0).or_default();
-                entry.legacy_function_call = true;
-                if entry.id.is_none() {
-                    entry.id = Some("function_call_1".to_string());
-                }
-                if let Some(name) = function_call.get("name").and_then(|v| v.as_str()) {
-                    entry.name.push_str(name);
-                }
-                if let Some(arguments) = function_call.get("arguments").and_then(|v| v.as_str()) {
-                    entry.arguments.push_str(arguments);
-                }
-            }
-        }
-    }
-
-    let tool_calls = direct_tool_calls_from_stream(tool_calls);
-    let message = direct_message_from_parts(
-        &content,
-        &reasoning,
-        &tool_calls,
-        direct_reasoning_history_mode(credential),
-    );
-    Ok(DirectChatResponse {
-        message,
-        content,
-        reasoning,
-        tool_calls,
-        usage,
-        streamed_text,
-    })
-}
-
-async fn execute_openai_compatible_provider(
+async fn execute_openai_compatible_via_claude_proxy(
     window: WebviewWindow,
     project_path: String,
     prompt: String,
     tab_id: String,
-    session_id: Option<String>,
+    args_prefix: Vec<String>,
+    effort_level: Option<String>,
     credential: StoredOpenAiCompatibleCredential,
 ) -> Result<(), String> {
-    let started = std::time::Instant::now();
-    let session_id = session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let process_key = format!("{}:{}", window.label(), tab_id);
-    let project_root = match canonical_project_root(&project_path) {
-        Ok(path) => path,
-        Err(err) => {
-            emit_direct_error(&window, &tab_id, err);
-            emit_direct_complete(&window, &tab_id, false);
-            return Ok(());
-        }
-    };
+    let proxy_url = start_openai_anthropic_proxy(OpenAiProxyCredential {
+        api_key: credential.api_key.clone(),
+        base_url: credential.base_url.clone(),
+        model: credential.model.clone(),
+    })
+    .await?;
+    let claude_path = find_claude_binary()?;
 
-    let state = window.state::<ClaudeProcessState>();
-    clear_direct_provider_cancelled(&state, &process_key).await;
-    hydrate_direct_task_state(&state, &project_path, &session_id).await;
-    hydrate_direct_workdir_state(&state, &project_path, &session_id, &project_root).await;
-    let initial_root = direct_session_root(&state, &session_id, &project_root).await;
-    let init = json!({
-        "type": "system",
-        "subtype": "init",
-        "session_id": session_id,
-        "provider": PROVIDER_OPENAI_COMPATIBLE,
-        "provider_credential_id": credential.id.clone(),
-        "model": credential.model.clone(),
-        "cwd": initial_root.to_string_lossy(),
-        "tools": DIRECT_PROVIDER_TOOL_NAMES,
-    });
-    emit_and_persist_direct_output(&window, &project_path, &session_id, &tab_id, &init);
+    let (mut args, stdin_payload) = with_prompt_transport(args_prefix, prompt);
+    args.push("--model".to_string());
+    args.push("sonnet".to_string());
+    args.extend(common_claude_args());
 
-    let mut messages = {
-        let sessions = state.direct_sessions.lock().await;
-        sessions.get(&session_id).cloned().unwrap_or_default()
-    };
-    if messages.is_empty() {
-        messages = load_direct_provider_messages(&project_path, &session_id).unwrap_or_default();
-    }
+    let mut cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref());
+    cmd.env("ANTHROPIC_API_KEY", "claude-prism-local-proxy");
+    cmd.env("ANTHROPIC_BASE_URL", proxy_url);
+    cmd.env_remove("ANTHROPIC_AUTH_TOKEN");
+    cmd.env_remove("ANTHROPIC_MODEL");
+    cmd.env_remove("CLAUDE_MODEL");
 
-    let mut request_messages = vec![json!({
-        "role": "system",
-        "content": direct_provider_system_prompt_for_project(&initial_root),
-    })];
-    request_messages.extend(messages.clone());
-    request_messages.push(json!({ "role": "user", "content": prompt.clone() }));
-    messages.push(json!({
-        "role": "user",
-        "content": prompt.clone(),
-    }));
-    let user_event = json!({
-        "type": "user",
-        "message": {
-            "content": [{ "type": "text", "text": prompt.clone() }],
-        },
-    });
-    if let Err(err) = append_direct_session_event(&project_path, &session_id, &user_event) {
-        eprintln!("[direct-provider] failed to persist user event: {}", err);
-    }
-
-    let final_content: String;
-    let mut final_usage = json!({ "input_tokens": 0, "output_tokens": 0 });
-    let mut turns = 0_u64;
-    let mut convergence_nudged = false;
-    let max_tool_turns = direct_provider_max_tool_turns();
-    let converge_turn = direct_provider_converge_turn(max_tool_turns);
-    let client = reqwest::Client::new();
-
-    loop {
-        turns += 1;
-        if converge_turn == Some(turns) && !convergence_nudged {
-            request_messages.push(json!({
-                "role": "user",
-                "content": "You have already used many tools. Prefer stopping tool use now: synthesize the findings, explain any uncertainty, and provide the final answer unless one more tool call is absolutely necessary.",
-            }));
-            convergence_nudged = true;
-        }
-        if turns > max_tool_turns {
-            let mut final_request_messages = request_messages.clone();
-            final_request_messages.push(json!({
-                "role": "user",
-                "content": "Stop using tools now. Based on all gathered context and tool results above, provide the best final answer. If anything remains incomplete, say exactly what is missing and what the user should do next.",
-            }));
-            let response = match send_openai_compatible_without_tools(
-                &client,
-                &credential,
-                &final_request_messages,
-                &window,
-                &tab_id,
-                &state,
-                &process_key,
-            )
-            .await
-            {
-                Ok(value) => value,
-                Err(err) => {
-                    let message = format!(
-                        "Provider kept requesting tools and ClaudePrism could not force a final answer: {}",
-                        err
-                    );
-                    emit_direct_error(&window, &tab_id, message.clone());
-                    cache_direct_provider_messages(&state, &session_id, &messages).await;
-                    let result = json!({
-                        "type": "result",
-                        "subtype": "error",
-                        "is_error": true,
-                        "result": message,
-                        "duration_ms": started.elapsed().as_millis() as u64,
-                        "duration_api_ms": started.elapsed().as_millis() as u64,
-                        "num_turns": turns,
-                        "usage": final_usage,
-                    });
-                    emit_and_persist_direct_output(
-                        &window,
-                        &project_path,
-                        &session_id,
-                        &tab_id,
-                        &result,
-                    );
-                    emit_direct_complete(&window, &tab_id, false);
-                    return Ok(());
-                }
-            };
-
-            final_usage = response.usage.clone();
-            let final_text = if response.content.trim().is_empty() {
-                if response.reasoning.trim().is_empty() {
-                    "I used several tools but the provider did not produce a final text answer. Please ask me to continue with a narrower instruction.".to_string()
-                } else {
-                    response.reasoning.trim().to_string()
-                }
-            } else {
-                response.content.trim().to_string()
-            };
-            let mut content_blocks = Vec::new();
-            if !response.reasoning.trim().is_empty() && response.reasoning.trim() != final_text {
-                content_blocks.push(json!({
-                    "type": "thinking",
-                    "thinking": response.reasoning,
-                }));
-            }
-            content_blocks.push(json!({ "type": "text", "text": final_text.clone() }));
-            let mut assistant_event = json!({
-                "type": "assistant",
-                "message": {
-                    "content": content_blocks,
-                    "usage": final_usage.clone(),
-                },
-            });
-            if response.streamed_text {
-                if let Some(object) = assistant_event.as_object_mut() {
-                    object.insert("subtype".to_string(), json!("streaming_final"));
-                }
-            }
-            emit_and_persist_direct_output(
-                &window,
-                &project_path,
-                &session_id,
-                &tab_id,
-                &assistant_event,
-            );
-            messages.push(json!({
-                "role": "assistant",
-                "content": final_text.clone(),
-            }));
-            final_content = final_text;
-            break;
-        }
-
-        if direct_provider_cancelled(&state, &process_key).await {
-            finish_direct_provider_cancelled(
-                &window,
-                &project_path,
-                &session_id,
-                &tab_id,
-                &state,
-                &process_key,
-                started,
-                turns,
-                &final_usage,
-                &messages,
-            )
-            .await;
-            return Ok(());
-        }
-
-        let response = match send_openai_compatible_chat_request(
-            &client,
-            &credential,
-            &request_messages,
-            &window,
-            &tab_id,
-            &state,
-            &process_key,
-        )
-        .await
-        {
-            Ok(value) => value,
-            Err(err) => {
-                if direct_provider_cancelled(&state, &process_key).await {
-                    finish_direct_provider_cancelled(
-                        &window,
-                        &project_path,
-                        &session_id,
-                        &tab_id,
-                        &state,
-                        &process_key,
-                        started,
-                        turns,
-                        &final_usage,
-                        &messages,
-                    )
-                    .await;
-                    return Ok(());
-                }
-                cache_direct_provider_messages(&state, &session_id, &messages).await;
-                emit_direct_error(&window, &tab_id, err);
-                emit_direct_complete(&window, &tab_id, false);
-                return Ok(());
-            }
-        };
-
-        if direct_provider_cancelled(&state, &process_key).await {
-            finish_direct_provider_cancelled(
-                &window,
-                &project_path,
-                &session_id,
-                &tab_id,
-                &state,
-                &process_key,
-                started,
-                turns,
-                &final_usage,
-                &messages,
-            )
-            .await;
-            return Ok(());
-        }
-
-        let content = response.content;
-        let reasoning = response.reasoning;
-        let tool_calls = response.tool_calls;
-        let usage = response.usage;
-        final_usage = usage.clone();
-
-        let mut content_blocks = Vec::new();
-        if !reasoning.trim().is_empty() {
-            content_blocks.push(json!({
-                "type": "thinking",
-                "thinking": reasoning,
-            }));
-        }
-        if !content.trim().is_empty() {
-            content_blocks.push(json!({ "type": "text", "text": content.clone() }));
-        }
-        for tool_call in &tool_calls {
-            content_blocks.push(json!({
-                "type": "tool_use",
-                "id": tool_call.id,
-                "name": tool_call.name,
-                "input": tool_call.input,
-            }));
-        }
-
-        if content_blocks.is_empty() {
-            let message = "Provider response did not include message content or tool calls";
-            cache_direct_provider_messages(&state, &session_id, &messages).await;
-            emit_direct_error(&window, &tab_id, message);
-            emit_direct_complete(&window, &tab_id, false);
-            return Ok(());
-        }
-
-        let mut assistant_event = json!({
-            "type": "assistant",
-            "message": {
-                "content": content_blocks,
-                "usage": usage.clone(),
-            },
-        });
-        if response.streamed_text {
-            if let Some(object) = assistant_event.as_object_mut() {
-                object.insert("subtype".to_string(), json!("streaming_final"));
-            }
-        }
-        emit_and_persist_direct_output(
-            &window,
-            &project_path,
-            &session_id,
-            &tab_id,
-            &assistant_event,
-        );
-
-        let assistant_message = response.message;
-        request_messages.push(assistant_message.clone());
-        messages.push(assistant_message);
-
-        if tool_calls.is_empty() {
-            final_content = content;
-            break;
-        }
-
-        if tool_calls
-            .iter()
-            .any(|tool_call| is_direct_ui_pause_tool(&tool_call.name))
-        {
-            let mut tool_result_blocks = Vec::new();
-            for tool_call in &tool_calls {
-                let message = match canonical_direct_tool_name(&tool_call.name) {
-                    Some("AskUserQuestion") => {
-                        "Waiting for the user to answer in the ClaudePrism UI.".to_string()
-                    }
-                    Some("ExitPlanMode") => {
-                        "Waiting for the user to approve or revise the plan in the ClaudePrism UI."
-                            .to_string()
-                    }
-                    _ => "Tool execution paused because the assistant requested user input."
-                        .to_string(),
-                };
-                let (block, tool_message) = direct_tool_result_values(tool_call, message, true);
-                tool_result_blocks.push(block);
-                messages.push(tool_message);
-            }
-
-            let tool_result_event = json!({
-                "type": "user",
-                "message": {
-                    "content": tool_result_blocks,
-                },
-            });
-            emit_and_persist_direct_output(
-                &window,
-                &project_path,
-                &session_id,
-                &tab_id,
-                &tool_result_event,
-            );
-            cache_direct_provider_messages(&state, &session_id, &messages).await;
-            clear_direct_provider_cancelled(&state, &process_key).await;
-            emit_direct_complete(&window, &tab_id, false);
-            return Ok(());
-        }
-
-        let mut tool_result_blocks = Vec::new();
-        for (idx, tool_call) in tool_calls.iter().enumerate() {
-            if direct_provider_cancelled(&state, &process_key).await {
-                for remaining_tool_call in &tool_calls[idx..] {
-                    let (block, tool_message) = direct_tool_result_values(
-                        remaining_tool_call,
-                        "Tool execution cancelled by user.".to_string(),
-                        true,
-                    );
-                    tool_result_blocks.push(block);
-                    messages.push(tool_message);
-                }
-                let tool_result_event = json!({
-                    "type": "user",
-                    "message": {
-                        "content": tool_result_blocks,
-                    },
-                });
-                emit_and_persist_direct_output(
-                    &window,
-                    &project_path,
-                    &session_id,
-                    &tab_id,
-                    &tool_result_event,
-                );
-                finish_direct_provider_cancelled(
-                    &window,
-                    &project_path,
-                    &session_id,
-                    &tab_id,
-                    &state,
-                    &process_key,
-                    started,
-                    turns,
-                    &final_usage,
-                    &messages,
-                )
-                .await;
-                return Ok(());
-            }
-
-            let active_root = direct_session_root(&state, &session_id, &project_root).await;
-            let output = execute_direct_provider_tool(
-                &state,
-                &session_id,
-                &project_root,
-                &active_root,
-                &tool_call.name,
-                &tool_call.input,
-                Some(&client),
-                Some(&credential),
-                0,
-            )
-            .await;
-            if !output.is_error && is_direct_task_mutation_tool(&tool_call.name) {
-                persist_direct_task_state(&state, &project_path, &session_id).await;
-            }
-            if !output.is_error && is_direct_workdir_mutation_tool(&tool_call.name) {
-                persist_direct_workdir_state(&state, &project_path, &session_id, &project_root)
-                    .await;
-            }
-            let (block, tool_message) =
-                direct_tool_result_values(tool_call, output.content, output.is_error);
-            tool_result_blocks.push(block);
-            request_messages.push(tool_message.clone());
-            messages.push(tool_message);
-        }
-
-        let tool_result_event = json!({
-            "type": "user",
-            "message": {
-                "content": tool_result_blocks,
-            },
-        });
-        emit_and_persist_direct_output(
-            &window,
-            &project_path,
-            &session_id,
-            &tab_id,
-            &tool_result_event,
-        );
-    }
-
-    cache_direct_provider_messages(&state, &session_id, &messages).await;
-
-    let elapsed_ms = started.elapsed().as_millis() as u64;
-    let result = json!({
-        "type": "result",
-        "subtype": "success",
-        "is_error": false,
-        "result": final_content,
-        "duration_ms": elapsed_ms,
-        "duration_api_ms": elapsed_ms,
-        "num_turns": turns,
-        "usage": final_usage,
-    });
-    emit_and_persist_direct_output(&window, &project_path, &session_id, &tab_id, &result);
-    clear_direct_provider_cancelled(&state, &process_key).await;
-    emit_direct_complete(&window, &tab_id, true);
-
-    Ok(())
+    spawn_claude_process(
+        window,
+        cmd,
+        tab_id,
+        stdin_payload,
+        Some(SpawnProviderMetadata {
+            provider: PROVIDER_OPENAI_COMPATIBLE,
+            provider_credential_id: credential.id,
+            model: credential.model,
+        }),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -7645,15 +2591,17 @@ pub async fn execute_claude_code(
     if let Some(mut credential) =
         stored_openai_compatible_credential_by_id(provider_credential_id.as_deref())?
     {
-        if let Some(model) = normalize_model(provider_model_override.as_deref())? {
+        if let Some(model) = normalize_provider_model_override(provider_model_override.as_deref())?
+        {
             credential.model = model;
         }
-        return execute_openai_compatible_provider(
+        return execute_openai_compatible_via_claude_proxy(
             window,
             project_path,
             prompt,
             tab_id,
-            None,
+            Vec::new(),
+            effort_level,
             credential,
         )
         .await;
@@ -7669,7 +2617,7 @@ pub async fn execute_claude_code(
     args.extend(common_claude_args());
 
     let cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref());
-    spawn_claude_process(window, cmd, tab_id, stdin_payload).await
+    spawn_claude_process(window, cmd, tab_id, stdin_payload, None).await
 }
 
 #[tauri::command]
@@ -7686,15 +2634,17 @@ pub async fn continue_claude_code(
     if let Some(mut credential) =
         stored_openai_compatible_credential_by_id(provider_credential_id.as_deref())?
     {
-        if let Some(model) = normalize_model(provider_model_override.as_deref())? {
+        if let Some(model) = normalize_provider_model_override(provider_model_override.as_deref())?
+        {
             credential.model = model;
         }
-        return execute_openai_compatible_provider(
+        return execute_openai_compatible_via_claude_proxy(
             window,
             project_path,
             prompt,
             tab_id,
-            None,
+            vec!["-c".to_string()],
+            effort_level,
             credential,
         )
         .await;
@@ -7710,7 +2660,7 @@ pub async fn continue_claude_code(
     args.extend(common_claude_args());
 
     let cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref());
-    spawn_claude_process(window, cmd, tab_id, stdin_payload).await
+    spawn_claude_process(window, cmd, tab_id, stdin_payload, None).await
 }
 
 #[tauri::command]
@@ -7728,15 +2678,17 @@ pub async fn resume_claude_code(
     if let Some(mut credential) =
         stored_openai_compatible_credential_by_id(provider_credential_id.as_deref())?
     {
-        if let Some(model) = normalize_model(provider_model_override.as_deref())? {
+        if let Some(model) = normalize_provider_model_override(provider_model_override.as_deref())?
+        {
             credential.model = model;
         }
-        return execute_openai_compatible_provider(
+        return execute_openai_compatible_via_claude_proxy(
             window,
             project_path,
             prompt,
             tab_id,
-            Some(session_id),
+            vec!["--resume".to_string(), session_id],
+            effort_level,
             credential,
         )
         .await;
@@ -7753,7 +2705,7 @@ pub async fn resume_claude_code(
     args.extend(common_claude_args());
 
     let cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref());
-    spawn_claude_process(window, cmd, tab_id, stdin_payload).await
+    spawn_claude_process(window, cmd, tab_id, stdin_payload, None).await
 }
 
 #[tauri::command]
@@ -7774,12 +2726,6 @@ pub async fn cancel_claude_execution(window: WebviewWindow, tab_id: String) -> R
         return Ok(());
     }
 
-    drop(processes);
-    claude_state
-        .direct_cancellations
-        .lock()
-        .await
-        .insert(process_key);
     let _ = window.emit(
         "claude-complete",
         ClaudeCompleteEvent {
@@ -7807,58 +2753,7 @@ pub async fn kill_process_for_window(state: &ClaudeProcessState, window_label: &
     }
 }
 
-async fn execute_direct_provider_tool(
-    state: &ClaudeProcessState,
-    session_id: &str,
-    original_project_root: &Path,
-    project_root: &Path,
-    name: &str,
-    input: &serde_json::Value,
-    client: Option<&reqwest::Client>,
-    credential: Option<&StoredOpenAiCompatibleCredential>,
-    agent_depth: usize,
-) -> DirectToolOutput {
-    let result = match name {
-        "Agent" | "agent" | "Task" | "task" => {
-            execute_direct_agent(
-                state,
-                session_id,
-                original_project_root,
-                project_root,
-                input,
-                client,
-                credential,
-                agent_depth,
-            )
-            .await
-        }
-        _ => {
-            return execute_direct_provider_tool_without_agent(
-                state,
-                session_id,
-                original_project_root,
-                project_root,
-                name,
-                input,
-                credential,
-            )
-            .await;
-        }
-    };
-
-    match result {
-        Ok(content) => DirectToolOutput {
-            content,
-            is_error: false,
-        },
-        Err(content) => DirectToolOutput {
-            content,
-            is_error: true,
-        },
-    }
-}
-
-// ─── Session Listing ───
+// 鈹€鈹€鈹€ Session Listing 鈹€鈹€鈹€
 
 #[derive(serde::Serialize)]
 pub struct ClaudeSessionInfo {
@@ -7884,7 +2779,7 @@ struct SessionCandidate {
 
 /// Resolve the Claude Code sessions directory for a given project path.
 /// Claude Code encodes paths by replacing all non-alphanumeric characters with '-'.
-/// e.g. "/Users/dev/my_project" → "-Users-dev-my-project"
+/// e.g. "/Users/dev/my_project" 鈫?"-Users-dev-my-project"
 fn get_sessions_dir(project_path: &str) -> Result<PathBuf, String> {
     let home = dirs::home_dir().ok_or("Could not determine home directory")?;
 
@@ -8012,6 +2907,15 @@ fn truncate_session_title(text: &str, max_chars: usize) -> String {
     }
 }
 
+fn truncate_long_text(text: String, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text;
+    }
+    let mut truncated: String = text.chars().take(max_chars).collect();
+    truncated.push_str("\n...[truncated]");
+    truncated
+}
+
 fn session_title_cache_path(session_path: &Path) -> PathBuf {
     session_path.with_extension("title.json")
 }
@@ -8021,12 +2925,12 @@ fn sanitize_model_session_title(title: &str) -> Option<String> {
         .lines()
         .map(str::trim)
         .find(|line| !line.is_empty())?
-        .trim_matches(|c| matches!(c, '"' | '\'' | '`' | '“' | '”' | '‘' | '’'))
+        .trim_matches(|c| matches!(c, '"' | '\'' | '`'))
         .trim();
     let title = title
         .strip_prefix("Title:")
         .or_else(|| title.strip_prefix("title:"))
-        .or_else(|| title.strip_prefix("标题:"))
+        .or_else(|| title.strip_prefix("鏍囬:"))
         .unwrap_or(title)
         .trim();
     let title = normalize_title_whitespace(title);
@@ -8044,13 +2948,10 @@ fn sanitize_model_session_title(title: &str) -> Option<String> {
     Some(truncate_session_title(&title, 72))
 }
 
-fn read_session_title_cache(session_path: &Path, source_modified: i64) -> Option<String> {
+fn read_session_title_cache(session_path: &Path) -> Option<String> {
     let cache_path = session_title_cache_path(session_path);
     let content = std::fs::read_to_string(cache_path).ok()?;
     let cache = serde_json::from_str::<SessionTitleCache>(&content).ok()?;
-    if cache.source_modified != source_modified {
-        return None;
-    }
     sanitize_model_session_title(&cache.title)
 }
 
@@ -8315,7 +3216,7 @@ fn session_excerpt_for_model_title(path: &Path) -> Option<String> {
         }
 
         let speaker = if kind == "user" { "User" } else { "Assistant" };
-        let text = truncate_tool_content(text, 1400);
+        let text = truncate_long_text(text, 1400);
         let entry = format!("{}: {}", speaker, text);
         total_chars += entry.chars().count();
         lines.push(entry);
@@ -8368,13 +3269,12 @@ async fn generate_model_session_title(
         }),
     ];
 
-    let response = send_openai_compatible_raw_no_tools_chat_request(client, credential, &messages)
-        .await
-        .map_err(|err| err.message)?;
-    let title = if response.content.trim().is_empty() {
-        response.reasoning.trim()
+    let (content, reasoning) =
+        send_openai_compatible_no_tools_text_request(client, credential, &messages).await?;
+    let title = if content.trim().is_empty() {
+        reasoning.trim()
     } else {
-        response.content.trim()
+        content.trim()
     };
 
     Ok(sanitize_model_session_title(title))
@@ -8433,7 +3333,7 @@ pub async fn list_claude_sessions(
 
         let (first_message, _timestamp) = extract_first_user_message(&path);
         let fallback_title = first_message.unwrap_or_else(|| "Untitled session".to_string());
-        let title = read_session_title_cache(&path, modified);
+        let title = read_session_title_cache(&path);
 
         candidates.push(SessionCandidate {
             session_id,
@@ -8564,7 +3464,7 @@ pub async fn load_session_history(
     Ok(messages)
 }
 
-// ─── Shell Command Execution ───
+// 鈹€鈹€鈹€ Shell Command Execution 鈹€鈹€鈹€
 
 #[tauri::command]
 pub async fn delete_claude_session(project_path: String, session_id: String) -> Result<(), String> {
@@ -8636,7 +3536,7 @@ pub async fn run_shell_command(command: String, cwd: String) -> Result<ShellComm
     })
 }
 
-// ─── Claude Settings (fast mode, etc.) ───
+// 鈹€鈹€鈹€ Claude Settings (fast mode, etc.) 鈹€鈹€鈹€
 
 fn get_claude_settings_path() -> Result<std::path::PathBuf, String> {
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
@@ -8721,6 +3621,34 @@ mod tests {
             ],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn test_provider_model_override_ignores_claude_model_selectors() {
+        assert_eq!(
+            normalize_provider_model_override(Some("claude-opus-4-7")).unwrap(),
+            None
+        );
+        assert_eq!(
+            normalize_provider_model_override(Some("opusplan")).unwrap(),
+            None
+        );
+        assert_eq!(
+            normalize_provider_model_override(Some("sonnet")).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn test_provider_model_override_accepts_openai_compatible_models() {
+        assert_eq!(
+            normalize_provider_model_override(Some("qwen3-coder-plus")).unwrap(),
+            Some("qwen3-coder-plus".to_string())
+        );
+        assert_eq!(
+            normalize_provider_model_override(Some("deepseek-chat")).unwrap(),
+            Some("deepseek-chat".to_string())
+        );
     }
 
     // --- get_sessions_dir ---
@@ -8841,18 +3769,18 @@ mod tests {
     fn test_with_prompt_transport_always_includes_print_flag() {
         let (args, stdin_payload) = with_prompt_transport(
             vec!["--resume".to_string(), "abc".to_string()],
-            "hello 文件".into(),
+            "hello 鏂囦欢".into(),
         );
         assert!(args.contains(&"-p".to_string()));
         #[cfg(target_os = "windows")]
         {
-            assert_eq!(stdin_payload.as_deref(), Some("hello 文件"));
-            assert!(!args.contains(&"hello 文件".to_string()));
+            assert_eq!(stdin_payload.as_deref(), Some("hello 鏂囦欢"));
+            assert!(!args.contains(&"hello 鏂囦欢".to_string()));
         }
         #[cfg(not(target_os = "windows"))]
         {
             assert_eq!(stdin_payload, None);
-            assert_eq!(args.last().map(String::as_str), Some("hello 文件"));
+            assert_eq!(args.last().map(String::as_str), Some("hello 鏂囦欢"));
         }
     }
 
@@ -8898,25 +3826,6 @@ mod tests {
             credential.base_url.as_deref(),
             Some("https://mg.aid.pub/claude-proxy")
         );
-    }
-
-    #[test]
-    fn test_direct_provider_turn_limit_is_optional() {
-        assert_eq!(parse_optional_direct_turn_limit(""), None);
-        assert_eq!(parse_optional_direct_turn_limit("0"), None);
-        assert_eq!(parse_optional_direct_turn_limit("off"), None);
-        assert_eq!(parse_optional_direct_turn_limit("none"), None);
-        assert_eq!(parse_optional_direct_turn_limit("false"), None);
-        assert_eq!(parse_optional_direct_turn_limit("not-a-number"), None);
-        assert_eq!(parse_optional_direct_turn_limit("42"), Some(42));
-    }
-
-    #[test]
-    fn test_direct_provider_converge_turn_tracks_explicit_max() {
-        assert_eq!(direct_provider_converge_turn_for(1, None), None);
-        assert_eq!(direct_provider_converge_turn_for(12, None), Some(10));
-        assert_eq!(direct_provider_converge_turn_for(12, Some(3)), Some(3));
-        assert_eq!(direct_provider_converge_turn_for(12, Some(99)), Some(12));
     }
 
     #[test]
@@ -9070,62 +3979,13 @@ mod tests {
         assert!(rate_limited.contains("rate limited"));
     }
 
-    #[test]
-    fn test_json_usage_reads_openai_standard_tokens() {
-        let usage = json_usage(&json!({
-            "usage": {
-                "prompt_tokens": 11,
-                "completion_tokens": 7,
-                "total_tokens": 18
-            }
-        }));
-
-        assert_eq!(usage["input_tokens"], 11);
-        assert_eq!(usage["output_tokens"], 7);
-    }
-
-    #[test]
-    fn test_json_usage_reads_compatible_input_output_aliases() {
-        let usage = json_usage(&json!({
-            "usage": {
-                "input_tokens": 13,
-                "output_tokens": 5
-            }
-        }));
-
-        assert_eq!(usage["input_tokens"], 13);
-        assert_eq!(usage["output_tokens"], 5);
-    }
-
-    #[test]
-    fn test_json_usage_derives_missing_side_from_total_tokens() {
-        let usage = json_usage(&json!({
-            "usage": {
-                "prompt_token_count": 9,
-                "total_token_count": 14
-            }
-        }));
-
-        assert_eq!(usage["input_tokens"], 9);
-        assert_eq!(usage["output_tokens"], 5);
-    }
-
-    #[test]
-    fn test_json_usage_ignores_null_stream_usage() {
-        let usage = json_usage(&json!({ "usage": null }));
-
-        assert_eq!(usage["input_tokens"], 0);
-        assert_eq!(usage["output_tokens"], 0);
-        assert!(!usage_has_tokens(&usage));
-    }
-
     // --- create_command ---
 
     #[test]
     fn test_create_command_sets_args_and_cwd() {
         let args = vec!["--version".to_string()];
         let cmd = create_command("/usr/bin/claude", args, "/tmp/project", None);
-        // Command is created — we can verify via its Debug representation
+        // Command is created 鈥?we can verify via its Debug representation
         let debug_str = format!("{:?}", cmd);
         assert!(debug_str.contains("--version"));
     }
@@ -9171,8 +4031,7 @@ mod tests {
 
     #[test]
     fn test_clean_user_message_title_multibyte_truncation() {
-        // Truncation counts chars, not bytes
-        let text = "あ".repeat(100); // 100 Japanese chars
+        let text = "a".repeat(100);
         let result = clean_user_message_title(&text).unwrap();
         assert!(result.ends_with("..."));
         // 77 chars + "..." = 80 display chars
@@ -9192,7 +4051,7 @@ mod tests {
     fn test_get_sessions_dir_dots_and_underscores() {
         let result = get_sessions_dir("/home/user/.my_project.v2").unwrap();
         let dir_name = result.file_name().unwrap().to_str().unwrap();
-        // dots and underscores are non-alphanumeric → replaced with '-'
+        // dots and underscores are non-alphanumeric 鈫?replaced with '-'
         assert_eq!(dir_name, "-home-user--my-project-v2");
     }
 
@@ -9281,17 +4140,20 @@ mod tests {
     }
 
     #[test]
-    fn test_session_title_cache_requires_matching_source_modified() {
+    fn test_session_title_cache_survives_session_modification() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("session.jsonl");
         std::fs::write(&path, "").unwrap();
 
         write_session_title_cache(&path, 10, "Aftershock Modeling").unwrap();
         assert_eq!(
-            read_session_title_cache(&path, 10).unwrap(),
+            read_session_title_cache(&path).unwrap(),
             "Aftershock Modeling"
         );
-        assert!(read_session_title_cache(&path, 11).is_none());
+        assert_eq!(
+            read_session_title_cache(&path).unwrap(),
+            "Aftershock Modeling"
+        );
     }
 
     #[test]
@@ -9307,1202 +4169,6 @@ mod tests {
         assert!(!excerpt.contains("<ide_context>"));
         assert!(excerpt.contains("User: Please rewrite"));
         assert!(excerpt.contains("Assistant: I will compare"));
-    }
-
-    // --- direct provider tools ---
-
-    async fn execute_test_direct_provider_tool(
-        project_root: &Path,
-        name: &str,
-        input: &serde_json::Value,
-    ) -> DirectToolOutput {
-        let state = ClaudeProcessState::default();
-        execute_direct_provider_tool(
-            &state,
-            "test-session",
-            project_root,
-            project_root,
-            name,
-            input,
-            None,
-            None,
-            0,
-        )
-        .await
-    }
-
-    async fn execute_test_direct_provider_tool_with_state(
-        state: &ClaudeProcessState,
-        session_id: &str,
-        project_root: &Path,
-        name: &str,
-        input: &serde_json::Value,
-    ) -> DirectToolOutput {
-        execute_direct_provider_tool(
-            state,
-            session_id,
-            project_root,
-            project_root,
-            name,
-            input,
-            None,
-            None,
-            0,
-        )
-        .await
-    }
-
-    #[tokio::test]
-    async fn test_direct_provider_tools_read_edit_and_grep_project_files() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = canonical_project_root(dir.path().to_str().unwrap()).unwrap();
-        let main = root.join("main.tex");
-        std::fs::write(&main, "\\section{Old Title}\nBody text").unwrap();
-
-        let read = execute_test_direct_provider_tool(
-            &root,
-            "Read",
-            &json!({ "file_path": "main.tex", "limit": 1 }),
-        )
-        .await;
-        assert!(!read.is_error);
-        assert!(read.content.contains("\\section{Old Title}"));
-
-        let edit = execute_test_direct_provider_tool(
-            &root,
-            "Edit",
-            &json!({
-                "file_path": "main.tex",
-                "old_string": "Old Title",
-                "new_string": "New Title",
-            }),
-        )
-        .await;
-        assert!(!edit.is_error);
-        assert!(std::fs::read_to_string(&main)
-            .unwrap()
-            .contains("New Title"));
-
-        let grep = execute_test_direct_provider_tool(
-            &root,
-            "Grep",
-            &json!({ "pattern": "New Title", "glob": "*.tex" }),
-        )
-        .await;
-        assert!(!grep.is_error);
-        assert!(grep.content.contains("main.tex:1"));
-    }
-
-    #[tokio::test]
-    async fn test_direct_provider_read_pdf_uses_text_sidecar() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = canonical_project_root(dir.path().to_str().unwrap()).unwrap();
-        std::fs::create_dir_all(root.join("attachments")).unwrap();
-        std::fs::write(root.join("attachments").join("paper.pdf"), b"%PDF-1.7\n").unwrap();
-        std::fs::write(
-            root.join("attachments").join("paper.pdf.txt"),
-            "# Extracted PDF Text: attachments/paper.pdf\n\n## Page 1\n\nFlashVID summary",
-        )
-        .unwrap();
-
-        let read = execute_test_direct_provider_tool(
-            &root,
-            "Read",
-            &json!({ "file_path": "attachments/paper.pdf" }),
-        )
-        .await;
-
-        assert!(!read.is_error);
-        assert!(read.content.contains("PDF text sidecar"));
-        assert!(read.content.contains("attachments/paper.pdf.txt"));
-        assert!(read.content.contains("FlashVID summary"));
-    }
-
-    #[tokio::test]
-    async fn test_direct_provider_read_pdf_without_sidecar_guides_model() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = canonical_project_root(dir.path().to_str().unwrap()).unwrap();
-        std::fs::create_dir_all(root.join("attachments")).unwrap();
-        std::fs::write(root.join("attachments").join("paper.pdf"), b"%PDF-1.7\n").unwrap();
-
-        let read = execute_test_direct_provider_tool(
-            &root,
-            "Read",
-            &json!({ "file_path": "attachments/paper.pdf" }),
-        )
-        .await;
-
-        assert!(!read.is_error);
-        assert!(read.content.contains("PDF files are binary"));
-        assert!(read.content.contains("attachments/paper.pdf.txt"));
-        assert!(read.content.contains("generate the sidecar"));
-    }
-
-    #[tokio::test]
-    async fn test_direct_provider_tools_reject_paths_outside_project() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = canonical_project_root(dir.path().to_str().unwrap()).unwrap();
-
-        let write = execute_test_direct_provider_tool(
-            &root,
-            "Write",
-            &json!({ "file_path": "../outside.tex", "content": "nope" }),
-        )
-        .await;
-        assert!(write.is_error);
-        assert!(write.content.contains("outside the project"));
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn test_direct_provider_write_rejects_symlink_parent_outside_project() {
-        let dir = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        let root = canonical_project_root(dir.path().to_str().unwrap()).unwrap();
-        std::os::unix::fs::symlink(outside.path(), root.join("linked-out")).unwrap();
-
-        let write = execute_test_direct_provider_tool(
-            &root,
-            "Write",
-            &json!({ "file_path": "linked-out/owned.tex", "content": "nope" }),
-        )
-        .await;
-
-        assert!(write.is_error);
-        assert!(write.content.contains("symlink inside the project"));
-        assert!(!outside.path().join("owned.tex").exists());
-    }
-
-    #[tokio::test]
-    async fn test_direct_provider_glob_lists_matching_project_files() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = canonical_project_root(dir.path().to_str().unwrap()).unwrap();
-        std::fs::create_dir_all(root.join("chapters")).unwrap();
-        std::fs::write(root.join("main.tex"), "main").unwrap();
-        std::fs::write(root.join("chapters").join("intro.tex"), "intro").unwrap();
-        std::fs::write(root.join("notes.md"), "notes").unwrap();
-
-        let glob =
-            execute_test_direct_provider_tool(&root, "Glob", &json!({ "pattern": "*.tex" })).await;
-        assert!(!glob.is_error);
-        assert!(glob.content.contains("main.tex"));
-        assert!(glob.content.contains("chapters/intro.tex"));
-        assert!(!glob.content.contains("notes.md"));
-    }
-
-    #[tokio::test]
-    async fn test_direct_provider_ls_lists_project_directory() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = canonical_project_root(dir.path().to_str().unwrap()).unwrap();
-        std::fs::create_dir_all(root.join("chapters")).unwrap();
-        std::fs::write(root.join("main.tex"), "main").unwrap();
-        std::fs::write(root.join("chapters").join("intro.tex"), "intro").unwrap();
-
-        let ls = execute_test_direct_provider_tool(&root, "LS", &json!({})).await;
-        assert!(!ls.is_error);
-        assert!(ls.content.contains("chapters/"));
-        assert!(ls.content.contains("main.tex"));
-
-        let nested =
-            execute_test_direct_provider_tool(&root, "LS", &json!({ "path": "chapters" })).await;
-        assert!(!nested.is_error);
-        assert!(nested.content.contains("chapters/intro.tex"));
-    }
-
-    #[tokio::test]
-    async fn test_direct_provider_todowrite_tracks_plan_items() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = canonical_project_root(dir.path().to_str().unwrap()).unwrap();
-
-        let todos = execute_test_direct_provider_tool(
-            &root,
-            "TodoWrite",
-            &json!({
-                "todos": [
-                    { "content": "Inspect project", "status": "completed" },
-                    { "content": "Edit main.tex", "status": "in_progress" },
-                    { "content": "Verify build", "status": "pending" }
-                ]
-            }),
-        )
-        .await;
-        assert!(!todos.is_error);
-        assert!(todos.content.contains("Todo list updated (3 items)"));
-        assert!(todos.content.contains("[in_progress] Edit main.tex"));
-
-        let invalid = execute_test_direct_provider_tool(
-            &root,
-            "TodoWrite",
-            &json!({ "todos": [{ "content": "Oops", "status": "blocked" }] }),
-        )
-        .await;
-        assert!(invalid.is_error);
-        assert!(invalid.content.contains("status must be pending"));
-    }
-
-    #[tokio::test]
-    async fn test_direct_provider_toolsearch_selects_compat_tools() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = canonical_project_root(dir.path().to_str().unwrap()).unwrap();
-
-        let result = execute_test_direct_provider_tool(
-            &root,
-            "ToolSearch",
-            &json!({ "query": "select:TaskCreate,TaskUpdate,TaskList" }),
-        )
-        .await;
-
-        assert!(!result.is_error);
-        assert!(result.content.contains("TaskCreate"));
-        assert!(result.content.contains("TaskUpdate"));
-        assert!(result.content.contains("TaskList"));
-        assert!(result.content.contains("already available"));
-    }
-
-    #[tokio::test]
-    async fn test_direct_provider_task_tools_track_lightweight_tasks() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = canonical_project_root(dir.path().to_str().unwrap()).unwrap();
-        let state = ClaudeProcessState::default();
-
-        let created = execute_test_direct_provider_tool_with_state(
-            &state,
-            "session-a",
-            &root,
-            "TaskCreate",
-            &json!({
-                "subject": "Inspect paper draft",
-                "description": "Read main.tex and identify missing citations",
-                "activeForm": "Inspecting paper draft"
-            }),
-        )
-        .await;
-        assert!(!created.is_error);
-        assert!(created.content.contains("task-1"));
-
-        let listed = execute_test_direct_provider_tool_with_state(
-            &state,
-            "session-a",
-            &root,
-            "TaskList",
-            &json!({}),
-        )
-        .await;
-        assert!(!listed.is_error);
-        assert!(listed.content.contains("Inspect paper draft"));
-        assert!(listed.content.contains("[pending]"));
-
-        let updated = execute_test_direct_provider_tool_with_state(
-            &state,
-            "session-a",
-            &root,
-            "TaskUpdate",
-            &json!({ "taskId": "task-1", "status": "completed" }),
-        )
-        .await;
-        assert!(!updated.is_error);
-        assert!(updated.content.contains("Task completed"));
-
-        let completed = execute_test_direct_provider_tool_with_state(
-            &state,
-            "session-a",
-            &root,
-            "TaskList",
-            &json!({ "status": "completed" }),
-        )
-        .await;
-        assert!(!completed.is_error);
-        assert!(completed.content.contains("[completed]"));
-    }
-
-    #[tokio::test]
-    async fn test_direct_provider_task_get_and_stop_are_available() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = canonical_project_root(dir.path().to_str().unwrap()).unwrap();
-        let state = ClaudeProcessState::default();
-
-        let created = execute_test_direct_provider_tool_with_state(
-            &state,
-            "session-a",
-            &root,
-            "TaskCreate",
-            &json!({
-                "subject": "Follow up",
-                "description": "Check task get and stop",
-            }),
-        )
-        .await;
-        assert!(!created.is_error);
-
-        let got = execute_test_direct_provider_tool_with_state(
-            &state,
-            "session-a",
-            &root,
-            "TaskGet",
-            &json!({ "taskId": "task-1" }),
-        )
-        .await;
-        assert!(!got.is_error);
-        assert!(got.content.contains("Follow up"));
-
-        let output = execute_test_direct_provider_tool_with_state(
-            &state,
-            "session-a",
-            &root,
-            "TaskOutput",
-            &json!({ "taskId": "task-1" }),
-        )
-        .await;
-        assert!(!output.is_error);
-        assert!(output.content.contains("Follow up"));
-
-        let stopped = execute_test_direct_provider_tool_with_state(
-            &state,
-            "session-a",
-            &root,
-            "TaskStop",
-            &json!({ "taskId": "task-1", "reason": "Done enough" }),
-        )
-        .await;
-        assert!(!stopped.is_error);
-        assert!(stopped.content.contains("[completed]"));
-        assert!(stopped.content.contains("Done enough"));
-    }
-
-    #[tokio::test]
-    async fn test_direct_provider_notebook_edit_updates_cell() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = canonical_project_root(dir.path().to_str().unwrap()).unwrap();
-        let notebook = root.join("analysis.ipynb");
-        std::fs::write(
-            &notebook,
-            serde_json::to_string_pretty(&json!({
-                "cells": [{
-                    "cell_type": "code",
-                    "execution_count": 7,
-                    "id": "abc123",
-                    "metadata": {},
-                    "outputs": [{ "output_type": "stream", "text": "old" }],
-                    "source": "print('old')"
-                }],
-                "metadata": { "language_info": { "name": "python" } },
-                "nbformat": 4,
-                "nbformat_minor": 5
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-
-        let edited = execute_test_direct_provider_tool(
-            &root,
-            "NotebookEdit",
-            &json!({
-                "file_path": "analysis.ipynb",
-                "cell_id": "abc123",
-                "new_source": "print('new')"
-            }),
-        )
-        .await;
-
-        assert!(!edited.is_error);
-        let updated: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&notebook).unwrap()).unwrap();
-        assert_eq!(updated["cells"][0]["source"], "print('new')");
-        assert_eq!(
-            updated["cells"][0]["execution_count"],
-            serde_json::Value::Null
-        );
-        assert_eq!(updated["cells"][0]["outputs"], json!([]));
-    }
-
-    #[tokio::test]
-    async fn test_direct_provider_skill_tool_loads_project_skill() {
-        let dir = tempfile::tempdir().unwrap();
-        let skill_dir = dir
-            .path()
-            .join(".claude")
-            .join("skills")
-            .join("paper-helper");
-        std::fs::create_dir_all(&skill_dir).unwrap();
-        std::fs::write(
-            skill_dir.join("SKILL.md"),
-            "---\nname: Paper Helper\n---\n\n# Paper Helper\n\nUse concise academic prose.",
-        )
-        .unwrap();
-        let root = canonical_project_root(dir.path().to_str().unwrap()).unwrap();
-
-        let listed = execute_test_direct_provider_tool(&root, "Skill", &json!({})).await;
-        assert!(!listed.is_error);
-        assert!(listed.content.contains("/paper-helper"));
-
-        let loaded =
-            execute_test_direct_provider_tool(&root, "Skill", &json!({ "skill": "Paper Helper" }))
-                .await;
-        assert!(!loaded.is_error);
-        assert!(loaded.content.contains("Use concise academic prose"));
-    }
-
-    #[test]
-    fn test_direct_provider_extended_tool_aliases_are_canonical() {
-        assert_eq!(canonical_direct_tool_name("PowerShell"), None);
-        assert_eq!(canonical_direct_tool_name("Bash"), None);
-        assert_eq!(canonical_direct_tool_name("web_search"), Some("WebSearch"));
-        assert_eq!(canonical_direct_tool_name("TaskGet"), Some("TaskGet"));
-        assert_eq!(
-            canonical_direct_tool_name("ReadMcpResource"),
-            Some("ReadMcpResource")
-        );
-        assert!(is_direct_ui_pause_tool("AskUserQuestion"));
-        assert!(is_direct_ui_pause_tool("ExitPlanMode"));
-        assert!(!is_direct_ui_pause_tool("EnterPlanMode"));
-    }
-
-    #[test]
-    fn test_direct_task_state_loads_latest_jsonl_snapshot() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("session.jsonl");
-        let first = direct_task_state_event(&[DirectTask {
-            id: "task-1".to_string(),
-            subject: "First".to_string(),
-            description: "Old state".to_string(),
-            active_form: None,
-            status: "pending".to_string(),
-            owner: None,
-        }]);
-        let latest = direct_task_state_event(&[DirectTask {
-            id: "task-1".to_string(),
-            subject: "First".to_string(),
-            description: "Latest state".to_string(),
-            active_form: Some("Checking latest state".to_string()),
-            status: "completed".to_string(),
-            owner: Some("assistant".to_string()),
-        }]);
-        let content = [
-            serde_json::to_string(&json!({ "type": "user", "message": { "content": "hi" } }))
-                .unwrap(),
-            serde_json::to_string(&first).unwrap(),
-            "not json".to_string(),
-            serde_json::to_string(&latest).unwrap(),
-        ]
-        .join("\n");
-        std::fs::write(&path, content).unwrap();
-
-        let tasks = load_direct_task_state_from_path(&path).unwrap();
-
-        assert_eq!(tasks.len(), 1);
-        assert_eq!(tasks[0].description, "Latest state");
-        assert_eq!(tasks[0].status, "completed");
-        assert_eq!(tasks[0].owner.as_deref(), Some("assistant"));
-    }
-
-    #[test]
-    fn test_direct_workdir_state_loads_latest_jsonl_snapshot() {
-        let dir = tempfile::tempdir().unwrap();
-        let fallback = dir.path().join("project");
-        let worktree = dir.path().join("worktree");
-        std::fs::create_dir_all(&fallback).unwrap();
-        std::fs::create_dir_all(&worktree).unwrap();
-        let path = dir.path().join("session.jsonl");
-        let content = [
-            serde_json::to_string(&direct_workdir_state_event(&fallback)).unwrap(),
-            serde_json::to_string(&direct_workdir_state_event(&worktree)).unwrap(),
-        ]
-        .join("\n");
-        std::fs::write(&path, content).unwrap();
-
-        let cwd = load_direct_workdir_state_from_path(&path, &fallback).unwrap();
-
-        assert_eq!(cwd, worktree);
-    }
-
-    #[tokio::test]
-    async fn test_restored_direct_task_state_is_visible_to_tasklist() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = canonical_project_root(dir.path().to_str().unwrap()).unwrap();
-        let state = ClaudeProcessState::default();
-
-        {
-            let mut task_lists = state.direct_task_lists.lock().await;
-            task_lists.insert(
-                "session-a".to_string(),
-                vec![DirectTask {
-                    id: "task-1".to_string(),
-                    subject: "Resume task".to_string(),
-                    description: "Loaded from prior session state".to_string(),
-                    active_form: None,
-                    status: "in_progress".to_string(),
-                    owner: None,
-                }],
-            );
-        }
-
-        let listed = execute_test_direct_provider_tool_with_state(
-            &state,
-            "session-a",
-            &root,
-            "TaskList",
-            &json!({}),
-        )
-        .await;
-
-        assert!(!listed.is_error);
-        assert!(listed.content.contains("Resume task"));
-        assert!(listed.content.contains("[in_progress]"));
-    }
-
-    #[test]
-    fn test_direct_provider_parses_tool_arguments_string_and_object() {
-        let response = json!({
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": [
-                        {
-                            "id": "call-1",
-                            "type": "function",
-                            "function": {
-                                "name": "Read",
-                                "arguments": "{\"file_path\":\"main.tex\"}"
-                            }
-                        },
-                        {
-                            "id": "call-2",
-                            "type": "function",
-                            "function": {
-                                "name": "Grep",
-                                "arguments": { "pattern": "Intro", "glob": "*.tex" }
-                            }
-                        }
-                    ]
-                }
-            }]
-        });
-
-        let calls = parse_direct_tool_calls(&response);
-        assert_eq!(calls.len(), 2);
-        assert_eq!(calls[0].input["file_path"], "main.tex");
-        assert_eq!(calls[1].input["pattern"], "Intro");
-    }
-
-    #[test]
-    fn test_direct_provider_builds_tool_result_messages() {
-        let tool_call = DirectToolCall {
-            id: "call-1".to_string(),
-            name: "Read".to_string(),
-            input: json!({ "file_path": "main.tex" }),
-            legacy_function_call: false,
-        };
-        let (block, message) =
-            direct_tool_result_values(&tool_call, "main.tex contents".to_string(), false);
-
-        assert_eq!(block["tool_use_id"], "call-1");
-        assert_eq!(block["content"], "main.tex contents");
-        assert_eq!(block["is_error"], false);
-        assert_eq!(message["role"], "tool");
-        assert_eq!(message["tool_call_id"], "call-1");
-
-        let legacy_call = DirectToolCall {
-            id: "function_call_1".to_string(),
-            name: "Read".to_string(),
-            input: json!({ "file_path": "main.tex" }),
-            legacy_function_call: true,
-        };
-        let (_, legacy_message) =
-            direct_tool_result_values(&legacy_call, "cancelled".to_string(), true);
-
-        assert_eq!(legacy_message["role"], "function");
-        assert_eq!(legacy_message["name"], "Read");
-        assert_eq!(legacy_message["content"], "cancelled");
-    }
-
-    #[test]
-    fn test_direct_provider_parses_legacy_function_call() {
-        let response = json!({
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": null,
-                    "function_call": {
-                        "name": "Read",
-                        "arguments": "{\"file_path\":\"main.tex\"}"
-                    }
-                }
-            }]
-        });
-
-        let calls = parse_direct_tool_calls(&response);
-
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].id, "function_call_1");
-        assert_eq!(calls[0].name, "Read");
-        assert_eq!(calls[0].input["file_path"], "main.tex");
-        assert!(calls[0].legacy_function_call);
-    }
-
-    #[test]
-    fn test_direct_provider_reconstructs_streamed_tool_calls() {
-        let mut calls = HashMap::new();
-        calls.insert(
-            0,
-            DirectStreamingToolCall {
-                id: Some("call-1".to_string()),
-                name: "Read".to_string(),
-                arguments: "{\"file_path\":\"main.tex\"}".to_string(),
-                legacy_function_call: false,
-            },
-        );
-
-        let calls = direct_tool_calls_from_stream(calls);
-        let message = direct_message_from_parts(
-            "Checking the file",
-            "Thinking aloud",
-            &calls,
-            DirectReasoningHistoryMode::Strip,
-        );
-
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name, "Read");
-        assert_eq!(calls[0].input["file_path"], "main.tex");
-        assert_eq!(message["content"], "Checking the file");
-        assert!(message.get("reasoning_content").is_none());
-        assert_eq!(message["tool_calls"][0]["function"]["name"], "Read");
-    }
-
-    #[test]
-    fn test_direct_provider_reconstructs_streamed_legacy_function_call() {
-        let mut calls = HashMap::new();
-        calls.insert(
-            0,
-            DirectStreamingToolCall {
-                id: Some("function_call_1".to_string()),
-                name: "Read".to_string(),
-                arguments: "{\"file_path\":\"main.tex\"}".to_string(),
-                legacy_function_call: true,
-            },
-        );
-
-        let calls = direct_tool_calls_from_stream(calls);
-        let message = direct_message_from_parts("", "", &calls, DirectReasoningHistoryMode::Strip);
-
-        assert_eq!(calls.len(), 1);
-        assert!(calls[0].legacy_function_call);
-        assert!(message.get("tool_calls").is_none());
-        assert_eq!(message["function_call"]["name"], "Read");
-        assert_eq!(
-            message["function_call"]["arguments"],
-            "{\"file_path\":\"main.tex\"}"
-        );
-    }
-
-    #[test]
-    fn test_direct_provider_extracts_reasoning_content() {
-        let response = json!({
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "reasoning_content": "First reason about structure.",
-                    "content": "Then answer."
-                }
-            }]
-        });
-
-        assert_eq!(
-            direct_assistant_reasoning(&response),
-            "First reason about structure."
-        );
-        assert_eq!(direct_assistant_content(&response), "Then answer.");
-    }
-
-    #[test]
-    fn test_direct_provider_strips_reasoning_from_request_history() {
-        let response = json!({
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "reasoning_content": "Hidden chain.",
-                    "reasoning": "Alternate hidden chain.",
-                    "content": "Visible answer."
-                }
-            }]
-        });
-
-        let parsed = direct_chat_response_from_value(response, DirectReasoningHistoryMode::Strip);
-
-        assert_eq!(parsed.reasoning, "Hidden chain.");
-        assert_eq!(parsed.message["content"], "Visible answer.");
-        assert!(parsed.message.get("reasoning_content").is_none());
-        assert!(parsed.message.get("reasoning").is_none());
-    }
-
-    #[test]
-    fn test_direct_provider_preserves_deepseek_tool_reasoning_in_history() {
-        let response = json!({
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "reasoning_content": "Need to inspect the source file first.",
-                    "content": "",
-                    "tool_calls": [{
-                        "id": "call-1",
-                        "type": "function",
-                        "function": {
-                            "name": "Read",
-                            "arguments": "{\"file_path\":\"main.tex\"}"
-                        }
-                    }]
-                }
-            }]
-        });
-
-        let parsed =
-            direct_chat_response_from_value(response, DirectReasoningHistoryMode::Preserve);
-
-        assert_eq!(parsed.reasoning, "Need to inspect the source file first.");
-        assert_eq!(
-            parsed.message["reasoning_content"],
-            "Need to inspect the source file first."
-        );
-        assert_eq!(parsed.message["tool_calls"][0]["function"]["name"], "Read");
-    }
-
-    #[test]
-    fn test_direct_provider_stream_preserves_deepseek_tool_reasoning_in_history() {
-        let mut calls = HashMap::new();
-        calls.insert(
-            0,
-            DirectStreamingToolCall {
-                id: Some("call-1".to_string()),
-                name: "Read".to_string(),
-                arguments: "{\"file_path\":\"main.tex\"}".to_string(),
-                legacy_function_call: false,
-            },
-        );
-
-        let calls = direct_tool_calls_from_stream(calls);
-        let message = direct_message_from_parts(
-            "",
-            "Need to inspect the source file first.",
-            &calls,
-            DirectReasoningHistoryMode::Preserve,
-        );
-
-        assert_eq!(
-            message["reasoning_content"],
-            "Need to inspect the source file first."
-        );
-        assert_eq!(message["tool_calls"][0]["function"]["name"], "Read");
-    }
-
-    #[test]
-    fn test_direct_provider_preserves_deepseek_final_reasoning_in_history() {
-        let response = json!({
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "reasoning_content": "Now synthesize the inspected file.",
-                    "content": "Here is the final answer."
-                }
-            }]
-        });
-
-        let parsed =
-            direct_chat_response_from_value(response, DirectReasoningHistoryMode::Preserve);
-
-        assert_eq!(parsed.reasoning, "Now synthesize the inspected file.");
-        assert_eq!(
-            parsed.message["reasoning_content"],
-            "Now synthesize the inspected file."
-        );
-        assert_eq!(parsed.message["content"], "Here is the final answer.");
-    }
-
-    #[test]
-    fn test_direct_provider_loads_reasoning_from_saved_session() {
-        let dir = tempfile::tempdir().unwrap();
-        let session_path = dir.path().join("session-reasoning.jsonl");
-        let event = json!({
-            "type": "assistant",
-            "message": {
-                "content": [
-                    { "type": "thinking", "thinking": "Need to read main.tex first." },
-                    {
-                        "type": "tool_use",
-                        "id": "call-1",
-                        "name": "Read",
-                        "input": { "file_path": "main.tex" }
-                    }
-                ]
-            }
-        });
-        std::fs::write(
-            &session_path,
-            format!("{}\n", serde_json::to_string(&event).unwrap()),
-        )
-        .unwrap();
-
-        let messages = load_direct_provider_messages_from_path(&session_path).unwrap();
-
-        assert_eq!(messages.len(), 1);
-        assert_eq!(
-            messages[0]["reasoning_content"],
-            "Need to read main.tex first."
-        );
-        assert_eq!(messages[0]["tool_calls"][0]["function"]["name"], "Read");
-    }
-
-    #[test]
-    fn test_direct_provider_request_history_sanitizes_reasoning_by_provider() {
-        let messages = vec![
-            json!({ "role": "system", "content": direct_provider_system_prompt() }),
-            json!({
-                "role": "assistant",
-                "reasoning_content": "Need to read main.tex first.",
-                "content": null,
-                "tool_calls": [{
-                    "id": "call-1",
-                    "type": "function",
-                    "function": { "name": "Read", "arguments": "{\"file_path\":\"main.tex\"}" }
-                }]
-            }),
-        ];
-
-        let qwen_messages = direct_messages_for_tool_capability(
-            &messages,
-            DirectToolRequestMode::Tools,
-            DirectReasoningHistoryMode::Strip,
-        );
-        let deepseek_messages = direct_messages_for_tool_capability(
-            &messages,
-            DirectToolRequestMode::Tools,
-            DirectReasoningHistoryMode::Preserve,
-        );
-
-        assert!(qwen_messages[1].get("reasoning_content").is_none());
-        assert_eq!(
-            deepseek_messages[1]["reasoning_content"],
-            "Need to read main.tex first."
-        );
-    }
-
-    #[test]
-    fn test_direct_provider_context_compaction_keeps_recent_messages() {
-        let mut messages = vec![json!({
-            "role": "system",
-            "content": direct_provider_system_prompt(),
-        })];
-        for index in 0..80 {
-            messages.push(json!({
-                "role": "user",
-                "content": format!("older request {} {}", index, "x".repeat(1600)),
-            }));
-            messages.push(json!({
-                "role": "assistant",
-                "content": format!("older response {} {}", index, "y".repeat(1600)),
-            }));
-        }
-        messages.push(json!({ "role": "user", "content": "latest request" }));
-
-        let plan = build_direct_compaction_plan(&messages).unwrap();
-        let mut compacted = plan.system_messages;
-        compacted.push(json!({
-            "role": "user",
-            "content": direct_compact_user_summary_message("<summary>Older work summary.</summary>"),
-        }));
-        compacted.extend(plan.retained_messages);
-
-        assert!(compacted.len() < messages.len());
-        assert_eq!(compacted[0]["role"], "system");
-        assert!(compacted[1]["content"]
-            .as_str()
-            .unwrap()
-            .contains("This session is being continued"));
-        assert_eq!(compacted.last().unwrap()["content"], "latest request");
-    }
-
-    #[test]
-    fn test_direct_provider_context_compaction_does_not_start_tail_with_tool_result() {
-        let mut messages = vec![json!({
-            "role": "system",
-            "content": direct_provider_system_prompt(),
-        })];
-        for index in 0..90 {
-            messages.push(json!({
-                "role": "user",
-                "content": format!("request {} {}", index, "x".repeat(1200)),
-            }));
-            messages.push(json!({
-                "role": "assistant",
-                "content": null,
-                "tool_calls": [{
-                    "id": format!("call-{}", index),
-                    "type": "function",
-                    "function": {
-                        "name": "Read",
-                        "arguments": "{\"file_path\":\"main.tex\"}"
-                    }
-                }]
-            }));
-            messages.push(json!({
-                "role": "tool",
-                "tool_call_id": format!("call-{}", index),
-                "content": format!("tool result {} {}", index, "z".repeat(1200)),
-            }));
-        }
-        messages.push(json!({ "role": "user", "content": "latest request" }));
-
-        let plan = build_direct_compaction_plan(&messages).unwrap();
-        let mut compacted = plan.system_messages;
-        compacted.push(json!({
-            "role": "user",
-            "content": direct_compact_user_summary_message("<summary>Older work summary.</summary>"),
-        }));
-        compacted.extend(plan.retained_messages);
-        let first_after_summary = compacted.get(2).unwrap();
-
-        assert!(compacted.len() < messages.len());
-        assert!(!is_direct_tool_result_message(first_after_summary));
-    }
-
-    #[test]
-    fn test_direct_provider_compact_summary_strips_analysis() {
-        let formatted = direct_compact_user_summary_message(
-            "<analysis>scratchpad that should not persist</analysis><summary>1. Primary Request and Intent:\n   Keep the paper context.</summary>",
-        );
-
-        assert!(formatted.contains("Summary:\n1. Primary Request and Intent"));
-        assert!(formatted.contains("Recent messages are preserved verbatim."));
-        assert!(!formatted.contains("scratchpad"));
-        assert!(!formatted.contains("<summary>"));
-    }
-
-    #[test]
-    fn test_direct_provider_no_tools_history_preserves_tool_call_details() {
-        let messages = vec![
-            json!({
-                "role": "assistant",
-                "content": null,
-                "tool_calls": [{
-                    "id": "call-1",
-                    "type": "function",
-                    "function": {
-                        "name": "Read",
-                        "arguments": "{\"file_path\":\"main.tex\"}"
-                    }
-                }]
-            }),
-            json!({
-                "role": "tool",
-                "tool_call_id": "call-1",
-                "content": "main.tex contents",
-            }),
-        ];
-
-        let converted =
-            direct_messages_without_tooling(&messages, DirectReasoningHistoryMode::Strip);
-
-        assert_eq!(converted[0]["role"], "assistant");
-        assert!(converted[0].get("tool_calls").is_none());
-        assert!(converted[0]["content"]
-            .as_str()
-            .unwrap()
-            .contains("Read({\"file_path\":\"main.tex\"})"));
-        assert_eq!(converted[1]["role"], "user");
-        assert!(converted[1]["content"]
-            .as_str()
-            .unwrap()
-            .contains("main.tex contents"));
-    }
-
-    #[test]
-    fn test_direct_provider_extracts_stream_reasoning_delta() {
-        let delta = json!({
-            "reasoning_content": "Step one.",
-            "content": "Answer part."
-        });
-
-        assert_eq!(direct_stream_reasoning_delta(&delta), "Step one.");
-        assert_eq!(direct_stream_text_delta(&delta), "Answer part.");
-    }
-
-    #[test]
-    fn test_direct_provider_detects_tool_unsupported_errors() {
-        assert!(provider_error_allows_toolless_retry(
-            reqwest::StatusCode::BAD_REQUEST,
-            "unknown parameter: tools"
-        ));
-        assert!(provider_error_allows_toolless_retry(
-            reqwest::StatusCode::UNPROCESSABLE_ENTITY,
-            "tool_choice is not supported"
-        ));
-        assert!(!provider_error_allows_toolless_retry(
-            reqwest::StatusCode::UNAUTHORIZED,
-            "invalid api key"
-        ));
-    }
-
-    #[test]
-    fn test_direct_provider_selects_reasoning_history_mode_by_provider() {
-        let deepseek = StoredOpenAiCompatibleCredential {
-            id: "deepseek".to_string(),
-            label: "DeepSeek".to_string(),
-            api_key: "sk-test".to_string(),
-            base_url: "https://api.deepseek.com".to_string(),
-            model: "deepseek-v4-pro".to_string(),
-        };
-        let qwen = StoredOpenAiCompatibleCredential {
-            id: "qwen".to_string(),
-            label: "Qwen".to_string(),
-            api_key: "sk-test".to_string(),
-            base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string(),
-            model: "qwen3-coder-plus".to_string(),
-        };
-        let proxied_deepseek = StoredOpenAiCompatibleCredential {
-            id: "proxied-deepseek".to_string(),
-            label: "Proxied DeepSeek".to_string(),
-            api_key: "sk-test".to_string(),
-            base_url: "https://openrouter.ai/api/v1".to_string(),
-            model: "deepseek/deepseek-v4-pro".to_string(),
-        };
-
-        assert!(direct_reasoning_history_mode(&deepseek) == DirectReasoningHistoryMode::Preserve);
-        assert!(
-            direct_reasoning_history_mode(&proxied_deepseek)
-                == DirectReasoningHistoryMode::Preserve
-        );
-        assert!(direct_reasoning_history_mode(&qwen) == DirectReasoningHistoryMode::Strip);
-    }
-
-    #[test]
-    fn test_direct_provider_project_prompt_surfaces_python_and_skills() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join(".venv")).unwrap();
-        let skill_dir = dir
-            .path()
-            .join(".claude")
-            .join("skills")
-            .join("paper-helper");
-        std::fs::create_dir_all(&skill_dir).unwrap();
-        std::fs::write(
-            skill_dir.join("SKILL.md"),
-            "---\nname: Paper Helper\ndescription: Helps revise academic papers.\n---\n\n# Paper Helper",
-        )
-        .unwrap();
-
-        let root = canonical_project_root(dir.path().to_str().unwrap()).unwrap();
-        let prompt = direct_provider_system_prompt_for_project(&root);
-
-        assert!(prompt.contains(DIRECT_PROVIDER_PROJECT_CONTEXT_HEADER));
-        assert!(prompt.contains("project .venv is present"));
-        assert!(prompt.contains("/paper-helper: Paper Helper - Helps revise academic papers."));
-        assert!(prompt.contains("invoking Skill before answering is a blocking requirement"));
-    }
-
-    #[test]
-    fn test_direct_provider_no_tools_prompt_replaces_system_message() {
-        let messages = vec![
-            json!({ "role": "system", "content": direct_provider_system_prompt() }),
-            json!({ "role": "user", "content": "Please edit main.tex" }),
-        ];
-
-        let no_tools = direct_messages_for_tool_capability(
-            &messages,
-            DirectToolRequestMode::None,
-            DirectReasoningHistoryMode::Strip,
-        );
-        let content = no_tools[0]["content"].as_str().unwrap();
-
-        assert!(content.contains("does not support tool calls"));
-        assert!(!content.contains("You can inspect and edit files through the provided tools"));
-        assert_eq!(no_tools[1]["content"], "Please edit main.tex");
-    }
-
-    #[test]
-    fn test_direct_provider_no_tools_sanitizes_tool_history() {
-        let messages = vec![
-            json!({ "role": "system", "content": direct_provider_system_prompt() }),
-            json!({
-                "role": "assistant",
-                "content": null,
-                "tool_calls": [{
-                    "id": "call-1",
-                    "type": "function",
-                    "function": { "name": "Read", "arguments": "{\"file_path\":\"main.tex\"}" }
-                }]
-            }),
-            json!({ "role": "tool", "tool_call_id": "call-1", "content": "main.tex contents" }),
-        ];
-
-        let no_tools = direct_messages_for_tool_capability(
-            &messages,
-            DirectToolRequestMode::None,
-            DirectReasoningHistoryMode::Strip,
-        );
-
-        assert!(no_tools[1].get("tool_calls").is_none());
-        assert_eq!(no_tools[1]["role"], "assistant");
-        assert_eq!(no_tools[2]["role"], "user");
-        assert!(no_tools[2]["content"]
-            .as_str()
-            .unwrap()
-            .contains("Previous tool result call-1"));
-    }
-
-    #[test]
-    fn test_direct_provider_legacy_functions_preserves_project_context() {
-        let dir = tempfile::tempdir().unwrap();
-        let skill_dir = dir.path().join(".claude").join("skills").join("plotter");
-        std::fs::create_dir_all(&skill_dir).unwrap();
-        std::fs::write(
-            skill_dir.join("SKILL.md"),
-            "---\nname: Plotter\ndescription: Creates analysis plots.\n---\n\n# Plotter",
-        )
-        .unwrap();
-        let root = canonical_project_root(dir.path().to_str().unwrap()).unwrap();
-        let messages = vec![
-            json!({ "role": "system", "content": direct_provider_system_prompt_for_project(&root) }),
-            json!({ "role": "user", "content": "Make a plot" }),
-        ];
-
-        let function_messages = direct_messages_for_tool_capability(
-            &messages,
-            DirectToolRequestMode::Functions,
-            DirectReasoningHistoryMode::Strip,
-        );
-        let content = function_messages[0]["content"].as_str().unwrap();
-
-        assert!(content.contains(DIRECT_PROVIDER_PROJECT_CONTEXT_HEADER));
-        assert!(content.contains("/plotter: Plotter - Creates analysis plots."));
-        assert!(content.contains("You can inspect and edit files through the provided tools"));
-    }
-
-    #[test]
-    fn test_direct_provider_legacy_function_messages_convert_tool_history() {
-        let messages = vec![
-            json!({ "role": "system", "content": direct_provider_system_prompt() }),
-            json!({
-                "role": "assistant",
-                "content": null,
-                "tool_calls": [{
-                    "id": "call-1",
-                    "type": "function",
-                    "function": { "name": "Read", "arguments": "{\"file_path\":\"main.tex\"}" }
-                }]
-            }),
-            json!({ "role": "tool", "tool_call_id": "call-1", "content": "main.tex contents" }),
-        ];
-
-        let function_messages = direct_messages_for_tool_capability(
-            &messages,
-            DirectToolRequestMode::Functions,
-            DirectReasoningHistoryMode::Strip,
-        );
-
-        assert!(function_messages[1].get("tool_calls").is_none());
-        assert_eq!(function_messages[1]["function_call"]["name"], "Read");
-        assert_eq!(function_messages[2]["role"], "function");
-        assert_eq!(function_messages[2]["name"], "Read");
-        assert_eq!(function_messages[2]["content"], "main.tex contents");
     }
 
     // --- claude_required_dirs ---

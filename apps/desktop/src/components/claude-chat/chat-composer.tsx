@@ -1,5 +1,6 @@
 import {
   type FC,
+  type KeyboardEvent,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -25,6 +26,8 @@ import {
   RabbitIcon,
   LayersIcon,
   PlusIcon,
+  Trash2Icon,
+  Loader2Icon,
 } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { writeFile, mkdir, exists } from "@tauri-apps/plugin-fs";
@@ -35,7 +38,10 @@ import {
   useClaudeChatStore,
   offsetToLineCol,
 } from "@/stores/claude-chat-store";
-import { useClaudeSetupStore } from "@/stores/claude-setup-store";
+import {
+  useClaudeSetupStore,
+  type OpenAiCompatibleCredentialInfo,
+} from "@/stores/claude-setup-store";
 import { useDocumentStore, type ProjectFile } from "@/stores/document-store";
 import { getUniqueTargetName } from "@/lib/tauri/fs";
 import { createPdfTextSidecar, isPdfPath } from "@/lib/pdf-text-extractor";
@@ -49,9 +55,11 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { SlashCommandPicker, type SlashCommand } from "./slash-command-picker";
 import { createLogger } from "@/lib/debug/logger";
@@ -110,6 +118,9 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
   const setActiveApiCredential = useClaudeSetupStore(
     (s) => s.setActiveApiCredential,
   );
+  const deleteApiCredential = useClaudeSetupStore(
+    (s) => s.deleteApiCredential,
+  );
   const activeProviderCredential =
     openAiCredentials.find(
       (credential) => credential.id === activeOpenAiCredentialId,
@@ -156,6 +167,14 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
     null,
   );
   const [providerSetupOpen, setProviderSetupOpen] = useState(false);
+  const [providerDeleteTarget, setProviderDeleteTarget] =
+    useState<OpenAiCompatibleCredentialInfo | null>(null);
+  const [providerDeleteError, setProviderDeleteError] = useState<string | null>(
+    null,
+  );
+  const [deletingProviderId, setDeletingProviderId] = useState<string | null>(
+    null,
+  );
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -201,6 +220,57 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
     selectedProviderCredentialId,
     setSelectedProviderCredentialId,
   ]);
+
+  const handleDeleteProviderCredential = useCallback(
+    async (credentialId: string) => {
+      if (deletingProviderId) return;
+
+      const remainingCredentials = openAiCredentials.filter(
+        (credential) => credential.id !== credentialId,
+      );
+      const deletingSelected =
+        selectedProviderCredentialId === credentialId ||
+        selectedProviderCredential?.id === credentialId;
+
+      setDeletingProviderId(credentialId);
+      setProviderDeleteError(null);
+      try {
+        const success = await deleteApiCredential(credentialId);
+        if (!success) {
+          setProviderDeleteError("Failed to delete this provider.");
+          return;
+        }
+
+        setProviderModelOptions((prev) => {
+          const next = { ...prev };
+          delete next[credentialId];
+          return next;
+        });
+
+        if (deletingSelected) {
+          const nextCredential = remainingCredentials[0] ?? null;
+          if (nextCredential) {
+            setSelectedProviderCredentialId(nextCredential.id);
+            void setActiveApiCredential(nextCredential.id);
+          } else {
+            setSelectedProviderCredentialId(CLAUDE_CODE_PROVIDER_ID);
+          }
+        }
+        setProviderDeleteTarget(null);
+      } finally {
+        setDeletingProviderId(null);
+      }
+    },
+    [
+      deleteApiCredential,
+      deletingProviderId,
+      openAiCredentials,
+      selectedProviderCredential?.id,
+      selectedProviderCredentialId,
+      setActiveApiCredential,
+      setSelectedProviderCredentialId,
+    ],
+  );
 
   useEffect(() => {
     if (!modelPickerOpen || !selectedProviderCredential) return;
@@ -990,18 +1060,31 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                   const currentModel =
                     selectedProviderModels[credential.id] || credential.model;
 
+                  const isDeleting = deletingProviderId === credential.id;
+                  const selectCredential = () => {
+                    if (isDeleting) return;
+                    setSelectedProviderCredentialId(credential.id);
+                    void setActiveApiCredential(credential.id);
+                  };
+
                   return (
-                    <button
+                    <div
                       key={credential.id}
+                      role="button"
+                      tabIndex={0}
                       className={cn(
-                        "flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition-colors",
+                        "group/provider flex w-full cursor-pointer items-center gap-2 rounded-md py-1.5 pr-1 pl-3 text-left text-sm transition-colors",
                         active
                           ? "bg-accent text-accent-foreground"
                           : "hover:bg-muted",
+                        isDeleting && "pointer-events-none opacity-70",
                       )}
-                      onClick={() => {
-                        setSelectedProviderCredentialId(credential.id);
-                        void setActiveApiCredential(credential.id);
+                      onClick={selectCredential}
+                      onKeyDown={(event: KeyboardEvent<HTMLDivElement>) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          selectCredential();
+                        }
                       }}
                     >
                       {iconSrc ? (
@@ -1021,8 +1104,29 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                           {currentModel}
                         </div>
                       </div>
-                      {active && <CheckIcon className="size-3 shrink-0" />}
-                    </button>
+                      <div className="flex shrink-0 items-center gap-1">
+                        {active && <CheckIcon className="size-3 shrink-0" />}
+                        <button
+                          type="button"
+                          className="flex size-6 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          aria-label={`Delete ${displayName}`}
+                          title="Delete provider"
+                          disabled={!!deletingProviderId}
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            setProviderDeleteError(null);
+                            setProviderDeleteTarget(credential);
+                          }}
+                        >
+                          {isDeleting ? (
+                            <Loader2Icon className="size-3.5 animate-spin" />
+                          ) : (
+                            <Trash2Icon className="size-3.5" />
+                          )}
+                        </button>
+                      </div>
+                    </div>
                   );
                 })}
                 <button
@@ -1166,6 +1270,73 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
               setProviderModelError(null);
             }}
           />
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={!!providerDeleteTarget}
+        onOpenChange={(open) => {
+          if (!open && !deletingProviderId) {
+            setProviderDeleteTarget(null);
+            setProviderDeleteError(null);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Delete Provider</DialogTitle>
+            <DialogDescription>
+              Delete{" "}
+              <span className="font-medium text-foreground">
+                {providerDeleteTarget
+                  ? getProviderDisplayName({
+                      label: providerDeleteTarget.label,
+                      baseUrl: providerDeleteTarget.base_url,
+                      model: providerDeleteTarget.model,
+                    })
+                  : "this provider"}
+              </span>{" "}
+              with model{" "}
+              <span className="font-mono text-foreground">
+                {providerDeleteTarget?.model || "unknown"}
+              </span>
+              ? The API key will be removed from ClaudePrism.
+            </DialogDescription>
+          </DialogHeader>
+          {providerDeleteError && (
+            <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive text-xs">
+              {providerDeleteError}
+            </p>
+          )}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                if (deletingProviderId) return;
+                setProviderDeleteTarget(null);
+                setProviderDeleteError(null);
+              }}
+              disabled={!!deletingProviderId}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                if (providerDeleteTarget) {
+                  void handleDeleteProviderCredential(providerDeleteTarget.id);
+                }
+              }}
+              disabled={!providerDeleteTarget || !!deletingProviderId}
+            >
+              {deletingProviderId ? (
+                <Loader2Icon className="size-3.5 animate-spin" />
+              ) : (
+                <Trash2Icon className="size-3.5" />
+              )}
+              Delete
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

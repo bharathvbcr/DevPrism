@@ -1,5 +1,6 @@
 #![recursion_limit = "512"]
 
+mod anthropic_proxy;
 mod claude;
 mod history;
 mod latex;
@@ -606,6 +607,7 @@ pub fn run() {
             claude::list_openai_compatible_credential_models,
             claude::clear_anthropic_api_key,
             claude::list_openai_compatible_credentials,
+            claude::delete_openai_compatible_credential,
             claude::set_active_openai_compatible_credential,
             claude::execute_claude_code,
             claude::continue_claude_code,

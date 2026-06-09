@@ -354,18 +354,24 @@ export function LatexEditor() {
     if (searchQuery) findNext(view);
   }, [searchQuery]);
 
-  const handleFindNext = () => {
+  const handleFindNext = (options?: { focusEditor?: boolean }) => {
     const view = viewRef.current;
     if (view) {
       findNext(view);
-      view.focus();
+      if (matchCount > 0) {
+        setCurrentMatch((current) => (current % matchCount) + 1);
+      }
+      if (options?.focusEditor !== false) view.focus();
     }
   };
-  const handleFindPrevious = () => {
+  const handleFindPrevious = (options?: { focusEditor?: boolean }) => {
     const view = viewRef.current;
     if (view) {
       findPrevious(view);
-      view.focus();
+      if (matchCount > 0) {
+        setCurrentMatch((current) => (current <= 1 ? matchCount : current - 1));
+      }
+      if (options?.focusEditor !== false) view.focus();
     }
   };
 

@@ -177,15 +177,15 @@ const BashWidget: FC<{
     typeof result?.content === "string" ? result.content : "";
 
   return (
-    <div className="my-1.5 rounded-lg border border-border bg-[#1e1e2e] text-sm">
+    <div className="my-1.5 rounded-lg border border-border bg-muted/70 text-sm dark:bg-neutral-900">
       <button
         type="button"
         className="flex w-full items-center gap-2 px-3 py-2"
         onClick={() => setExpanded(!expanded)}
       >
         <StatusIcon result={result} />
-        <TerminalIcon className="size-3.5 shrink-0 text-green-400" />
-        <code className="min-w-0 truncate text-green-300 text-xs">
+        <TerminalIcon className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+        <code className="min-w-0 truncate text-emerald-700 text-xs dark:text-emerald-300">
           {prefix} {truncate(command, 80)}
         </code>
         {result &&
@@ -197,7 +197,7 @@ const BashWidget: FC<{
       </button>
       {expanded && resultContent && (
         <div className="max-h-40 overflow-auto border-border/50 border-t px-3 py-2">
-          <pre className="whitespace-pre-wrap font-mono text-gray-300 text-xs">
+          <pre className="whitespace-pre-wrap font-mono text-muted-foreground text-xs">
             {truncate(resultContent, 2000)}
           </pre>
         </div>

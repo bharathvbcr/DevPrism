@@ -2,6 +2,7 @@ import anthropicIcon from "@/assets/providers/anthropic.svg";
 import deepseekIcon from "@/assets/providers/deepseek.svg";
 import geminiIcon from "@/assets/providers/gemini-color.svg";
 import moonshotIcon from "@/assets/providers/moonshot.svg";
+import ollamaIcon from "@/assets/providers/ollama.svg";
 import openaiIcon from "@/assets/providers/openai.svg";
 import qwenIcon from "@/assets/providers/qwen.svg";
 import zhipuIcon from "@/assets/providers/zhipu-color.svg";
@@ -36,6 +37,14 @@ function isGenericOpenAiLabel(label?: string | null) {
 
 export function getProviderDisplayName(input: ProviderIconInput): string {
   const haystack = providerHaystack(input);
+
+  if (
+    haystack.includes("ollama") ||
+    haystack.includes("localhost:11434") ||
+    haystack.includes("127.0.0.1:11434")
+  ) {
+    return "Ollama";
+  }
 
   if (
     haystack.includes("qwen") ||
@@ -95,6 +104,14 @@ export function getProviderDisplayName(input: ProviderIconInput): string {
 
 export function getProviderIconSrc(input: ProviderIconInput): string | null {
   const haystack = providerHaystack(input);
+
+  if (
+    haystack.includes("ollama") ||
+    haystack.includes("localhost:11434") ||
+    haystack.includes("127.0.0.1:11434")
+  ) {
+    return ollamaIcon;
+  }
 
   if (
     haystack.includes("qwen") ||

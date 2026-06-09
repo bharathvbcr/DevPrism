@@ -178,6 +178,63 @@ describe("useClaudeSetupStore.saveApiKey", () => {
     });
   });
 
+  it("allows local OpenAI-compatible providers without an API key", async () => {
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "check_claude_status") {
+        return {
+          installed: true,
+          authenticated: true,
+          binary_path: null,
+          version: "OpenAI-compatible provider",
+          provider_kind: "openai-compatible",
+          account_email: null,
+          provider_model: "llama3.2",
+          provider_base_url: "http://localhost:11434/v1",
+          missing_git: false,
+        };
+      }
+      if (command === "list_openai_compatible_credentials") {
+        return [
+          {
+            id: "ollama-cred",
+            label: "Ollama",
+            model: "llama3.2",
+            base_url: "http://localhost:11434/v1",
+          },
+        ];
+      }
+      return null;
+    });
+
+    const success = await useClaudeSetupStore
+      .getState()
+      .saveApiKey(
+        "",
+        "http://localhost:11434/v1",
+        "openai-compatible",
+        "llama3.2",
+        "Ollama",
+      );
+
+    expect(success).toBe(true);
+    expect(invoke).toHaveBeenNthCalledWith(
+      1,
+      "verify_openai_compatible_api_key",
+      {
+        apiKey: "",
+        baseUrl: "http://localhost:11434/v1",
+        model: "llama3.2",
+      },
+    );
+    expect(invoke).toHaveBeenNthCalledWith(2, "save_anthropic_api_key", {
+      apiKey: "",
+      baseUrl: "http://localhost:11434/v1",
+      provider: "openai-compatible",
+      model: "llama3.2",
+      credentialLabel: "Ollama",
+    });
+  });
+
   it("does not save OpenAI-compatible credentials when verification fails", async () => {
     vi.mocked(invoke).mockRejectedValueOnce(
       new Error("Invalid provider API key"),

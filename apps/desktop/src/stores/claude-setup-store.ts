@@ -294,12 +294,12 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
     const key = apiKey.trim();
     const url = baseUrl?.trim() ?? "";
     const modelName = model?.trim() ?? "";
-    if (!key) {
+    if (provider !== "openai-compatible" && !key) {
       set({ error: "API key is empty" });
       return false;
     }
 
-    if (/\s/.test(key)) {
+    if (key && /\s/.test(key)) {
       set({ error: "API key cannot contain spaces or line breaks" });
       return false;
     }

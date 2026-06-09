@@ -43,6 +43,7 @@ type OpenAICompatiblePreset = {
   baseUrl: string;
   model: string;
   note: string;
+  apiKeyOptional?: boolean;
 };
 
 type ClaudeCompatiblePreset = {
@@ -60,6 +61,7 @@ type ModelProviderCard = {
   model: string;
   badge: string;
   note: string;
+  apiKeyOptional?: boolean;
 };
 
 const CLAUDE_COMPATIBLE_PRESETS: ClaudeCompatiblePreset[] = [
@@ -106,6 +108,14 @@ const OPENAI_COMPATIBLE_PRESETS: OpenAICompatiblePreset[] = [
     baseUrl: "https://open.bigmodel.cn/api/paas/v4",
     model: "",
     note: "Zhipu BigModel chat completions endpoint.",
+  },
+  {
+    id: "ollama",
+    label: "Ollama",
+    baseUrl: "http://localhost:11434/v1",
+    model: "",
+    note: "Local Ollama OpenAI-compatible endpoint.",
+    apiKeyOptional: true,
   },
   {
     id: "gemini",
@@ -559,6 +569,9 @@ export function ClaudeSetup({
       ? providerPreset
       : fallbackCardId;
     const activeCard = providerCards.find((card) => card.id === activeCardId);
+    const apiKeyOptional =
+      selectedProvider === "openai-compatible" && !!activeCard?.apiKeyOptional;
+    const apiKeyRequired = !apiKeyOptional;
 
     return (
       <>
@@ -637,7 +650,9 @@ export function ClaudeSetup({
               type="password"
               placeholder={
                 selectedProvider === "openai-compatible"
-                  ? "sk-..."
+                  ? apiKeyOptional
+                    ? "Optional for local Ollama"
+                    : "sk-..."
                   : "sk-ant-... or provider key"
               }
               value={apiKey}
@@ -651,7 +666,9 @@ export function ClaudeSetup({
             />
             <p className="text-[11px] text-muted-foreground">
               {selectedProvider === "openai-compatible"
-                ? "Use the API key from your model provider."
+                ? apiKeyOptional
+                  ? "Ollama runs locally and normally does not require an API key."
+                  : "Use the API key from your model provider."
                 : "Anthropic keys start with sk-ant-. Claude-compatible proxies can use their own key format."}
             </p>
           </div>
@@ -714,7 +731,7 @@ export function ClaudeSetup({
                   disabled={
                     isSavingApiKey ||
                     isFetchingModels ||
-                    !apiKey.trim() ||
+                    (apiKeyRequired && !apiKey.trim()) ||
                     !baseUrl.trim()
                   }
                 >
@@ -779,7 +796,7 @@ export function ClaudeSetup({
             size="sm"
             className="w-full gap-2"
             disabled={
-              !apiKey.trim() ||
+              (apiKeyRequired && !apiKey.trim()) ||
               isSavingApiKey ||
               (selectedProvider === "openai-compatible" &&
                 (!baseUrl.trim() || !model.trim()))
@@ -795,7 +812,9 @@ export function ClaudeSetup({
                 ? "Verifying..."
                 : "Saving..."
               : selectedProvider === "openai-compatible"
-                ? "Verify & Use API Key"
+                ? apiKeyOptional
+                  ? "Verify & Use Local Provider"
+                  : "Verify & Use API Key"
                 : "Use API Key"}
           </Button>
         </form>

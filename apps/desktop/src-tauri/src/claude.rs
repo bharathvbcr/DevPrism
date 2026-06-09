@@ -198,6 +198,15 @@ fn normalize_api_key(value: &str) -> Result<String, String> {
     Ok(clean)
 }
 
+fn normalize_optional_api_key(value: &str) -> Result<String, String> {
+    let clean = strip_nul(value).trim().to_string();
+    if clean.chars().any(char::is_whitespace) {
+        return Err("API key cannot contain spaces or line breaks".to_string());
+    }
+
+    Ok(clean)
+}
+
 fn normalize_base_url(value: Option<&str>) -> Result<Option<String>, String> {
     let Some(value) = value else {
         return Ok(None);
@@ -318,7 +327,7 @@ fn normalized_openai_compatible_credentials(
 ) -> Vec<StoredOpenAiCompatibleCredential> {
     let mut credentials = Vec::new();
     for credential in &config.openai_credentials {
-        let Ok(api_key) = normalize_api_key(&credential.api_key) else {
+        let Ok(api_key) = normalize_optional_api_key(&credential.api_key) else {
             continue;
         };
         let Some(base_url) = normalize_base_url(Some(credential.base_url.as_str()))
@@ -356,7 +365,7 @@ fn normalized_openai_compatible_credentials(
             config
                 .openai_api_key
                 .as_deref()
-                .and_then(|value| normalize_api_key(value).ok()),
+                .and_then(|value| normalize_optional_api_key(value).ok()),
             normalize_base_url(config.openai_base_url.as_deref())
                 .ok()
                 .flatten(),
@@ -481,9 +490,13 @@ pub async fn save_anthropic_api_key(
     credential_label: Option<String>,
     credential_id: Option<String>,
 ) -> Result<(), String> {
-    let api_key = normalize_api_key(&api_key)?;
-    let base_url = normalize_base_url(base_url.as_deref())?;
     let provider = normalize_provider(provider.as_deref())?;
+    let api_key = if provider == PROVIDER_OPENAI_COMPATIBLE {
+        normalize_optional_api_key(&api_key)?
+    } else {
+        normalize_api_key(&api_key)?
+    };
+    let base_url = normalize_base_url(base_url.as_deref())?;
     let model = normalize_model(model.as_deref())?;
     if let Some(message) = known_proxy_mismatch_error(&provider, base_url.as_deref()) {
         return Err(message);
@@ -564,7 +577,7 @@ pub async fn verify_openai_compatible_api_key(
     base_url: String,
     model: String,
 ) -> Result<(), String> {
-    let api_key = normalize_api_key(&api_key)?;
+    let api_key = normalize_optional_api_key(&api_key)?;
     let base_url = normalize_base_url(Some(base_url.as_str()))?
         .ok_or("OpenAI-compatible provider requires a Base URL")?;
     if let Some(message) =
@@ -590,7 +603,7 @@ pub async fn list_openai_compatible_models(
     api_key: String,
     base_url: String,
 ) -> Result<Vec<String>, String> {
-    let api_key = normalize_api_key(&api_key)?;
+    let api_key = normalize_optional_api_key(&api_key)?;
     let base_url = normalize_base_url(Some(base_url.as_str()))?
         .ok_or("OpenAI-compatible provider requires a Base URL")?;
     if let Some(message) =
@@ -619,9 +632,8 @@ async fn fetch_openai_compatible_models(
     api_key: &str,
     base_url: &str,
 ) -> Result<Vec<String>, String> {
-    let response = reqwest::Client::new()
-        .get(openai_models_url(base_url))
-        .bearer_auth(api_key)
+    let request = reqwest::Client::new().get(openai_models_url(base_url));
+    let response = with_optional_bearer_auth(request, api_key)
         .send()
         .await
         .map_err(|err| format!("Failed to fetch provider models: {}", err))?;
@@ -2351,6 +2363,17 @@ fn openai_chat_completions_url(base_url: &str) -> String {
     }
 }
 
+fn with_optional_bearer_auth(
+    request: reqwest::RequestBuilder,
+    api_key: &str,
+) -> reqwest::RequestBuilder {
+    if api_key.trim().is_empty() {
+        request
+    } else {
+        request.bearer_auth(api_key)
+    }
+}
+
 fn openai_models_url(base_url: &str) -> String {
     let clean = base_url.trim_end_matches('/');
     if let Some(root) = clean.strip_suffix("/chat/completions") {
@@ -2439,11 +2462,11 @@ async fn verify_openai_compatible_credential(
         .map_err(|err| format!("Failed to create provider client: {}", err))?;
     let request_body = openai_compatible_verification_body(&credential.model);
 
-    let response = client
+    let request = client
         .post(openai_chat_completions_url(&credential.base_url))
-        .bearer_auth(&credential.api_key)
         .header("Content-Type", "application/json")
-        .body(request_body.to_string())
+        .body(request_body.to_string());
+    let response = with_optional_bearer_auth(request, &credential.api_key)
         .send()
         .await
         .map_err(|err| format!("Provider verification request failed: {}", err))?;
@@ -2487,11 +2510,11 @@ async fn send_openai_compatible_no_tools_text_request(
         "stream": false,
     });
 
-    let response = client
+    let request = client
         .post(openai_chat_completions_url(&credential.base_url))
-        .bearer_auth(&credential.api_key)
         .header("Content-Type", "application/json")
-        .body(request_body.to_string())
+        .body(request_body.to_string());
+    let response = with_optional_bearer_auth(request, &credential.api_key)
         .send()
         .await
         .map_err(|err| format!("Provider request failed: {}", err))?;
@@ -3931,6 +3954,18 @@ mod tests {
     }
 
     #[test]
+    fn test_openai_chat_completions_url_supports_ollama_roots() {
+        assert_eq!(
+            openai_chat_completions_url("http://localhost:11434"),
+            "http://localhost:11434/v1/chat/completions"
+        );
+        assert_eq!(
+            openai_chat_completions_url("http://localhost:11434/v1"),
+            "http://localhost:11434/v1/chat/completions"
+        );
+    }
+
+    #[test]
     fn test_openai_models_url_matches_provider_roots() {
         assert_eq!(
             openai_models_url("https://dashscope.aliyuncs.com/compatible-mode/v1"),
@@ -3948,6 +3983,22 @@ mod tests {
             openai_models_url("https://api.openai.com"),
             "https://api.openai.com/v1/models"
         );
+        assert_eq!(
+            openai_models_url("http://localhost:11434"),
+            "http://localhost:11434/v1/models"
+        );
+        assert_eq!(
+            openai_models_url("http://localhost:11434/v1"),
+            "http://localhost:11434/v1/models"
+        );
+    }
+
+    #[test]
+    fn test_openai_compatible_api_key_can_be_empty_for_local_providers() {
+        assert!(normalize_api_key("").is_err());
+        assert_eq!(normalize_optional_api_key("").unwrap(), "");
+        assert_eq!(normalize_optional_api_key(" ollama ").unwrap(), "ollama");
+        assert!(normalize_optional_api_key("bad key").is_err());
     }
 
     #[test]

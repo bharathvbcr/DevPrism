@@ -17,6 +17,7 @@ import { invoke } from "@tauri-apps/api/core";
 import "katex/dist/katex.min.css";
 
 import { useDocumentStore } from "@/stores/document-store";
+import { cn } from "@/lib/utils";
 
 // ─── Shell Detection ───
 
@@ -83,7 +84,10 @@ export const MarkdownRenderer: FC<MarkdownRendererProps> = ({
     <ReactMarkdown
       remarkPlugins={[remarkGfm, remarkMath]}
       rehypePlugins={[rehypeKatex]}
-      className={className ?? "prose prose-sm dark:prose-invert max-w-none"}
+      className={cn(
+        "min-w-0 max-w-full break-words [overflow-wrap:anywhere] [&_*]:max-w-full",
+        className ?? "prose prose-sm dark:prose-invert max-w-none",
+      )}
       components={{
         pre({ children }) {
           return <>{children}</>;
@@ -98,7 +102,13 @@ export const MarkdownRenderer: FC<MarkdownRendererProps> = ({
 
           if (!match && !isBlock) {
             return (
-              <code className={codeClassName} {...props}>
+              <code
+                className={cn(
+                  "break-words [overflow-wrap:anywhere]",
+                  codeClassName,
+                )}
+                {...props}
+              >
                 {children}
               </code>
             );

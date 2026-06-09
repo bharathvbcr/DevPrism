@@ -228,9 +228,7 @@ function messageContentText(message: ClaudeStreamMessage): string {
       );
     } else if (block.type === "tool_result") {
       const content = stringifyBlockContent(block.content ?? "");
-      parts.push(
-        `[tool_result${block.is_error ? " error" : ""}: ${content}]`,
-      );
+      parts.push(`[tool_result${block.is_error ? " error" : ""}: ${content}]`);
     }
   }
   return parts.join("\n").trim();
@@ -273,6 +271,106 @@ function buildProviderSwitchContext(
 let tabCounter = 0;
 function nextTabId(): string {
   return `tab-${++tabCounter}`;
+}
+
+function truncateChatTitle(text: string, maxChars = 80): string {
+  return text.length > maxChars
+    ? `${text.slice(0, Math.max(0, maxChars - 3))}...`
+    : text;
+}
+
+function normalizeChatTitleWhitespace(text: string): string {
+  return text.trim().replace(/\s+/g, " ");
+}
+
+function isNoiseChatTitleLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed) return true;
+  const lower = trimmed.toLowerCase();
+  return (
+    lower.startsWith("template:") ||
+    lower.startsWith("file:") ||
+    lower.startsWith("reference files") ||
+    lower === "what i want to create" ||
+    lower.startsWith("(extracted text") ||
+    lower.startsWith("attachments/") ||
+    lower.startsWith("the file currently contains") ||
+    (lower.startsWith("new ") && lower.includes(" project"))
+  );
+}
+
+function extractMarkedRequestBody(text: string): string | null {
+  const lines = text.split(/\r?\n/);
+  const markerIndex = lines.findIndex(
+    (line) => line.trim().toLowerCase() === "what i want to create",
+  );
+  if (markerIndex < 0) return null;
+
+  const selected: string[] = [];
+  for (const line of lines.slice(markerIndex + 1)) {
+    const trimmed = line.trim();
+    if (trimmed.toLowerCase() === "reference files") break;
+    if (isNoiseChatTitleLine(trimmed)) continue;
+    selected.push(trimmed);
+    if (selected.join(" ").length >= 120) break;
+  }
+
+  const body = normalizeChatTitleWhitespace(selected.join(" "));
+  return body || null;
+}
+
+function firstMeaningfulTitleLine(text: string): string | null {
+  for (const line of text.split(/\r?\n/)) {
+    if (!isNoiseChatTitleLine(line)) {
+      const normalized = normalizeChatTitleWhitespace(line);
+      if (normalized) return normalized;
+    }
+  }
+  return null;
+}
+
+function summarizeChatTitle(prompt: string): string | undefined {
+  const clean = prompt.includes("]\n\n")
+    ? prompt.slice(prompt.lastIndexOf("]\n\n") + 3)
+    : prompt;
+  if (
+    clean.startsWith("<ide_") ||
+    clean.startsWith("<system-reminder>") ||
+    clean.startsWith("<command-name>") ||
+    clean.startsWith("<local-command-stdout>")
+  ) {
+    return undefined;
+  }
+
+  const source =
+    extractMarkedRequestBody(clean) ?? firstMeaningfulTitleLine(clean);
+  if (!source) return undefined;
+
+  const normalized = normalizeChatTitleWhitespace(source);
+  const lower = normalized.toLowerCase();
+  const researchPrefix = [
+    "a research paper for ",
+    "research paper for ",
+    "a research paper on ",
+    "research paper on ",
+    "a research paper about ",
+    "research paper about ",
+  ].find((prefix) => lower.startsWith(prefix));
+
+  if (researchPrefix) {
+    const topic = normalized.slice(researchPrefix.length).trim();
+    return topic
+      ? `Research Paper: ${truncateChatTitle(topic, 56)}`
+      : "Research Paper";
+  }
+
+  return truncateChatTitle(normalized);
+}
+
+function titleForMessages(messages: ClaudeStreamMessage[]): string | undefined {
+  const firstUser = messages.find((message) => message.type === "user");
+  if (!firstUser) return undefined;
+  return summarizeChatTitle(messageContentText(firstUser));
 }
 
 /**
@@ -503,14 +601,16 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     const requestProviderKey = providerSessionKey(providerCredentialId);
     const previousProviderKey = activeTab?.providerKey ?? null;
     const providerChanged =
-      !!sessionId && !!previousProviderKey && previousProviderKey !== requestProviderKey;
+      !!sessionId &&
+      !!previousProviderKey &&
+      previousProviderKey !== requestProviderKey;
     const switchingDirectProviderToClaudeCode =
       providerChanged &&
       requestProviderKey === CLAUDE_CODE_PROVIDER_ID &&
       previousProviderKey !== CLAUDE_CODE_PROVIDER_ID;
     const resumeSessionId = switchingDirectProviderToClaudeCode
       ? null
-      : sessionId ?? null;
+      : (sessionId ?? null);
 
     const sendStart = performance.now();
     log.info("sendPrompt start", {
@@ -559,7 +659,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     // Auto-set tab title from first prompt
     const isFirstMessage = activeTab && activeTab.messages.length === 0;
     const tabTitle = isFirstMessage
-      ? userPrompt.slice(0, 40) + (userPrompt.length > 40 ? "..." : "")
+      ? summarizeChatTitle(userPrompt)
       : undefined;
 
     set((s) => {
@@ -622,7 +722,9 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       prompt = `${ctx}\n\n${userPrompt}`;
     }
     if (switchingDirectProviderToClaudeCode) {
-      const priorContext = buildProviderSwitchContext(activeTab?.messages ?? []);
+      const priorContext = buildProviderSwitchContext(
+        activeTab?.messages ?? [],
+      );
       if (priorContext) {
         prompt = `${priorContext}\n\n${prompt}`;
       }
@@ -756,19 +858,18 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         if (selectedProviderCredentialId !== undefined) {
           persistSelectedProviderCredentialId(selectedProviderCredentialId);
         }
-        set((s) =>
-          ({
-            ...applyTabUpdate(s, activeTabId, {
-              messages,
-              providerKey,
-              totalInputTokens: totals.inputTokens,
-              totalOutputTokens: totals.outputTokens,
-            }),
-            ...(selectedProviderCredentialId !== undefined
-              ? { selectedProviderCredentialId }
-              : {}),
+        set((s) => ({
+          ...applyTabUpdate(s, activeTabId, {
+            messages,
+            providerKey,
+            title: titleForMessages(messages) ?? "New Chat",
+            totalInputTokens: totals.inputTokens,
+            totalOutputTokens: totals.outputTokens,
           }),
-        );
+          ...(selectedProviderCredentialId !== undefined
+            ? { selectedProviderCredentialId }
+            : {}),
+        }));
       } catch (err) {
         log.error("Failed to load session history", { error: String(err) });
       }

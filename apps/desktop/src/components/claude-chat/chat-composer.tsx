@@ -118,9 +118,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
   const setActiveApiCredential = useClaudeSetupStore(
     (s) => s.setActiveApiCredential,
   );
-  const deleteApiCredential = useClaudeSetupStore(
-    (s) => s.deleteApiCredential,
-  );
+  const deleteApiCredential = useClaudeSetupStore((s) => s.deleteApiCredential);
   const activeProviderCredential =
     openAiCredentials.find(
       (credential) => credential.id === activeOpenAiCredentialId,
@@ -130,9 +128,9 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
   const selectedProviderCredential =
     selectedProviderCredentialId &&
     selectedProviderCredentialId !== CLAUDE_CODE_PROVIDER_ID
-      ? openAiCredentials.find(
+      ? (openAiCredentials.find(
           (credential) => credential.id === selectedProviderCredentialId,
-        ) ?? null
+        ) ?? null)
       : selectedProviderCredentialId === CLAUDE_CODE_PROVIDER_ID
         ? null
         : activeProviderCredential;
@@ -288,7 +286,9 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
       .then((models) => {
         if (cancelled) return;
         const options = Array.from(
-          new Set([selectedProviderCredential.model, ...models].filter(Boolean)),
+          new Set(
+            [selectedProviderCredential.model, ...models].filter(Boolean),
+          ),
         );
         setProviderModelOptions((prev) => ({
           ...prev,
@@ -312,11 +312,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
     return () => {
       cancelled = true;
     };
-  }, [
-    modelPickerOpen,
-    providerModelOptions,
-    selectedProviderCredential,
-  ]);
+  }, [modelPickerOpen, providerModelOptions, selectedProviderCredential]);
 
   // Pinned contexts — supports multiple files/selections
   const [pinnedContexts, setPinnedContexts] = useState<PinnedContext[]>([]);
@@ -965,9 +961,9 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
     },
   ];
   const activeProviderModelOptions = selectedProviderCredential
-    ? providerModelOptions[selectedProviderCredential.id] ?? [
+    ? (providerModelOptions[selectedProviderCredential.id] ?? [
         selectedProviderCredential.model,
-      ]
+      ])
     : [];
   const activeProviderModelsLoading =
     !!selectedProviderCredential &&
@@ -1046,7 +1042,8 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                 </button>
 
                 {openAiCredentials.map((credential) => {
-                  const active = selectedProviderCredential?.id === credential.id;
+                  const active =
+                    selectedProviderCredential?.id === credential.id;
                   const displayName = getProviderDisplayName({
                     label: credential.label,
                     baseUrl: credential.base_url,
@@ -1130,7 +1127,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                   );
                 })}
                 <button
-                  className="mt-1 flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  className="mt-1 flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-muted-foreground text-sm transition-colors hover:bg-muted hover:text-foreground"
                   onClick={() => {
                     setModelPickerOpen(false);
                     setProviderSetupOpen(true);
@@ -1141,9 +1138,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                     <div className="truncate font-medium text-xs">
                       Add Provider
                     </div>
-                    <div className="truncate text-xs">
-                      Save another API key
-                    </div>
+                    <div className="truncate text-xs">Save another API key</div>
                   </div>
                 </button>
               </div>
@@ -1253,7 +1248,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
         )}
 
       <Dialog open={providerSetupOpen} onOpenChange={setProviderSetupOpen}>
-        <DialogContent className="max-h-[85vh] w-[min(42rem,calc(100vw-2rem))] overflow-x-hidden overflow-y-auto sm:max-w-none">
+        <DialogContent className="max-h-[85vh] w-[min(42rem,calc(100vw-2rem))] overflow-y-auto overflow-x-hidden sm:max-w-none">
           <DialogHeader>
             <DialogTitle>Add AI Provider</DialogTitle>
             <DialogDescription>

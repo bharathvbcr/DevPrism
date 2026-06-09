@@ -221,8 +221,7 @@ export function SessionSelector() {
                           : "Delete session"
                       }
                       disabled={
-                        sessionIsStreaming ||
-                        deletingId === session.session_id
+                        sessionIsStreaming || deletingId === session.session_id
                       }
                       onPointerDown={(event) => event.stopPropagation()}
                       onClick={(event) => {

@@ -15,12 +15,7 @@ interface ProviderIconInput {
 }
 
 function providerHaystack(input: ProviderIconInput) {
-  return [
-    input.id,
-    input.label,
-    input.baseUrl,
-    input.model,
-  ]
+  return [input.id, input.label, input.baseUrl, input.model]
     .filter(Boolean)
     .join(" ")
     .toLowerCase();

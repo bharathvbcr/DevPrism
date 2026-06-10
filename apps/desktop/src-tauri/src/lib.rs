@@ -618,6 +618,7 @@ pub fn run() {
             claude::get_claude_fast_mode,
             claude::set_claude_fast_mode,
             claude::list_claude_sessions,
+            claude::generate_claude_session_title,
             claude::load_session_history,
             claude::delete_claude_session,
             zotero::zotero_start_oauth,

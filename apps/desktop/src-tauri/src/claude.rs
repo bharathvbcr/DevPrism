@@ -60,7 +60,6 @@ pub struct OpenAiCompatibleCredentialInfo {
 
 const PROVIDER_CLAUDE_CODE: &str = "claude-code";
 const PROVIDER_OPENAI_COMPATIBLE: &str = "openai-compatible";
-const MAX_MODEL_SESSION_TITLE_GENERATIONS_PER_LIST: usize = 12;
 
 /// Check if an environment variable should be explicitly passed to child processes.
 ///
@@ -2794,7 +2793,6 @@ struct SessionTitleCache {
 
 struct SessionCandidate {
     session_id: String,
-    path: PathBuf,
     fallback_title: String,
     title: Option<String>,
     last_modified: i64,
@@ -3308,6 +3306,7 @@ pub async fn list_claude_sessions(
     project_path: String,
     generate_titles: Option<bool>,
 ) -> Result<Vec<ClaudeSessionInfo>, String> {
+    let _ = generate_titles;
     eprintln!(
         "[session] list_claude_sessions called with project_path={}",
         project_path
@@ -3360,7 +3359,6 @@ pub async fn list_claude_sessions(
 
         candidates.push(SessionCandidate {
             session_id,
-            path,
             fallback_title,
             title,
             last_modified: modified,
@@ -3368,58 +3366,6 @@ pub async fn list_claude_sessions(
     }
 
     candidates.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
-
-    let should_generate_titles = generate_titles.unwrap_or(true);
-    let title_credential = should_generate_titles
-        .then(|| {
-            read_claude_prism_auth_config()
-                .ok()
-                .and_then(|config| session_title_credential_from_config(&config))
-        })
-        .flatten();
-    let title_client = title_credential.as_ref().and_then(|_| {
-        reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(8))
-            .build()
-            .ok()
-    });
-
-    if should_generate_titles {
-        if let (Some(client), Some(credential)) = (title_client.as_ref(), title_credential.as_ref())
-        {
-            for candidate in candidates
-                .iter_mut()
-                .filter(|candidate| candidate.title.is_none())
-                .take(MAX_MODEL_SESSION_TITLE_GENERATIONS_PER_LIST)
-            {
-                let Some(excerpt) = session_excerpt_for_model_title(&candidate.path) else {
-                    continue;
-                };
-                match generate_model_session_title(client, credential, &excerpt).await {
-                    Ok(Some(title)) => {
-                        if let Err(err) = write_session_title_cache(
-                            &candidate.path,
-                            candidate.last_modified,
-                            &title,
-                        ) {
-                            eprintln!(
-                                "[session] failed to cache model title for {}: {}",
-                                candidate.session_id, err
-                            );
-                        }
-                        candidate.title = Some(title);
-                    }
-                    Ok(None) => {}
-                    Err(err) => {
-                        eprintln!(
-                            "[session] failed to generate model title for {}: {}",
-                            candidate.session_id, err
-                        );
-                    }
-                }
-            }
-        }
-    }
 
     let mut sessions: Vec<ClaudeSessionInfo> = candidates
         .into_iter()
@@ -3441,6 +3387,66 @@ pub async fn list_claude_sessions(
     }
 
     Ok(sessions)
+}
+
+fn is_valid_session_id(session_id: &str) -> bool {
+    !session_id.is_empty()
+        && session_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+#[tauri::command]
+pub async fn generate_claude_session_title(
+    project_path: String,
+    session_id: String,
+) -> Result<Option<String>, String> {
+    if !is_valid_session_id(&session_id) {
+        return Err("Invalid session id".to_string());
+    }
+
+    let sessions_dir = get_sessions_dir(&project_path)?;
+    let session_path = sessions_dir.join(format!("{}.jsonl", session_id));
+    if !session_path.exists() {
+        return Ok(None);
+    }
+
+    if let Some(title) = read_session_title_cache(&session_path) {
+        return Ok(Some(title));
+    }
+
+    let modified = std::fs::metadata(&session_path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .map(|t| {
+            t.duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64
+        })
+        .unwrap_or(0);
+
+    let Some(excerpt) = session_excerpt_for_model_title(&session_path) else {
+        return Ok(None);
+    };
+    let Some(credential) = read_claude_prism_auth_config()
+        .ok()
+        .and_then(|config| session_title_credential_from_config(&config))
+    else {
+        return Ok(None);
+    };
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+    else {
+        return Ok(None);
+    };
+
+    let Some(title) = generate_model_session_title(&client, &credential, &excerpt).await? else {
+        return Ok(None);
+    };
+
+    write_session_title_cache(&session_path, modified, &title)?;
+    Ok(Some(title))
 }
 
 /// Load the full JSONL history for a specific session.

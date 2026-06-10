@@ -1,4 +1,5 @@
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -44,7 +45,35 @@ async fn handle_connection(
     credential: Arc<OpenAiProxyCredential>,
 ) -> Result<(), String> {
     let request = read_http_request(&mut stream).await?;
-    let response = route_request(&request, &credential).await;
+    let path = request_path_without_query(&request.path);
+    if request.method == "POST" && is_messages_path(path) {
+        match handle_messages_to_stream(&request, &credential, &mut stream).await {
+            Ok(()) => {
+                let _ = stream.shutdown().await;
+                return Ok(());
+            }
+            Err(err) => {
+                let response = json_response(
+                    502,
+                    &json!({
+                        "type": "error",
+                        "error": {
+                            "type": "api_error",
+                            "message": err,
+                        },
+                    }),
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .map_err(|err| format!("Failed to write proxy error response: {}", err))?;
+                let _ = stream.shutdown().await;
+                return Ok(());
+            }
+        }
+    }
+
+    let response = route_request(&request).await;
     stream
         .write_all(response.as_bytes())
         .await
@@ -121,7 +150,7 @@ fn find_header_end(buffer: &[u8]) -> Option<usize> {
     buffer.windows(4).position(|window| window == b"\r\n\r\n")
 }
 
-async fn route_request(request: &HttpRequest, credential: &OpenAiProxyCredential) -> String {
+async fn route_request(request: &HttpRequest) -> String {
     let path = request_path_without_query(&request.path);
 
     if request.method == "GET" && path == "/" {
@@ -133,22 +162,6 @@ async fn route_request(request: &HttpRequest, credential: &OpenAiProxyCredential
 
     if request.method == "POST" && is_count_tokens_path(path) {
         return handle_count_tokens(request);
-    }
-
-    if request.method == "POST" && is_messages_path(path) {
-        return match handle_messages(request, credential).await {
-            Ok(response) => response,
-            Err(err) => json_response(
-                502,
-                &json!({
-                    "type": "error",
-                    "error": {
-                        "type": "api_error",
-                        "message": err,
-                    },
-                }),
-            ),
-        };
     }
 
     json_response(
@@ -186,17 +199,19 @@ fn handle_count_tokens(request: &HttpRequest) -> String {
     )
 }
 
-async fn handle_messages(
+async fn handle_messages_to_stream(
     request: &HttpRequest,
     credential: &OpenAiProxyCredential,
-) -> Result<String, String> {
+    stream: &mut TcpStream,
+) -> Result<(), String> {
     let anthropic_request: Value = serde_json::from_slice(&request.body)
         .map_err(|err| format!("Claude Code sent invalid Anthropic JSON: {}", err))?;
     let wants_stream = anthropic_request
         .get("stream")
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
-    let openai_request = anthropic_to_openai_request(&anthropic_request, credential)?;
+    let mut openai_request = anthropic_to_openai_request(&anthropic_request, credential)?;
+    openai_request["stream"] = Value::Bool(wants_stream);
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(300))
@@ -212,11 +227,11 @@ async fn handle_messages(
         .map_err(|err| format!("Provider request failed: {}", err))?;
 
     let status = response.status();
-    let response_text = response
-        .text()
-        .await
-        .map_err(|err| format!("Failed to read provider response: {}", err))?;
     if !status.is_success() {
+        let response_text = response
+            .text()
+            .await
+            .map_err(|err| format!("Failed to read provider error response: {}", err))?;
         return Err(format!(
             "Provider returned HTTP {}: {}",
             status,
@@ -224,14 +239,42 @@ async fn handle_messages(
         ));
     }
 
-    let openai_response: Value = serde_json::from_str(&response_text)
-        .map_err(|err| format!("Provider returned invalid JSON: {}", err))?;
-    let anthropic_response =
-        openai_to_anthropic_message(&anthropic_request, &openai_response, credential)?;
     if wants_stream {
-        Ok(sse_response(&anthropic_response))
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if content_type.contains("stream") {
+            stream_openai_sse_to_anthropic(stream, response, &anthropic_request, credential).await
+        } else {
+            let response_text = response
+                .text()
+                .await
+                .map_err(|err| format!("Failed to read provider response: {}", err))?;
+            let openai_response: Value = serde_json::from_str(&response_text)
+                .map_err(|err| format!("Provider returned invalid JSON: {}", err))?;
+            let anthropic_response =
+                openai_to_anthropic_message(&anthropic_request, &openai_response, credential)?;
+            stream
+                .write_all(sse_response(&anthropic_response).as_bytes())
+                .await
+                .map_err(|err| format!("Failed to write proxy SSE response: {}", err))
+        }
     } else {
-        Ok(json_response(200, &anthropic_response))
+        let response_text = response
+            .text()
+            .await
+            .map_err(|err| format!("Failed to read provider response: {}", err))?;
+        let openai_response: Value = serde_json::from_str(&response_text)
+            .map_err(|err| format!("Provider returned invalid JSON: {}", err))?;
+        let anthropic_response =
+            openai_to_anthropic_message(&anthropic_request, &openai_response, credential)?;
+        stream
+            .write_all(json_response(200, &anthropic_response).as_bytes())
+            .await
+            .map_err(|err| format!("Failed to write proxy JSON response: {}", err))
     }
 }
 
@@ -685,6 +728,461 @@ fn usage_token(usage: &Value, keys: &[&str]) -> u64 {
         .unwrap_or(0)
 }
 
+#[derive(Default)]
+struct OpenAiStreamState {
+    message_started: bool,
+    completed: bool,
+    message_id: Option<String>,
+    model: Option<String>,
+    next_block_index: usize,
+    text_block_index: Option<usize>,
+    thinking_block_index: Option<usize>,
+    tool_blocks: HashMap<i64, StreamToolBlock>,
+    stop_reason: Option<String>,
+    output_tokens: u64,
+}
+
+#[derive(Default)]
+struct StreamToolBlock {
+    block_index: Option<usize>,
+    id: Option<String>,
+    name: Option<String>,
+    buffered_arguments: String,
+    started: bool,
+}
+
+async fn stream_openai_sse_to_anthropic(
+    stream: &mut TcpStream,
+    mut response: reqwest::Response,
+    anthropic_request: &Value,
+    credential: &OpenAiProxyCredential,
+) -> Result<(), String> {
+    stream
+        .write_all(streaming_http_headers().as_bytes())
+        .await
+        .map_err(|err| format!("Failed to write proxy stream headers: {}", err))?;
+
+    let mut state = OpenAiStreamState::default();
+    let mut buffer = String::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|err| format!("Failed to read provider stream: {}", err))?
+    {
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        while let Some((event, rest)) = take_next_sse_event(&buffer) {
+            buffer = rest;
+            let rendered =
+                openai_sse_event_to_anthropic(&mut state, &event, anthropic_request, credential);
+            if !rendered.is_empty() {
+                stream
+                    .write_all(rendered.as_bytes())
+                    .await
+                    .map_err(|err| format!("Failed to write proxy stream event: {}", err))?;
+            }
+        }
+    }
+
+    if !buffer.trim().is_empty() {
+        let rendered =
+            openai_sse_event_to_anthropic(&mut state, &buffer, anthropic_request, credential);
+        if !rendered.is_empty() {
+            stream
+                .write_all(rendered.as_bytes())
+                .await
+                .map_err(|err| format!("Failed to write final proxy stream event: {}", err))?;
+        }
+    }
+
+    let rendered = finish_anthropic_stream(&mut state);
+    stream
+        .write_all(rendered.as_bytes())
+        .await
+        .map_err(|err| format!("Failed to write proxy stream completion: {}", err))
+}
+
+fn streaming_http_headers() -> String {
+    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n"
+        .to_string()
+}
+
+fn take_next_sse_event(buffer: &str) -> Option<(String, String)> {
+    if let Some(index) = buffer.find("\n\n") {
+        let event = buffer[..index].to_string();
+        let rest = buffer[index + 2..].to_string();
+        return Some((event, rest));
+    }
+    if let Some(index) = buffer.find("\r\n\r\n") {
+        let event = buffer[..index].to_string();
+        let rest = buffer[index + 4..].to_string();
+        return Some((event, rest));
+    }
+    None
+}
+
+fn openai_sse_event_to_anthropic(
+    state: &mut OpenAiStreamState,
+    event: &str,
+    anthropic_request: &Value,
+    credential: &OpenAiProxyCredential,
+) -> String {
+    let Some(data) = sse_event_data(event) else {
+        return String::new();
+    };
+    if data.trim() == "[DONE]" {
+        return finish_anthropic_stream(state);
+    }
+    let Ok(chunk) = serde_json::from_str::<Value>(&data) else {
+        return String::new();
+    };
+    openai_stream_chunk_to_anthropic(state, &chunk, anthropic_request, credential)
+}
+
+fn sse_event_data(event: &str) -> Option<String> {
+    let mut parts = Vec::new();
+    for line in event.lines() {
+        let line = line.trim_end_matches('\r');
+        if let Some(data) = line.strip_prefix("data:") {
+            parts.push(data.trim_start());
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n"))
+    }
+}
+
+fn openai_stream_chunk_to_anthropic(
+    state: &mut OpenAiStreamState,
+    chunk: &Value,
+    anthropic_request: &Value,
+    credential: &OpenAiProxyCredential,
+) -> String {
+    let mut body = String::new();
+    ensure_stream_message_started(state, &mut body, chunk, anthropic_request, credential);
+
+    if let Some(usage) = chunk.get("usage") {
+        state.output_tokens = usage_token(
+            usage,
+            &[
+                "completion_tokens",
+                "output_tokens",
+                "completion_token_count",
+            ],
+        );
+    }
+
+    let Some(choice) = chunk
+        .get("choices")
+        .and_then(|value| value.as_array())
+        .and_then(|choices| choices.first())
+    else {
+        return body;
+    };
+    let delta = choice.get("delta").unwrap_or(&Value::Null);
+
+    if let Some(reasoning) = delta_text(delta, &["reasoning_content", "reasoning"]) {
+        push_stream_text_delta(state, &mut body, "thinking", &reasoning);
+    }
+    if let Some(thinking) = delta
+        .get("thinking")
+        .and_then(|value| {
+            value
+                .get("content")
+                .and_then(|content| content.as_str())
+                .or_else(|| value.as_str())
+        })
+        .filter(|value| !value.is_empty())
+    {
+        push_stream_text_delta(state, &mut body, "thinking", thinking);
+    }
+    if let Some(content) = delta_text(delta, &["content"]) {
+        push_stream_text_delta(state, &mut body, "text", &content);
+    }
+    if let Some(tool_calls) = delta.get("tool_calls").and_then(|value| value.as_array()) {
+        for call in tool_calls {
+            push_stream_tool_delta(state, &mut body, call);
+        }
+    }
+
+    if let Some(finish_reason) = choice.get("finish_reason").and_then(|value| value.as_str()) {
+        if !finish_reason.is_empty() {
+            state.stop_reason = Some(map_openai_finish_reason(finish_reason).to_string());
+        }
+    }
+
+    body
+}
+
+fn ensure_stream_message_started(
+    state: &mut OpenAiStreamState,
+    body: &mut String,
+    chunk: &Value,
+    anthropic_request: &Value,
+    credential: &OpenAiProxyCredential,
+) {
+    if state.message_started {
+        return;
+    }
+    state.message_started = true;
+    state.message_id = chunk
+        .get("id")
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+        .or_else(|| Some(format!("msg_{}", uuid::Uuid::new_v4().simple())));
+    state.model = anthropic_request
+        .get("model")
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+        .or_else(|| {
+            chunk
+                .get("model")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        })
+        .or_else(|| Some(credential.model.clone()));
+
+    push_sse(
+        body,
+        "message_start",
+        &json!({
+            "type": "message_start",
+            "message": {
+                "id": state.message_id.clone().unwrap_or_else(|| format!("msg_{}", uuid::Uuid::new_v4().simple())),
+                "type": "message",
+                "role": "assistant",
+                "model": state.model.clone().unwrap_or_else(|| credential.model.clone()),
+                "content": [],
+                "stop_reason": Value::Null,
+                "stop_sequence": Value::Null,
+                "usage": {
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                },
+            },
+        }),
+    );
+}
+
+fn delta_text(delta: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| delta.get(*key).and_then(|value| value.as_str()))
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn push_stream_text_delta(
+    state: &mut OpenAiStreamState,
+    body: &mut String,
+    block_type: &str,
+    text: &str,
+) {
+    let block_index = if block_type == "thinking" {
+        if let Some(index) = state.thinking_block_index {
+            index
+        } else {
+            let index = state.next_block_index;
+            state.next_block_index += 1;
+            state.thinking_block_index = Some(index);
+            push_sse(
+                body,
+                "content_block_start",
+                &json!({
+                    "type": "content_block_start",
+                    "index": index,
+                    "content_block": {
+                        "type": "thinking",
+                        "text": "",
+                    },
+                }),
+            );
+            index
+        }
+    } else if let Some(index) = state.text_block_index {
+        index
+    } else {
+        let index = state.next_block_index;
+        state.next_block_index += 1;
+        state.text_block_index = Some(index);
+        push_sse(
+            body,
+            "content_block_start",
+            &json!({
+                "type": "content_block_start",
+                "index": index,
+                "content_block": {
+                    "type": "text",
+                    "text": "",
+                },
+            }),
+        );
+        index
+    };
+
+    let (delta_type, key) = if block_type == "thinking" {
+        ("thinking_delta", "thinking")
+    } else {
+        ("text_delta", "text")
+    };
+    push_sse(
+        body,
+        "content_block_delta",
+        &json!({
+            "type": "content_block_delta",
+            "index": block_index,
+            "delta": {
+                "type": delta_type,
+                key: text,
+            },
+        }),
+    );
+}
+
+fn push_stream_tool_delta(state: &mut OpenAiStreamState, body: &mut String, call: &Value) {
+    let openai_index = call
+        .get("index")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(0);
+    let block = state.tool_blocks.entry(openai_index).or_default();
+    if let Some(id) = call.get("id").and_then(|value| value.as_str()) {
+        block.id = Some(id.to_string());
+    }
+    let function = call.get("function").unwrap_or(&Value::Null);
+    if let Some(name) = function.get("name").and_then(|value| value.as_str()) {
+        if !name.is_empty() {
+            block.name = Some(name.to_string());
+        }
+    }
+    if let Some(arguments) = function.get("arguments").and_then(|value| value.as_str()) {
+        block.buffered_arguments.push_str(arguments);
+    }
+
+    if !block.started {
+        block.started = true;
+        let index = state.next_block_index;
+        state.next_block_index += 1;
+        block.block_index = Some(index);
+        push_sse(
+            body,
+            "content_block_start",
+            &json!({
+                "type": "content_block_start",
+                "index": index,
+                "content_block": {
+                    "type": "tool_use",
+                    "id": block.id.clone().unwrap_or_else(|| format!("toolu_{}", uuid::Uuid::new_v4().simple())),
+                    "name": block.name.clone().unwrap_or_else(|| "unknown".to_string()),
+                    "input": {},
+                },
+            }),
+        );
+    }
+
+    if let Some(index) = block.block_index {
+        if let Some(arguments) = function.get("arguments").and_then(|value| value.as_str()) {
+            if !arguments.is_empty() {
+                push_sse(
+                    body,
+                    "content_block_delta",
+                    &json!({
+                        "type": "content_block_delta",
+                        "index": index,
+                        "delta": {
+                            "type": "input_json_delta",
+                            "partial_json": arguments,
+                        },
+                    }),
+                );
+            }
+        }
+    }
+}
+
+fn finish_anthropic_stream(state: &mut OpenAiStreamState) -> String {
+    if state.completed {
+        return String::new();
+    }
+    state.completed = true;
+    let mut body = String::new();
+    if !state.message_started {
+        state.message_started = true;
+        let message_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
+        state.message_id = Some(message_id.clone());
+        push_sse(
+            &mut body,
+            "message_start",
+            &json!({
+                "type": "message_start",
+                "message": {
+                    "id": message_id,
+                    "type": "message",
+                    "role": "assistant",
+                    "model": state.model.clone().unwrap_or_else(|| "claude-prism-proxy".to_string()),
+                    "content": [],
+                    "stop_reason": Value::Null,
+                    "stop_sequence": Value::Null,
+                    "usage": {
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                    },
+                },
+            }),
+        );
+    }
+    let mut indexes = Vec::new();
+    if let Some(index) = state.thinking_block_index.take() {
+        indexes.push(index);
+    }
+    if let Some(index) = state.text_block_index.take() {
+        indexes.push(index);
+    }
+    for block in state.tool_blocks.values_mut() {
+        if let Some(index) = block.block_index.take() {
+            indexes.push(index);
+        }
+    }
+    indexes.sort_unstable();
+    for index in indexes {
+        push_sse(
+            &mut body,
+            "content_block_stop",
+            &json!({
+                "type": "content_block_stop",
+                "index": index,
+            }),
+        );
+    }
+    push_sse(
+        &mut body,
+        "message_delta",
+        &json!({
+            "type": "message_delta",
+            "delta": {
+                "stop_reason": state.stop_reason.clone().unwrap_or_else(|| "end_turn".to_string()),
+                "stop_sequence": Value::Null,
+            },
+            "usage": {
+                "output_tokens": state.output_tokens,
+            },
+        }),
+    );
+    push_sse(
+        &mut body,
+        "message_stop",
+        &json!({ "type": "message_stop" }),
+    );
+    body
+}
+
+fn map_openai_finish_reason(reason: &str) -> &str {
+    match reason {
+        "length" => "max_tokens",
+        "tool_calls" => "tool_use",
+        _ => "end_turn",
+    }
+}
+
 fn sse_response(message: &Value) -> String {
     let content = message
         .get("content")
@@ -1110,5 +1608,114 @@ mod tests {
         assert_eq!(converted["stop_reason"], "tool_use");
         assert_eq!(converted["content"][0]["type"], "tool_use");
         assert_eq!(converted["content"][0]["input"]["pattern"], "FastVID");
+    }
+
+    #[test]
+    fn streams_openai_text_delta_as_anthropic_sse() {
+        let credential = OpenAiProxyCredential {
+            api_key: "sk-test".to_string(),
+            base_url: "https://api.example.com/v1".to_string(),
+            model: "qwen-test".to_string(),
+        };
+        let request = json!({ "model": "claude-sonnet-4" });
+        let mut state = OpenAiStreamState::default();
+        let chunk = json!({
+            "id": "chatcmpl_1",
+            "model": "qwen-test",
+            "choices": [{
+                "delta": { "content": "Hello" },
+                "finish_reason": null
+            }]
+        });
+
+        let first = openai_stream_chunk_to_anthropic(&mut state, &chunk, &request, &credential);
+        let done = finish_anthropic_stream(&mut state);
+        let combined = format!("{}{}", first, done);
+
+        assert!(combined.contains("event: message_start"));
+        assert!(combined.contains("\"model\":\"claude-sonnet-4\""));
+        assert!(combined.contains("\"type\":\"text_delta\""));
+        assert!(combined.contains("\"text\":\"Hello\""));
+        assert!(combined.contains("\"stop_reason\":\"end_turn\""));
+        assert!(finish_anthropic_stream(&mut state).is_empty());
+    }
+
+    #[test]
+    fn streams_reasoning_content_as_thinking_delta() {
+        let credential = OpenAiProxyCredential {
+            api_key: "sk-test".to_string(),
+            base_url: "https://api.example.com/v1".to_string(),
+            model: "deepseek-test".to_string(),
+        };
+        let request = json!({ "model": "claude-sonnet-4" });
+        let mut state = OpenAiStreamState::default();
+        let chunk = json!({
+            "id": "chatcmpl_1",
+            "choices": [{
+                "delta": { "reasoning_content": "I should inspect files." },
+                "finish_reason": null
+            }]
+        });
+
+        let rendered = openai_stream_chunk_to_anthropic(&mut state, &chunk, &request, &credential);
+
+        assert!(rendered.contains("\"type\":\"thinking\""));
+        assert!(rendered.contains("\"type\":\"thinking_delta\""));
+        assert!(rendered.contains("\"thinking\":\"I should inspect files.\""));
+    }
+
+    #[test]
+    fn streams_openai_tool_call_as_anthropic_tool_use() {
+        let credential = OpenAiProxyCredential {
+            api_key: "sk-test".to_string(),
+            base_url: "https://api.example.com/v1".to_string(),
+            model: "qwen-test".to_string(),
+        };
+        let request = json!({ "model": "claude-sonnet-4" });
+        let mut state = OpenAiStreamState::default();
+        let first_chunk = json!({
+            "id": "chatcmpl_1",
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "Read",
+                            "arguments": "{\"file_path\":"
+                        }
+                    }]
+                },
+                "finish_reason": null
+            }]
+        });
+        let second_chunk = json!({
+            "id": "chatcmpl_1",
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "function": { "arguments": "\"main.tex\"}" }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        });
+
+        let first =
+            openai_stream_chunk_to_anthropic(&mut state, &first_chunk, &request, &credential);
+        let second =
+            openai_stream_chunk_to_anthropic(&mut state, &second_chunk, &request, &credential);
+        let done = finish_anthropic_stream(&mut state);
+        let combined = format!("{}{}{}", first, second, done);
+
+        assert!(combined.contains("\"type\":\"tool_use\""));
+        assert!(combined.contains("\"id\":\"call_1\""));
+        assert!(combined.contains("\"name\":\"Read\""));
+        assert!(combined.contains("\"type\":\"input_json_delta\""));
+        assert!(combined.contains("{\\\"file_path\\\":"));
+        assert!(combined.contains("\\\"main.tex\\\"}"));
+        assert!(combined.contains("\"stop_reason\":\"tool_use\""));
     }
 }

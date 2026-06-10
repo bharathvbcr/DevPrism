@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+import { remove } from "@tauri-apps/plugin-fs";
 import {
   CLAUDE_CODE_PROVIDER_ID,
   useClaudeChatStore,
@@ -19,6 +20,21 @@ import {
 import { createLogger } from "@/lib/debug/logger";
 
 const log = createLogger("claude-event");
+
+async function cleanupTemporaryFiles(paths: string[]) {
+  await Promise.all(
+    paths.map(async (path) => {
+      try {
+        await remove(path);
+      } catch (err) {
+        log.warn("failed to remove temporary chat file", {
+          path,
+          error: String(err),
+        });
+      }
+    }),
+  );
+}
 
 /** Backend event payload shapes (include tab_id for routing) */
 interface ClaudeOutputPayload {
@@ -388,6 +404,7 @@ export function useClaudeEvents() {
 
       const completedSessionId = tab.sessionId;
       chatStore._setStreaming(tabId, false);
+      void cleanupTemporaryFiles(chatStore.consumeTemporaryFilePaths(tabId));
 
       const forceQueuedGuidance = tab.forceQueuedGuidanceOnComplete === true;
       if (forceQueuedGuidance) {

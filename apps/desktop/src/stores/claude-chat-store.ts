@@ -97,6 +97,7 @@ export interface TabDraft {
     filePath: string;
     selectedText: string;
     imageDataUrl?: string;
+    isTemporary?: boolean;
   }[];
 }
 
@@ -104,6 +105,7 @@ export interface PromptContextOverride {
   label: string;
   filePath: string;
   selectedText: string;
+  temporaryFilePaths?: string[];
 }
 
 export interface QueuedGuidance {
@@ -128,6 +130,7 @@ export interface TabState {
   queuedGuidance?: QueuedGuidance[];
   forceQueuedGuidanceOnComplete?: boolean;
   forcedQueuedGuidanceId?: string | null;
+  pendingTemporaryFilePaths?: string[];
 }
 
 /** Fields that are projected from the active tab to top-level state */
@@ -155,6 +158,7 @@ function makeDefaultTab(id: string): TabState {
     queuedGuidance: [],
     forceQueuedGuidanceOnComplete: false,
     forcedQueuedGuidanceId: null,
+    pendingTemporaryFilePaths: [],
   };
 }
 
@@ -530,6 +534,7 @@ interface ClaudeChatState {
   ) => string | null;
   removeQueuedGuidance: (tabId: string, guidanceId: string) => void;
   clearQueuedGuidance: (tabId: string) => void;
+  consumeTemporaryFilePaths: (tabId: string) => string[];
   forceQueuedGuidanceNow: (tabId: string, guidanceId?: string) => Promise<void>;
   cancelExecution: () => Promise<void>;
   clearMessages: () => void;
@@ -717,15 +722,20 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       : undefined;
 
     set((s) => {
+      const currentTab = s.tabs.find((t) => t.id === activeTabId);
+      const temporaryFilePaths = Array.from(
+        new Set([
+          ...(currentTab?.pendingTemporaryFilePaths ?? []),
+          ...(contextOverride?.temporaryFilePaths ?? []),
+        ]),
+      );
       const tabUpdates: Partial<TabState> = {
-        messages: [
-          ...(s.tabs.find((t) => t.id === activeTabId)?.messages ?? []),
-          userMessage,
-        ],
+        messages: [...(currentTab?.messages ?? []), userMessage],
         sessionId: resumeSessionId,
         providerKey: requestProviderKey,
         isStreaming: true,
         error: null,
+        pendingTemporaryFilePaths: temporaryFilePaths,
       };
       if (tabTitle) tabUpdates.title = tabTitle;
       return {
@@ -934,6 +944,18 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         forcedQueuedGuidanceId: null,
       }),
     );
+  },
+
+  consumeTemporaryFilePaths: (tabId) => {
+    const paths =
+      get().tabs.find((tab) => tab.id === tabId)?.pendingTemporaryFilePaths ??
+      [];
+    if (paths.length > 0) {
+      set((state) =>
+        applyTabUpdate(state, tabId, { pendingTemporaryFilePaths: [] }),
+      );
+    }
+    return paths;
   },
 
   forceQueuedGuidanceNow: async (tabId, guidanceId) => {

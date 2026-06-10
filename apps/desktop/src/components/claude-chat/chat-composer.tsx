@@ -32,7 +32,7 @@ import {
   ListEndIcon,
 } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { writeFile, mkdir, exists } from "@tauri-apps/plugin-fs";
+import { writeFile, mkdir, exists, remove } from "@tauri-apps/plugin-fs";
 import { join, tempDir } from "@tauri-apps/api/path";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -87,6 +87,7 @@ interface PinnedContext {
   filePath: string;
   selectedText: string;
   imageDataUrl?: string; // thumbnail for captured images
+  isTemporary?: boolean;
 }
 
 function pastedFileExtension(file: File) {
@@ -111,6 +112,33 @@ function readFileAsDataUrl(file: File) {
     reader.onerror = () => reject(reader.error ?? new Error("Read failed"));
     reader.readAsDataURL(file);
   });
+}
+
+function temporaryFilePaths(contexts: PinnedContext[]) {
+  return contexts
+    .filter((context) => context.isTemporary)
+    .map((context) => context.filePath);
+}
+
+async function cleanupTemporaryFilePaths(paths: string[] | undefined) {
+  if (!paths?.length) return;
+  await Promise.all(
+    paths.map(async (path) => {
+      try {
+        await remove(path);
+      } catch (err) {
+        log.warn("Failed to remove temporary pasted file", {
+          path,
+          error: String(err),
+        });
+      }
+    }),
+  );
+}
+
+function cleanupTemporaryPinnedContext(context: PinnedContext) {
+  if (!context.isTemporary) return;
+  void cleanupTemporaryFilePaths([context.filePath]);
 }
 
 function getFileIcon(file: ProjectFile) {
@@ -813,6 +841,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                 "Use this image file as visual context for the user's message.",
               ].join("\n"),
               imageDataUrl: await readFileAsDataUrl(file),
+              isTemporary: true,
             });
           } catch (err) {
             log.error("Failed to save pasted image", {
@@ -946,6 +975,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
         label: combinedLabel,
         filePath: pinnedContexts[0].filePath,
         selectedText: combinedText,
+        temporaryFilePaths: temporaryFilePaths(pinnedContexts),
       };
     }
 
@@ -960,7 +990,8 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
-    // Clear pinned contexts after send
+    // Clear pinned contexts after send. Temporary files are removed by the
+    // completion event once the provider has finished with them.
     setPinnedContexts([]);
   }, [
     activeTabId,
@@ -1655,9 +1686,12 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                     type="button"
                     aria-label="Remove queued guidance"
                     className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-red-500/10 hover:text-red-600 dark:hover:bg-red-500/15 dark:hover:text-red-400"
-                    onClick={() =>
-                      removeQueuedGuidance(activeTabId, guidance.id)
-                    }
+                    onClick={() => {
+                      void cleanupTemporaryFilePaths(
+                        guidance.contextOverride?.temporaryFilePaths,
+                      );
+                      removeQueuedGuidance(activeTabId, guidance.id);
+                    }}
                   >
                     <Trash2Icon className="size-3" />
                   </button>
@@ -1683,11 +1717,12 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                   />
                   <button
                     aria-label="Remove attachment"
-                    onClick={() =>
+                    onClick={() => {
+                      void cleanupTemporaryPinnedContext(ctx);
                       setPinnedContexts((prev) =>
                         prev.filter((_, idx) => idx !== i),
-                      )
-                    }
+                      );
+                    }}
                     className="absolute top-0.5 right-0.5 rounded-full bg-background/80 p-0.5 opacity-0 transition-opacity group-hover:opacity-100"
                   >
                     <XIcon className="size-3" />
@@ -1701,11 +1736,12 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                   {ctx.label}
                   <button
                     aria-label="Remove context"
-                    onClick={() =>
+                    onClick={() => {
+                      void cleanupTemporaryPinnedContext(ctx);
                       setPinnedContexts((prev) =>
                         prev.filter((_, idx) => idx !== i),
-                      )
-                    }
+                      );
+                    }}
                     className="ml-0.5 rounded-sm p-0.5 transition-colors hover:bg-muted-foreground/20"
                   >
                     <XIcon className="size-3" />

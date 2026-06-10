@@ -56,18 +56,18 @@ describe("provider selection persistence", () => {
       .getState()
       .setSelectedProviderCredentialId(CLAUDE_CODE_PROVIDER_ID);
 
-    expect(
-      localStorage.getItem(SELECTED_PROVIDER_CREDENTIAL_STORAGE_KEY),
-    ).toBe(CLAUDE_CODE_PROVIDER_ID);
+    expect(localStorage.getItem(SELECTED_PROVIDER_CREDENTIAL_STORAGE_KEY)).toBe(
+      CLAUDE_CODE_PROVIDER_ID,
+    );
     expect(loadSelectedProviderCredentialId()).toBe(CLAUDE_CODE_PROVIDER_ID);
   });
 
   it("persists and clears OpenAI-compatible provider selections", () => {
     useClaudeChatStore.getState().setSelectedProviderCredentialId("qwen");
 
-    expect(
-      localStorage.getItem(SELECTED_PROVIDER_CREDENTIAL_STORAGE_KEY),
-    ).toBe("qwen");
+    expect(localStorage.getItem(SELECTED_PROVIDER_CREDENTIAL_STORAGE_KEY)).toBe(
+      "qwen",
+    );
 
     useClaudeChatStore.getState().setSelectedProviderCredentialId(null);
 
@@ -75,5 +75,103 @@ describe("provider selection persistence", () => {
       localStorage.getItem(SELECTED_PROVIDER_CREDENTIAL_STORAGE_KEY),
     ).toBeNull();
     expect(loadSelectedProviderCredentialId()).toBeNull();
+  });
+});
+
+describe("queued guidance", () => {
+  it("queues and consumes guidance for the active tab", () => {
+    const chat = useClaudeChatStore.getState();
+    const tabId = chat.activeTabId;
+
+    chat.clearQueuedGuidance(tabId);
+    chat.queueGuidance(tabId, "please focus on the API key deletion flow", {
+      label: "@main.tex:1:1-1:8",
+      filePath: "main.tex",
+      selectedText: "selected",
+    });
+
+    expect(
+      useClaudeChatStore.getState().tabs.find((tab) => tab.id === tabId)
+        ?.queuedGuidance,
+    ).toHaveLength(1);
+
+    const queued = useClaudeChatStore.getState().consumeQueuedGuidance(tabId);
+    expect(queued?.prompt).toBe("please focus on the API key deletion flow");
+    expect(queued?.contextOverride?.filePath).toBe("main.tex");
+    expect(
+      useClaudeChatStore.getState().tabs.find((tab) => tab.id === tabId)
+        ?.queuedGuidance,
+    ).toHaveLength(0);
+  });
+
+  it("can remove and consume a specific queued guidance item", () => {
+    const chat = useClaudeChatStore.getState();
+    const tabId = chat.activeTabId;
+
+    chat.clearQueuedGuidance(tabId);
+    chat.queueGuidance(tabId, "first");
+    chat.queueGuidance(tabId, "second");
+    chat.queueGuidance(tabId, "third");
+
+    const queue = useClaudeChatStore
+      .getState()
+      .tabs.find((tab) => tab.id === tabId)?.queuedGuidance;
+    expect(queue?.map((item) => item.prompt)).toEqual([
+      "first",
+      "second",
+      "third",
+    ]);
+
+    chat.removeQueuedGuidance(tabId, queue![1].id);
+    expect(
+      useClaudeChatStore
+        .getState()
+        .tabs.find((tab) => tab.id === tabId)
+        ?.queuedGuidance?.map((item) => item.prompt),
+    ).toEqual(["first", "third"]);
+
+    const thirdId = useClaudeChatStore
+      .getState()
+      .tabs.find((tab) => tab.id === tabId)?.queuedGuidance?.[1].id;
+    const selected = chat.consumeQueuedGuidance(tabId, thirdId);
+    expect(selected?.prompt).toBe("third");
+    expect(
+      useClaudeChatStore
+        .getState()
+        .tabs.find((tab) => tab.id === tabId)
+        ?.queuedGuidance?.map((item) => item.prompt),
+    ).toEqual(["first"]);
+  });
+
+  it("marks a queued guidance item as displayed in chat", () => {
+    const chat = useClaudeChatStore.getState();
+    const tabId = chat.activeTabId;
+
+    chat.clearQueuedGuidance(tabId);
+    chat.queueGuidance(tabId, "first");
+    chat.queueGuidance(tabId, "second");
+
+    const secondId = useClaudeChatStore
+      .getState()
+      .tabs.find((tab) => tab.id === tabId)?.queuedGuidance?.[1].id;
+
+    expect(
+      useClaudeChatStore
+        .getState()
+        .displayQueuedGuidanceInChat(tabId, secondId),
+    ).toBe(secondId);
+
+    expect(
+      useClaudeChatStore
+        .getState()
+        .tabs.find((tab) => tab.id === tabId)
+        ?.queuedGuidance?.map((item) => ({
+          prompt: item.prompt,
+          displayedInChat: item.displayedInChat ?? false,
+        })),
+    ).toEqual([
+      { prompt: "first", displayedInChat: false },
+      { prompt: "second", displayedInChat: true },
+    ]);
   });
 });

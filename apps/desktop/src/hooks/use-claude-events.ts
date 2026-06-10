@@ -427,6 +427,27 @@ export function useClaudeEvents() {
       const docStore = useDocumentStore.getState();
       await docStore.refreshFiles();
 
+      const forceQueuedGuidance = tab.forceQueuedGuidanceOnComplete === true;
+      const queuedGuidance =
+        success || forceQueuedGuidance
+          ? useClaudeChatStore
+              .getState()
+              .consumeQueuedGuidance(
+                tabId,
+                forceQueuedGuidance ? tab.forcedQueuedGuidanceId : null,
+              )
+          : null;
+      if (queuedGuidance) {
+        log.info(`[${tabId}] continuing with queued guidance`);
+        void useClaudeChatStore
+          .getState()
+          .sendPrompt(queuedGuidance.prompt, queuedGuidance.contextOverride, {
+            tabId,
+            preserveTabProvider: true,
+          });
+        return;
+      }
+
       // Auto-recompile after Claude finishes
       const {
         projectRoot,

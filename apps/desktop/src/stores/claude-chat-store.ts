@@ -272,9 +272,7 @@ function displayTextForStoredUserPrompt(text: string): string {
 
   const contextText = normalized.slice(0, contextEnd + 1);
   const body = normalized.slice(contextEnd + 3);
-  const selectionMatch = contextText.match(
-    /(?:^|\n)\[Selection: ([^\]\n]+)\]/,
-  );
+  const selectionMatch = contextText.match(/(?:^|\n)\[Selection: ([^\]\n]+)\]/);
   const contextLabel = selectionMatch?.[1]?.trim();
 
   if (!contextLabel) return body;

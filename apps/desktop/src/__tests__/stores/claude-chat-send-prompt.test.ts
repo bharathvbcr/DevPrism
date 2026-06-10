@@ -204,11 +204,15 @@ describe("useClaudeChatStore.sendPrompt context assembly", () => {
               messages: [
                 {
                   type: "user",
-                  message: { content: [{ type: "text", text: "Old DS question" }] },
+                  message: {
+                    content: [{ type: "text", text: "Old DS question" }],
+                  },
                 },
                 {
                   type: "assistant",
-                  message: { content: [{ type: "text", text: "Old DS answer" }] },
+                  message: {
+                    content: [{ type: "text", text: "Old DS answer" }],
+                  },
                 },
               ],
             }
@@ -231,7 +235,9 @@ describe("useClaudeChatStore.sendPrompt context assembly", () => {
     expect(prompt).toContain("Old DS answer");
     expect(prompt).toContain("Use Claude now");
     expect(
-      vi.mocked(invoke).mock.calls.some(([command]) => command === "resume_claude_code"),
+      vi
+        .mocked(invoke)
+        .mock.calls.some(([command]) => command === "resume_claude_code"),
     ).toBe(false);
   });
 
@@ -359,10 +365,11 @@ describe("useClaudeChatStore.resumeSession", () => {
 
     const state = useClaudeChatStore.getState();
     const userContent = state.messages[0].message?.content as any;
+    const activeTab = state.tabs.find((tab) => tab.id === state.activeTabId);
 
     expect(userContent).toBe("Pasted image\nPlease inspect this image");
     expect(userContent).not.toContain("[Currently open file:");
     expect(userContent).not.toContain("[Temporary pasted image:");
-    expect(state.title).toBe("Please inspect this image");
+    expect(activeTab?.title).toBe("Please inspect this image");
   });
 });

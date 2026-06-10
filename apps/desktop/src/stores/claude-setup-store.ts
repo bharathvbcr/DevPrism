@@ -1,5 +1,11 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
+import {
+  isChatModelOption,
+  modelInfoId,
+  type OpenAiCompatibleModelInfo,
+  rememberModelListCapabilityMetadata,
+} from "@/lib/model-capabilities";
 
 // ─── Types ───
 
@@ -420,10 +426,24 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
   },
 
   fetchProviderModels: async (apiKey: string, baseUrl: string) => {
-    return invoke<string[]>("list_openai_compatible_models", {
-      apiKey: apiKey.trim(),
-      baseUrl: baseUrl.trim(),
-    });
+    const trimmedBaseUrl = baseUrl.trim();
+    const models = await invoke<Array<string | OpenAiCompatibleModelInfo>>(
+      "list_openai_compatible_models",
+      {
+        apiKey: apiKey.trim(),
+        baseUrl: trimmedBaseUrl,
+      },
+    );
+    rememberModelListCapabilityMetadata(trimmedBaseUrl, models);
+    return models
+      .filter((model) =>
+        isChatModelOption({
+          baseUrl: trimmedBaseUrl,
+          model: modelInfoId(model),
+          metadata: typeof model === "string" ? undefined : model.metadata,
+        }),
+      )
+      .map(modelInfoId);
   },
 
   toggleInstallLogs: () => {

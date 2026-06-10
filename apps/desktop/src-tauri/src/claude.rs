@@ -3,8 +3,9 @@ pub use crate::claude_process::{kill_process_for_window, ClaudeProcessState};
 use crate::claude_process::{
     spawn_claude_process, stop_claude_process, ClaudeStopMode, SpawnProviderMetadata,
 };
-use serde_json::json;
+use serde_json::{json, Value};
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -59,6 +60,12 @@ pub struct OpenAiCompatibleCredentialInfo {
     label: String,
     base_url: String,
     model: String,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct OpenAiCompatibleModelInfo {
+    id: String,
+    metadata: Value,
 }
 
 const PROVIDER_CLAUDE_CODE: &str = "claude-code";
@@ -604,7 +611,7 @@ pub async fn verify_openai_compatible_api_key(
 pub async fn list_openai_compatible_models(
     api_key: String,
     base_url: String,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<OpenAiCompatibleModelInfo>, String> {
     let api_key = normalize_optional_api_key(&api_key)?;
     let base_url = normalize_base_url(Some(base_url.as_str()))?
         .ok_or("OpenAI-compatible provider requires a Base URL")?;
@@ -620,7 +627,7 @@ pub async fn list_openai_compatible_models(
 #[tauri::command]
 pub async fn list_openai_compatible_credential_models(
     credential_id: String,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<OpenAiCompatibleModelInfo>, String> {
     let config = read_claude_prism_auth_config()?;
     let credential = normalized_openai_compatible_credentials(&config)
         .into_iter()
@@ -633,7 +640,7 @@ pub async fn list_openai_compatible_credential_models(
 async fn fetch_openai_compatible_models(
     api_key: &str,
     base_url: &str,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<OpenAiCompatibleModelInfo>, String> {
     let request = reqwest::Client::new().get(openai_models_url(base_url));
     let response = with_optional_bearer_auth(request, api_key)
         .send()
@@ -649,7 +656,7 @@ async fn fetch_openai_compatible_models(
         return Err(openai_compatible_verification_error(status, &response_text));
     }
 
-    let value: serde_json::Value = serde_json::from_str(&response_text)
+    let value: Value = serde_json::from_str(&response_text)
         .map_err(|err| format!("Provider returned invalid models JSON: {}", err))?;
     let mut models = value
         .get("data")
@@ -657,13 +664,25 @@ async fn fetch_openai_compatible_models(
         .map(|items| {
             items
                 .iter()
-                .filter_map(|item| item.get("id").and_then(|value| value.as_str()))
-                .map(str::to_string)
+                .filter_map(|item| {
+                    item.get("id")
+                        .and_then(|value| value.as_str())
+                        .map(|id| OpenAiCompatibleModelInfo {
+                            id: id.to_string(),
+                            metadata: item.clone(),
+                        })
+                        .or_else(|| {
+                            item.as_str().map(|id| OpenAiCompatibleModelInfo {
+                                id: id.to_string(),
+                                metadata: json!({ "id": id }),
+                            })
+                        })
+                })
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    models.sort();
-    models.dedup();
+    let mut seen = HashSet::new();
+    models.retain(|model| seen.insert(model.id.clone()));
     if models.is_empty() {
         return Err("Provider did not return any models.".to_string());
     }

@@ -183,6 +183,18 @@ export function App({ onReady }: { onReady?: () => void }) {
   useKeyboardShortcuts();
 
   useEffect(() => {
+    const preventNativeContextMenu = (event: MouseEvent) => {
+      if (event.defaultPrevented) return;
+      event.preventDefault();
+    };
+
+    document.addEventListener("contextmenu", preventNativeContextMenu);
+    return () => {
+      document.removeEventListener("contextmenu", preventNativeContextMenu);
+    };
+  }, []);
+
+  useEffect(() => {
     onReady?.();
   }, [onReady]);
 

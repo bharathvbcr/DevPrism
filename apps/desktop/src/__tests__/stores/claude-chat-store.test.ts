@@ -143,23 +143,29 @@ describe("queued guidance", () => {
     ).toEqual(["first"]);
   });
 
-  it("marks a queued guidance item as displayed in chat", () => {
+  it("marks multiple queued guidance items as displayed in chat", () => {
     const chat = useClaudeChatStore.getState();
     const tabId = chat.activeTabId;
 
     chat.clearQueuedGuidance(tabId);
     chat.queueGuidance(tabId, "first");
     chat.queueGuidance(tabId, "second");
+    chat.queueGuidance(tabId, "third");
 
-    const secondId = useClaudeChatStore
+    const queue = useClaudeChatStore
       .getState()
-      .tabs.find((tab) => tab.id === tabId)?.queuedGuidance?.[1].id;
+      .tabs.find((tab) => tab.id === tabId)?.queuedGuidance;
+    const secondId = queue?.[1].id;
+    const thirdId = queue?.[2].id;
 
     expect(
       useClaudeChatStore
         .getState()
         .displayQueuedGuidanceInChat(tabId, secondId),
     ).toBe(secondId);
+    expect(
+      useClaudeChatStore.getState().displayQueuedGuidanceInChat(tabId, thirdId),
+    ).toBe(thirdId);
 
     expect(
       useClaudeChatStore
@@ -172,6 +178,30 @@ describe("queued guidance", () => {
     ).toEqual([
       { prompt: "first", displayedInChat: false },
       { prompt: "second", displayedInChat: true },
+      { prompt: "third", displayedInChat: true },
     ]);
+  });
+
+  it("consumes displayed guidance before ordinary queued guidance", () => {
+    const chat = useClaudeChatStore.getState();
+    const tabId = chat.activeTabId;
+
+    chat.clearQueuedGuidance(tabId);
+    chat.queueGuidance(tabId, "first");
+    chat.queueGuidance(tabId, "second");
+
+    const secondId = useClaudeChatStore
+      .getState()
+      .tabs.find((tab) => tab.id === tabId)?.queuedGuidance?.[1].id;
+    useClaudeChatStore.getState().displayQueuedGuidanceInChat(tabId, secondId);
+
+    const selected = chat.consumeQueuedGuidance(tabId);
+    expect(selected?.prompt).toBe("second");
+    expect(
+      useClaudeChatStore
+        .getState()
+        .tabs.find((tab) => tab.id === tabId)
+        ?.queuedGuidance?.map((item) => item.prompt),
+    ).toEqual(["first"]);
   });
 });

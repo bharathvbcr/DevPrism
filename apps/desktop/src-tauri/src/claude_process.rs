@@ -320,11 +320,13 @@ async fn interrupt_or_terminate(child: &mut Child) -> bool {
 }
 
 #[cfg(not(unix))]
-async fn interrupt_or_terminate(_child: &mut Child) -> bool {
+async fn interrupt_or_terminate(child: &mut Child) -> bool {
     // Windows GUI processes do not have a reliable console-control path from
-    // Tauri without a PTY/ConPTY session. Keep this fallback isolated so the
-    // future long-lived session driver can replace it cleanly.
-    false
+    // Tauri without a PTY/ConPTY session. For guided follow-ups, fall back to
+    // terminating the current run so the frontend can immediately continue the
+    // same tab with the queued guidance.
+    let _ = child.start_kill();
+    true
 }
 
 /// Kill all Claude processes associated with a specific window label.

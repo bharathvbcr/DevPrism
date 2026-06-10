@@ -321,4 +321,48 @@ describe("useClaudeChatStore.resumeSession", () => {
     expect(state.totalInputTokens).toBe(24);
     expect(state.totalOutputTokens).toBe(12);
   });
+
+  it("hides internal file and pasted-image context when restoring history", async () => {
+    const tempImagePath = [
+      "C:\\Users\\Devlin\\AppData\\Local\\Temp",
+      "ClaudePrism",
+      "chat-pastes",
+      "1781110224092-1-paste-1781110223586-1.png",
+    ].join("\\");
+    const restoredPrompt = [
+      "[Currently open file: main.tex]",
+      "[Selection: Pasted image]",
+      "[Selected text:",
+      `[Temporary pasted image: ${tempImagePath}]`,
+      "Use this image file as visual context for the user's message.",
+      "]",
+      "",
+      "Please inspect this image",
+    ].join("\n");
+
+    vi.mocked(invoke).mockResolvedValueOnce([
+      {
+        type: "user",
+        message: {
+          content: restoredPrompt,
+        },
+      },
+      {
+        type: "assistant",
+        message: {
+          content: [{ type: "text", text: "OK" }],
+        },
+      },
+    ]);
+
+    await useClaudeChatStore.getState().resumeSession("session-with-image");
+
+    const state = useClaudeChatStore.getState();
+    const userContent = state.messages[0].message?.content as any;
+
+    expect(userContent).toBe("Pasted image\nPlease inspect this image");
+    expect(userContent).not.toContain("[Currently open file:");
+    expect(userContent).not.toContain("[Temporary pasted image:");
+    expect(state.title).toBe("Please inspect this image");
+  });
 });

@@ -215,10 +215,15 @@ const UserMessage: FC<{ message: ClaudeStreamMessage }> = ({ message }) => {
 
   if (!textContent) return null;
 
-  // Parse leading @file:line:col or ~@file:line context reference
-  const contextMatch = textContent.match(/^(~?@[^\n]+)\n([\s\S]*)$/);
-  const contextLabel = contextMatch?.[1] ?? null;
-  const bodyText = contextMatch ? contextMatch[2] : textContent;
+  const firstLineMatch = textContent.match(/^([^\n]+)\n([\s\S]*)$/);
+  const firstLine = firstLineMatch?.[1]?.trim() ?? "";
+  const hasContextLabel =
+    firstLine.startsWith("@") ||
+    firstLine.startsWith("~@") ||
+    /^Pasted image(?: \d+)?(?:, Pasted image(?: \d+)?)*$/.test(firstLine);
+  const contextLabel = hasContextLabel ? firstLine : null;
+  const bodyText =
+    hasContextLabel && firstLineMatch ? firstLineMatch[2] : textContent;
 
   // Parse error block patterns for styled rendering:
   // Lint single: "[Lint error in FILE:LINE]\n[Error: MSG]\n\nPrompt"

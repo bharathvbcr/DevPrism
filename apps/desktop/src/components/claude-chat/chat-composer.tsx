@@ -28,6 +28,8 @@ import {
   PlusIcon,
   Trash2Icon,
   Loader2Icon,
+  CornerDownRightIcon,
+  ListEndIcon,
 } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { writeFile, mkdir, exists } from "@tauri-apps/plugin-fs";
@@ -37,6 +39,8 @@ import {
   CLAUDE_CODE_PROVIDER_ID,
   useClaudeChatStore,
   offsetToLineCol,
+  type PromptContextOverride,
+  type QueuedGuidance,
 } from "@/stores/claude-chat-store";
 import {
   useClaudeSetupStore,
@@ -65,6 +69,7 @@ import { SlashCommandPicker, type SlashCommand } from "./slash-command-picker";
 import { createLogger } from "@/lib/debug/logger";
 
 const log = createLogger("chat-composer");
+const EMPTY_GUIDANCE: QueuedGuidance[] = [];
 
 // Re-export for other modules
 export type { SlashCommand };
@@ -90,9 +95,22 @@ function getFileIcon(file: ProjectFile) {
   return <FileTextIcon className="size-3.5 shrink-0 text-muted-foreground" />;
 }
 
+function formatGuidanceText(guidance: QueuedGuidance) {
+  return guidance.contextOverride?.label
+    ? `${guidance.contextOverride.label} - ${guidance.prompt}`
+    : guidance.prompt;
+}
+
 export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
   const sendPrompt = useClaudeChatStore((s) => s.sendPrompt);
+  const queueGuidance = useClaudeChatStore((s) => s.queueGuidance);
   const cancelExecution = useClaudeChatStore((s) => s.cancelExecution);
+  const removeQueuedGuidance = useClaudeChatStore(
+    (s) => s.removeQueuedGuidance,
+  );
+  const forceQueuedGuidanceNow = useClaudeChatStore(
+    (s) => s.forceQueuedGuidanceNow,
+  );
   const isStreaming = useClaudeChatStore((s) => s.isStreaming);
   const selectedModel = useClaudeChatStore((s) => s.selectedModel);
   const setSelectedModel = useClaudeChatStore((s) => s.setSelectedModel);
@@ -111,6 +129,15 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
   const effortLevel = useClaudeChatStore((s) => s.effortLevel);
   const setEffortLevel = useClaudeChatStore((s) => s.setEffortLevel);
   const activeTabId = useClaudeChatStore((s) => s.activeTabId);
+  const queuedGuidance = useClaudeChatStore(
+    (s) =>
+      s.tabs.find((tab) => tab.id === s.activeTabId)?.queuedGuidance ??
+      EMPTY_GUIDANCE,
+  );
+  const visibleQueuedGuidance = useMemo(
+    () => queuedGuidance.filter((guidance) => !guidance.displayedInChat),
+    [queuedGuidance],
+  );
   const openAiCredentials = useClaudeSetupStore((s) => s.openAiCredentials);
   const activeOpenAiCredentialId = useClaudeSetupStore(
     (s) => s.activeOpenAiCredentialId,
@@ -174,6 +201,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
     null,
   );
   const [input, setInput] = useState("");
+  const hasInput = input.trim().length > 0;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Model picker state
@@ -760,7 +788,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
 
   const handleSend = useCallback(() => {
     const trimmed = input.trim();
-    if (!trimmed || isStreaming) return;
+    if (!trimmed) return;
 
     // Resolve slash commands: if input starts with /command, find the command and substitute $ARGUMENTS
     // Skills (scope === "skill") are passed through as-is — Claude handles them via the Skill tool.
@@ -784,17 +812,24 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
     setMentionQuery(null);
     setSlashQuery(null);
     slashSelectedRef.current = false;
-    // Send with pinned context override
+
+    let contextOverride: PromptContextOverride | undefined;
     if (pinnedContexts.length > 0) {
       const combinedLabel = pinnedContexts.map((c) => c.label).join(", ");
       const combinedText = pinnedContexts
         .map((c) => c.selectedText)
         .join("\n\n---\n\n");
-      sendPrompt(finalPrompt, {
+      contextOverride = {
         label: combinedLabel,
         filePath: pinnedContexts[0].filePath,
         selectedText: combinedText,
-      });
+      };
+    }
+
+    if (isStreaming) {
+      queueGuidance(activeTabId, finalPrompt, contextOverride);
+    } else if (contextOverride) {
+      sendPrompt(finalPrompt, contextOverride);
     } else {
       sendPrompt(finalPrompt);
     }
@@ -804,7 +839,34 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
     }
     // Clear pinned contexts after send
     setPinnedContexts([]);
-  }, [input, isStreaming, sendPrompt, pinnedContexts, slashCommands]);
+  }, [
+    activeTabId,
+    input,
+    isStreaming,
+    queueGuidance,
+    sendPrompt,
+    pinnedContexts,
+    slashCommands,
+  ]);
+
+  const handleGuideQueuedGuidance = useCallback(
+    (guidance: QueuedGuidance) => {
+      if (isStreaming) {
+        void forceQueuedGuidanceNow(activeTabId, guidance.id);
+        return;
+      }
+
+      removeQueuedGuidance(activeTabId, guidance.id);
+      void sendPrompt(guidance.prompt, guidance.contextOverride);
+    },
+    [
+      activeTabId,
+      forceQueuedGuidanceNow,
+      isStreaming,
+      removeQueuedGuidance,
+      sendPrompt,
+    ],
+  );
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1378,10 +1440,50 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
 
       <div
         className={cn(
-          "flex w-full flex-col rounded-2xl border border-input bg-muted/30 transition-colors focus-within:border-ring focus-within:bg-background",
+          "flex w-full flex-col overflow-hidden rounded-2xl border border-input bg-muted/30 transition-colors focus-within:border-ring focus-within:bg-background",
           isDragOver && "border-ring bg-accent/20",
         )}
       >
+        {visibleQueuedGuidance.length > 0 && (
+          <div className="max-h-20 overflow-y-auto border-border/70 border-b bg-muted/35 text-xs">
+            {visibleQueuedGuidance.map((guidance) => {
+              const displayText = formatGuidanceText(guidance);
+              return (
+                <div
+                  key={guidance.id}
+                  className="flex min-h-8 items-center gap-1.5 border-border/50 border-b px-3 py-1 last:border-b-0"
+                >
+                  <ListEndIcon className="size-3 shrink-0 text-muted-foreground/60" />
+                  <span className="min-w-0 flex-1 truncate text-muted-foreground">
+                    {displayText}
+                  </span>
+                  <button
+                    type="button"
+                    className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-2 font-normal text-muted-foreground transition-colors hover:bg-muted-foreground/15 hover:text-foreground/90 dark:hover:bg-muted"
+                    title={
+                      isStreaming ? "Guide this item now" : "Send this guidance"
+                    }
+                    onClick={() => handleGuideQueuedGuidance(guidance)}
+                  >
+                    <CornerDownRightIcon className="size-3" />
+                    Guide
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Remove queued guidance"
+                    className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-red-500/10 hover:text-red-600 dark:hover:bg-red-500/15 dark:hover:text-red-400"
+                    onClick={() =>
+                      removeQueuedGuidance(activeTabId, guidance.id)
+                    }
+                  >
+                    <Trash2Icon className="size-3" />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
         {/* Pinned context chips */}
         {pinnedContexts.length > 0 && (
           <div className="flex flex-wrap items-center gap-1.5 px-4 pt-3 pb-0">
@@ -1443,7 +1545,11 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
             onChange={handleInput}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
-            placeholder="Ask me anything (/ for commands, @ to mention)"
+            placeholder={
+              isStreaming
+                ? "Add guidance for the next turn..."
+                : "Ask me anything (/ for commands, @ to mention)"
+            }
             className="max-h-40 min-h-10 w-full resize-none bg-transparent px-4 py-2 text-sm outline-none placeholder:text-muted-foreground"
             rows={1}
           />
@@ -1512,30 +1618,33 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
             </button>
           </div>
 
-          {isStreaming ? (
+          <div className="flex items-center gap-1">
             <TooltipIconButton
-              tooltip="Stop"
-              side="top"
-              variant="secondary"
-              size="icon"
-              className="size-8 rounded-full"
-              onClick={cancelExecution}
-            >
-              <SquareIcon className="size-3 fill-current" />
-            </TooltipIconButton>
-          ) : (
-            <TooltipIconButton
-              tooltip="Send"
+              tooltip={
+                isStreaming && !hasInput
+                  ? "Stop"
+                  : isStreaming
+                    ? "Queue guidance"
+                    : "Send"
+              }
               side="top"
               variant="default"
               size="icon"
               className="size-8 rounded-full"
-              onClick={handleSend}
-              disabled={!input.trim()}
+              onClick={
+                isStreaming && !hasInput
+                  ? () => void cancelExecution()
+                  : handleSend
+              }
+              disabled={!isStreaming && !hasInput}
             >
-              <ArrowUpIcon className="size-4" />
+              {isStreaming && !hasInput ? (
+                <SquareIcon className="size-3.5 fill-current" />
+              ) : (
+                <ArrowUpIcon className="size-4" />
+              )}
             </TooltipIconButton>
-          )}
+          </div>
         </div>
       </div>
     </div>

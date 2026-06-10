@@ -100,6 +100,20 @@ export interface TabDraft {
   }[];
 }
 
+export interface PromptContextOverride {
+  label: string;
+  filePath: string;
+  selectedText: string;
+}
+
+export interface QueuedGuidance {
+  id: string;
+  prompt: string;
+  contextOverride?: PromptContextOverride;
+  createdAt: number;
+  displayedInChat?: boolean;
+}
+
 export interface TabState {
   id: string;
   title: string;
@@ -111,6 +125,9 @@ export interface TabState {
   totalInputTokens: number;
   totalOutputTokens: number;
   draft: TabDraft;
+  queuedGuidance?: QueuedGuidance[];
+  forceQueuedGuidanceOnComplete?: boolean;
+  forcedQueuedGuidanceId?: string | null;
 }
 
 /** Fields that are projected from the active tab to top-level state */
@@ -135,6 +152,9 @@ function makeDefaultTab(id: string): TabState {
     totalInputTokens: 0,
     totalOutputTokens: 0,
     draft: { input: "", pinnedContexts: [] },
+    queuedGuidance: [],
+    forceQueuedGuidanceOnComplete: false,
+    forcedQueuedGuidanceId: null,
   };
 }
 
@@ -271,6 +291,10 @@ function buildProviderSwitchContext(
 let tabCounter = 0;
 function nextTabId(): string {
   return `tab-${++tabCounter}`;
+}
+
+function nextGuidanceId(): string {
+  return `guidance-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 function truncateChatTitle(text: string, maxChars = 80): string {
@@ -488,8 +512,25 @@ interface ClaudeChatState {
   // Actions
   sendPrompt: (
     userPrompt: string,
-    contextOverride?: { label: string; filePath: string; selectedText: string },
+    contextOverride?: PromptContextOverride,
+    options?: { tabId?: string; preserveTabProvider?: boolean },
   ) => Promise<void>;
+  queueGuidance: (
+    tabId: string,
+    prompt: string,
+    contextOverride?: PromptContextOverride,
+  ) => void;
+  consumeQueuedGuidance: (
+    tabId: string,
+    guidanceId?: string | null,
+  ) => QueuedGuidance | null;
+  displayQueuedGuidanceInChat: (
+    tabId: string,
+    guidanceId?: string | null,
+  ) => string | null;
+  removeQueuedGuidance: (tabId: string, guidanceId: string) => void;
+  clearQueuedGuidance: (tabId: string) => void;
+  forceQueuedGuidanceNow: (tabId: string, guidanceId?: string) => Promise<void>;
   cancelExecution: () => Promise<void>;
   clearMessages: () => void;
   newSession: () => void;
@@ -576,26 +617,38 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
 
   sendPrompt: async (
     userPrompt: string,
-    contextOverride?: { label: string; filePath: string; selectedText: string },
+    contextOverride?: PromptContextOverride,
+    options?: { tabId?: string; preserveTabProvider?: boolean },
   ) => {
     const state = get();
-    const { activeTabId } = state;
+    const activeTabId = options?.tabId ?? state.activeTabId;
     const activeTab = state.tabs.find((t) => t.id === activeTabId);
-    // Guard: prevent sending from a tab that's already streaming
-    if (activeTab?.isStreaming) return;
+    if (!activeTab || activeTab.isStreaming) return;
 
     const {
-      sessionId,
       selectedModel,
       effortLevel,
       selectedProviderCredentialId,
       selectedProviderModels,
     } = state;
-    const providerCredentialId =
+    const sessionId = activeTab.sessionId;
+    let providerCredentialId =
       selectedProviderCredentialId &&
       selectedProviderCredentialId !== CLAUDE_CODE_PROVIDER_ID
         ? selectedProviderCredentialId
         : null;
+
+    if (options?.preserveTabProvider && activeTab.providerKey) {
+      const tabProviderCredentialId = providerCredentialIdFromSessionKey(
+        activeTab.providerKey,
+      );
+      if (tabProviderCredentialId === CLAUDE_CODE_PROVIDER_ID) {
+        providerCredentialId = null;
+      } else if (tabProviderCredentialId !== undefined) {
+        providerCredentialId = tabProviderCredentialId;
+      }
+    }
+
     const providerModelOverride = providerCredentialId
       ? selectedProviderModels[providerCredentialId] || null
       : null;
@@ -777,6 +830,140 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     }
   },
 
+  queueGuidance: (tabId, prompt, contextOverride) => {
+    const trimmed = prompt.trim();
+    if (!trimmed) return;
+    set((state) => {
+      const tab = state.tabs.find((t) => t.id === tabId);
+      if (!tab) return {};
+      const queuedGuidance = [
+        ...(tab.queuedGuidance ?? []),
+        {
+          id: nextGuidanceId(),
+          prompt: trimmed,
+          contextOverride,
+          createdAt: Date.now(),
+        },
+      ];
+      return applyTabUpdate(state, tabId, { queuedGuidance });
+    });
+  },
+
+  consumeQueuedGuidance: (tabId, guidanceId) => {
+    const state = get();
+    const tab = state.tabs.find((t) => t.id === tabId);
+    const queue = tab?.queuedGuidance ?? [];
+    const targetIndex = guidanceId
+      ? queue.findIndex((guidance) => guidance.id === guidanceId)
+      : 0;
+    const next = targetIndex >= 0 ? queue[targetIndex] : null;
+    if (!next) {
+      if (tab?.forceQueuedGuidanceOnComplete) {
+        set((s) =>
+          applyTabUpdate(s, tabId, {
+            forceQueuedGuidanceOnComplete: false,
+            forcedQueuedGuidanceId: null,
+          }),
+        );
+      }
+      return null;
+    }
+    const rest = queue.filter((_, index) => index !== targetIndex);
+    set((s) =>
+      applyTabUpdate(s, tabId, {
+        queuedGuidance: rest,
+        forceQueuedGuidanceOnComplete: false,
+        forcedQueuedGuidanceId: null,
+      }),
+    );
+    return next;
+  },
+
+  displayQueuedGuidanceInChat: (tabId, guidanceId) => {
+    let displayedId: string | null = null;
+    set((state) => {
+      const tab = state.tabs.find((t) => t.id === tabId);
+      const queue = tab?.queuedGuidance ?? [];
+      const targetId = guidanceId ?? queue[0]?.id;
+      if (!tab || !targetId || queue.length === 0) return {};
+      displayedId = targetId;
+      return applyTabUpdate(state, tabId, {
+        queuedGuidance: queue.map((guidance) => ({
+          ...guidance,
+          displayedInChat: guidance.id === targetId,
+        })),
+      });
+    });
+    return displayedId;
+  },
+
+  removeQueuedGuidance: (tabId, guidanceId) => {
+    set((state) => {
+      const tab = state.tabs.find((t) => t.id === tabId);
+      if (!tab) return {};
+      const queuedGuidance = (tab.queuedGuidance ?? []).filter(
+        (guidance) => guidance.id !== guidanceId,
+      );
+      return applyTabUpdate(state, tabId, {
+        queuedGuidance,
+        ...(tab.forcedQueuedGuidanceId === guidanceId
+          ? {
+              forceQueuedGuidanceOnComplete: false,
+              forcedQueuedGuidanceId: null,
+            }
+          : {}),
+      });
+    });
+  },
+
+  clearQueuedGuidance: (tabId) => {
+    set((state) =>
+      applyTabUpdate(state, tabId, {
+        queuedGuidance: [],
+        forceQueuedGuidanceOnComplete: false,
+        forcedQueuedGuidanceId: null,
+      }),
+    );
+  },
+
+  forceQueuedGuidanceNow: async (tabId, guidanceId) => {
+    const tab = get().tabs.find((t) => t.id === tabId);
+    if (!tab?.isStreaming || !(tab.queuedGuidance?.length ?? 0)) return;
+    const targetId = get().displayQueuedGuidanceInChat(tabId, guidanceId);
+    if (!targetId) return;
+
+    set((state) =>
+      applyTabUpdate(state, tabId, {
+        forceQueuedGuidanceOnComplete: true,
+        forcedQueuedGuidanceId: targetId,
+      }),
+    );
+
+    try {
+      const interrupted = await invoke<boolean>("interrupt_claude_execution", {
+        tabId,
+      });
+      if (interrupted) {
+        set({ _cancelledByUser: true });
+      }
+    } catch (err: any) {
+      set((state) =>
+        applyTabUpdate(state, tabId, {
+          queuedGuidance: (
+            state.tabs.find((t) => t.id === tabId)?.queuedGuidance ?? []
+          ).map((guidance) =>
+            guidance.id === targetId
+              ? { ...guidance, displayedInChat: false }
+              : guidance,
+          ),
+          forceQueuedGuidanceOnComplete: false,
+          forcedQueuedGuidanceId: null,
+          error: err?.message || String(err),
+        }),
+      );
+    }
+  },
+
   cancelExecution: async () => {
     const { activeTabId } = get();
     set({ _cancelledByUser: true });
@@ -785,7 +972,14 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     } catch {
       // ignore
     }
-    set((s) => applyTabUpdate(s, activeTabId, { isStreaming: false }));
+    set((s) =>
+      applyTabUpdate(s, activeTabId, {
+        isStreaming: false,
+        queuedGuidance: [],
+        forceQueuedGuidanceOnComplete: false,
+        forcedQueuedGuidanceId: null,
+      }),
+    );
   },
 
   clearMessages: () => {
@@ -796,6 +990,9 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         error: null,
         totalInputTokens: 0,
         totalOutputTokens: 0,
+        queuedGuidance: [],
+        forceQueuedGuidanceOnComplete: false,
+        forcedQueuedGuidanceId: null,
       }),
     );
   },
@@ -830,6 +1027,9 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         totalInputTokens: 0,
         totalOutputTokens: 0,
         title: "New Chat",
+        queuedGuidance: [],
+        forceQueuedGuidanceOnComplete: false,
+        forcedQueuedGuidanceId: null,
       }),
     );
   },
@@ -892,6 +1092,9 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         totalInputTokens: 0,
         totalOutputTokens: 0,
         title: sessionTitle ?? "New Chat",
+        queuedGuidance: [],
+        forceQueuedGuidanceOnComplete: false,
+        forcedQueuedGuidanceId: null,
       }),
     );
 

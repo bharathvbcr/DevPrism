@@ -1,14 +1,17 @@
 use crate::anthropic_proxy::{start_openai_anthropic_proxy, OpenAiProxyCredential};
+pub use crate::claude_process::{kill_process_for_window, ClaudeProcessState};
+use crate::claude_process::{
+    spawn_claude_process, stop_claude_process, ClaudeStopMode, SpawnProviderMetadata,
+};
 use serde_json::json;
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tauri::{Emitter, Manager, WebviewWindow};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, Command};
+use tauri::{Emitter, WebviewWindow};
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::Command;
 use tokio::sync::Mutex;
 
 #[cfg(unix)]
@@ -788,19 +791,6 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
-#[derive(Clone)]
-pub struct ClaudeProcessState {
-    pub processes: Arc<Mutex<HashMap<String, Child>>>,
-}
-
-impl Default for ClaudeProcessState {
-    fn default() -> Self {
-        Self {
-            processes: Arc::new(Mutex::new(HashMap::new())),
-        }
-    }
-}
-
 /// On Windows, read User + System PATH from the registry and search for claude.
 /// This catches cases where claude was installed after the GUI app launched,
 /// since the process PATH is stale but the registry PATH is up to date.
@@ -1574,267 +1564,6 @@ fn with_prompt_transport(mut args: Vec<String>, prompt: String) -> (Vec<String>,
         args.push(prompt);
         (args, None)
     }
-}
-
-// 鈹€鈹€鈹€ Event payloads (include tab_id for multi-tab routing) 鈹€鈹€鈹€
-
-#[derive(Clone, serde::Serialize)]
-struct ClaudeOutputEvent {
-    tab_id: String,
-    data: String,
-}
-
-#[derive(Clone, serde::Serialize)]
-struct ClaudeCompleteEvent {
-    tab_id: String,
-    success: bool,
-}
-
-#[derive(Clone, serde::Serialize)]
-struct ClaudeErrorEvent {
-    tab_id: String,
-    data: String,
-}
-
-#[derive(Clone)]
-struct SpawnProviderMetadata {
-    provider: &'static str,
-    provider_credential_id: String,
-    model: String,
-}
-
-/// Spawn the Claude CLI process and stream output via Tauri events.
-/// Events are emitted only to the originating window, tagged with tab_id.
-async fn spawn_claude_process(
-    window: WebviewWindow,
-    mut cmd: Command,
-    tab_id: String,
-    stdin_payload: Option<String>,
-    provider_metadata: Option<SpawnProviderMetadata>,
-) -> Result<(), String> {
-    let window_label = window.label().to_string();
-    let process_key = format!("{}:{}", window_label, tab_id);
-
-    if stdin_payload.is_some() {
-        cmd.stdin(std::process::Stdio::piped());
-    }
-
-    // Spawn the process
-    let mut child = cmd.spawn().map_err(|e| {
-        eprintln!(
-            "[claude-spawn] Failed to spawn process for tab {}: {}",
-            tab_id, e
-        );
-        format!(
-            "Failed to spawn Claude process: {}. Is Claude Code CLI installed?",
-            e
-        )
-    })?;
-
-    if let Some(payload) = stdin_payload {
-        let mut stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| "Failed to acquire stdin for Claude process".to_string())?;
-        stdin
-            .write_all(payload.as_bytes())
-            .await
-            .map_err(|e| format!("Failed to write prompt to Claude process stdin: {}", e))?;
-        stdin
-            .shutdown()
-            .await
-            .map_err(|e| format!("Failed to close Claude process stdin: {}", e))?;
-    }
-
-    let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
-    let stderr = child.stderr.take().ok_or("Failed to capture stderr")?;
-
-    // Get a clone of the process state Arc before any moves
-    let process_arc = window
-        .state::<ClaudeProcessState>()
-        .inner()
-        .processes
-        .clone();
-
-    // Store the child process in state (kill any existing process for this tab)
-    {
-        let mut processes = process_arc.lock().await;
-        if let Some(mut existing) = processes.remove(&process_key) {
-            let _ = existing.kill().await;
-        }
-        processes.insert(process_key.clone(), child);
-    }
-
-    let stdout_reader = BufReader::new(stdout);
-    let stderr_reader = BufReader::new(stderr);
-    let session_id_holder: Arc<std::sync::Mutex<Option<String>>> =
-        Arc::new(std::sync::Mutex::new(None));
-    let result_success_holder: Arc<std::sync::Mutex<Option<bool>>> =
-        Arc::new(std::sync::Mutex::new(None));
-
-    let start_time = std::time::Instant::now();
-
-    // Spawn stdout streaming task 鈥?emit only to the originating window
-    let win_stdout = window.clone();
-    let session_id_stdout = session_id_holder.clone();
-    let result_success_stdout = result_success_holder.clone();
-    let tab_id_stdout = tab_id.clone();
-    let provider_metadata_stdout = provider_metadata.clone();
-    let stdout_task = tokio::spawn(async move {
-        let mut lines = stdout_reader.lines();
-        let mut line_count: u64 = 0;
-        while let Ok(Some(mut line)) = lines.next_line().await {
-            line_count += 1;
-            let elapsed = start_time.elapsed().as_secs_f64();
-
-            // Parse for system:init to extract session_id
-            if let Ok(mut msg) = serde_json::from_str::<serde_json::Value>(&line) {
-                let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("?");
-                let msg_sub = msg.get("subtype").and_then(|v| v.as_str()).unwrap_or("");
-                eprintln!(
-                    "[claude-stdout] [{}] +{:.1}s #{} type={} sub={} len={}",
-                    tab_id_stdout,
-                    elapsed,
-                    line_count,
-                    msg_type,
-                    msg_sub,
-                    line.len()
-                );
-
-                if msg.get("type").and_then(|v| v.as_str()) == Some("system")
-                    && msg.get("subtype").and_then(|v| v.as_str()) == Some("init")
-                {
-                    if let Some(sid) = msg.get("session_id").and_then(|v| v.as_str()) {
-                        if let Ok(mut guard) = session_id_stdout.lock() {
-                            *guard = Some(sid.to_string());
-                        }
-                    }
-                    if let Some(metadata) = provider_metadata_stdout.as_ref() {
-                        if let Some(object) = msg.as_object_mut() {
-                            object.insert(
-                                "provider".to_string(),
-                                serde_json::Value::String(metadata.provider.to_string()),
-                            );
-                            object.insert(
-                                "provider_credential_id".to_string(),
-                                serde_json::Value::String(metadata.provider_credential_id.clone()),
-                            );
-                            object.insert(
-                                "model".to_string(),
-                                serde_json::Value::String(metadata.model.clone()),
-                            );
-                        }
-                        line = msg.to_string();
-                    }
-                }
-
-                if msg.get("type").and_then(|v| v.as_str()) == Some("result") {
-                    let is_success = msg.get("subtype").and_then(|v| v.as_str()) == Some("success");
-                    if let Ok(mut guard) = result_success_stdout.lock() {
-                        *guard = Some(is_success);
-                    }
-                }
-            }
-
-            // Emit output event to this window with tab_id
-            let _ = win_stdout.emit(
-                "claude-output",
-                ClaudeOutputEvent {
-                    tab_id: tab_id_stdout.clone(),
-                    data: line,
-                },
-            );
-        }
-        eprintln!(
-            "[claude-stdout] [{}] stream ended after {} lines ({:.1}s)",
-            tab_id_stdout,
-            line_count,
-            start_time.elapsed().as_secs_f64()
-        );
-    });
-
-    // Spawn stderr streaming task 鈥?emit only to the originating window
-    let win_stderr = window.clone();
-    let tab_id_stderr = tab_id.clone();
-    let stderr_task = tokio::spawn(async move {
-        let mut lines = stderr_reader.lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            eprintln!(
-                "[claude-stderr] [{}] +{:.1}s {}",
-                tab_id_stderr,
-                start_time.elapsed().as_secs_f64(),
-                &line[..line.len().min(200)]
-            );
-            let _ = win_stderr.emit(
-                "claude-error",
-                ClaudeErrorEvent {
-                    tab_id: tab_id_stderr.clone(),
-                    data: line,
-                },
-            );
-        }
-    });
-
-    // Spawn wait task 鈥?wait for process completion
-    let process_arc_wait = process_arc.clone();
-    let win_wait = window;
-    let process_key_wait = process_key;
-    let tab_id_wait = tab_id;
-    let result_success_wait = result_success_holder.clone();
-    tokio::spawn(async move {
-        // Wait for stdout/stderr to finish
-        let _ = stdout_task.await;
-        let _ = stderr_task.await;
-
-        // Wait for process exit and remove from map
-        let mut processes = process_arc_wait.lock().await;
-        let success = if let Some(mut child) = processes.remove(&process_key_wait) {
-            match child.wait().await {
-                Ok(status) => {
-                    let exit_success = status.success();
-                    let result_success = result_success_wait.lock().ok().and_then(|guard| *guard);
-                    let success = exit_success || result_success == Some(true);
-                    eprintln!(
-                        "[claude-process] [{}] exited with status={} result_success={:?} final_success={} ({:.1}s)",
-                        tab_id_wait,
-                        status,
-                        result_success,
-                        success,
-                        start_time.elapsed().as_secs_f64()
-                    );
-                    success
-                }
-                Err(e) => {
-                    eprintln!(
-                        "[claude-process] [{}] wait error: {} ({:.1}s)",
-                        tab_id_wait,
-                        e,
-                        start_time.elapsed().as_secs_f64()
-                    );
-                    false
-                }
-            }
-        } else {
-            eprintln!(
-                "[claude-process] [{}] no child found in map ({:.1}s)",
-                tab_id_wait,
-                start_time.elapsed().as_secs_f64()
-            );
-            false
-        };
-        drop(processes);
-
-        // Emit completion event to this window with tab_id
-        let _ = win_wait.emit(
-            "claude-complete",
-            ClaudeCompleteEvent {
-                tab_id: tab_id_wait,
-                success,
-            },
-        );
-    });
-
-    Ok(())
 }
 
 // 鈹€鈹€鈹€ Setup / Status Commands 鈹€鈹€鈹€
@@ -2732,47 +2461,17 @@ pub async fn resume_claude_code(
 
 #[tauri::command]
 pub async fn cancel_claude_execution(window: WebviewWindow, tab_id: String) -> Result<(), String> {
-    let window_label = window.label().to_string();
-    let process_key = format!("{}:{}", window_label, tab_id);
-    let claude_state = window.state::<ClaudeProcessState>();
-    let mut processes = claude_state.processes.lock().await;
-    if let Some(mut child) = processes.remove(&process_key) {
-        let _ = child.kill().await;
-        let _ = window.emit(
-            "claude-complete",
-            ClaudeCompleteEvent {
-                tab_id,
-                success: false,
-            },
-        );
-        return Ok(());
-    }
-
-    let _ = window.emit(
-        "claude-complete",
-        ClaudeCompleteEvent {
-            tab_id,
-            success: false,
-        },
-    );
-    Ok(())
+    stop_claude_process(window, tab_id, ClaudeStopMode::Terminate)
+        .await
+        .map(|_| ())
 }
 
-/// Kill all Claude processes associated with a specific window label.
-/// Called when a window is destroyed.
-pub async fn kill_process_for_window(state: &ClaudeProcessState, window_label: &str) {
-    let mut processes = state.processes.lock().await;
-    let prefix = format!("{}:", window_label);
-    let keys_to_remove: Vec<String> = processes
-        .keys()
-        .filter(|k| k.starts_with(&prefix))
-        .cloned()
-        .collect();
-    for key in keys_to_remove {
-        if let Some(mut child) = processes.remove(&key) {
-            let _ = child.kill().await;
-        }
-    }
+#[tauri::command]
+pub async fn interrupt_claude_execution(
+    window: WebviewWindow,
+    tab_id: String,
+) -> Result<bool, String> {
+    stop_claude_process(window, tab_id, ClaudeStopMode::Interrupt).await
 }
 
 // 鈹€鈹€鈹€ Session Listing 鈹€鈹€鈹€

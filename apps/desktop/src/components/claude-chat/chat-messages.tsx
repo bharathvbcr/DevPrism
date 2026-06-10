@@ -1,9 +1,10 @@
 import { type FC, memo, useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircleIcon } from "lucide-react";
+import { AlertCircleIcon, CornerDownRightIcon } from "lucide-react";
 import {
   useClaudeChatStore,
   type ClaudeStreamMessage,
   type ContentBlock,
+  type QueuedGuidance,
 } from "@/stores/claude-chat-store";
 import { MarkdownRenderer } from "./markdown-renderer";
 import { ThinkingWidget, ToolWidget } from "./tool-widgets";
@@ -51,11 +52,21 @@ const StreamingIndicator: FC = memo(() => {
   );
 });
 
+const EMPTY_PENDING_GUIDANCE: QueuedGuidance[] = [];
+
 // ─── Chat Messages (main component) ───
 
 export const ChatMessages: FC = () => {
   const messages = useClaudeChatStore((s) => s.messages) ?? [];
   const isStreaming = useClaudeChatStore((s) => s.isStreaming);
+  const queuedGuidance =
+    useClaudeChatStore(
+      (s) => s.tabs.find((tab) => tab.id === s.activeTabId)?.queuedGuidance,
+    ) ?? EMPTY_PENDING_GUIDANCE;
+  const pendingGuidance = useMemo(
+    () => queuedGuidance.filter((guidance) => guidance.displayedInChat),
+    [queuedGuidance],
+  );
   const viewportRef = useRef<HTMLDivElement>(null);
   const shouldAutoScrollRef = useRef(true);
   const userHasScrolledRef = useRef(false);
@@ -120,7 +131,7 @@ export const ChatMessages: FC = () => {
         behavior: "smooth",
       });
     }
-  }, [displayMessages]);
+  }, [displayMessages, pendingGuidance]);
 
   // Reset auto-scroll when streaming stops
   useEffect(() => {
@@ -150,17 +161,23 @@ export const ChatMessages: FC = () => {
       onScroll={handleScroll}
       className="absolute inset-0 overflow-y-auto scroll-smooth px-4 py-2"
     >
-      {displayMessages.length === 0 && !isStreaming && (
-        <div className="flex h-full items-center justify-center text-muted-foreground text-sm">
-          Ask Claude about your LaTeX document...
-        </div>
-      )}
+      {displayMessages.length === 0 &&
+        pendingGuidance.length === 0 &&
+        !isStreaming && (
+          <div className="flex h-full items-center justify-center text-muted-foreground text-sm">
+            Ask Claude about your LaTeX document...
+          </div>
+        )}
 
       {displayMessages.map((msg, idx) => (
         <MessageBubble key={idx} message={msg} toolResultMap={toolResultMap} />
       ))}
 
       {isStreaming && <StreamingIndicator />}
+
+      {pendingGuidance.map((guidance) => (
+        <PendingGuidanceMessage key={guidance.id} guidance={guidance} />
+      ))}
     </div>
   );
 };
@@ -305,6 +322,32 @@ const UserMessage: FC<{ message: ClaudeStreamMessage }> = ({ message }) => {
 };
 
 // ─── Assistant Message ───
+
+const PendingGuidanceMessage: FC<{ guidance: QueuedGuidance }> = ({
+  guidance,
+}) => {
+  const contextLabel = guidance.contextOverride?.label ?? null;
+
+  return (
+    <div className="flex w-full flex-col items-end py-1.5">
+      <div className="max-w-[85%] rounded-xl border border-border/70 bg-muted px-3 py-1.5 text-foreground text-sm shadow-sm">
+        {contextLabel && (
+          <span className="mb-1 inline-flex items-center rounded-md bg-background/60 px-1.5 py-0.5 font-mono text-muted-foreground text-xs">
+            {contextLabel}
+          </span>
+        )}
+        {contextLabel && guidance.prompt && <br />}
+        <div className="flex min-w-0 items-start gap-2">
+          <CornerDownRightIcon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/70" />
+          <MarkdownRenderer
+            content={guidance.prompt}
+            className="prose prose-sm dark:prose-invert min-w-0 max-w-none flex-1 break-words [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
+          />
+        </div>
+      </div>
+    </div>
+  );
+};
 
 const AssistantMessage: FC<{
   message: ClaudeStreamMessage;

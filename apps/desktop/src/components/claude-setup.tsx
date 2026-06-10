@@ -35,6 +35,7 @@ import {
   getProviderDisplayName,
   getProviderIconSrc,
 } from "@/lib/provider-icons";
+import { ModelCapabilityBadges } from "@/components/model-capability-badges";
 import { cn } from "@/lib/utils";
 
 type OpenAICompatiblePreset = {
@@ -757,7 +758,14 @@ export function ClaudeSetup({
                   <SelectContent>
                     {modelOptions.map((item) => (
                       <SelectItem key={item} value={item}>
-                        {item}
+                        <span className="flex min-w-0 items-center gap-2">
+                          <span className="min-w-0 truncate">{item}</span>
+                          <ModelCapabilityBadges
+                            label={activeCard?.label}
+                            baseUrl={baseUrl}
+                            model={item}
+                          />
+                        </span>
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -999,6 +1007,11 @@ export function ClaudeSetup({
                   <span className="min-w-0 flex-1 truncate text-muted-foreground">
                     {credential.model}
                   </span>
+                  <ModelCapabilityBadges
+                    label={credential.label}
+                    baseUrl={credential.base_url}
+                    model={credential.model}
+                  />
                 </div>
               );
             })}

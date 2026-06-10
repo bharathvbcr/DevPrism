@@ -33,7 +33,7 @@ import {
 } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { writeFile, mkdir, exists } from "@tauri-apps/plugin-fs";
-import { join } from "@tauri-apps/api/path";
+import { join, tempDir } from "@tauri-apps/api/path";
 import { invoke } from "@tauri-apps/api/core";
 import {
   CLAUDE_CODE_PROVIDER_ID,
@@ -53,6 +53,14 @@ import {
   getProviderDisplayName,
   getProviderIconSrc,
 } from "@/lib/provider-icons";
+import {
+  getModelCapabilities,
+  isChatModelOption,
+  modelInfoId,
+  type OpenAiCompatibleModelInfo,
+  rememberModelListCapabilityMetadata,
+} from "@/lib/model-capabilities";
+import { ModelCapabilityBadges } from "@/components/model-capability-badges";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { ClaudeSetup } from "@/components/claude-setup";
 import {
@@ -75,10 +83,34 @@ const EMPTY_GUIDANCE: QueuedGuidance[] = [];
 export type { SlashCommand };
 
 interface PinnedContext {
-  label: string; // @file:line:col-line:col
+  label: string;
   filePath: string;
   selectedText: string;
   imageDataUrl?: string; // thumbnail for captured images
+}
+
+function pastedFileExtension(file: File) {
+  const namedExt = file.name.split(".").pop()?.trim().toLowerCase();
+  if (namedExt && namedExt !== file.name.toLowerCase()) return namedExt;
+  return file.type.split("/")[1]?.split("+")[0] || "png";
+}
+
+function safePastedFileName(file: File, index: number) {
+  const ext = pastedFileExtension(file).replace(/[^a-z0-9]/g, "") || "png";
+  const base =
+    file.name && file.name !== "image.png"
+      ? file.name.replace(/\.[^.]+$/, "")
+      : `paste-${Date.now()}-${index + 1}`;
+  return `${base.replace(/[^a-zA-Z0-9._-]/g, "_")}.${ext}`;
+}
+
+function readFileAsDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.onerror = () => reject(reader.error ?? new Error("Read failed"));
+    reader.readAsDataURL(file);
+  });
 }
 
 function getFileIcon(file: ProjectFile) {
@@ -103,6 +135,7 @@ function formatGuidanceText(guidance: QueuedGuidance) {
 
 export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
   const sendPrompt = useClaudeChatStore((s) => s.sendPrompt);
+  const setChatError = useClaudeChatStore((s) => s._setError);
   const queueGuidance = useClaudeChatStore((s) => s.queueGuidance);
   const cancelExecution = useClaudeChatStore((s) => s.cancelExecution);
   const removeQueuedGuidance = useClaudeChatStore(
@@ -167,6 +200,13 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
     : null;
   const directProviderModel =
     selectedProviderModel || selectedProviderCredential?.model || "Provider";
+  const selectedProviderSupportsVision = selectedProviderCredential
+    ? getModelCapabilities({
+        label: selectedProviderCredential.label,
+        baseUrl: selectedProviderCredential.base_url,
+        model: directProviderModel,
+      }).vision
+    : true;
   const selectedProviderDisplayName = selectedProviderCredential
     ? getProviderDisplayName({
         label: selectedProviderCredential.label,
@@ -208,6 +248,10 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const modelPickerRef = useRef<HTMLDivElement>(null);
   const modelButtonRef = useRef<HTMLButtonElement>(null);
+  const providerModelListRef = useRef<HTMLDivElement>(null);
+  const providerModelItemRefs = useRef<
+    Record<string, HTMLButtonElement | null>
+  >({});
   const [pickerPos, setPickerPos] = useState<{ left: number; bottom: number }>({
     left: 0,
     bottom: 0,
@@ -308,16 +352,35 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
     setProviderModelLoadingId(credentialId);
     setProviderModelError(null);
 
-    invoke<string[]>("list_openai_compatible_credential_models", {
-      credentialId,
-    })
+    invoke<Array<string | OpenAiCompatibleModelInfo>>(
+      "list_openai_compatible_credential_models",
+      {
+        credentialId,
+      },
+    )
       .then((models) => {
         if (cancelled) return;
-        const options = Array.from(
-          new Set(
-            [selectedProviderCredential.model, ...models].filter(Boolean),
-          ),
+        rememberModelListCapabilityMetadata(
+          selectedProviderCredential.base_url,
+          models,
         );
+        const modelIds = models
+          .filter((model) =>
+            isChatModelOption({
+              label: selectedProviderCredential.label,
+              baseUrl: selectedProviderCredential.base_url,
+              model: modelInfoId(model),
+              metadata: typeof model === "string" ? undefined : model.metadata,
+            }),
+          )
+          .map(modelInfoId);
+        const options = Array.from(new Set(modelIds.filter(Boolean)));
+        if (
+          selectedProviderCredential.model &&
+          !options.includes(selectedProviderCredential.model)
+        ) {
+          options.push(selectedProviderCredential.model);
+        }
         setProviderModelOptions((prev) => ({
           ...prev,
           [credentialId]: options,
@@ -344,6 +407,21 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
 
   // Pinned contexts — supports multiple files/selections
   const [pinnedContexts, setPinnedContexts] = useState<PinnedContext[]>([]);
+  const hasPinnedImages = pinnedContexts.some(
+    (context) => context.imageDataUrl,
+  );
+  const imageCompatibilityError =
+    selectedProviderCredential &&
+    hasPinnedImages &&
+    !selectedProviderSupportsVision
+      ? `${selectedProviderDisplayName} ${directProviderModel} does not support image input. Remove the pasted image or switch to a vision-capable model.`
+      : null;
+
+  useEffect(() => {
+    if (imageCompatibilityError) {
+      setChatError(activeTabId, imageCompatibilityError);
+    }
+  }, [activeTabId, imageCompatibilityError, setChatError]);
 
   // File drop state
   const [isDragOver, setIsDragOver] = useState(false);
@@ -705,7 +783,46 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
 
       const newContexts: PinnedContext[] = [];
 
-      for (const file of fileItems) {
+      for (const [index, file] of fileItems.entries()) {
+        if (file.type.startsWith("image/")) {
+          try {
+            const fileName = safePastedFileName(file, index);
+            const tempRoot = await join(
+              await tempDir(),
+              "ClaudePrism",
+              "chat-pastes",
+            );
+            if (!(await exists(tempRoot))) {
+              await mkdir(tempRoot, { recursive: true });
+            }
+            const fullPath = await join(
+              tempRoot,
+              `${Date.now()}-${index + 1}-${fileName}`,
+            );
+            const buffer = await file.arrayBuffer();
+            await writeFile(fullPath, new Uint8Array(buffer));
+
+            newContexts.push({
+              label:
+                fileItems.length > 1
+                  ? `Pasted image ${index + 1}`
+                  : "Pasted image",
+              filePath: fullPath,
+              selectedText: [
+                `[Temporary pasted image: ${fullPath}]`,
+                "Use this image file as visual context for the user's message.",
+              ].join("\n"),
+              imageDataUrl: await readFileAsDataUrl(file),
+            });
+          } catch (err) {
+            log.error("Failed to save pasted image", {
+              fileName: file.name || "clipboard image",
+              error: String(err),
+            });
+          }
+          continue;
+        }
+
         // Generate a filename — use the original name or a timestamp-based name for screenshots
         let fileName = file.name;
         if (!fileName || fileName === "image.png") {
@@ -771,8 +888,10 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
       }
 
       if (newContexts.length > 0) {
-        // Refresh file list so the store knows about new files
-        await refreshFiles();
+        if (newContexts.some((context) => context.label.startsWith("@"))) {
+          // Refresh only for files imported into the project tree.
+          await refreshFiles();
+        }
 
         setPinnedContexts((prev) => {
           const existingLabels = new Set(prev.map((c) => c.label));
@@ -789,6 +908,10 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
   const handleSend = useCallback(() => {
     const trimmed = input.trim();
     if (!trimmed) return;
+    if (imageCompatibilityError) {
+      setChatError(activeTabId, imageCompatibilityError);
+      return;
+    }
 
     // Resolve slash commands: if input starts with /command, find the command and substitute $ARGUMENTS
     // Skills (scope === "skill") are passed through as-is — Claude handles them via the Skill tool.
@@ -846,6 +969,8 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
     queueGuidance,
     sendPrompt,
     pinnedContexts,
+    imageCompatibilityError,
+    setChatError,
     slashCommands,
   ]);
 
@@ -1023,14 +1148,55 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
     },
   ];
   const activeProviderModelOptions = selectedProviderCredential
-    ? (providerModelOptions[selectedProviderCredential.id] ?? [
-        selectedProviderCredential.model,
-      ])
+    ? Array.from(
+        new Set(
+          (
+            providerModelOptions[selectedProviderCredential.id] ?? [
+              selectedProviderCredential.model,
+            ]
+          )
+            .map(modelInfoId)
+            .filter(Boolean),
+        ),
+      ).filter((model) =>
+        isChatModelOption({
+          label: selectedProviderCredential.label,
+          baseUrl: selectedProviderCredential.base_url,
+          model,
+        }),
+      )
     : [];
   const activeProviderModelsLoading =
     !!selectedProviderCredential &&
     providerModelLoadingId === selectedProviderCredential.id;
   const claudeProviderActive = !selectedProviderCredential;
+  const activeProviderModelOptionsKey = activeProviderModelOptions.join("\0");
+
+  useLayoutEffect(() => {
+    if (
+      !modelPickerOpen ||
+      claudeProviderActive ||
+      activeProviderModelsLoading
+    ) {
+      return;
+    }
+
+    const list = providerModelListRef.current;
+    const item = providerModelItemRefs.current[directProviderModel];
+    if (!list || !item) return;
+
+    const itemTop = item.offsetTop - list.offsetTop;
+    const centeredTop =
+      itemTop - Math.max(0, (list.clientHeight - item.offsetHeight) / 2);
+    list.scrollTop = Math.max(0, centeredTop);
+  }, [
+    activeProviderModelOptionsKey,
+    activeProviderModelsLoading,
+    claudeProviderActive,
+    directProviderModel,
+    modelPickerOpen,
+    selectedProviderCredential?.id,
+  ]);
 
   return (
     <div ref={composerRef} className="relative shrink-0 p-3">
@@ -1205,7 +1371,10 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                 </button>
               </div>
 
-              <div className="max-h-80 min-w-0 overflow-y-auto p-1">
+              <div
+                ref={providerModelListRef}
+                className="max-h-80 min-w-0 overflow-y-auto p-1"
+              >
                 <div className="px-2 py-1 font-medium text-muted-foreground text-xs">
                   Model
                 </div>
@@ -1270,6 +1439,13 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                     {activeProviderModelOptions.map((modelId) => (
                       <button
                         key={modelId}
+                        ref={(node) => {
+                          if (node) {
+                            providerModelItemRefs.current[modelId] = node;
+                          } else {
+                            delete providerModelItemRefs.current[modelId];
+                          }
+                        }}
                         className={cn(
                           "flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition-colors",
                           directProviderModel === modelId
@@ -1284,8 +1460,15 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                           setModelPickerOpen(false);
                         }}
                       >
-                        <span className="min-w-0 flex-1 truncate font-medium text-xs">
-                          {modelId}
+                        <span className="flex min-w-0 flex-1 items-center gap-2">
+                          <span className="min-w-0 truncate font-medium text-xs">
+                            {modelId}
+                          </span>
+                          <ModelCapabilityBadges
+                            label={selectedProviderCredential.label}
+                            baseUrl={selectedProviderCredential.base_url}
+                            model={modelId}
+                          />
                         </span>
                         {directProviderModel === modelId && (
                           <CheckIcon className="size-3 shrink-0" />

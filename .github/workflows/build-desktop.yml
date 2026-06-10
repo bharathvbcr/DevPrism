@@ -448,42 +448,8 @@ jobs:
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
             autoconf autoconf-archive automake libtool pkg-config \
-            libgraphite2-dev
-
-      # Static linking via vcpkg — avoids runtime dependency on system ICU/harfbuzz.
-      # Without this, the binary links against the build host's libicuuc.so.70
-      # (Ubuntu 22.04) and fails on distros shipping newer ICU (e.g. Ubuntu 25.10
-      # with libicuuc.so.76). Mirrors the macOS approach (commit 9566956).
-      - name: Setup vcpkg
-        run: |
-          git clone --depth 1 https://github.com/microsoft/vcpkg $HOME/vcpkg
-          $HOME/vcpkg/bootstrap-vcpkg.sh
-          echo "VCPKG_ROOT=$HOME/vcpkg" >> $GITHUB_ENV
-
-      - name: Restore vcpkg cache
-        id: vcpkg-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/vcpkg/installed
-          key: vcpkg-linux-x64-v1
-
-      - name: Install Linux dependencies (vcpkg)
-        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
-        env:
-          VCPKG_BINARY_SOURCES: "clear"
-        run: |
-          $HOME/vcpkg/vcpkg install \
-            "harfbuzz[graphite2]:x64-linux" \
-            fontconfig:x64-linux \
-            freetype:x64-linux \
-            icu:x64-linux
-
-      - name: Save vcpkg cache
-        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: ~/vcpkg/installed
-          key: vcpkg-linux-x64-v1
+            libgraphite2-dev libicu-dev libfontconfig1-dev libharfbuzz-dev \
+            libssl-dev libfreetype-dev libpng-dev zlib1g-dev
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -506,15 +472,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ZOTERO_CONSUMER_KEY: ${{ secrets.ZOTERO_CONSUMER_KEY }}
           ZOTERO_CONSUMER_SECRET: ${{ secrets.ZOTERO_CONSUMER_SECRET }}
-          TECTONIC_DEP_BACKEND: vcpkg
+          # Use pkg-config (same as tectonic's own CI) with semi-static linking.
+          # AppImage bundles .so files automatically for portable distribution.
+          TECTONIC_DEP_BACKEND: pkg-config
+          TECTONIC_PKGCONFIG_FORCE_SEMI_STATIC: "true"
           CXXFLAGS: "-std=c++17"
           CFLAGS: ""
-        run: |
-          # vcpkg builds graphite2 with STV_HIDDEN on gr_* symbols.
-          # rust-lld treats hidden symbol refs as hard errors; ld.bfd does not.
-          # Switch to ld.bfd for linking.
-          export RUSTFLAGS="-C linker=gcc -C link-arg=-fuse-ld=bfd"
-          pnpm --filter @claude-prism/desktop tauri build --target x86_64-unknown-linux-gnu
+        run: pnpm --filter @claude-prism/desktop tauri build --target x86_64-unknown-linux-gnu
 
       - name: Collect updater artifacts
         id: collect

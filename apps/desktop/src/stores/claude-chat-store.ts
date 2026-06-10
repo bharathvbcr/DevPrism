@@ -240,7 +240,10 @@ function stringifyBlockContent(value: unknown): string {
 }
 
 function messageContentText(message: ClaudeStreamMessage): string {
-  const blocks = message.message?.content ?? [];
+  const rawContent = (message.message as any)?.content;
+  if (typeof rawContent === "string") return rawContent.trim();
+
+  const blocks = rawContent ?? [];
   const parts: string[] = [];
   for (const block of blocks) {
     if (block.type === "text" && block.text?.trim()) {
@@ -256,6 +259,62 @@ function messageContentText(message: ClaudeStreamMessage): string {
     }
   }
   return parts.join("\n").trim();
+}
+
+function displayTextForStoredUserPrompt(text: string): string {
+  const normalized = text.replace(/\r\n/g, "\n");
+  if (!/^\[(?:Currently open file|File): [^\]\n]*\]/.test(normalized)) {
+    return text;
+  }
+
+  const contextEnd = normalized.lastIndexOf("]\n\n");
+  if (contextEnd < 0) return text;
+
+  const contextText = normalized.slice(0, contextEnd + 1);
+  const body = normalized.slice(contextEnd + 3);
+  const selectionMatch = contextText.match(
+    /(?:^|\n)\[Selection: ([^\]\n]+)\]/,
+  );
+  const contextLabel = selectionMatch?.[1]?.trim();
+
+  if (!contextLabel) return body;
+  return body.trim() ? `${contextLabel}\n${body}` : contextLabel;
+}
+
+function sanitizeStoredUserMessageForDisplay(
+  message: ClaudeStreamMessage,
+): ClaudeStreamMessage {
+  if (message.type !== "user") return message;
+
+  const rawContent = (message.message as any)?.content;
+  if (typeof rawContent === "string") {
+    const displayText = displayTextForStoredUserPrompt(rawContent);
+    return displayText === rawContent
+      ? message
+      : {
+          ...message,
+          message: { ...message.message, content: displayText as any },
+        };
+  }
+
+  if (!Array.isArray(rawContent)) return message;
+
+  let changed = false;
+  const content = rawContent.map((block) => {
+    if (block.type !== "text" || typeof block.text !== "string") {
+      return block;
+    }
+
+    const displayText = displayTextForStoredUserPrompt(block.text);
+    if (displayText === block.text) return block;
+
+    changed = true;
+    return { ...block, text: displayText };
+  });
+
+  return changed
+    ? { ...message, message: { ...message.message, content } }
+    : message;
 }
 
 function buildProviderSwitchContext(
@@ -1150,14 +1209,15 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         });
 
         // Filter to displayable message types and map to ClaudeStreamMessage
-        const messages: ClaudeStreamMessage[] = [];
+        const rawMessages: ClaudeStreamMessage[] = [];
         for (const entry of history) {
           const type = entry.type;
           if (type === "user" || type === "assistant" || type === "result") {
-            messages.push(entry as ClaudeStreamMessage);
+            rawMessages.push(entry as ClaudeStreamMessage);
           }
         }
 
+        const messages = rawMessages.map(sanitizeStoredUserMessageForDisplay);
         const totals = usageTotalsForMessages(messages);
         const providerKey = inferProviderKeyFromHistory(history);
         const selectedProviderCredentialId =
@@ -1169,7 +1229,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
           ...applyTabUpdate(s, activeTabId, {
             messages,
             providerKey,
-            title: sessionTitle ?? titleForMessages(messages) ?? "New Chat",
+            title: sessionTitle ?? titleForMessages(rawMessages) ?? "New Chat",
             totalInputTokens: totals.inputTokens,
             totalOutputTokens: totals.outputTokens,
           }),

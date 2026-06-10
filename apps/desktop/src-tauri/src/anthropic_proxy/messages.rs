@@ -271,6 +271,7 @@ fn anthropic_image_block_to_openai_part(block: &Value) -> Option<Value> {
         "type": "image_url",
         "image_url": {
             "url": url,
+            "detail": "high",
         },
     }))
 }
@@ -694,9 +695,14 @@ mod tests {
         let converted = anthropic_to_openai_request(&request, &credential()).unwrap();
 
         assert_eq!(converted["messages"][0]["content"][0]["type"], "text");
+        assert_eq!(converted["messages"][0]["content"][1]["type"], "image_url");
         assert_eq!(
             converted["messages"][0]["content"][1]["image_url"]["url"],
             "data:image/png;base64,abcd"
+        );
+        assert_eq!(
+            converted["messages"][0]["content"][1]["image_url"]["detail"],
+            "high"
         );
     }
 
@@ -745,9 +751,14 @@ mod tests {
         );
         assert_eq!(converted["messages"][2]["role"], "user");
         assert_eq!(converted["messages"][2]["content"][0]["type"], "text");
+        assert_eq!(converted["messages"][2]["content"][1]["type"], "image_url");
         assert_eq!(
             converted["messages"][2]["content"][1]["image_url"]["url"],
             "data:image/png;base64,abcd"
+        );
+        assert_eq!(
+            converted["messages"][2]["content"][1]["image_url"]["detail"],
+            "high"
         );
     }
 

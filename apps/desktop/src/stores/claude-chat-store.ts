@@ -853,9 +853,14 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     const state = get();
     const tab = state.tabs.find((t) => t.id === tabId);
     const queue = tab?.queuedGuidance ?? [];
+    const displayedIndex = queue.findIndex(
+      (guidance) => guidance.displayedInChat,
+    );
     const targetIndex = guidanceId
       ? queue.findIndex((guidance) => guidance.id === guidanceId)
-      : 0;
+      : displayedIndex >= 0
+        ? displayedIndex
+        : 0;
     const next = targetIndex >= 0 ? queue[targetIndex] : null;
     if (!next) {
       if (tab?.forceQueuedGuidanceOnComplete) {
@@ -890,7 +895,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       return applyTabUpdate(state, tabId, {
         queuedGuidance: queue.map((guidance) => ({
           ...guidance,
-          displayedInChat: guidance.id === targetId,
+          displayedInChat: guidance.displayedInChat || guidance.id === targetId,
         })),
       });
     });
@@ -904,12 +909,17 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       const queuedGuidance = (tab.queuedGuidance ?? []).filter(
         (guidance) => guidance.id !== guidanceId,
       );
+      const nextForcedGuidanceId =
+        tab.forcedQueuedGuidanceId === guidanceId
+          ? (queuedGuidance.find((guidance) => guidance.displayedInChat)?.id ??
+            null)
+          : tab.forcedQueuedGuidanceId;
       return applyTabUpdate(state, tabId, {
         queuedGuidance,
         ...(tab.forcedQueuedGuidanceId === guidanceId
           ? {
-              forceQueuedGuidanceOnComplete: false,
-              forcedQueuedGuidanceId: null,
+              forceQueuedGuidanceOnComplete: nextForcedGuidanceId !== null,
+              forcedQueuedGuidanceId: nextForcedGuidanceId,
             }
           : {}),
       });
@@ -932,12 +942,19 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     const targetId = get().displayQueuedGuidanceInChat(tabId, guidanceId);
     if (!targetId) return;
 
-    set((state) =>
-      applyTabUpdate(state, tabId, {
+    set((state) => {
+      const currentTab = state.tabs.find((t) => t.id === tabId);
+      const existingForcedId = currentTab?.forcedQueuedGuidanceId ?? null;
+      const existingForcedStillQueued = (currentTab?.queuedGuidance ?? []).some(
+        (guidance) => guidance.id === existingForcedId,
+      );
+      return applyTabUpdate(state, tabId, {
         forceQueuedGuidanceOnComplete: true,
-        forcedQueuedGuidanceId: targetId,
-      }),
-    );
+        forcedQueuedGuidanceId: existingForcedStillQueued
+          ? existingForcedId
+          : targetId,
+      });
+    });
 
     try {
       const interrupted = await invoke<boolean>("interrupt_claude_execution", {
@@ -947,20 +964,24 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         set({ _cancelledByUser: true });
       }
     } catch (err: any) {
-      set((state) =>
-        applyTabUpdate(state, tabId, {
-          queuedGuidance: (
-            state.tabs.find((t) => t.id === tabId)?.queuedGuidance ?? []
-          ).map((guidance) =>
+      set((state) => {
+        const currentTab = state.tabs.find((t) => t.id === tabId);
+        const existingForcedId = currentTab?.forcedQueuedGuidanceId ?? null;
+        const nextForcedId =
+          existingForcedId && existingForcedId !== targetId
+            ? existingForcedId
+            : null;
+        return applyTabUpdate(state, tabId, {
+          queuedGuidance: (currentTab?.queuedGuidance ?? []).map((guidance) =>
             guidance.id === targetId
               ? { ...guidance, displayedInChat: false }
               : guidance,
           ),
-          forceQueuedGuidanceOnComplete: false,
-          forcedQueuedGuidanceId: null,
+          forceQueuedGuidanceOnComplete: nextForcedId !== null,
+          forcedQueuedGuidanceId: nextForcedId,
           error: err?.message || String(err),
-        }),
-      );
+        });
+      });
     }
   },
 

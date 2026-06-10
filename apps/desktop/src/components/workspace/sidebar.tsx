@@ -48,6 +48,7 @@ import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogFooter,
@@ -119,6 +120,60 @@ interface TreeNode {
   type: "folder" | "file";
   file?: ProjectFile;
   children: TreeNode[];
+}
+
+type FileTreeItemType = "file" | "folder";
+
+interface FileTreeSelectionItem {
+  type: FileTreeItemType;
+  path: string;
+}
+
+function fileTreeSelectionKey(item: FileTreeSelectionItem) {
+  return `${item.type}:${item.path}`;
+}
+
+function fileTreeSelectionItemFromKey(
+  key: string,
+): FileTreeSelectionItem | null {
+  const separator = key.indexOf(":");
+  if (separator === -1) return null;
+
+  const type = key.slice(0, separator);
+  const path = key.slice(separator + 1);
+  if ((type !== "file" && type !== "folder") || !path) return null;
+
+  return { type, path };
+}
+
+function isInsideFolder(path: string, folderPath: string) {
+  return path === folderPath || path.startsWith(`${folderPath}/`);
+}
+
+function parentFolderOfPath(path: string): string | undefined {
+  return path.includes("/")
+    ? path.substring(0, path.lastIndexOf("/"))
+    : undefined;
+}
+
+function normalizeSelectionItems(items: FileTreeSelectionItem[]) {
+  const folders = items
+    .filter((item) => item.type === "folder")
+    .sort((a, b) => a.path.length - b.path.length)
+    .filter(
+      (item, index, all) =>
+        !all
+          .slice(0, index)
+          .some((folder) => isInsideFolder(item.path, folder.path)),
+    );
+
+  const files = items.filter(
+    (item) =>
+      item.type === "file" &&
+      !folders.some((folder) => isInsideFolder(item.path, folder.path)),
+  );
+
+  return { files, folders };
 }
 
 function buildFileTree(files: ProjectFile[], folders: string[]): TreeNode[] {
@@ -434,6 +489,220 @@ export function Sidebar() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [importFiles, pasteTargetFolder]);
 
+  const [selectedItemKeys, setSelectedItemKeys] = useState<Set<string>>(
+    new Set(),
+  );
+
+  const existingItemKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const file of files) {
+      keys.add(fileTreeSelectionKey({ type: "file", path: file.relativePath }));
+    }
+    for (const folder of folders) {
+      keys.add(fileTreeSelectionKey({ type: "folder", path: folder }));
+    }
+    return keys;
+  }, [files, folders]);
+
+  useEffect(() => {
+    setSelectedItemKeys((prev) => {
+      const next = new Set(
+        [...prev].filter((key) => existingItemKeys.has(key)),
+      );
+      return next.size === prev.size ? prev : next;
+    });
+  }, [existingItemKeys]);
+
+  const selectedItemsFromKeys = useCallback(
+    (keys: Iterable<string>) =>
+      Array.from(keys)
+        .map(fileTreeSelectionItemFromKey)
+        .filter((item): item is FileTreeSelectionItem => {
+          if (!item) return false;
+          return existingItemKeys.has(fileTreeSelectionKey(item));
+        }),
+    [existingItemKeys],
+  );
+
+  const getEffectiveSelectionItems = useCallback(
+    (fallback: FileTreeSelectionItem) => {
+      const fallbackKey = fileTreeSelectionKey(fallback);
+      if (selectedItemKeys.has(fallbackKey)) {
+        return selectedItemsFromKeys(selectedItemKeys);
+      }
+      return [fallback];
+    },
+    [selectedItemKeys, selectedItemsFromKeys],
+  );
+
+  const getEffectiveSelectionCount = useCallback(
+    (fallback: FileTreeSelectionItem) =>
+      getEffectiveSelectionItems(fallback).length,
+    [getEffectiveSelectionItems],
+  );
+
+  const selectedAffectedFileCount = useCallback(
+    (items: FileTreeSelectionItem[]) => {
+      const { files: selectedFiles, folders: selectedFolders } =
+        normalizeSelectionItems(items);
+      const affected = new Set(selectedFiles.map((item) => item.path));
+
+      for (const folder of selectedFolders) {
+        for (const file of files) {
+          if (isInsideFolder(file.relativePath, folder.path)) {
+            affected.add(file.relativePath);
+          }
+        }
+      }
+
+      return affected.size;
+    },
+    [files],
+  );
+
+  const canDeleteSelection = useCallback(
+    (fallback: FileTreeSelectionItem) => {
+      const items = getEffectiveSelectionItems(fallback);
+      const affected = selectedAffectedFileCount(items);
+      return items.length > 0 && affected < files.length;
+    },
+    [files.length, getEffectiveSelectionItems, selectedAffectedFileCount],
+  );
+
+  const [pendingDeleteItems, setPendingDeleteItems] = useState<
+    FileTreeSelectionItem[] | null
+  >(null);
+  const [isDeletingSelection, setIsDeletingSelection] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
+
+  const canDeleteItems = useCallback(
+    (items: FileTreeSelectionItem[]) => {
+      const affected = selectedAffectedFileCount(items);
+      return items.length > 0 && affected < files.length;
+    },
+    [files.length, selectedAffectedFileCount],
+  );
+
+  const requestDeleteItems = useCallback(
+    (items: FileTreeSelectionItem[]) => {
+      if (!canDeleteItems(items)) return;
+      const { files: selectedFiles, folders: selectedFolders } =
+        normalizeSelectionItems(items);
+      setPendingDeleteItems([...selectedFolders, ...selectedFiles]);
+      setDeleteError("");
+    },
+    [canDeleteItems],
+  );
+
+  const handleTreeItemContextMenu = useCallback(
+    (item: FileTreeSelectionItem) => {
+      const key = fileTreeSelectionKey(item);
+      setPasteTargetFolder(
+        item.type === "folder" ? item.path : parentFolderOfPath(item.path),
+      );
+      setSelectedItemKeys((prev) => (prev.has(key) ? prev : new Set([key])));
+    },
+    [],
+  );
+
+  const handleTreeItemClick = useCallback(
+    (
+      item: FileTreeSelectionItem,
+      event: React.MouseEvent,
+      onPrimaryClick: () => void,
+    ) => {
+      setPasteTargetFolder(
+        item.type === "folder" ? item.path : parentFolderOfPath(item.path),
+      );
+
+      if (event.ctrlKey || event.metaKey) {
+        event.preventDefault();
+        event.stopPropagation();
+        const key = fileTreeSelectionKey(item);
+        setSelectedItemKeys((prev) => {
+          const next = new Set(prev);
+          if (next.has(key)) next.delete(key);
+          else next.add(key);
+          return next;
+        });
+        return;
+      }
+
+      setSelectedItemKeys(new Set());
+      onPrimaryClick();
+    },
+    [],
+  );
+
+  const requestDeleteSelection = useCallback(
+    (fallback: FileTreeSelectionItem) => {
+      requestDeleteItems(getEffectiveSelectionItems(fallback));
+    },
+    [getEffectiveSelectionItems, requestDeleteItems],
+  );
+
+  const confirmDeleteSelection = useCallback(async () => {
+    if (!pendingDeleteItems || isDeletingSelection) return;
+
+    setIsDeletingSelection(true);
+    setDeleteError("");
+    try {
+      const { files: selectedFiles, folders: selectedFolders } =
+        normalizeSelectionItems(pendingDeleteItems);
+
+      for (const file of selectedFiles) {
+        await Promise.resolve(deleteFile(file.path) as unknown);
+      }
+      for (const folder of selectedFolders) {
+        await deleteFolder(folder.path);
+      }
+
+      setPendingDeleteItems(null);
+      setSelectedItemKeys(new Set());
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsDeletingSelection(false);
+    }
+  }, [deleteFile, deleteFolder, isDeletingSelection, pendingDeleteItems]);
+
+  useEffect(() => {
+    const handleDeleteKey = (event: KeyboardEvent) => {
+      if (event.key !== "Delete" && event.key !== "Backspace") return;
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+
+      const active = document.activeElement;
+      if (
+        active &&
+        (active.tagName === "INPUT" ||
+          active.tagName === "TEXTAREA" ||
+          (active as HTMLElement).isContentEditable)
+      ) {
+        return;
+      }
+
+      const selectedItems = selectedItemsFromKeys(selectedItemKeys);
+      if (selectedItems.length > 0) {
+        event.preventDefault();
+        requestDeleteItems(selectedItems);
+        return;
+      }
+
+      if (activeFileId) {
+        event.preventDefault();
+        requestDeleteItems([{ type: "file", path: activeFileId }]);
+      }
+    };
+
+    window.addEventListener("keydown", handleDeleteKey);
+    return () => window.removeEventListener("keydown", handleDeleteKey);
+  }, [
+    activeFileId,
+    requestDeleteItems,
+    selectedItemKeys,
+    selectedItemsFromKeys,
+  ]);
+
   // dnd-kit drag-and-drop (uses PointerSensor — works in Tauri WKWebView)
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -442,15 +711,29 @@ export function Sidebar() {
     id: string;
     type: "file" | "folder";
     name: string;
+    count: number;
   } | null>(null);
 
-  const handleDragStart = useCallback((event: DragStartEvent) => {
-    const { type, name } = event.active.data.current as {
-      type: "file" | "folder";
-      name: string;
-    };
-    setActiveDrag({ id: event.active.id as string, type, name });
-  }, []);
+  const handleDragStart = useCallback(
+    (event: DragStartEvent) => {
+      const { type, name } = event.active.data.current as {
+        type: "file" | "folder";
+        name: string;
+      };
+      const item: FileTreeSelectionItem = {
+        type,
+        path: event.active.id as string,
+      };
+      const key = fileTreeSelectionKey(item);
+      setActiveDrag({
+        id: item.path,
+        type,
+        name,
+        count: selectedItemKeys.has(key) ? getEffectiveSelectionCount(item) : 1,
+      });
+    },
+    [getEffectiveSelectionCount, selectedItemKeys],
+  );
 
   const handleDragEnd = useCallback(
     async (event: DragEndEvent) => {
@@ -463,29 +746,45 @@ export function Sidebar() {
       const targetId = over.id as string;
       const targetFolder = targetId === "__root__" ? null : targetId;
 
-      // Don't move if same parent
-      const draggedParent = draggedPath.includes("/")
-        ? draggedPath.substring(0, draggedPath.lastIndexOf("/"))
-        : null;
-      if (targetFolder === draggedParent) return;
+      const draggedItem: FileTreeSelectionItem = {
+        type: draggedType === "folder" ? "folder" : "file",
+        path: draggedPath,
+      };
+      const draggedKey = fileTreeSelectionKey(draggedItem);
+      const movingItems = selectedItemKeys.has(draggedKey)
+        ? selectedItemsFromKeys(selectedItemKeys)
+        : [draggedItem];
+      const { files: movingFiles, folders: movingFolders } =
+        normalizeSelectionItems(movingItems);
 
-      // Don't move folder into itself or descendant
-      if (draggedType === "folder" && targetFolder) {
-        if (
-          targetFolder === draggedPath ||
-          targetFolder.startsWith(`${draggedPath}/`)
+      if (
+        targetFolder &&
+        movingFolders.some((folder) =>
+          isInsideFolder(targetFolder, folder.path),
         )
-          return;
+      ) {
+        return;
       }
 
       try {
-        if (draggedType === "file") await moveFile(draggedPath, targetFolder);
-        else await moveFolder(draggedPath, targetFolder);
+        for (const file of movingFiles) {
+          const parent = parentFolderOfPath(file.path) ?? null;
+          if (targetFolder === parent) continue;
+          await moveFile(file.path, targetFolder);
+        }
+
+        for (const folder of movingFolders) {
+          const parent = parentFolderOfPath(folder.path) ?? null;
+          if (targetFolder === parent) continue;
+          await moveFolder(folder.path, targetFolder);
+        }
+
+        setSelectedItemKeys(new Set());
       } catch (err) {
         log.error("DnD move failed", { error: String(err) });
       }
     },
-    [moveFile, moveFolder],
+    [moveFile, moveFolder, selectedItemKeys, selectedItemsFromKeys],
   );
 
   // Dialog state
@@ -712,6 +1011,9 @@ export function Sidebar() {
 
   // ─── Render ───
 
+  const pendingDeleteCount = pendingDeleteItems?.length ?? 0;
+  const pendingDeletePreview = pendingDeleteItems?.slice(0, 4) ?? [];
+
   return (
     <div className="flex h-full flex-col bg-sidebar text-sidebar-foreground">
       {/* Header — padded top for macOS overlay titlebar */}
@@ -817,22 +1119,23 @@ export function Sidebar() {
                         node={node}
                         depth={0}
                         activeFileId={activeFileId}
+                        selectedItemKeys={selectedItemKeys}
                         expandedFolders={expandedFolders}
                         onToggleFolder={toggleFolder}
                         onSelectFile={(id: string) => {
-                          const parent = id.includes("/")
-                            ? id.substring(0, id.lastIndexOf("/"))
-                            : undefined;
+                          const parent = parentFolderOfPath(id);
                           setPasteTargetFolder(parent);
                           setActiveFile(id);
                         }}
+                        onItemClick={handleTreeItemClick}
+                        onItemContextMenu={handleTreeItemContextMenu}
                         onNewFile={openNewFileDialog}
                         onNewFolder={openNewFolderDialog}
                         onImport={handleImport}
                         onRename={openRenameDialog}
-                        onDelete={deleteFile}
-                        onDeleteFolder={deleteFolder}
-                        fileCount={files.length}
+                        onDeleteSelection={requestDeleteSelection}
+                        canDeleteSelection={canDeleteSelection}
+                        getEffectiveSelectionCount={getEffectiveSelectionCount}
                         nativeDragOver={nativeDragOver}
                       />
                     ))}
@@ -862,7 +1165,11 @@ export function Sidebar() {
                     ) : (
                       <FileTextIcon className="size-4 shrink-0" />
                     )}
-                    <span className="truncate">{activeDrag.name}</span>
+                    <span className="truncate">
+                      {activeDrag.count > 1
+                        ? `${activeDrag.count} selected`
+                        : activeDrag.name}
+                    </span>
                   </div>
                 )}
               </DragOverlay>
@@ -963,7 +1270,7 @@ export function Sidebar() {
 
       {/* New File Dialog */}
       <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="overflow-hidden sm:max-w-md">
           <DialogHeader>
             <DialogTitle>
               New File{addDialogFolder ? ` in ${addDialogFolder}` : ""}
@@ -1117,6 +1424,74 @@ export function Sidebar() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Delete confirmation */}
+      <Dialog
+        open={!!pendingDeleteItems}
+        onOpenChange={(open) => {
+          if (!open && !isDeletingSelection) {
+            setPendingDeleteItems(null);
+            setDeleteError("");
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              Delete {pendingDeleteCount === 1 ? "Item" : "Items"}
+            </DialogTitle>
+            <DialogDescription>
+              {pendingDeleteCount === 1
+                ? "This item will be removed from disk."
+                : `${pendingDeleteCount} selected items will be removed from disk.`}
+            </DialogDescription>
+          </DialogHeader>
+          {pendingDeletePreview.length > 0 && (
+            <div className="min-w-0 max-w-full overflow-hidden rounded-md border border-border bg-muted/40 px-3 py-2">
+              <div className="space-y-1">
+                {pendingDeletePreview.map((item) => (
+                  <div
+                    key={fileTreeSelectionKey(item)}
+                    className="min-w-0 break-all font-mono text-muted-foreground text-xs"
+                  >
+                    {item.type === "folder" ? "Folder" : "File"}: {item.path}
+                  </div>
+                ))}
+                {pendingDeleteCount > pendingDeletePreview.length && (
+                  <div className="text-muted-foreground text-xs">
+                    +{pendingDeleteCount - pendingDeletePreview.length} more
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+          {deleteError && (
+            <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive text-xs">
+              {deleteError}
+            </p>
+          )}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                if (isDeletingSelection) return;
+                setPendingDeleteItems(null);
+                setDeleteError("");
+              }}
+              disabled={isDeletingSelection}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => void confirmDeleteSelection()}
+              disabled={!pendingDeleteItems || isDeletingSelection}
+            >
+              {isDeletingSelection ? "Deleting..." : "Delete"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -1174,16 +1549,23 @@ interface FileTreeNodeProps {
   node: TreeNode;
   depth: number;
   activeFileId: string;
+  selectedItemKeys: Set<string>;
   expandedFolders: Set<string>;
   onToggleFolder: (path: string) => void;
   onSelectFile: (id: string) => void;
+  onItemClick: (
+    item: FileTreeSelectionItem,
+    event: React.MouseEvent,
+    onPrimaryClick: () => void,
+  ) => void;
+  onItemContextMenu: (item: FileTreeSelectionItem) => void;
   onNewFile: (folder?: string) => void;
   onNewFolder: (parent?: string) => void;
   onImport: (folder?: string) => void;
   onRename: (id: string, name: string) => void;
-  onDelete: (id: string) => void;
-  onDeleteFolder: (folderPath: string) => void;
-  fileCount: number;
+  onDeleteSelection: (fallback: FileTreeSelectionItem) => void;
+  canDeleteSelection: (fallback: FileTreeSelectionItem) => boolean;
+  getEffectiveSelectionCount: (fallback: FileTreeSelectionItem) => number;
   nativeDragOver?: string | null;
 }
 
@@ -1191,21 +1573,32 @@ function FileTreeNode({
   node,
   depth,
   activeFileId,
+  selectedItemKeys,
   expandedFolders,
   onToggleFolder,
   onSelectFile,
+  onItemClick,
+  onItemContextMenu,
   onNewFile,
   onNewFolder,
   onImport,
   onRename,
-  onDelete,
-  onDeleteFolder,
-  fileCount,
+  onDeleteSelection,
+  canDeleteSelection,
+  getEffectiveSelectionCount,
   nativeDragOver,
 }: FileTreeNodeProps) {
   const isExpanded = expandedFolders.has(node.relativePath);
 
   if (node.type === "folder") {
+    const folderItem: FileTreeSelectionItem = {
+      type: "folder",
+      path: node.relativePath,
+    };
+    const isSelected = selectedItemKeys.has(fileTreeSelectionKey(folderItem));
+    const effectiveSelectionCount = getEffectiveSelectionCount(folderItem);
+    const batchOperation = effectiveSelectionCount > 1;
+
     return (
       <DroppableFolder
         id={node.relativePath}
@@ -1215,9 +1608,19 @@ function FileTreeNode({
           <ContextMenu>
             <ContextMenuTrigger asChild>
               <button
-                className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-sm transition-colors hover:bg-sidebar-accent/50"
+                aria-pressed={isSelected}
+                className={cn(
+                  "flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-sm transition-colors hover:bg-sidebar-accent/50",
+                  isSelected &&
+                    "bg-sidebar-accent text-sidebar-accent-foreground",
+                )}
                 style={{ paddingLeft: `${depth * 16 + 4}px` }}
-                onClick={() => onToggleFolder(node.relativePath)}
+                onClick={(event) =>
+                  onItemClick(folderItem, event, () =>
+                    onToggleFolder(node.relativePath),
+                  )
+                }
+                onContextMenu={() => onItemContextMenu(folderItem)}
               >
                 {isExpanded ? (
                   <ChevronDownIcon className="size-3.5 shrink-0 text-muted-foreground" />
@@ -1244,16 +1647,20 @@ function FileTreeNode({
               <ContextMenuSeparator />
               <ContextMenuItem
                 onClick={() => onRename(node.relativePath, node.name)}
+                disabled={batchOperation}
               >
                 <PencilIcon className="mr-2 size-4" />
                 Rename
               </ContextMenuItem>
               <ContextMenuItem
                 variant="destructive"
-                onClick={() => onDeleteFolder(node.relativePath)}
+                onClick={() => onDeleteSelection(folderItem)}
+                disabled={!canDeleteSelection(folderItem)}
               >
                 <Trash2Icon className="mr-2 size-4" />
-                Delete
+                {batchOperation
+                  ? `Delete ${effectiveSelectionCount} selected`
+                  : "Delete"}
               </ContextMenuItem>
             </ContextMenuContent>
           </ContextMenu>
@@ -1265,16 +1672,19 @@ function FileTreeNode({
               node={child}
               depth={depth + 1}
               activeFileId={activeFileId}
+              selectedItemKeys={selectedItemKeys}
               expandedFolders={expandedFolders}
               onToggleFolder={onToggleFolder}
               onSelectFile={onSelectFile}
+              onItemClick={onItemClick}
+              onItemContextMenu={onItemContextMenu}
               onNewFile={onNewFile}
               onNewFolder={onNewFolder}
               onImport={onImport}
               onRename={onRename}
-              onDelete={onDelete}
-              onDeleteFolder={onDeleteFolder}
-              fileCount={fileCount}
+              onDeleteSelection={onDeleteSelection}
+              canDeleteSelection={canDeleteSelection}
+              getEffectiveSelectionCount={getEffectiveSelectionCount}
               nativeDragOver={nativeDragOver}
             />
           ))}
@@ -1284,22 +1694,36 @@ function FileTreeNode({
 
   // File node
   const file = node.file!;
+  const fileItem: FileTreeSelectionItem = {
+    type: "file",
+    path: file.relativePath,
+  };
+  const isSelected = selectedItemKeys.has(fileTreeSelectionKey(fileItem));
+  const effectiveSelectionCount = getEffectiveSelectionCount(fileItem);
+  const batchOperation = effectiveSelectionCount > 1;
+
   return (
     <DraggableItem id={file.relativePath} type="file" name={node.name}>
       <ContextMenu>
         <ContextMenuTrigger asChild>
           <button
+            aria-pressed={isSelected}
             className={cn(
               "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
-              file.id === activeFileId
-                ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                : "hover:bg-sidebar-accent/50",
+              (file.id === activeFileId || isSelected) &&
+                "bg-sidebar-accent text-sidebar-accent-foreground",
+              file.id !== activeFileId &&
+                !isSelected &&
+                "hover:bg-sidebar-accent/50",
             )}
             style={{ paddingLeft: `${depth * 16 + 8}px` }}
-            onClick={() => {
-              useHistoryStore.getState().stopReview();
-              onSelectFile(file.id);
-            }}
+            onClick={(event) =>
+              onItemClick(fileItem, event, () => {
+                useHistoryStore.getState().stopReview();
+                onSelectFile(file.id);
+              })
+            }
+            onContextMenu={() => onItemContextMenu(fileItem)}
           >
             {getFileIcon(file)}
             <span className="min-w-0 flex-1 truncate">{node.name}</span>
@@ -1312,17 +1736,22 @@ function FileTreeNode({
           </button>
         </ContextMenuTrigger>
         <ContextMenuContent>
-          <ContextMenuItem onClick={() => onRename(file.id, file.name)}>
+          <ContextMenuItem
+            onClick={() => onRename(file.id, file.name)}
+            disabled={batchOperation}
+          >
             <PencilIcon className="mr-2 size-4" />
             Rename
           </ContextMenuItem>
           <ContextMenuItem
             variant="destructive"
-            onClick={() => onDelete(file.id)}
-            disabled={fileCount <= 1}
+            onClick={() => onDeleteSelection(fileItem)}
+            disabled={!canDeleteSelection(fileItem)}
           >
             <Trash2Icon className="mr-2 size-4" />
-            Delete
+            {batchOperation
+              ? `Delete ${effectiveSelectionCount} selected`
+              : "Delete"}
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>

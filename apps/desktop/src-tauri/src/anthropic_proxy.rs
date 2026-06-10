@@ -225,6 +225,14 @@ async fn handle_messages_to_stream(
         credential,
         wants_stream,
     );
+    if request_contains_openai_image_parts(&openai_request)
+        && provider_rejects_openai_image_parts(credential)
+    {
+        return Err(format!(
+            "{} does not accept OpenAI-style image_url message parts. Switch to Claude Code or a vision-capable OpenAI-compatible endpoint for image questions.",
+            credential.model
+        ));
+    }
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(300))
@@ -313,6 +321,22 @@ fn with_optional_bearer_auth(
     }
 }
 
+fn request_contains_openai_image_parts(value: &Value) -> bool {
+    match value {
+        Value::Array(values) => values.iter().any(request_contains_openai_image_parts),
+        Value::Object(object) => {
+            object.get("type").and_then(Value::as_str) == Some("image_url")
+                || object.values().any(request_contains_openai_image_parts)
+        }
+        _ => false,
+    }
+}
+
+fn provider_rejects_openai_image_parts(credential: &OpenAiProxyCredential) -> bool {
+    let base_url = credential.base_url.to_ascii_lowercase();
+    base_url.contains("api.deepseek.com")
+}
+
 fn openai_compatible_base_url_has_chat_root(base_url: &str) -> bool {
     let lower = base_url.to_ascii_lowercase();
     if lower == "https://api.deepseek.com" || lower == "http://api.deepseek.com" {
@@ -383,6 +407,22 @@ mod tests {
         assert_eq!(path, "/v1/messages");
         assert!(is_messages_path(path));
         assert!(is_count_tokens_path("/v1/messages/count_tokens"));
+    }
+
+    #[test]
+    fn detects_openai_image_parts_for_provider_guard() {
+        assert!(request_contains_openai_image_parts(&json!({
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": "what is this?" },
+                    { "type": "image_url", "image_url": { "url": "data:image/png;base64,abc" } }
+                ]
+            }]
+        })));
+        assert!(!request_contains_openai_image_parts(&json!({
+            "messages": [{ "role": "user", "content": "text only" }]
+        })));
     }
 
     #[test]

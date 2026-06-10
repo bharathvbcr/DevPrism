@@ -1,12 +1,6 @@
 import { useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import {
-  getAppZoomAction,
-  resetAppZoom,
-  shouldHandleAppZoomShortcut,
-  zoomInApp,
-  zoomOutApp,
-} from "@/lib/app-zoom";
+import { getAppZoomAction, shouldHandleAppZoomShortcut } from "@/lib/app-zoom";
 import { useDocumentStore } from "@/stores/document-store";
 
 export function useKeyboardShortcuts() {
@@ -18,14 +12,7 @@ export function useKeyboardShortcuts() {
       }
 
       e.preventDefault();
-
-      if (zoomAction === "in") {
-        zoomInApp().catch(console.error);
-      } else if (zoomAction === "out") {
-        zoomOutApp().catch(console.error);
-      } else {
-        resetAppZoom().catch(console.error);
-      }
+      e.stopPropagation();
     };
 
     const handleKeyDown = (e: KeyboardEvent) => {

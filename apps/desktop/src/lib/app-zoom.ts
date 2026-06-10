@@ -48,7 +48,8 @@ export async function persistAppZoom(value: number): Promise<number> {
 
 export function initializeAppZoom(): Promise<number> {
   installNativeWheelZoomGuard();
-  return applyAppZoom(readStoredAppZoom());
+  window.localStorage.removeItem(APP_ZOOM_STORAGE_KEY);
+  return applyAppZoom(DEFAULT_APP_ZOOM);
 }
 
 export function zoomInApp(): Promise<number> {

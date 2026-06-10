@@ -196,12 +196,32 @@ fn append_openai_messages_for_anthropic_message(messages: &mut Vec<Value>, messa
                 .get("tool_use_id")
                 .and_then(|value| value.as_str())
                 .unwrap_or("toolu_unknown");
-            let content = flatten_tool_result_content(block.get("content").unwrap_or(&Value::Null));
+            let (content, image_parts) =
+                tool_result_content_to_openai(block.get("content").unwrap_or(&Value::Null));
+            let content = if content.trim().is_empty() && !image_parts.is_empty() {
+                "Tool returned image content.".to_string()
+            } else {
+                content
+            };
             messages.push(json!({
                 "role": "tool",
                 "tool_call_id": tool_call_id,
                 "content": content,
             }));
+            if !image_parts.is_empty() {
+                let mut content_parts = vec![json!({
+                    "type": "text",
+                    "text": format!(
+                        "Tool result for {} included image content. Use the attached image when answering.",
+                        tool_call_id
+                    ),
+                })];
+                content_parts.extend(image_parts);
+                messages.push(json!({
+                    "role": "user",
+                    "content": content_parts,
+                }));
+            }
         }
         return;
     }
@@ -446,22 +466,34 @@ fn assistant_content_to_openai(content: &Value) -> (String, Vec<Value>, Option<V
 }
 
 fn flatten_tool_result_content(content: &Value) -> String {
+    tool_result_content_to_openai(content).0
+}
+
+fn tool_result_content_to_openai(content: &Value) -> (String, Vec<Value>) {
     if let Some(text) = content.as_str() {
-        return text.to_string();
+        return (text.to_string(), Vec::new());
     }
     if let Some(blocks) = content.as_array() {
-        return blocks
-            .iter()
-            .filter_map(|block| {
-                block
-                    .get("text")
-                    .and_then(|value| value.as_str())
-                    .or_else(|| block.get("content").and_then(|value| value.as_str()))
-            })
-            .collect::<Vec<_>>()
-            .join("\n\n");
+        let mut text = Vec::new();
+        let mut image_parts = Vec::new();
+        for block in blocks {
+            if let Some(value) = block
+                .get("text")
+                .and_then(|value| value.as_str())
+                .or_else(|| block.get("content").and_then(|value| value.as_str()))
+            {
+                text.push(value);
+                continue;
+            }
+            if block.get("type").and_then(|value| value.as_str()) == Some("image") {
+                if let Some(part) = anthropic_image_block_to_openai_part(block) {
+                    image_parts.push(part);
+                }
+            }
+        }
+        return (text.join("\n\n"), image_parts);
     }
-    content.to_string()
+    (content.to_string(), Vec::new())
 }
 
 fn anthropic_tool_to_openai_tool(tool: &Value) -> Option<Value> {
@@ -664,6 +696,57 @@ mod tests {
         assert_eq!(converted["messages"][0]["content"][0]["type"], "text");
         assert_eq!(
             converted["messages"][0]["content"][1]["image_url"]["url"],
+            "data:image/png;base64,abcd"
+        );
+    }
+
+    #[test]
+    fn preserves_tool_result_images_as_follow_up_user_image_parts() {
+        let request = json!({
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "toolu_read_image",
+                        "name": "Read",
+                        "input": { "file_path": "attachments/figure.png" }
+                    }]
+                },
+                {
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_read_image",
+                        "content": [
+                            { "type": "text", "text": "Image read successfully." },
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "image/png",
+                                    "data": "abcd"
+                                }
+                            }
+                        ]
+                    }]
+                }
+            ]
+        });
+
+        let converted = anthropic_to_openai_request(&request, &credential()).unwrap();
+
+        assert_eq!(converted["messages"][0]["role"], "assistant");
+        assert_eq!(converted["messages"][1]["role"], "tool");
+        assert_eq!(converted["messages"][1]["tool_call_id"], "toolu_read_image");
+        assert_eq!(
+            converted["messages"][1]["content"],
+            "Image read successfully."
+        );
+        assert_eq!(converted["messages"][2]["role"], "user");
+        assert_eq!(converted["messages"][2]["content"][0]["type"], "text");
+        assert_eq!(
+            converted["messages"][2]["content"][1]["image_url"]["url"],
             "data:image/png;base64,abcd"
         );
     }

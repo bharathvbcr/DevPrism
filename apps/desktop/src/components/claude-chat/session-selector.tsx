@@ -80,6 +80,7 @@ export function SessionSelector() {
     try {
       const result = await invoke<ClaudeSessionInfo[]>("list_claude_sessions", {
         projectPath: projectRoot,
+        generateTitles: false,
       });
       log.debug("loaded sessions", { count: result.length });
       setSessions(result);

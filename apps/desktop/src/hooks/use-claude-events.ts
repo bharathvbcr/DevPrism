@@ -389,6 +389,23 @@ export function useClaudeEvents() {
       const completedSessionId = tab.sessionId;
       chatStore._setStreaming(tabId, false);
 
+      const forceQueuedGuidance = tab.forceQueuedGuidanceOnComplete === true;
+      if (forceQueuedGuidance) {
+        const queuedGuidance = useClaudeChatStore
+          .getState()
+          .consumeQueuedGuidance(tabId, tab.forcedQueuedGuidanceId);
+        if (queuedGuidance) {
+          log.info(`[${tabId}] interrupting current run with queued guidance`);
+          void useClaudeChatStore
+            .getState()
+            .sendPrompt(queuedGuidance.prompt, queuedGuidance.contextOverride, {
+              tabId,
+              preserveTabProvider: true,
+            });
+          return;
+        }
+      }
+
       // Snapshot after Claude edit
       const projectPath = useDocumentStore.getState().projectRoot;
       if (projectPath && completedSessionId) {
@@ -427,16 +444,9 @@ export function useClaudeEvents() {
       const docStore = useDocumentStore.getState();
       await docStore.refreshFiles();
 
-      const forceQueuedGuidance = tab.forceQueuedGuidanceOnComplete === true;
-      const queuedGuidance =
-        success || forceQueuedGuidance
-          ? useClaudeChatStore
-              .getState()
-              .consumeQueuedGuidance(
-                tabId,
-                forceQueuedGuidance ? tab.forcedQueuedGuidanceId : null,
-              )
-          : null;
+      const queuedGuidance = success
+        ? useClaudeChatStore.getState().consumeQueuedGuidance(tabId)
+        : null;
       if (queuedGuidance) {
         log.info(`[${tabId}] continuing with queued guidance`);
         void useClaudeChatStore

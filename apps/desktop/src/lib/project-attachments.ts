@@ -1,17 +1,18 @@
-import { createPdfTextSidecar, isPdfPath } from "@/lib/pdf-text-extractor";
-import { copyFileToProject, join } from "@/lib/tauri/fs";
+import { copyFileToProject } from "@/lib/tauri/fs";
 
 export interface ImportedReferenceFile {
   relativePath: string;
-  sidecarRelativePath?: string;
-  sidecarError?: string;
 }
 
 function baseName(path: string): string {
   return path.split(/[/\\]/).pop() || path;
 }
 
-export async function importReferenceFilesWithSidecars(
+function isPdfPath(path: string): boolean {
+  return path.toLowerCase().endsWith(".pdf");
+}
+
+export async function importReferenceFiles(
   projectRoot: string,
   sourcePaths: string[],
   targetFolder = "attachments",
@@ -26,22 +27,6 @@ export async function importReferenceFilesWithSidecars(
       targetName,
     );
     const reference: ImportedReferenceFile = { relativePath };
-
-    if (isPdfPath(relativePath)) {
-      try {
-        const absolutePath = await join(projectRoot, relativePath);
-        const sidecar = await createPdfTextSidecar(
-          projectRoot,
-          relativePath,
-          absolutePath,
-        );
-        reference.sidecarRelativePath = sidecar.sidecarRelativePath;
-      } catch (err) {
-        reference.sidecarError =
-          err instanceof Error ? err.message : String(err);
-      }
-    }
-
     imported.push(reference);
   }
 
@@ -54,11 +39,8 @@ export function buildReferenceFilesSection(
   if (references.length === 0) return "";
 
   const lines = references.map((reference) => {
-    if (reference.sidecarRelativePath) {
-      return `- \`${reference.relativePath}\` (extracted text: \`${reference.sidecarRelativePath}\`)`;
-    }
     if (isPdfPath(reference.relativePath)) {
-      return `- \`${reference.relativePath}\` (PDF; extracted text sidecar was not generated)`;
+      return `- \`${reference.relativePath}\` (PDF)`;
     }
     return `- \`${reference.relativePath}\``;
   });
@@ -68,7 +50,7 @@ export function buildReferenceFilesSection(
     "### Reference Files",
     lines.join("\n"),
     "",
-    "Please review them and incorporate relevant information. For PDFs, read the extracted text sidecar when one is listed instead of relying on the raw PDF file.",
+    "Please review them and incorporate relevant information.",
     "",
   ].join("\n");
 }

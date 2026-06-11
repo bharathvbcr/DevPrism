@@ -43,12 +43,15 @@ pub(super) fn anthropic_to_openai_request(
             .filter_map(anthropic_tool_to_openai_tool)
             .collect::<Vec<_>>();
         if !converted.is_empty() {
-            let tool_choice = openai_tool_choice(request.get("tool_choice"));
             let mut converted = converted;
-            if tool_choice == Value::String("required".to_string()) {
+            let requested_tool_choice = openai_tool_choice(request.get("tool_choice"));
+            let tool_choice = if requested_tool_choice.is_object() {
+                requested_tool_choice
+            } else {
                 append_exit_tool(&mut converted);
                 append_exit_tool_reminder(&mut body);
-            }
+                Value::String("required".to_string())
+            };
             body["tools"] = Value::Array(converted);
             body["tool_choice"] = tool_choice;
         }
@@ -530,13 +533,13 @@ fn append_exit_tool(tools: &mut Vec<Value>) {
         "type": "function",
         "function": {
             "name": EXIT_TOOL_NAME,
-            "description": "Use this when tool mode is active but no remaining tool call is needed. The response field is forwarded to the user as the final answer.",
+            "description": "Use this when tool mode is active and no remaining tool call is needed. This is the valid way to exit tool mode with a final answer.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "response": {
                         "type": "string",
-                        "description": "Final response to show the user."
+                        "description": "Final response to show the user exactly as written."
                     }
                 },
                 "required": ["response"]
@@ -554,7 +557,7 @@ fn append_exit_tool_reminder(body: &mut Value) {
     };
     messages.push(json!({
         "role": "system",
-        "content": "<system-reminder>Tool mode is active. Use the most suitable tool when it helps complete the task. If no available tool is appropriate or the task is complete, call ExitTool with the final response instead of inventing another tool call.</system-reminder>",
+        "content": "<system-reminder>Tool mode is active. The user expects you to proactively execute the most suitable tool to help complete the task. Before invoking a tool, carefully evaluate whether it matches the current task. If no available tool is appropriate, or the task is complete, call ExitTool with the final response instead of inventing another tool call.</system-reminder>",
     }));
 }
 
@@ -816,6 +819,45 @@ mod tests {
         assert!(tool_names.contains(&"Read"));
         assert!(tool_names.contains(&EXIT_TOOL_NAME));
         assert_eq!(converted["tool_choice"], "required");
+    }
+
+    #[test]
+    fn enters_tool_mode_when_tools_are_available() {
+        let request = json!({
+            "messages": [{ "role": "user", "content": "use the right tool" }],
+            "tools": [{
+                "name": "Skill",
+                "description": "Load a skill",
+                "input_schema": { "type": "object" }
+            }]
+        });
+
+        let converted = anthropic_to_openai_request(&request, &credential()).unwrap();
+        let tool_names = converted["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|tool| {
+                tool.pointer("/function/name")
+                    .and_then(|value| value.as_str())
+            })
+            .collect::<Vec<_>>();
+        let reminder = converted["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| {
+                message.get("role").and_then(|value| value.as_str()) == Some("system")
+                    && message
+                        .get("content")
+                        .and_then(|value| value.as_str())
+                        .is_some_and(|content| content.contains("Tool mode is active"))
+            });
+
+        assert_eq!(converted["tool_choice"], "required");
+        assert!(tool_names.contains(&"Skill"));
+        assert!(tool_names.contains(&EXIT_TOOL_NAME));
+        assert!(reminder.is_some());
     }
 
     #[test]

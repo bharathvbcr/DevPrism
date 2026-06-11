@@ -1560,6 +1560,9 @@ fn create_command(
     let venv_dir = std::path::Path::new(cwd).join(".venv");
     if venv_dir.exists() {
         cmd.env("VIRTUAL_ENV", &venv_dir);
+        cmd.env("UV_PROJECT_ENVIRONMENT", &venv_dir);
+        cmd.env("PYTHONNOUSERSITE", "1");
+        cmd.env("PIP_REQUIRE_VIRTUALENV", "true");
         #[cfg(not(target_os = "windows"))]
         let venv_bin = venv_dir.join("bin");
         #[cfg(target_os = "windows")]

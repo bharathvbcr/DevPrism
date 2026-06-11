@@ -341,12 +341,12 @@ fn request_contains_openai_image_parts(value: &Value) -> bool {
 
 fn provider_rejects_openai_image_parts(credential: &OpenAiProxyCredential) -> bool {
     let base_url = credential.base_url.to_ascii_lowercase();
-    base_url.contains("api.deepseek.com")
+    base_url == "https://api.deepseek.com" || base_url.starts_with("https://api.deepseek.com/")
 }
 
 fn openai_compatible_base_url_has_chat_root(base_url: &str) -> bool {
     let lower = base_url.to_ascii_lowercase();
-    if lower == "https://api.deepseek.com" || lower == "http://api.deepseek.com" {
+    if lower == "https://api.deepseek.com" {
         return true;
     }
 

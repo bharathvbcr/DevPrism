@@ -243,6 +243,28 @@ fn normalize_base_url(value: Option<&str>) -> Result<Option<String>, String> {
     Ok(Some(clean))
 }
 
+fn ensure_secure_known_provider_base_url(base_url: &str) -> Result<(), String> {
+    let lower = base_url.to_ascii_lowercase();
+    let insecure_known_provider = [
+        "http://api.deepseek.com",
+        "http://dashscope.aliyuncs.com",
+        "http://dashscope-intl.aliyuncs.com",
+        "http://api.moonshot.cn",
+        "http://api.moonshot.ai",
+    ]
+    .iter()
+    .any(|prefix| lower == *prefix || lower.starts_with(&format!("{}/", prefix)));
+
+    if insecure_known_provider {
+        return Err(
+            "Known cloud provider endpoints must use https:// to avoid sending API keys in plaintext."
+                .to_string(),
+        );
+    }
+
+    Ok(())
+}
+
 fn normalize_provider(value: Option<&str>) -> Result<String, String> {
     let provider = value.unwrap_or(PROVIDER_CLAUDE_CODE).trim();
     match provider {
@@ -558,6 +580,7 @@ pub async fn save_anthropic_api_key(
 
     if provider == PROVIDER_OPENAI_COMPATIBLE {
         let base_url = base_url.ok_or("OpenAI-compatible provider requires a Base URL")?;
+        ensure_secure_known_provider_base_url(&base_url)?;
         let model = model.ok_or("OpenAI-compatible provider requires a model")?;
         let label = credential_label
             .as_deref()
@@ -642,6 +665,7 @@ pub async fn verify_openai_compatible_api_key(
     let api_key = normalize_optional_api_key(&api_key)?;
     let base_url = normalize_base_url(Some(base_url.as_str()))?
         .ok_or("OpenAI-compatible provider requires a Base URL")?;
+    ensure_secure_known_provider_base_url(&base_url)?;
     if let Some(message) =
         known_proxy_mismatch_error(PROVIDER_OPENAI_COMPATIBLE, Some(base_url.as_str()))
     {
@@ -670,6 +694,7 @@ pub async fn list_openai_compatible_models(
     let api_key = normalize_optional_api_key(&api_key)?;
     let base_url = normalize_base_url(Some(base_url.as_str()))?
         .ok_or("OpenAI-compatible provider requires a Base URL")?;
+    ensure_secure_known_provider_base_url(&base_url)?;
     if let Some(message) =
         known_proxy_mismatch_error(PROVIDER_OPENAI_COMPATIBLE, Some(base_url.as_str()))
     {
@@ -696,6 +721,7 @@ async fn fetch_openai_compatible_models(
     api_key: &str,
     base_url: &str,
 ) -> Result<Vec<OpenAiCompatibleModelInfo>, String> {
+    ensure_secure_known_provider_base_url(base_url)?;
     let request = reqwest::Client::new().get(openai_models_url(base_url));
     let response = with_optional_bearer_auth(request, api_key)
         .send()
@@ -1630,6 +1656,29 @@ fn create_command(
     cmd
 }
 
+fn clear_anthropic_provider_env(cmd: &mut Command) {
+    for key in [
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_SMALL_FAST_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        "ANTHROPIC_CUSTOM_HEADERS",
+        "ANTHROPIC_BETA",
+        "ANTHROPIC_VERSION",
+    ] {
+        cmd.env_remove(key);
+    }
+    for (key, _) in std::env::vars() {
+        if key.to_ascii_uppercase().starts_with("ANTHROPIC_") {
+            cmd.env_remove(key);
+        }
+    }
+}
+
 fn with_prompt_transport(mut args: Vec<String>, prompt: String) -> (Vec<String>, Option<String>) {
     args.push("-p".to_string());
     #[cfg(target_os = "windows")]
@@ -1707,19 +1756,18 @@ fn find_git_bash() -> Option<String> {
 #[tauri::command]
 pub async fn check_claude_status() -> Result<ClaudeStatus, String> {
     let auth_config = read_claude_prism_auth_config()?;
-    if let Some(credential) = stored_openai_compatible_credential_from_config(&auth_config, None) {
-        return Ok(ClaudeStatus {
-            installed: true,
-            authenticated: true,
-            binary_path: None,
-            version: Some("OpenAI-compatible provider".to_string()),
-            provider_kind: PROVIDER_OPENAI_COMPATIBLE.to_string(),
-            account_email: None,
-            provider_model: Some(credential.model),
-            provider_base_url: Some(credential.base_url),
-            missing_git: false,
-        });
-    }
+    let openai_credential = stored_openai_compatible_credential_from_config(&auth_config, None);
+    let provider_kind = if openai_credential.is_some() {
+        PROVIDER_OPENAI_COMPATIBLE
+    } else {
+        PROVIDER_CLAUDE_CODE
+    };
+    let provider_model = openai_credential
+        .as_ref()
+        .map(|credential| credential.model.clone());
+    let provider_base_url = openai_credential
+        .as_ref()
+        .map(|credential| credential.base_url.clone());
 
     // On Windows, check for Git for Windows first 鈥?Claude Code requires it.
     #[cfg(target_os = "windows")]
@@ -1736,10 +1784,10 @@ pub async fn check_claude_status() -> Result<ClaudeStatus, String> {
                 authenticated: false,
                 binary_path: None,
                 version: None,
-                provider_kind: PROVIDER_CLAUDE_CODE.to_string(),
+                provider_kind: provider_kind.to_string(),
                 account_email: None,
-                provider_model: None,
-                provider_base_url: None,
+                provider_model: provider_model.clone(),
+                provider_base_url: provider_base_url.clone(),
                 missing_git,
             });
         }
@@ -1760,14 +1808,28 @@ pub async fn check_claude_status() -> Result<ClaudeStatus, String> {
                 authenticated: false,
                 binary_path: None,
                 version: None,
-                provider_kind: PROVIDER_CLAUDE_CODE.to_string(),
+                provider_kind: provider_kind.to_string(),
                 account_email: None,
-                provider_model: None,
-                provider_base_url: None,
+                provider_model: provider_model.clone(),
+                provider_base_url: provider_base_url.clone(),
                 missing_git,
             });
         }
     };
+
+    if openai_credential.is_some() {
+        return Ok(ClaudeStatus {
+            installed: true,
+            authenticated: true,
+            binary_path: Some(binary_path),
+            version,
+            provider_kind: PROVIDER_OPENAI_COMPATIBLE.to_string(),
+            account_email: None,
+            provider_model,
+            provider_base_url,
+            missing_git,
+        });
+    }
 
     // Check auth status
     let auth_output = new_sync_command(&binary_path)
@@ -2132,7 +2194,6 @@ fn common_claude_args() -> Vec<String> {
         "--output-format".to_string(),
         "stream-json".to_string(),
         "--verbose".to_string(),
-        "--dangerously-skip-permissions".to_string(),
         "--append-system-prompt".to_string(),
         concat!(
             "You are an AI assistant integrated into a LaTeX document editor (Prism). ",
@@ -2214,7 +2275,7 @@ fn openai_models_url(base_url: &str) -> String {
 
 fn openai_compatible_base_url_has_chat_root(base_url: &str) -> bool {
     let lower = base_url.to_ascii_lowercase();
-    if lower == "https://api.deepseek.com" || lower == "http://api.deepseek.com" {
+    if lower == "https://api.deepseek.com" {
         return true;
     }
 
@@ -2567,10 +2628,9 @@ async fn execute_openai_compatible_via_claude_proxy(
     args.extend(common_claude_args());
 
     let mut cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref());
+    clear_anthropic_provider_env(&mut cmd);
     cmd.env("ANTHROPIC_API_KEY", "claude-prism-local-proxy");
     cmd.env("ANTHROPIC_BASE_URL", proxy_url);
-    cmd.env_remove("ANTHROPIC_AUTH_TOKEN");
-    cmd.env_remove("ANTHROPIC_MODEL");
     cmd.env_remove("CLAUDE_MODEL");
 
     spawn_claude_process(
@@ -2596,6 +2656,8 @@ async fn execute_openai_compatible_provider(
     effort_level: Option<String>,
     credential: StoredOpenAiCompatibleCredential,
 ) -> Result<(), String> {
+    ensure_secure_known_provider_base_url(&credential.base_url)?;
+
     if uses_native_anthropic_route(&credential) {
         return execute_openai_compatible_via_native_anthropic(
             window,
@@ -2659,9 +2721,9 @@ fn apply_native_anthropic_provider_env(
     credential: &StoredOpenAiCompatibleCredential,
     anthropic_base_url: &str,
 ) {
+    clear_anthropic_provider_env(cmd);
     cmd.env("ANTHROPIC_BASE_URL", anthropic_base_url);
     cmd.env("ANTHROPIC_AUTH_TOKEN", credential.api_key.as_str());
-    cmd.env_remove("ANTHROPIC_API_KEY");
     cmd.env("ANTHROPIC_MODEL", credential.model.as_str());
     cmd.env("ANTHROPIC_SMALL_FAST_MODEL", credential.model.as_str());
     cmd.env("ANTHROPIC_DEFAULT_OPUS_MODEL", credential.model.as_str());
@@ -2678,7 +2740,7 @@ fn uses_native_anthropic_route(credential: &StoredOpenAiCompatibleCredential) ->
 fn native_anthropic_base_url(credential: &StoredOpenAiCompatibleCredential) -> Option<String> {
     let origin = http_origin(&credential.base_url)?;
     let lower_origin = origin.to_ascii_lowercase();
-    if lower_origin == "https://api.deepseek.com" || lower_origin == "http://api.deepseek.com" {
+    if lower_origin == "https://api.deepseek.com" {
         let lower = credential.base_url.to_ascii_lowercase();
         if let Some(index) = lower.find("/anthropic") {
             return Some(format!("{}{}", &credential.base_url[..index], "/anthropic"));
@@ -2714,10 +2776,11 @@ fn native_anthropic_base_url(credential: &StoredOpenAiCompatibleCredential) -> O
 
 fn deepseek_origin_for_anthropic_base_url(base_url: &str) -> Option<String> {
     let lower = base_url.to_ascii_lowercase();
-    if !lower.contains("api.deepseek.com") || !lower.contains("/anthropic") {
+    let origin = http_origin(base_url)?;
+    if origin.to_ascii_lowercase() != "https://api.deepseek.com" || !lower.contains("/anthropic") {
         return None;
     }
-    http_origin(base_url)
+    Some(origin)
 }
 
 fn qwen_origin_for_anthropic_base_url(base_url: &str) -> Option<String> {
@@ -2747,20 +2810,14 @@ fn moonshot_origin_for_anthropic_base_url(base_url: &str) -> Option<String> {
 fn is_qwen_anthropic_origin(lower_origin: &str) -> bool {
     matches!(
         lower_origin,
-        "https://dashscope.aliyuncs.com"
-            | "http://dashscope.aliyuncs.com"
-            | "https://dashscope-intl.aliyuncs.com"
-            | "http://dashscope-intl.aliyuncs.com"
+        "https://dashscope.aliyuncs.com" | "https://dashscope-intl.aliyuncs.com"
     )
 }
 
 fn is_moonshot_anthropic_origin(lower_origin: &str) -> bool {
     matches!(
         lower_origin,
-        "https://api.moonshot.cn"
-            | "http://api.moonshot.cn"
-            | "https://api.moonshot.ai"
-            | "http://api.moonshot.ai"
+        "https://api.moonshot.cn" | "https://api.moonshot.ai"
     )
 }
 
@@ -3687,27 +3744,59 @@ pub struct ShellCommandResult {
     pub stderr: String,
 }
 
+fn truncate_shell_output(value: &[u8]) -> String {
+    const MAX_OUTPUT_BYTES: usize = 64 * 1024;
+    let truncated = value.len() > MAX_OUTPUT_BYTES;
+    let mut text = String::from_utf8_lossy(&value[..value.len().min(MAX_OUTPUT_BYTES)]).to_string();
+    if truncated {
+        text.push_str("\n[output truncated]");
+    }
+    text
+}
+
 #[tauri::command]
 pub async fn run_shell_command(command: String, cwd: String) -> Result<ShellCommandResult, String> {
+    let command = strip_nul(&command).trim().to_string();
+    if command.is_empty() {
+        return Err("Command is empty".to_string());
+    }
+
+    let cwd = strip_nul(&cwd).trim().to_string();
+    if cwd.is_empty() {
+        return Err("Command working directory is empty".to_string());
+    }
+    let cwd = PathBuf::from(cwd);
+    let cwd = cwd
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve command working directory: {}", e))?;
+    if !cwd.is_dir() {
+        return Err("Command working directory is not a directory".to_string());
+    }
+    let cwd = cwd.to_string_lossy().to_string();
+
     #[cfg(not(target_os = "windows"))]
     let (shell, args) = ("sh", vec!["-c".to_string(), command]);
     #[cfg(target_os = "windows")]
     let (shell, args) = ("cmd", vec!["/C".to_string(), command]);
     let mut cmd = create_command(shell, args, &cwd, None);
+    cmd.kill_on_drop(true);
 
     let child = cmd
         .spawn()
         .map_err(|e| format!("Failed to spawn command: {}", e))?;
 
-    let output = child
-        .wait_with_output()
-        .await
-        .map_err(|e| format!("Failed to wait for command: {}", e))?;
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        child.wait_with_output(),
+    )
+    .await
+    .map_err(|_| "Command timed out after 120 seconds".to_string())?
+    .map_err(|e| format!("Failed to wait for command: {}", e))?;
 
     Ok(ShellCommandResult {
         exit_code: output.status.code().unwrap_or(-1),
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        stdout: truncate_shell_output(&output.stdout),
+        stderr: truncate_shell_output(&output.stderr),
     })
 }
 
@@ -3941,7 +4030,7 @@ mod tests {
         assert!(args.contains(&"--output-format".to_string()));
         assert!(args.contains(&"stream-json".to_string()));
         assert!(args.contains(&"--verbose".to_string()));
-        assert!(args.contains(&"--dangerously-skip-permissions".to_string()));
+        assert!(!args.contains(&"--dangerously-skip-permissions".to_string()));
         assert!(args.contains(&"--append-system-prompt".to_string()));
     }
 
@@ -4184,6 +4273,30 @@ mod tests {
             native_anthropic_base_url(&credential).as_deref(),
             Some("https://api.moonshot.ai/anthropic")
         );
+    }
+
+    #[test]
+    fn test_known_native_provider_routes_require_https() {
+        for (base_url, model) in [
+            ("http://api.deepseek.com/anthropic", "deepseek-chat"),
+            ("http://dashscope.aliyuncs.com/apps/anthropic", "qwen3-max"),
+            ("http://api.moonshot.cn/anthropic", "kimi-k2.5"),
+        ] {
+            let credential = StoredOpenAiCompatibleCredential {
+                id: "insecure".to_string(),
+                label: "Insecure".to_string(),
+                api_key: "sk-test".to_string(),
+                base_url: base_url.to_string(),
+                model: model.to_string(),
+                transformers: Vec::new(),
+                model_transformers: HashMap::new(),
+            };
+
+            assert!(!uses_native_anthropic_route(&credential));
+            assert!(ensure_secure_known_provider_base_url(base_url).is_err());
+        }
+
+        assert!(ensure_secure_known_provider_base_url("http://localhost:11434/v1").is_ok());
     }
 
     #[test]

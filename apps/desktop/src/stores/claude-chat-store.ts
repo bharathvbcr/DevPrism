@@ -12,7 +12,7 @@ export const SELECTED_PROVIDER_CREDENTIAL_STORAGE_KEY =
 
 function providerSelectionStorage(): Storage | null {
   try {
-    return globalThis.localStorage ?? null;
+    return globalThis.sessionStorage ?? null;
   } catch {
     return null;
   }
@@ -120,7 +120,10 @@ export interface TabState {
   id: string;
   title: string;
   sessionId: string | null;
+  /** Provider currently selected in the tab UI. */
   providerKey: string | null;
+  /** Provider that last executed this session, used for safe resume/switching. */
+  sessionProviderKey: string | null;
   messages: ClaudeStreamMessage[];
   isStreaming: boolean;
   error: string | null;
@@ -144,11 +147,14 @@ const TAB_FIELDS = [
 ] as const;
 
 function makeDefaultTab(id: string): TabState {
+  const selectedCredentialId =
+    loadSelectedProviderCredentialId() ?? CLAUDE_CODE_PROVIDER_ID;
   return {
     id,
     title: "New Chat",
     sessionId: null,
-    providerKey: null,
+    providerKey: providerKeyForSelectedCredential(selectedCredentialId),
+    sessionProviderKey: null,
     messages: [],
     isStreaming: false,
     error: null,
@@ -168,6 +174,12 @@ function providerSessionKey(providerCredentialId: string | null): string {
     : CLAUDE_CODE_PROVIDER_ID;
 }
 
+function providerKeyForSelectedCredential(credentialId: string | null): string {
+  return credentialId && credentialId !== CLAUDE_CODE_PROVIDER_ID
+    ? providerSessionKey(credentialId)
+    : CLAUDE_CODE_PROVIDER_ID;
+}
+
 function providerCredentialIdFromSessionKey(
   providerKey: string | null,
 ): string | null | undefined {
@@ -177,6 +189,11 @@ function providerCredentialIdFromSessionKey(
   return providerKey.startsWith(prefix)
     ? providerKey.slice(prefix.length)
     : undefined;
+}
+
+function selectedCredentialForProviderKey(providerKey: string | null) {
+  const credentialId = providerCredentialIdFromSessionKey(providerKey);
+  return credentialId === undefined ? null : credentialId;
 }
 
 function inferProviderKeyFromHistory(history: any[]): string | null {
@@ -593,7 +610,7 @@ interface ClaudeChatState {
   clearQueuedGuidance: (tabId: string) => void;
   consumeTemporaryFilePaths: (tabId: string) => string[];
   forceQueuedGuidanceNow: (tabId: string, guidanceId?: string) => Promise<void>;
-  cancelExecution: () => Promise<void>;
+  cancelExecution: (tabId?: string) => Promise<void>;
   clearMessages: () => void;
   newSession: () => void;
   resumeSession: (sessionId: string, title?: string) => Promise<void>;
@@ -634,10 +651,19 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
 
   selectedModel: "opus",
   setSelectedModel: (model) => set({ selectedModel: model }),
-  selectedProviderCredentialId: loadSelectedProviderCredentialId(),
+  selectedProviderCredentialId:
+    loadSelectedProviderCredentialId() ?? CLAUDE_CODE_PROVIDER_ID,
   setSelectedProviderCredentialId: (credentialId) => {
     persistSelectedProviderCredentialId(credentialId);
-    set({ selectedProviderCredentialId: credentialId });
+    const providerKey = providerKeyForSelectedCredential(
+      credentialId ?? CLAUDE_CODE_PROVIDER_ID,
+    );
+    set((state) => ({
+      selectedProviderCredentialId: credentialId,
+      tabs: state.tabs.map((tab) =>
+        tab.id === state.activeTabId ? { ...tab, providerKey } : tab,
+      ),
+    }));
   },
   selectedProviderModels: {},
   setSelectedProviderModel: (credentialId, model) =>
@@ -687,17 +713,15 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     const activeTab = state.tabs.find((t) => t.id === activeTabId);
     if (!activeTab || activeTab.isStreaming) return;
 
-    const {
-      selectedModel,
-      effortLevel,
-      selectedProviderCredentialId,
-      selectedProviderModels,
-    } = state;
+    const { selectedModel, effortLevel, selectedProviderModels } = state;
     const sessionId = activeTab.sessionId;
+    const tabSelectedProviderCredentialId =
+      selectedCredentialForProviderKey(activeTab.providerKey) ??
+      state.selectedProviderCredentialId;
     let providerCredentialId =
-      selectedProviderCredentialId &&
-      selectedProviderCredentialId !== CLAUDE_CODE_PROVIDER_ID
-        ? selectedProviderCredentialId
+      tabSelectedProviderCredentialId &&
+      tabSelectedProviderCredentialId !== CLAUDE_CODE_PROVIDER_ID
+        ? tabSelectedProviderCredentialId
         : null;
 
     if (options?.preserveTabProvider && activeTab.providerKey) {
@@ -715,7 +739,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       ? selectedProviderModels[providerCredentialId] || null
       : null;
     const requestProviderKey = providerSessionKey(providerCredentialId);
-    const previousProviderKey = activeTab?.providerKey ?? null;
+    const previousProviderKey = activeTab?.sessionProviderKey ?? null;
     const providerChanged =
       !!sessionId &&
       !!previousProviderKey &&
@@ -790,6 +814,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         messages: [...(currentTab?.messages ?? []), userMessage],
         sessionId: resumeSessionId,
         providerKey: requestProviderKey,
+        sessionProviderKey: requestProviderKey,
         isStreaming: true,
         error: null,
         pendingTemporaryFilePaths: temporaryFilePaths,
@@ -1064,14 +1089,11 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     }
   },
 
-  cancelExecution: async () => {
-    const { activeTabId } = get();
+  cancelExecution: async (tabId) => {
+    const activeTabId = tabId ?? get().activeTabId;
+    const tab = get().tabs.find((t) => t.id === activeTabId);
+    if (!tab?.isStreaming) return;
     set({ _cancelledByUser: true });
-    try {
-      await invoke("cancel_claude_execution", { tabId: activeTabId });
-    } catch {
-      // ignore
-    }
     set((s) =>
       applyTabUpdate(s, activeTabId, {
         isStreaming: false,
@@ -1080,6 +1102,11 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         forcedQueuedGuidanceId: null,
       }),
     );
+    try {
+      await invoke("cancel_claude_execution", { tabId: activeTabId });
+    } catch {
+      // The UI has already moved to a stopped state; stale output is ignored.
+    }
   },
 
   clearMessages: () => {
@@ -1103,7 +1130,12 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     const activeTab = tabs.find((t) => t.id === activeTabId);
     if (activeTab?.isStreaming) {
       const id = nextTabId();
-      const newTab = makeDefaultTab(id);
+      const newTab = {
+        ...makeDefaultTab(id),
+        providerKey:
+          activeTab.providerKey ??
+          providerKeyForSelectedCredential(get().selectedProviderCredentialId),
+      };
       set({
         tabs: [...tabs, newTab],
         activeTabId: id,
@@ -1113,6 +1145,9 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         error: newTab.error,
         totalInputTokens: newTab.totalInputTokens,
         totalOutputTokens: newTab.totalOutputTokens,
+        selectedProviderCredentialId: selectedCredentialForProviderKey(
+          newTab.providerKey,
+        ),
       });
       return;
     }
@@ -1121,7 +1156,10 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       applyTabUpdate(s, activeTabId, {
         messages: [],
         sessionId: null,
-        providerKey: null,
+        providerKey:
+          activeTab?.providerKey ??
+          providerKeyForSelectedCredential(s.selectedProviderCredentialId),
+        sessionProviderKey: null,
         error: null,
         isStreaming: false,
         totalInputTokens: 0,
@@ -1148,6 +1186,10 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       const nextTabs = tabs.map((tab) =>
         tab.id === existingTab.id ? { ...tab, title: nextTitle } : tab,
       );
+      const nextSelectedProviderCredentialId =
+        selectedCredentialForProviderKey(existingTab.providerKey) ??
+        CLAUDE_CODE_PROVIDER_ID;
+      persistSelectedProviderCredentialId(nextSelectedProviderCredentialId);
       set({
         tabs: nextTabs,
         activeTabId: existingTab.id,
@@ -1157,13 +1199,21 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         error: existingTab.error,
         totalInputTokens: existingTab.totalInputTokens,
         totalOutputTokens: existingTab.totalOutputTokens,
+        selectedProviderCredentialId: nextSelectedProviderCredentialId,
       });
       if (existingTab.isStreaming) return;
     } else {
       const activeTab = tabs.find((tab) => tab.id === activeTabId);
       if (activeTab?.isStreaming) {
         const id = nextTabId();
-        const newTab = makeDefaultTab(id);
+        const newTab = {
+          ...makeDefaultTab(id),
+          providerKey:
+            activeTab.providerKey ??
+            providerKeyForSelectedCredential(
+              get().selectedProviderCredentialId,
+            ),
+        };
         tabs = [...tabs, newTab];
         activeTabId = id;
         set({
@@ -1175,6 +1225,9 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
           error: newTab.error,
           totalInputTokens: newTab.totalInputTokens,
           totalOutputTokens: newTab.totalOutputTokens,
+          selectedProviderCredentialId: selectedCredentialForProviderKey(
+            newTab.providerKey,
+          ),
         });
       }
     }
@@ -1187,6 +1240,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         messages: [],
         sessionId,
         providerKey: null,
+        sessionProviderKey: null,
         error: null,
         isStreaming: false,
         totalInputTokens: 0,
@@ -1220,20 +1274,29 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         const providerKey = inferProviderKeyFromHistory(history);
         const selectedProviderCredentialId =
           providerCredentialIdFromSessionKey(providerKey);
-        if (selectedProviderCredentialId !== undefined) {
-          persistSelectedProviderCredentialId(selectedProviderCredentialId);
-        }
+        const nextSelectedProviderCredentialId =
+          selectedProviderCredentialId === undefined
+            ? CLAUDE_CODE_PROVIDER_ID
+            : selectedProviderCredentialId;
+        persistSelectedProviderCredentialId(nextSelectedProviderCredentialId);
         set((s) => ({
           ...applyTabUpdate(s, activeTabId, {
             messages,
-            providerKey,
+            providerKey:
+              providerKey ??
+              providerKeyForSelectedCredential(
+                nextSelectedProviderCredentialId,
+              ),
+            sessionProviderKey:
+              providerKey ??
+              providerKeyForSelectedCredential(
+                nextSelectedProviderCredentialId,
+              ),
             title: sessionTitle ?? titleForMessages(rawMessages) ?? "New Chat",
             totalInputTokens: totals.inputTokens,
             totalOutputTokens: totals.outputTokens,
           }),
-          ...(selectedProviderCredentialId !== undefined
-            ? { selectedProviderCredentialId }
-            : {}),
+          selectedProviderCredentialId: nextSelectedProviderCredentialId,
         }));
       } catch (err) {
         log.error("Failed to load session history", { error: String(err) });
@@ -1246,7 +1309,14 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
   createTab: () => {
     log.debug("Creating new tab");
     const id = nextTabId();
-    const newTab = makeDefaultTab(id);
+    const state = get();
+    const activeTab = state.tabs.find((tab) => tab.id === state.activeTabId);
+    const newTab = {
+      ...makeDefaultTab(id),
+      providerKey:
+        activeTab?.providerKey ??
+        providerKeyForSelectedCredential(state.selectedProviderCredentialId),
+    };
     set((s) => ({
       tabs: [...s.tabs, newTab],
       activeTabId: id,
@@ -1257,6 +1327,9 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       error: newTab.error,
       totalInputTokens: newTab.totalInputTokens,
       totalOutputTokens: newTab.totalOutputTokens,
+      selectedProviderCredentialId: selectedCredentialForProviderKey(
+        newTab.providerKey,
+      ),
     }));
     return id;
   },
@@ -1278,6 +1351,10 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       // Switch to adjacent tab
       const newIdx = Math.min(idx, newTabs.length - 1);
       const newActive = newTabs[newIdx];
+      const nextSelectedProviderCredentialId =
+        selectedCredentialForProviderKey(newActive.providerKey) ??
+        CLAUDE_CODE_PROVIDER_ID;
+      persistSelectedProviderCredentialId(nextSelectedProviderCredentialId);
       set({
         tabs: newTabs,
         activeTabId: newActive.id,
@@ -1288,6 +1365,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         error: newActive.error,
         totalInputTokens: newActive.totalInputTokens,
         totalOutputTokens: newActive.totalOutputTokens,
+        selectedProviderCredentialId: nextSelectedProviderCredentialId,
       });
     } else {
       set({ tabs: newTabs });
@@ -1299,6 +1377,10 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     if (tabId === state.activeTabId) return;
     const targetTab = state.tabs.find((t) => t.id === tabId);
     if (!targetTab) return;
+    const nextSelectedProviderCredentialId =
+      selectedCredentialForProviderKey(targetTab.providerKey) ??
+      CLAUDE_CODE_PROVIDER_ID;
+    persistSelectedProviderCredentialId(nextSelectedProviderCredentialId);
 
     // Project the target tab's fields to top-level
     set({
@@ -1309,6 +1391,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       error: targetTab.error,
       totalInputTokens: targetTab.totalInputTokens,
       totalOutputTokens: targetTab.totalOutputTokens,
+      selectedProviderCredentialId: nextSelectedProviderCredentialId,
     });
   },
 

@@ -41,7 +41,8 @@ function resetClaudeChatStore() {
         id: "tab-default",
         title: "New Chat",
         sessionId: null,
-        providerKey: null,
+        providerKey: CLAUDE_CODE_PROVIDER_ID,
+        sessionProviderKey: null,
         messages: [],
         isStreaming: false,
         error: null,
@@ -54,7 +55,7 @@ function resetClaudeChatStore() {
     pendingInitialPrompt: null,
     pendingAttachments: [],
     selectedModel: "opus",
-    selectedProviderCredentialId: null,
+    selectedProviderCredentialId: CLAUDE_CODE_PROVIDER_ID,
     selectedProviderModels: {},
     effortLevel: "medium",
     _cancelledByUser: false,
@@ -200,7 +201,8 @@ describe("useClaudeChatStore.sendPrompt context assembly", () => {
           ? {
               ...tab,
               sessionId: "qwen-session",
-              providerKey: "openai-compatible:qwen-cred",
+              providerKey: CLAUDE_CODE_PROVIDER_ID,
+              sessionProviderKey: "openai-compatible:qwen-cred",
               messages: [
                 {
                   type: "user",
@@ -251,7 +253,8 @@ describe("useClaudeChatStore.sendPrompt context assembly", () => {
           ? {
               ...tab,
               sessionId: "shared-session",
-              providerKey: "openai-compatible:qwen-cred",
+              providerKey: "openai-compatible:deepseek-cred",
+              sessionProviderKey: "openai-compatible:qwen-cred",
             }
           : tab,
       ),
@@ -270,8 +273,8 @@ describe("useClaudeChatStore.sendPrompt context assembly", () => {
   });
 
   it("passes an OpenAI-compatible model override with the provider credential", async () => {
+    useClaudeChatStore.getState().setSelectedProviderCredentialId("qwen-cred");
     useClaudeChatStore.setState({
-      selectedProviderCredentialId: "qwen-cred",
       selectedProviderModels: { "qwen-cred": "qwen3.7-plus" },
     });
 

@@ -1,4 +1,5 @@
 use super::tools::{normalized_tool_call_id, repair_tool_arguments, repaired_tool_arguments_value};
+use super::transformers::ProxyTransformerChain;
 use super::OpenAiProxyCredential;
 use serde_json::{json, Value};
 
@@ -7,6 +8,7 @@ const EXIT_TOOL_NAME: &str = "ExitTool";
 pub(super) fn anthropic_to_openai_request(
     request: &Value,
     credential: &OpenAiProxyCredential,
+    transformers: &ProxyTransformerChain,
 ) -> Result<Value, String> {
     let mut messages = Vec::new();
     if let Some(system) = request.get("system").and_then(flatten_anthropic_content) {
@@ -43,15 +45,16 @@ pub(super) fn anthropic_to_openai_request(
             .filter_map(anthropic_tool_to_openai_tool)
             .collect::<Vec<_>>();
         if !converted.is_empty() {
-            let mut converted = converted;
-            let requested_tool_choice = openai_tool_choice(request.get("tool_choice"));
-            let tool_choice = if requested_tool_choice.is_object() {
-                requested_tool_choice
+            let tool_choice = if transformers.has_tooluse() {
+                Value::String("required".to_string())
             } else {
+                openai_tool_choice(request.get("tool_choice"))
+            };
+            let mut converted = converted;
+            if tool_choice == Value::String("required".to_string()) {
                 append_exit_tool(&mut converted);
                 append_exit_tool_reminder(&mut body);
-                Value::String("required".to_string())
-            };
+            }
             body["tools"] = Value::Array(converted);
             body["tool_choice"] = tool_choice;
         }
@@ -469,10 +472,6 @@ fn assistant_content_to_openai(content: &Value) -> (String, Vec<Value>, Option<V
     (text.join("\n\n"), tool_calls, thinking)
 }
 
-fn flatten_tool_result_content(content: &Value) -> String {
-    tool_result_content_to_openai(content).0
-}
-
 fn tool_result_content_to_openai(content: &Value) -> (String, Vec<Value>) {
     if let Some(text) = content.as_str() {
         return (text.to_string(), Vec::new());
@@ -673,7 +672,13 @@ mod tests {
             api_key: "sk-test".to_string(),
             base_url: "https://api.example.com/v1".to_string(),
             model: "qwen-test".to_string(),
+            transformers: Vec::new(),
+            model_transformers: Vec::new(),
         }
+    }
+
+    fn transformers(names: &[&str]) -> ProxyTransformerChain {
+        ProxyTransformerChain::from_names(names)
     }
 
     #[test]
@@ -695,7 +700,8 @@ mod tests {
             }]
         });
 
-        let converted = anthropic_to_openai_request(&request, &credential()).unwrap();
+        let converted =
+            anthropic_to_openai_request(&request, &credential(), &transformers(&[])).unwrap();
 
         assert_eq!(converted["messages"][0]["content"][0]["type"], "text");
         assert_eq!(converted["messages"][0]["content"][1]["type"], "image_url");
@@ -743,7 +749,8 @@ mod tests {
             ]
         });
 
-        let converted = anthropic_to_openai_request(&request, &credential()).unwrap();
+        let converted =
+            anthropic_to_openai_request(&request, &credential(), &transformers(&[])).unwrap();
 
         assert_eq!(converted["messages"][0]["role"], "assistant");
         assert_eq!(converted["messages"][1]["role"], "tool");
@@ -784,7 +791,8 @@ mod tests {
             }]
         });
 
-        let converted = anthropic_to_openai_request(&request, &credential()).unwrap();
+        let converted =
+            anthropic_to_openai_request(&request, &credential(), &transformers(&[])).unwrap();
 
         assert_eq!(
             converted["messages"][0]["thinking"]["content"],
@@ -805,7 +813,8 @@ mod tests {
             }]
         });
 
-        let converted = anthropic_to_openai_request(&request, &credential()).unwrap();
+        let converted =
+            anthropic_to_openai_request(&request, &credential(), &transformers(&[])).unwrap();
         let tool_names = converted["tools"]
             .as_array()
             .unwrap()
@@ -822,17 +831,19 @@ mod tests {
     }
 
     #[test]
-    fn enters_tool_mode_when_tools_are_available() {
+    fn tooluse_transformer_forces_exit_tool_like_ccr() {
         let request = json!({
-            "messages": [{ "role": "user", "content": "use the right tool" }],
+            "messages": [{ "role": "user", "content": "finish" }],
             "tools": [{
-                "name": "Skill",
-                "description": "Load a skill",
+                "name": "Read",
+                "description": "Read a file",
                 "input_schema": { "type": "object" }
             }]
         });
 
-        let converted = anthropic_to_openai_request(&request, &credential()).unwrap();
+        let converted =
+            anthropic_to_openai_request(&request, &credential(), &transformers(&["tooluse"]))
+                .unwrap();
         let tool_names = converted["tools"]
             .as_array()
             .unwrap()
@@ -842,22 +853,18 @@ mod tests {
                     .and_then(|value| value.as_str())
             })
             .collect::<Vec<_>>();
-        let reminder = converted["messages"]
+
+        assert_eq!(converted["tool_choice"], "required");
+        assert!(tool_names.contains(&"Read"));
+        assert!(tool_names.contains(&EXIT_TOOL_NAME));
+        assert!(converted["messages"]
             .as_array()
             .unwrap()
             .iter()
-            .find(|message| {
-                message.get("role").and_then(|value| value.as_str()) == Some("system")
-                    && message
-                        .get("content")
-                        .and_then(|value| value.as_str())
-                        .is_some_and(|content| content.contains("Tool mode is active"))
-            });
-
-        assert_eq!(converted["tool_choice"], "required");
-        assert!(tool_names.contains(&"Skill"));
-        assert!(tool_names.contains(&EXIT_TOOL_NAME));
-        assert!(reminder.is_some());
+            .any(|message| message
+                .get("content")
+                .and_then(|value| value.as_str())
+                .is_some_and(|content| content.contains("Tool mode is active"))));
     }
 
     #[test]

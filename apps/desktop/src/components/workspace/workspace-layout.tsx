@@ -33,13 +33,17 @@ export function WorkspaceLayout() {
 
   return (
     <PanelGroup direction="horizontal" className="h-full">
-      <Panel defaultSize={15} minSize={10} maxSize={25}>
+      <Panel defaultSize={15} minSize={10} maxSize={25} className="min-w-0">
         <Sidebar />
       </Panel>
 
       <PanelResizeHandle className="w-px bg-border transition-colors hover:bg-ring" />
 
-      <Panel defaultSize={previewVisible ? 42.5 : 85} minSize={25}>
+      <Panel
+        defaultSize={previewVisible ? 42.5 : 85}
+        minSize={25}
+        className="min-w-0"
+      >
         <LatexEditor />
       </Panel>
 
@@ -47,7 +51,7 @@ export function WorkspaceLayout() {
         <>
           <PanelResizeHandle className="w-px bg-border transition-colors hover:bg-ring" />
 
-          <Panel defaultSize={42.5} minSize={25}>
+          <Panel defaultSize={42.5} minSize={25} className="min-w-0">
             <PdfPreview />
           </Panel>
         </>

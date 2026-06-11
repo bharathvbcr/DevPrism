@@ -1227,7 +1227,7 @@ export function Sidebar() {
       <EnvironmentSection projectPath={projectRoot} />
 
       {/* Footer */}
-      <div className="flex items-center justify-between border-sidebar-border border-t px-3 py-2 text-muted-foreground text-xs">
+      <div className="flex h-9 items-center justify-between border-sidebar-border border-t px-3 text-muted-foreground text-xs">
         <span className="truncate">ClaudePrism v{appVersion}</span>
         <div className="flex shrink-0 items-center gap-1">
           <Button variant="ghost" size="icon" className="size-6" asChild>

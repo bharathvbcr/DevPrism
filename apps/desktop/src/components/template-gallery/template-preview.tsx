@@ -45,7 +45,7 @@ import type { PageSize } from "@/lib/mupdf/types";
 import { createLogger } from "@/lib/debug/logger";
 import {
   buildReferenceFilesSection,
-  importReferenceFilesWithSidecars,
+  importReferenceFiles,
 } from "@/lib/project-attachments";
 import { getProjectNameError, normalizeProjectName } from "@/lib/project-name";
 
@@ -411,7 +411,7 @@ export function TemplatePreview() {
 
       const referenceFiles =
         attachments.length > 0
-          ? await importReferenceFilesWithSidecars(projectPath, attachments)
+          ? await importReferenceFiles(projectPath, attachments)
           : [];
 
       if (purpose.trim()) {

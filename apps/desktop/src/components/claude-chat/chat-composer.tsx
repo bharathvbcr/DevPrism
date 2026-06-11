@@ -48,7 +48,6 @@ import {
 } from "@/stores/claude-setup-store";
 import { useDocumentStore, type ProjectFile } from "@/stores/document-store";
 import { getUniqueTargetName } from "@/lib/tauri/fs";
-import { createPdfTextSidecar, isPdfPath } from "@/lib/pdf-text-extractor";
 import {
   getProviderDisplayName,
   getProviderIconSrc,
@@ -139,6 +138,10 @@ async function cleanupTemporaryFilePaths(paths: string[] | undefined) {
 function cleanupTemporaryPinnedContext(context: PinnedContext) {
   if (!context.isTemporary) return;
   void cleanupTemporaryFilePaths([context.filePath]);
+}
+
+function isPdfPath(path: string) {
+  return path.toLowerCase().endsWith(".pdf");
 }
 
 function getFileIcon(file: ProjectFile) {
@@ -598,33 +601,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
   }, [slashQuery !== null, projectRoot]);
 
   const buildPinnedContextForFile = useCallback(
-    async (
-      file: ProjectFile,
-    ): Promise<{ context: PinnedContext; createdSidecar: boolean }> => {
-      if (projectRoot && file.type === "pdf") {
-        try {
-          const sidecar = await createPdfTextSidecar(
-            projectRoot,
-            file.relativePath,
-            file.absolutePath,
-          );
-
-          return {
-            context: {
-              label: `@${file.relativePath}`,
-              filePath: sidecar.sidecarRelativePath,
-              selectedText: sidecar.contextText,
-            },
-            createdSidecar: true,
-          };
-        } catch (err) {
-          log.error("Failed to extract PDF text", {
-            path: file.relativePath,
-            error: String(err),
-          });
-        }
-      }
-
+    async (file: ProjectFile): Promise<PinnedContext> => {
       const isTextFile =
         file.type === "tex" ||
         file.type === "bib" ||
@@ -632,17 +609,14 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
         file.type === "other";
 
       return {
-        context: {
-          label: `@${file.relativePath}`,
-          filePath: file.relativePath,
-          selectedText: isTextFile
-            ? (file.content ?? "")
-            : `[Referenced file: ${file.relativePath} (${file.type} file)]`,
-        },
-        createdSidecar: false,
+        label: `@${file.relativePath}`,
+        filePath: file.relativePath,
+        selectedText: isTextFile
+          ? (file.content ?? "")
+          : `[Referenced file: ${file.relativePath} (${file.type} file)]`,
       };
     },
-    [projectRoot],
+    [],
   );
 
   const selectMention = useCallback(
@@ -660,16 +634,13 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
       setMentionQuery(null);
 
       // Pin the whole file as context
-      const { context, createdSidecar } = await buildPinnedContextForFile(file);
-      if (createdSidecar) {
-        await refreshFiles();
-      }
+      const context = await buildPinnedContextForFile(file);
       setPinnedContexts((prev) => [...prev, context]);
 
       // Refocus textarea
       setTimeout(() => textarea.focus(), 0);
     },
-    [buildPinnedContextForFile, input, refreshFiles],
+    [buildPinnedContextForFile, input],
   );
 
   const selectSlashCommand = useCallback((command: SlashCommand) => {
@@ -712,7 +683,6 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
       // Pin each file as context
       const storeFiles = useDocumentStore.getState().files;
       const newContexts: PinnedContext[] = [];
-      let createdPdfSidecar = false;
 
       for (const relativePath of importedPaths) {
         const imported = storeFiles.find(
@@ -720,10 +690,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
         );
 
         if (imported) {
-          const { context, createdSidecar } =
-            await buildPinnedContextForFile(imported);
-          createdPdfSidecar ||= createdSidecar;
-          newContexts.push(context);
+          newContexts.push(await buildPinnedContextForFile(imported));
         } else {
           // File imported but type might be filtered out — still pin as reference
           newContexts.push({
@@ -735,10 +702,6 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
       }
 
       if (newContexts.length > 0) {
-        if (createdPdfSidecar) {
-          await refreshFiles();
-        }
-
         setPinnedContexts((prev) => {
           // Deduplicate by label
           const existingLabels = new Set(prev.map((c) => c.label));
@@ -876,25 +839,10 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
           const buffer = await file.arrayBuffer();
           await writeFile(fullPath, new Uint8Array(buffer));
 
-          let contextFilePath = uniqueName;
           let content: string;
 
           if (isPdfPath(uniqueName) || file.type === "application/pdf") {
-            try {
-              const sidecar = await createPdfTextSidecar(
-                projectRoot,
-                uniqueName,
-                fullPath,
-              );
-              contextFilePath = sidecar.sidecarRelativePath;
-              content = sidecar.contextText;
-            } catch (err) {
-              log.error("Failed to extract pasted PDF text", {
-                fileName: uniqueName,
-                error: String(err),
-              });
-              content = `[Attached file: ${uniqueName} (${file.type})]`;
-            }
+            content = `[Attached file: ${uniqueName} (PDF)]`;
           } else {
             // Determine if it's a text file
             const isText = file.type.startsWith("text/");
@@ -905,7 +853,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
 
           newContexts.push({
             label: `@${uniqueName}`,
-            filePath: contextFilePath,
+            filePath: uniqueName,
             selectedText: content,
           });
         } catch (err) {

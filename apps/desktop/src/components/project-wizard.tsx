@@ -32,7 +32,7 @@ import { TemplateGallery } from "@/components/template-gallery";
 import { DEFAULT_CLAUDE_MD } from "@/lib/default-claude-md";
 import {
   buildReferenceFilesSection,
-  importReferenceFilesWithSidecars,
+  importReferenceFiles,
 } from "@/lib/project-attachments";
 import { getProjectNameError, normalizeProjectName } from "@/lib/project-name";
 
@@ -247,7 +247,7 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
 
       const referenceFiles =
         attachments.length > 0
-          ? await importReferenceFilesWithSidecars(projectPath, attachments)
+          ? await importReferenceFiles(projectPath, attachments)
           : [];
 
       if (purpose.trim()) {

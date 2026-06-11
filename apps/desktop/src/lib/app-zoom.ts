@@ -107,6 +107,32 @@ export function shouldHandleAppZoomShortcut(
   return !target.closest(`[${LOCAL_ZOOM_SHORTCUTS_ATTR}]`);
 }
 
+function hasLocalZoomSurfaceAtPoint(event: WheelEvent): boolean {
+  if (typeof document.elementsFromPoint !== "function") return false;
+
+  return document
+    .elementsFromPoint(event.clientX, event.clientY)
+    .some((element) => element.closest(`[${LOCAL_ZOOM_SHORTCUTS_ATTR}]`));
+}
+
+function hasLocalZoomSurfaceInPath(event: WheelEvent): boolean {
+  return event
+    .composedPath()
+    .some(
+      (target) =>
+        target instanceof Element &&
+        !!target.closest(`[${LOCAL_ZOOM_SHORTCUTS_ATTR}]`),
+    );
+}
+
+function shouldHandleNativeWheelZoom(event: WheelEvent): boolean {
+  return (
+    shouldHandleAppZoomShortcut(event.target) &&
+    !hasLocalZoomSurfaceInPath(event) &&
+    !hasLocalZoomSurfaceAtPoint(event)
+  );
+}
+
 export function installNativeWheelZoomGuard(): void {
   if (nativeWheelZoomGuardInstalled || typeof document === "undefined") return;
   nativeWheelZoomGuardInstalled = true;
@@ -115,9 +141,9 @@ export function installNativeWheelZoomGuard(): void {
     "wheel",
     (event) => {
       if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
-      if (!shouldHandleAppZoomShortcut(event.target)) return;
+      if (!shouldHandleNativeWheelZoom(event)) return;
       event.preventDefault();
     },
-    { capture: true, passive: false },
+    { passive: false },
   );
 }

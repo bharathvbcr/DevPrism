@@ -23,7 +23,7 @@
         "visible": false,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
-        "zoomHotkeysEnabled": false,
+        "zoomHotkeysEnabled": true,
         "trafficLightPosition": {
           "x": 12,
           "y": 12

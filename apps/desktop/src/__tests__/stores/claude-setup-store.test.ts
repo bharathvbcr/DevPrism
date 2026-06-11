@@ -271,6 +271,68 @@ describe("useClaudeSetupStore.saveApiKey", () => {
     });
   });
 
+  it("normalizes legacy Moonshot compatible URLs to the native Anthropic endpoint", async () => {
+    vi.mocked(invoke).mockResolvedValue(null);
+
+    const success = await useClaudeSetupStore
+      .getState()
+      .saveApiKey(
+        "sk-test",
+        "https://api.moonshot.cn/v1",
+        "openai-compatible",
+        "kimi-k2.5",
+      );
+
+    expect(success).toBe(true);
+    expect(invoke).toHaveBeenNthCalledWith(
+      1,
+      "verify_openai_compatible_api_key",
+      {
+        apiKey: "sk-test",
+        baseUrl: "https://api.moonshot.cn/anthropic",
+        model: "kimi-k2.5",
+      },
+    );
+    expect(invoke).toHaveBeenNthCalledWith(2, "save_anthropic_api_key", {
+      apiKey: "sk-test",
+      baseUrl: "https://api.moonshot.cn/anthropic",
+      provider: "openai-compatible",
+      model: "kimi-k2.5",
+      credentialLabel: null,
+    });
+  });
+
+  it("preserves Moonshot international Anthropic URLs when saving credentials", async () => {
+    vi.mocked(invoke).mockResolvedValue(null);
+
+    const success = await useClaudeSetupStore
+      .getState()
+      .saveApiKey(
+        "sk-test",
+        "https://api.moonshot.ai/anthropic/v1",
+        "openai-compatible",
+        "kimi-k2.5",
+      );
+
+    expect(success).toBe(true);
+    expect(invoke).toHaveBeenNthCalledWith(
+      1,
+      "verify_openai_compatible_api_key",
+      {
+        apiKey: "sk-test",
+        baseUrl: "https://api.moonshot.ai/anthropic",
+        model: "kimi-k2.5",
+      },
+    );
+    expect(invoke).toHaveBeenNthCalledWith(2, "save_anthropic_api_key", {
+      apiKey: "sk-test",
+      baseUrl: "https://api.moonshot.ai/anthropic",
+      provider: "openai-compatible",
+      model: "kimi-k2.5",
+      credentialLabel: null,
+    });
+  });
+
   it("allows local OpenAI-compatible providers without an API key", async () => {
     vi.mocked(invoke).mockImplementation(async (command) => {
       if (command === "check_claude_status") {

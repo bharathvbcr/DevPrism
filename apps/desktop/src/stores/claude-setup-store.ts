@@ -150,6 +150,24 @@ function canonicalOpenAiCompatibleBaseUrl(url: string) {
     return `${qwenOrigin}/apps/anthropic`;
   }
 
+  const moonshotMatch = trimmed.match(
+    /^(https?:\/\/api\.moonshot\.(?:cn|ai))(?:\/|$)/i,
+  );
+  const moonshotOrigin = moonshotMatch?.[1];
+  if (
+    moonshotOrigin &&
+    (lower.includes("/anthropic") ||
+      lower.includes("/v1") ||
+      trimmed.replace(/\/+$/, "").toLowerCase() ===
+        moonshotOrigin.toLowerCase())
+  ) {
+    const anthropicIndex = lower.indexOf("/anthropic");
+    if (anthropicIndex >= 0) {
+      return `${trimmed.slice(0, anthropicIndex)}/anthropic`;
+    }
+    return `${moonshotOrigin}/anthropic`;
+  }
+
   return trimmed;
 }
 

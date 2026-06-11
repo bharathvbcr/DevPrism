@@ -1,6 +1,10 @@
-import { useCallback, useRef, useEffect, useState } from "react";
-import type { MutableRefObject } from "react";
-import { flushSync } from "react-dom";
+import {
+  useCallback,
+  useRef,
+  useEffect,
+  useLayoutEffect,
+  useState,
+} from "react";
 import { LoaderIcon } from "lucide-react";
 import { open as shellOpen } from "@tauri-apps/plugin-shell";
 import { ask } from "@tauri-apps/plugin-dialog";
@@ -18,11 +22,10 @@ const log = createLogger("pdf-viewer");
 
 const MIN_PDF_SCALE = 0.25;
 const MAX_PDF_SCALE = 4;
-const MOUSE_WHEEL_ZOOM_STEP = 1.12;
-const TRACKPAD_PINCH_MIN_FACTOR = 0.9;
-const TRACKPAD_PINCH_MAX_FACTOR = 1.1;
-const PIXELS_PER_WHEEL_TICK = 120;
-const MIN_WHEEL_TICKS_PER_ZOOM_STEP = 0.5;
+const MOUSE_WHEEL_ZOOM_SENSITIVITY = 0.00125;
+const TRACKPAD_PINCH_ZOOM_SENSITIVITY = 0.012;
+const MAX_MOUSE_WHEEL_FACTOR_PER_EVENT = 1.22;
+const MAX_TRACKPAD_PINCH_FACTOR_PER_EVENT = 1.28;
 
 type WebKitGestureEvent = Event & {
   scale?: number;
@@ -79,82 +82,48 @@ function isTrackpadPinchWheel(
   );
 }
 
-function normalizeWheelEventDirection(event: WheelEvent): number {
-  let delta = Math.hypot(event.deltaX, event.deltaY);
-  const angle = Math.atan2(event.deltaY, event.deltaX);
-  if (-0.25 * Math.PI < angle && angle < 0.75 * Math.PI) {
-    delta = -delta;
-  }
-  return delta;
+function clampZoomFactor(factor: number, maxFactor: number): number {
+  if (!Number.isFinite(factor) || factor <= 0) return 1;
+  return Math.max(1 / maxFactor, Math.min(maxFactor, factor));
 }
 
-function normalizeMouseWheelTicks(event: WheelEvent): number {
-  if (event.deltaY === 0) return 0;
+function getWheelZoomFactor(event: WheelEvent, isTrackpadPinch: boolean): number {
+  if (event.deltaY === 0) return 1;
 
   if (
-    event.deltaMode === WheelEvent.DOM_DELTA_LINE ||
-    event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+    !isTrackpadPinch &&
+    (event.deltaMode === WheelEvent.DOM_DELTA_LINE ||
+      event.deltaMode === WheelEvent.DOM_DELTA_PAGE)
   ) {
-    return Math.sign(normalizeWheelEventDirection(event));
+    return event.deltaY < 0 ? 1.16 : 1 / 1.16;
   }
 
-  return normalizeWheelEventDirection(event) / PIXELS_PER_WHEEL_TICK;
-}
+  const sensitivity = isTrackpadPinch
+    ? TRACKPAD_PINCH_ZOOM_SENSITIVITY
+    : MOUSE_WHEEL_ZOOM_SENSITIVITY;
+  const maxFactor = isTrackpadPinch
+    ? MAX_TRACKPAD_PINCH_FACTOR_PER_EVENT
+    : MAX_MOUSE_WHEEL_FACTOR_PER_EVENT;
 
-function accumulateWheelTicks(
-  ticksRef: MutableRefObject<number>,
-  ticks: number,
-): number {
-  if (
-    (ticksRef.current > 0 && ticks < 0) ||
-    (ticksRef.current < 0 && ticks > 0)
-  ) {
-    ticksRef.current = 0;
-  }
-
-  ticksRef.current += ticks;
-  if (Math.abs(ticksRef.current) < MIN_WHEEL_TICKS_PER_ZOOM_STEP) {
-    return 0;
-  }
-
-  const zoomTicks = Math.sign(ticksRef.current);
-  ticksRef.current -= zoomTicks;
-  return zoomTicks;
-}
-
-function accumulatePinchFactor(
-  factorRef: MutableRefObject<number>,
-  previousScale: number,
-  factor: number,
-): number {
-  if (factor === 1) return 1;
-
-  if (
-    (factorRef.current > 1 && factor < 1) ||
-    (factorRef.current < 1 && factor > 1)
-  ) {
-    factorRef.current = 1;
-  }
-
-  const nextFactor =
-    Math.floor(previousScale * factor * factorRef.current * 100) /
-    (100 * previousScale);
-  factorRef.current = factor / nextFactor;
-  return nextFactor;
-}
-
-function getTrackpadPinchFactor(event: WheelEvent): number {
-  const factor = Math.exp(-event.deltaY / 100);
-  return Math.max(
-    TRACKPAD_PINCH_MIN_FACTOR,
-    Math.min(TRACKPAD_PINCH_MAX_FACTOR, factor),
-  );
+  return clampZoomFactor(Math.exp(-event.deltaY * sensitivity), maxFactor);
 }
 
 interface PageZoomAnchor {
   pageNumber: number;
   pdfX: number;
   pdfY: number;
+}
+
+interface PendingZoomScroll {
+  anchorClientX: number;
+  anchorClientY: number;
+  pageAnchor: PageZoomAnchor | null;
+  fallbackAnchorX: number;
+  fallbackAnchorY: number;
+  fallbackRatio: number;
+  nextScale: number;
+  containerLeft: number;
+  containerTop: number;
 }
 
 function findPageZoomAnchor(
@@ -276,10 +245,10 @@ export function PdfViewer({
 
   const scaleRef = useRef(scale);
   scaleRef.current = scale;
+  const renderedScaleRef = useRef(scale);
+  const pendingZoomScrollRef = useRef<PendingZoomScroll | null>(null);
   const ctrlKeyDownRef = useRef(false);
   const metaKeyDownRef = useRef(false);
-  const wheelUnusedTicksRef = useRef(0);
-  const wheelUnusedFactorRef = useRef(1);
   const touchPinchRef = useRef<{
     distance: number;
     scale: number;
@@ -304,6 +273,42 @@ export function PdfViewer({
     return () =>
       window.removeEventListener(APP_VISIBILITY_RESTORED, handleRestore);
   }, []);
+
+  useLayoutEffect(() => {
+    renderedScaleRef.current = scale;
+
+    const pending = pendingZoomScrollRef.current;
+    if (!pending || Math.abs(pending.nextScale - scale) > 0.001) return;
+    pendingZoomScrollRef.current = null;
+
+    const container = containerRef.current;
+    if (!container) return;
+
+    if (pending.pageAnchor) {
+      const pageEl = container.querySelector(
+        `.mupdf-page[data-page-number="${pending.pageAnchor.pageNumber}"]`,
+      ) as HTMLElement | null;
+      if (pageEl) {
+        const pageRect = pageEl.getBoundingClientRect();
+        container.scrollLeft +=
+          pageRect.left +
+          pending.pageAnchor.pdfX * scale -
+          pending.anchorClientX;
+        container.scrollTop +=
+          pageRect.top +
+          pending.pageAnchor.pdfY * scale -
+          pending.anchorClientY;
+        return;
+      }
+    }
+
+    container.scrollLeft =
+      pending.fallbackAnchorX * pending.fallbackRatio -
+      (pending.anchorClientX - pending.containerLeft);
+    container.scrollTop =
+      pending.fallbackAnchorY * pending.fallbackRatio -
+      (pending.anchorClientY - pending.containerTop);
+  }, [scale]);
 
   // Keep-alive scroll save/restore
   const savedScrollTop = useRef(0);
@@ -744,10 +749,11 @@ export function PdfViewer({
 
       const container = containerRef.current;
       const previousScale = scaleRef.current;
+      const renderedScale = renderedScaleRef.current;
       const nextScale = clampPdfScale(nextScaleValue);
       if (Math.abs(nextScale - previousScale) < 0.001) return;
 
-      if (!container || previousScale <= 0) {
+      if (!container || previousScale <= 0 || renderedScale <= 0) {
         scaleRef.current = nextScale;
         onScaleChange(nextScale);
         return;
@@ -762,38 +768,28 @@ export function PdfViewer({
         container,
         anchorClientX,
         anchorClientY,
-        previousScale,
+        renderedScale,
       );
       const fallbackAnchorX =
         anchorClientX - containerRect.left + container.scrollLeft;
       const fallbackAnchorY =
         anchorClientY - containerRect.top + container.scrollTop;
-      const fallbackRatio = nextScale / previousScale;
+      const fallbackRatio = nextScale / renderedScale;
+
+      pendingZoomScrollRef.current = {
+        anchorClientX,
+        anchorClientY,
+        pageAnchor,
+        fallbackAnchorX,
+        fallbackAnchorY,
+        fallbackRatio,
+        nextScale,
+        containerLeft: containerRect.left,
+        containerTop: containerRect.top,
+      };
 
       scaleRef.current = nextScale;
-      flushSync(() => onScaleChange(nextScale));
-
-      const currentContainer = containerRef.current;
-      if (!currentContainer) return;
-
-      if (pageAnchor) {
-        const pageEl = currentContainer.querySelector(
-          `.mupdf-page[data-page-number="${pageAnchor.pageNumber}"]`,
-        ) as HTMLElement | null;
-        if (pageEl) {
-          const pageRect = pageEl.getBoundingClientRect();
-          currentContainer.scrollLeft +=
-            pageRect.left + pageAnchor.pdfX * nextScale - anchorClientX;
-          currentContainer.scrollTop +=
-            pageRect.top + pageAnchor.pdfY * nextScale - anchorClientY;
-          return;
-        }
-      }
-
-      currentContainer.scrollLeft =
-        fallbackAnchorX * fallbackRatio - (anchorClientX - containerRect.left);
-      currentContainer.scrollTop =
-        fallbackAnchorY * fallbackRatio - (anchorClientY - containerRect.top);
+      onScaleChange(nextScale);
     },
     [onScaleChange],
   );
@@ -811,30 +807,13 @@ export function PdfViewer({
       e.preventDefault();
       e.stopPropagation();
 
-      if (
-        isTrackpadPinchWheel(e, ctrlKeyDownRef.current, metaKeyDownRef.current)
-      ) {
-        const previousScale = scaleRef.current;
-        const factor = accumulatePinchFactor(
-          wheelUnusedFactorRef,
-          previousScale,
-          getTrackpadPinchFactor(e),
-        );
-        if (factor !== 1) {
-          wheelUnusedTicksRef.current = 0;
-          zoomAtPoint(previousScale * factor, e.clientX, e.clientY);
-        }
-        return;
-      }
-
-      const ticks = accumulateWheelTicks(
-        wheelUnusedTicksRef,
-        normalizeMouseWheelTicks(e),
+      const isTrackpadPinch = isTrackpadPinchWheel(
+        e,
+        ctrlKeyDownRef.current,
+        metaKeyDownRef.current,
       );
-      if (ticks === 0) return;
-
-      wheelUnusedFactorRef.current = 1;
-      const factor = MOUSE_WHEEL_ZOOM_STEP ** ticks;
+      const factor = getWheelZoomFactor(e, isTrackpadPinch);
+      if (Math.abs(factor - 1) < 0.0001) return;
       zoomAtPoint(scaleRef.current * factor, e.clientX, e.clientY);
     };
 
@@ -843,8 +822,7 @@ export function PdfViewer({
     });
     return () => {
       window.removeEventListener("wheel", handleWheel);
-      wheelUnusedTicksRef.current = 0;
-      wheelUnusedFactorRef.current = 1;
+      pendingZoomScrollRef.current = null;
     };
   }, [onScaleChange, zoomAtPoint]);
 

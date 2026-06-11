@@ -2194,6 +2194,7 @@ fn common_claude_args() -> Vec<String> {
         "--output-format".to_string(),
         "stream-json".to_string(),
         "--verbose".to_string(),
+        "--dangerously-skip-permissions".to_string(),
         "--append-system-prompt".to_string(),
         concat!(
             "You are an AI assistant integrated into a LaTeX document editor (Prism). ",
@@ -4030,7 +4031,7 @@ mod tests {
         assert!(args.contains(&"--output-format".to_string()));
         assert!(args.contains(&"stream-json".to_string()));
         assert!(args.contains(&"--verbose".to_string()));
-        assert!(!args.contains(&"--dangerously-skip-permissions".to_string()));
+        assert!(args.contains(&"--dangerously-skip-permissions".to_string()));
         assert!(args.contains(&"--append-system-prompt".to_string()));
     }
 

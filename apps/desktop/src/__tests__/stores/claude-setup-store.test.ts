@@ -271,7 +271,7 @@ describe("useClaudeSetupStore.saveApiKey", () => {
     });
   });
 
-  it("normalizes legacy Moonshot compatible URLs to the native Anthropic endpoint", async () => {
+  it("normalizes Moonshot compatible URLs to the native Anthropic endpoint", async () => {
     vi.mocked(invoke).mockResolvedValue(null);
 
     const success = await useClaudeSetupStore
@@ -289,20 +289,20 @@ describe("useClaudeSetupStore.saveApiKey", () => {
       "verify_openai_compatible_api_key",
       {
         apiKey: "sk-test",
-        baseUrl: "https://api.moonshot.cn/anthropic",
+        baseUrl: "https://api.moonshot.ai/anthropic",
         model: "kimi-k2.5",
       },
     );
     expect(invoke).toHaveBeenNthCalledWith(2, "save_anthropic_api_key", {
       apiKey: "sk-test",
-      baseUrl: "https://api.moonshot.cn/anthropic",
+      baseUrl: "https://api.moonshot.ai/anthropic",
       provider: "openai-compatible",
       model: "kimi-k2.5",
       credentialLabel: null,
     });
   });
 
-  it("preserves Moonshot international Anthropic URLs when saving credentials", async () => {
+  it("preserves Moonshot Anthropic-looking URLs when saving credentials", async () => {
     vi.mocked(invoke).mockResolvedValue(null);
 
     const success = await useClaudeSetupStore

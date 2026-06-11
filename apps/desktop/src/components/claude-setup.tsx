@@ -99,9 +99,9 @@ const OPENAI_COMPATIBLE_PRESETS: OpenAICompatiblePreset[] = [
   {
     id: "moonshot",
     label: "Moonshot / Kimi",
-    baseUrl: "https://api.moonshot.cn/v1",
+    baseUrl: "https://api.moonshot.cn/anthropic",
     model: "",
-    note: "Moonshot AI OpenAI-compatible endpoint.",
+    note: "Kimi Anthropic-compatible endpoint for Claude Code.",
   },
   {
     id: "glm",
@@ -161,6 +161,7 @@ const CLAUDE_PROVIDER_CARDS: ModelProviderCard[] = [
 const OPENAI_DEFAULT_PRESET_ID = OPENAI_PROVIDER_CARDS[0]?.id ?? "openai";
 const DEEPSEEK_ANTHROPIC_BASE_URL = "https://api.deepseek.com/anthropic";
 const QWEN_ANTHROPIC_BASE_URL = "https://dashscope.aliyuncs.com/apps/anthropic";
+const MOONSHOT_ANTHROPIC_BASE_URL = "https://api.moonshot.cn/anthropic";
 
 function deepseekOrigin(url: string) {
   const trimmed = url.trim();
@@ -172,6 +173,14 @@ function qwenOrigin(url: string) {
   const trimmed = url.trim();
   const match = trimmed.match(
     /^(https?:\/\/dashscope(?:-intl)?\.aliyuncs\.com)(?:\/|$)/i,
+  );
+  return match?.[1] ?? null;
+}
+
+function moonshotOrigin(url: string) {
+  const trimmed = url.trim();
+  const match = trimmed.match(
+    /^(https?:\/\/api\.moonshot\.(?:cn|ai))(?:\/|$)/i,
   );
   return match?.[1] ?? null;
 }
@@ -211,6 +220,23 @@ function canonicalOpenAiCompatibleBaseUrl(
     return `${qwenBaseOrigin}/apps/anthropic`;
   }
 
+  const moonshotBaseOrigin = moonshotOrigin(trimmed);
+  if (
+    moonshotBaseOrigin &&
+    (presetId === "moonshot" ||
+      trimmed.toLowerCase().includes("/anthropic") ||
+      trimmed.toLowerCase().includes("/v1") ||
+      normalizeOriginOnlyUrl(trimmed) ===
+        normalizeOriginOnlyUrl(moonshotBaseOrigin))
+  ) {
+    const lower = trimmed.toLowerCase();
+    const anthropicIndex = lower.indexOf("/anthropic");
+    if (anthropicIndex >= 0) {
+      return `${trimmed.slice(0, anthropicIndex)}/anthropic`;
+    }
+    return `${moonshotBaseOrigin}/anthropic`;
+  }
+
   return trimmed;
 }
 
@@ -219,7 +245,7 @@ function normalizeOriginOnlyUrl(value: string) {
 }
 
 function isNativeAnthropicPreset(cardId?: string | null) {
-  return cardId === "deepseek" || cardId === "qwen";
+  return cardId === "deepseek" || cardId === "qwen" || cardId === "moonshot";
 }
 
 function normalizePresetBaseUrl(url: string) {
@@ -757,7 +783,9 @@ export function ClaudeSetup({
                     ? DEEPSEEK_ANTHROPIC_BASE_URL
                     : activeCardId === "qwen"
                       ? QWEN_ANTHROPIC_BASE_URL
-                      : "https://dashscope.aliyuncs.com/compatible-mode/v1"
+                      : activeCardId === "moonshot"
+                        ? MOONSHOT_ANTHROPIC_BASE_URL
+                        : "https://dashscope.aliyuncs.com/compatible-mode/v1"
                   : "https://mg.aid.pub/claude-proxy"
               }
               value={baseUrl}
@@ -799,7 +827,9 @@ export function ClaudeSetup({
                   ? "DeepSeek runs through its native Anthropic-compatible Claude Code route."
                   : activeCardId === "qwen"
                     ? "Qwen runs through its native Anthropic-compatible Claude Code route."
-                    : "Use either the API root or a full /chat/completions URL."
+                    : activeCardId === "moonshot"
+                      ? "Kimi runs through its native Anthropic-compatible Claude Code route."
+                      : "Use either the API root or a full /chat/completions URL."
                 : "Leave blank for Anthropic direct API."}
             </p>
           </div>
@@ -880,7 +910,9 @@ export function ClaudeSetup({
                   ? "Fetches DeepSeek models from the matching provider model endpoint."
                   : activeCardId === "qwen"
                     ? "Fetches Qwen models from the matching DashScope model endpoint."
-                    : "Fetches the provider's real /models list when available."}
+                    : activeCardId === "moonshot"
+                      ? "Fetches Kimi models from the matching Moonshot model endpoint."
+                      : "Fetches the provider's real /models list when available."}
               </p>
             </div>
           )}

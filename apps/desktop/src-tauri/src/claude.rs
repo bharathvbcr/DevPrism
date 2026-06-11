@@ -2198,6 +2198,9 @@ fn openai_models_url(base_url: &str) -> String {
     if let Some(origin) = qwen_origin_for_anthropic_base_url(clean) {
         return format!("{}/compatible-mode/v1/models", origin);
     }
+    if let Some(origin) = moonshot_origin_for_anthropic_base_url(clean) {
+        return format!("{}/v1/models", origin);
+    }
     if let Some(root) = clean.strip_suffix("/chat/completions") {
         return format!("{}/models", root.trim_end_matches('/'));
     }
@@ -2697,6 +2700,15 @@ fn native_anthropic_base_url(credential: &StoredOpenAiCompatibleCredential) -> O
         return Some(format!("{}/apps/anthropic", origin));
     }
 
+    if is_moonshot_anthropic_origin(&lower_origin) {
+        let lower = credential.base_url.to_ascii_lowercase();
+        if let Some(index) = lower.find("/anthropic") {
+            return Some(format!("{}{}", &credential.base_url[..index], "/anthropic"));
+        }
+
+        return Some(format!("{}/anthropic", origin));
+    }
+
     None
 }
 
@@ -2720,6 +2732,18 @@ fn qwen_origin_for_anthropic_base_url(base_url: &str) -> Option<String> {
     None
 }
 
+fn moonshot_origin_for_anthropic_base_url(base_url: &str) -> Option<String> {
+    let lower = base_url.to_ascii_lowercase();
+    let origin = http_origin(base_url)?;
+    if !is_moonshot_anthropic_origin(&origin.to_ascii_lowercase()) {
+        return None;
+    }
+    if lower.contains("/anthropic") || lower.ends_with("/v1") {
+        return Some(origin);
+    }
+    None
+}
+
 fn is_qwen_anthropic_origin(lower_origin: &str) -> bool {
     matches!(
         lower_origin,
@@ -2727,6 +2751,16 @@ fn is_qwen_anthropic_origin(lower_origin: &str) -> bool {
             | "http://dashscope.aliyuncs.com"
             | "https://dashscope-intl.aliyuncs.com"
             | "http://dashscope-intl.aliyuncs.com"
+    )
+}
+
+fn is_moonshot_anthropic_origin(lower_origin: &str) -> bool {
+    matches!(
+        lower_origin,
+        "https://api.moonshot.cn"
+            | "http://api.moonshot.cn"
+            | "https://api.moonshot.ai"
+            | "http://api.moonshot.ai"
     )
 }
 
@@ -3766,6 +3800,15 @@ mod tests {
                         vec!["tooluse".to_string()],
                     )]),
                 },
+                StoredOpenAiCompatibleCredentialConfig {
+                    id: "moonshot".to_string(),
+                    label: "Moonshot / Kimi".to_string(),
+                    api_key: "sk-moonshot".to_string(),
+                    base_url: "https://api.moonshot.cn/anthropic".to_string(),
+                    model: "kimi-k2.5".to_string(),
+                    transformers: Vec::new(),
+                    model_transformers: HashMap::new(),
+                },
             ],
             ..Default::default()
         }
@@ -4058,6 +4101,20 @@ mod tests {
     }
 
     #[test]
+    fn test_moonshot_official_anthropic_endpoint_uses_native_route() {
+        let config = test_openai_compatible_auth_config();
+        let credential = openai_compatible_credential_by_id_from_config(&config, Some("moonshot"))
+            .unwrap()
+            .unwrap();
+
+        assert!(uses_native_anthropic_route(&credential));
+        assert_eq!(
+            native_anthropic_base_url(&credential).as_deref(),
+            Some("https://api.moonshot.cn/anthropic")
+        );
+    }
+
+    #[test]
     fn test_native_anthropic_route_preserves_explicit_anthropic_path() {
         let credential = StoredOpenAiCompatibleCredential {
             id: "deepseek-anthropic".to_string(),
@@ -4107,6 +4164,25 @@ mod tests {
         assert_eq!(
             native_anthropic_base_url(&credential).as_deref(),
             Some("https://dashscope.aliyuncs.com/apps/anthropic")
+        );
+    }
+
+    #[test]
+    fn test_moonshot_legacy_openai_mode_uses_native_anthropic_route() {
+        let credential = StoredOpenAiCompatibleCredential {
+            id: "moonshot-compatible".to_string(),
+            label: "Moonshot / Kimi".to_string(),
+            api_key: "sk-test".to_string(),
+            base_url: "https://api.moonshot.ai/v1".to_string(),
+            model: "kimi-k2.5".to_string(),
+            transformers: Vec::new(),
+            model_transformers: HashMap::new(),
+        };
+
+        assert!(uses_native_anthropic_route(&credential));
+        assert_eq!(
+            native_anthropic_base_url(&credential).as_deref(),
+            Some("https://api.moonshot.ai/anthropic")
         );
     }
 
@@ -4192,6 +4268,14 @@ mod tests {
         assert_eq!(
             openai_models_url("https://dashscope.aliyuncs.com/apps/anthropic"),
             "https://dashscope.aliyuncs.com/compatible-mode/v1/models"
+        );
+        assert_eq!(
+            openai_models_url("https://api.moonshot.cn/anthropic"),
+            "https://api.moonshot.cn/v1/models"
+        );
+        assert_eq!(
+            openai_models_url("https://api.moonshot.ai/anthropic"),
+            "https://api.moonshot.ai/v1/models"
         );
         assert_eq!(
             openai_models_url("https://generativelanguage.googleapis.com/v1beta/openai/"),

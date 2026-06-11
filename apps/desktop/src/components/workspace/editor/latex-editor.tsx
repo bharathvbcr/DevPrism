@@ -1070,7 +1070,7 @@ export function LatexEditor() {
   const isImage = !isTextFile && !isPdf && !!activeFile;
 
   return (
-    <div className="flex h-full flex-col bg-background">
+    <div className="flex h-full min-w-0 flex-col bg-background">
       {/* Toolbar — adapts to file type */}
       <EditorToolbar
         editorView={viewRef}

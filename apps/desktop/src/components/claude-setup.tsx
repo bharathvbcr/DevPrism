@@ -99,7 +99,7 @@ const OPENAI_COMPATIBLE_PRESETS: OpenAICompatiblePreset[] = [
   {
     id: "moonshot",
     label: "Moonshot / Kimi",
-    baseUrl: "https://api.moonshot.cn/anthropic",
+    baseUrl: "https://api.moonshot.ai/anthropic",
     model: "",
     note: "Kimi Anthropic-compatible endpoint for Claude Code.",
   },
@@ -161,7 +161,8 @@ const CLAUDE_PROVIDER_CARDS: ModelProviderCard[] = [
 const OPENAI_DEFAULT_PRESET_ID = OPENAI_PROVIDER_CARDS[0]?.id ?? "openai";
 const DEEPSEEK_ANTHROPIC_BASE_URL = "https://api.deepseek.com/anthropic";
 const QWEN_ANTHROPIC_BASE_URL = "https://dashscope.aliyuncs.com/apps/anthropic";
-const MOONSHOT_ANTHROPIC_BASE_URL = "https://api.moonshot.cn/anthropic";
+const MOONSHOT_ANTHROPIC_BASE_URL = "https://api.moonshot.ai/anthropic";
+const MOONSHOT_OFFICIAL_ORIGIN = "https://api.moonshot.ai";
 
 function deepseekOrigin(url: string) {
   const trimmed = url.trim();
@@ -232,9 +233,9 @@ function canonicalOpenAiCompatibleBaseUrl(
     const lower = trimmed.toLowerCase();
     const anthropicIndex = lower.indexOf("/anthropic");
     if (anthropicIndex >= 0) {
-      return `${trimmed.slice(0, anthropicIndex)}/anthropic`;
+      return `${MOONSHOT_OFFICIAL_ORIGIN}/anthropic`;
     }
-    return `${moonshotBaseOrigin}/anthropic`;
+    return `${MOONSHOT_OFFICIAL_ORIGIN}/anthropic`;
   }
 
   return trimmed;

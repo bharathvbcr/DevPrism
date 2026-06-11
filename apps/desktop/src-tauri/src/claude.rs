@@ -76,6 +76,7 @@ pub struct OpenAiCompatibleModelInfo {
 
 const PROVIDER_CLAUDE_CODE: &str = "claude-code";
 const PROVIDER_OPENAI_COMPATIBLE: &str = "openai-compatible";
+const MOONSHOT_OFFICIAL_ORIGIN: &str = "https://api.moonshot.ai";
 
 /// Check if an environment variable should be explicitly passed to child processes.
 ///
@@ -2731,6 +2732,10 @@ fn apply_native_anthropic_provider_env(
     cmd.env("ANTHROPIC_DEFAULT_SONNET_MODEL", credential.model.as_str());
     cmd.env("ANTHROPIC_DEFAULT_HAIKU_MODEL", credential.model.as_str());
     cmd.env("CLAUDE_CODE_SUBAGENT_MODEL", credential.model.as_str());
+    if native_anthropic_provider_kind(anthropic_base_url) == Some("moonshot") {
+        cmd.env("ENABLE_TOOL_SEARCH", "false");
+        cmd.env("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "262144");
+    }
     cmd.env_remove("CLAUDE_MODEL");
 }
 
@@ -2764,14 +2769,23 @@ fn native_anthropic_base_url(credential: &StoredOpenAiCompatibleCredential) -> O
     }
 
     if is_moonshot_anthropic_origin(&lower_origin) {
-        let lower = credential.base_url.to_ascii_lowercase();
-        if let Some(index) = lower.find("/anthropic") {
-            return Some(format!("{}{}", &credential.base_url[..index], "/anthropic"));
-        }
-
-        return Some(format!("{}/anthropic", origin));
+        return Some(format!("{}/anthropic", MOONSHOT_OFFICIAL_ORIGIN));
     }
 
+    None
+}
+
+fn native_anthropic_provider_kind(base_url: &str) -> Option<&'static str> {
+    let origin = http_origin(base_url)?.to_ascii_lowercase();
+    if origin == "https://api.deepseek.com" {
+        return Some("deepseek");
+    }
+    if is_qwen_anthropic_origin(&origin) {
+        return Some("qwen");
+    }
+    if is_moonshot_anthropic_origin(&origin) {
+        return Some("moonshot");
+    }
     None
 }
 
@@ -2803,7 +2817,7 @@ fn moonshot_origin_for_anthropic_base_url(base_url: &str) -> Option<String> {
         return None;
     }
     if lower.contains("/anthropic") || lower.ends_with("/v1") {
-        return Some(origin);
+        return Some(MOONSHOT_OFFICIAL_ORIGIN.to_string());
     }
     None
 }
@@ -3894,7 +3908,7 @@ mod tests {
                     id: "moonshot".to_string(),
                     label: "Moonshot / Kimi".to_string(),
                     api_key: "sk-moonshot".to_string(),
-                    base_url: "https://api.moonshot.cn/anthropic".to_string(),
+                    base_url: "https://api.moonshot.ai/anthropic".to_string(),
                     model: "kimi-k2.5".to_string(),
                     transformers: Vec::new(),
                     model_transformers: HashMap::new(),
@@ -4200,7 +4214,7 @@ mod tests {
         assert!(uses_native_anthropic_route(&credential));
         assert_eq!(
             native_anthropic_base_url(&credential).as_deref(),
-            Some("https://api.moonshot.cn/anthropic")
+            Some("https://api.moonshot.ai/anthropic")
         );
     }
 
@@ -4277,11 +4291,30 @@ mod tests {
     }
 
     #[test]
+    fn test_moonshot_cn_urls_normalize_to_official_ai_route() {
+        let credential = StoredOpenAiCompatibleCredential {
+            id: "moonshot-compatible".to_string(),
+            label: "Moonshot / Kimi".to_string(),
+            api_key: "sk-test".to_string(),
+            base_url: "https://api.moonshot.cn/v1".to_string(),
+            model: "kimi-k2.5".to_string(),
+            transformers: Vec::new(),
+            model_transformers: HashMap::new(),
+        };
+
+        assert!(uses_native_anthropic_route(&credential));
+        assert_eq!(
+            native_anthropic_base_url(&credential).as_deref(),
+            Some("https://api.moonshot.ai/anthropic")
+        );
+    }
+
+    #[test]
     fn test_known_native_provider_routes_require_https() {
         for (base_url, model) in [
             ("http://api.deepseek.com/anthropic", "deepseek-chat"),
             ("http://dashscope.aliyuncs.com/apps/anthropic", "qwen3-max"),
-            ("http://api.moonshot.cn/anthropic", "kimi-k2.5"),
+            ("http://api.moonshot.ai/anthropic", "kimi-k2.5"),
         ] {
             let credential = StoredOpenAiCompatibleCredential {
                 id: "insecure".to_string(),
@@ -4385,7 +4418,7 @@ mod tests {
         );
         assert_eq!(
             openai_models_url("https://api.moonshot.cn/anthropic"),
-            "https://api.moonshot.cn/v1/models"
+            "https://api.moonshot.ai/v1/models"
         );
         assert_eq!(
             openai_models_url("https://api.moonshot.ai/anthropic"),

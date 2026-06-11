@@ -7,6 +7,8 @@ import {
   rememberModelListCapabilityMetadata,
 } from "@/lib/model-capabilities";
 
+const MOONSHOT_OFFICIAL_ORIGIN = "https://api.moonshot.ai";
+
 // ─── Types ───
 
 interface ClaudeStatus {
@@ -163,9 +165,9 @@ function canonicalOpenAiCompatibleBaseUrl(url: string) {
   ) {
     const anthropicIndex = lower.indexOf("/anthropic");
     if (anthropicIndex >= 0) {
-      return `${trimmed.slice(0, anthropicIndex)}/anthropic`;
+      return `${MOONSHOT_OFFICIAL_ORIGIN}/anthropic`;
     }
-    return `${moonshotOrigin}/anthropic`;
+    return `${MOONSHOT_OFFICIAL_ORIGIN}/anthropic`;
   }
 
   return trimmed;

@@ -45,6 +45,7 @@ function resetStores() {
         title: "New Chat",
         sessionId: null,
         providerKey: null,
+        sessionProviderKey: null,
         messages: [],
         isStreaming: false,
         error: null,

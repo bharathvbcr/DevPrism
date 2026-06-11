@@ -5,7 +5,7 @@ use crate::claude_process::{
 };
 use serde_json::{json, Value};
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -43,6 +43,8 @@ struct StoredOpenAiCompatibleCredential {
     api_key: String,
     base_url: String,
     model: String,
+    transformers: Vec<String>,
+    model_transformers: HashMap<String, Vec<String>>,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -52,6 +54,10 @@ struct StoredOpenAiCompatibleCredentialConfig {
     api_key: String,
     base_url: String,
     model: String,
+    #[serde(default)]
+    transformers: Vec<String>,
+    #[serde(default)]
+    model_transformers: HashMap<String, Vec<String>>,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -263,6 +269,36 @@ fn normalize_model(value: Option<&str>) -> Result<Option<String>, String> {
     Ok(Some(clean))
 }
 
+fn normalized_transformer_names(values: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    values
+        .iter()
+        .map(|value| strip_nul(value).trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .filter(|value| seen.insert(value.clone()))
+        .collect()
+}
+
+fn normalized_model_transformers(
+    values: &HashMap<String, Vec<String>>,
+) -> HashMap<String, Vec<String>> {
+    values
+        .iter()
+        .filter_map(|(model, transformers)| {
+            let model = strip_nul(model).trim().to_string();
+            if model.is_empty() {
+                return None;
+            }
+            let transformers = normalized_transformer_names(transformers);
+            if transformers.is_empty() {
+                None
+            } else {
+                Some((model, transformers))
+            }
+        })
+        .collect()
+}
+
 fn is_claude_model_selector(value: &str) -> bool {
     let model = value.trim().to_ascii_lowercase();
     if model.starts_with("claude") {
@@ -366,6 +402,8 @@ fn normalized_openai_compatible_credentials(
             api_key,
             base_url,
             model,
+            transformers: normalized_transformer_names(&credential.transformers),
+            model_transformers: normalized_model_transformers(&credential.model_transformers),
         });
     }
 
@@ -388,6 +426,8 @@ fn normalized_openai_compatible_credentials(
                 api_key,
                 base_url,
                 model,
+                transformers: Vec::new(),
+                model_transformers: HashMap::new(),
             });
         }
     }
@@ -542,6 +582,17 @@ pub async fn save_anthropic_api_key(
                     .map(|credential| credential.id.clone())
             })
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let (transformers, model_transformers) = config
+            .openai_credentials
+            .iter()
+            .find(|item| item.id == credential_id)
+            .map(|item| {
+                (
+                    normalized_transformer_names(&item.transformers),
+                    normalized_model_transformers(&item.model_transformers),
+                )
+            })
+            .unwrap_or_else(|| (Vec::new(), HashMap::new()));
 
         let credential = StoredOpenAiCompatibleCredentialConfig {
             id: credential_id.clone(),
@@ -549,6 +600,8 @@ pub async fn save_anthropic_api_key(
             api_key: api_key.clone(),
             base_url: base_url.clone(),
             model: model.clone(),
+            transformers,
+            model_transformers,
         };
 
         if let Some(existing) = config
@@ -602,6 +655,8 @@ pub async fn verify_openai_compatible_api_key(
         api_key,
         base_url,
         model,
+        transformers: Vec::new(),
+        model_transformers: HashMap::new(),
     };
 
     verify_openai_compatible_credential(&credential).await
@@ -2124,8 +2179,25 @@ fn with_optional_bearer_auth(
     }
 }
 
+fn with_optional_anthropic_key(
+    request: reqwest::RequestBuilder,
+    api_key: &str,
+) -> reqwest::RequestBuilder {
+    if api_key.trim().is_empty() {
+        request
+    } else {
+        request.header("x-api-key", api_key).bearer_auth(api_key)
+    }
+}
+
 fn openai_models_url(base_url: &str) -> String {
     let clean = base_url.trim_end_matches('/');
+    if let Some(origin) = deepseek_origin_for_anthropic_base_url(clean) {
+        return format!("{}/models", origin);
+    }
+    if let Some(origin) = qwen_origin_for_anthropic_base_url(clean) {
+        return format!("{}/compatible-mode/v1/models", origin);
+    }
     if let Some(root) = clean.strip_suffix("/chat/completions") {
         return format!("{}/models", root.trim_end_matches('/'));
     }
@@ -2170,6 +2242,41 @@ fn openai_compatible_verification_body(model: &str) -> serde_json::Value {
     })
 }
 
+fn anthropic_messages_url(base_url: &str) -> String {
+    let clean = base_url.trim_end_matches('/');
+    if clean.ends_with("/v1/messages") || clean.ends_with("/messages") {
+        clean.to_string()
+    } else if clean.ends_with("/v1") {
+        format!("{}/messages", clean)
+    } else {
+        format!("{}/v1/messages", clean)
+    }
+}
+
+fn anthropic_verification_body(model: &str) -> serde_json::Value {
+    json!({
+        "model": model,
+        "max_tokens": 16,
+        "messages": [{
+            "role": "user",
+            "content": "Reply with exactly: ok",
+        }],
+        "stream": false,
+    })
+}
+
+fn anthropic_response_has_message_content(response: &Value) -> bool {
+    response
+        .get("content")
+        .and_then(|value| value.as_array())
+        .is_some_and(|content| {
+            content.iter().any(|block| {
+                block.get("text").and_then(|value| value.as_str()).is_some()
+                    || block.get("type").and_then(|value| value.as_str()) == Some("tool_use")
+            })
+        })
+}
+
 fn provider_error_excerpt(body: &str) -> String {
     let compact = body.split_whitespace().collect::<Vec<_>>().join(" ");
     if compact.chars().count() <= 500 {
@@ -2210,6 +2317,11 @@ async fn verify_openai_compatible_credential(
         .timeout(std::time::Duration::from_secs(20))
         .build()
         .map_err(|err| format!("Failed to create provider client: {}", err))?;
+
+    if let Some(anthropic_base_url) = native_anthropic_base_url(credential) {
+        return verify_native_anthropic_credential(&client, credential, &anthropic_base_url).await;
+    }
+
     let request_body = openai_compatible_verification_body(&credential.model);
 
     let request = client
@@ -2249,11 +2361,63 @@ async fn verify_openai_compatible_credential(
     Ok(())
 }
 
+async fn verify_native_anthropic_credential(
+    client: &reqwest::Client,
+    credential: &StoredOpenAiCompatibleCredential,
+    anthropic_base_url: &str,
+) -> Result<(), String> {
+    let request_body = anthropic_verification_body(&credential.model);
+    let request = client
+        .post(anthropic_messages_url(anthropic_base_url))
+        .header("Content-Type", "application/json")
+        .header("anthropic-version", "2023-06-01")
+        .body(request_body.to_string());
+    let response = with_optional_anthropic_key(request, &credential.api_key)
+        .send()
+        .await
+        .map_err(|err| format!("Provider verification request failed: {}", err))?;
+
+    let status = response.status();
+    let response_text = response
+        .text()
+        .await
+        .map_err(|err| format!("Failed to read provider verification response: {}", err))?;
+
+    if !status.is_success() {
+        return Err(openai_compatible_verification_error(status, &response_text));
+    }
+
+    let response_json: serde_json::Value = serde_json::from_str(&response_text).map_err(|err| {
+        format!(
+            "Provider returned invalid JSON during verification: {}",
+            err
+        )
+    })?;
+    if !anthropic_response_has_message_content(&response_json) {
+        return Err(
+            "Provider verification succeeded but did not return an Anthropic-compatible message response."
+                .to_string(),
+        );
+    }
+
+    Ok(())
+}
+
 async fn send_openai_compatible_no_tools_text_request(
     client: &reqwest::Client,
     credential: &StoredOpenAiCompatibleCredential,
     messages: &[serde_json::Value],
 ) -> Result<(String, String), String> {
+    if let Some(anthropic_base_url) = native_anthropic_base_url(credential) {
+        return send_native_anthropic_no_tools_text_request(
+            client,
+            credential,
+            messages,
+            &anthropic_base_url,
+        )
+        .await;
+    }
+
     let request_body = json!({
         "model": credential.model.clone(),
         "messages": messages,
@@ -2307,6 +2471,69 @@ async fn send_openai_compatible_no_tools_text_request(
     Ok((content, reasoning))
 }
 
+async fn send_native_anthropic_no_tools_text_request(
+    client: &reqwest::Client,
+    credential: &StoredOpenAiCompatibleCredential,
+    messages: &[serde_json::Value],
+    anthropic_base_url: &str,
+) -> Result<(String, String), String> {
+    let request_body = json!({
+        "model": credential.model.clone(),
+        "max_tokens": 128,
+        "messages": messages,
+        "stream": false,
+    });
+
+    let request = client
+        .post(anthropic_messages_url(anthropic_base_url))
+        .header("Content-Type", "application/json")
+        .header("anthropic-version", "2023-06-01")
+        .body(request_body.to_string());
+    let response = with_optional_anthropic_key(request, &credential.api_key)
+        .send()
+        .await
+        .map_err(|err| format!("Provider request failed: {}", err))?;
+
+    let status = response.status();
+    let response_text = response
+        .text()
+        .await
+        .map_err(|err| format!("Failed to read provider response: {}", err))?;
+    if !status.is_success() {
+        return Err(format!(
+            "Provider returned HTTP {}: {}",
+            status, response_text
+        ));
+    }
+
+    let response: serde_json::Value = serde_json::from_str(&response_text)
+        .map_err(|err| format!("Provider returned invalid JSON: {}", err))?;
+    let content = response
+        .get("content")
+        .and_then(|value| value.as_array())
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter_map(|block| block.get("text").and_then(|value| value.as_str()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+    let reasoning = response
+        .get("content")
+        .and_then(|value| value.as_array())
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter_map(|block| block.get("thinking").and_then(|value| value.as_str()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+
+    Ok((content, reasoning))
+}
+
 async fn execute_openai_compatible_via_claude_proxy(
     window: WebviewWindow,
     project_path: String,
@@ -2316,10 +2543,17 @@ async fn execute_openai_compatible_via_claude_proxy(
     effort_level: Option<String>,
     credential: StoredOpenAiCompatibleCredential,
 ) -> Result<(), String> {
+    let model_transformers = credential
+        .model_transformers
+        .get(&credential.model)
+        .cloned()
+        .unwrap_or_default();
     let proxy_url = start_openai_anthropic_proxy(OpenAiProxyCredential {
         api_key: credential.api_key.clone(),
         base_url: credential.base_url.clone(),
         model: credential.model.clone(),
+        transformers: credential.transformers.clone(),
+        model_transformers,
     })
     .await?;
     let claude_path = find_claude_binary()?;
@@ -2350,6 +2584,163 @@ async fn execute_openai_compatible_via_claude_proxy(
     .await
 }
 
+async fn execute_openai_compatible_provider(
+    window: WebviewWindow,
+    project_path: String,
+    prompt: String,
+    tab_id: String,
+    args_prefix: Vec<String>,
+    effort_level: Option<String>,
+    credential: StoredOpenAiCompatibleCredential,
+) -> Result<(), String> {
+    if uses_native_anthropic_route(&credential) {
+        return execute_openai_compatible_via_native_anthropic(
+            window,
+            project_path,
+            prompt,
+            tab_id,
+            args_prefix,
+            effort_level,
+            credential,
+        )
+        .await;
+    }
+
+    execute_openai_compatible_via_claude_proxy(
+        window,
+        project_path,
+        prompt,
+        tab_id,
+        args_prefix,
+        effort_level,
+        credential,
+    )
+    .await
+}
+
+async fn execute_openai_compatible_via_native_anthropic(
+    window: WebviewWindow,
+    project_path: String,
+    prompt: String,
+    tab_id: String,
+    args_prefix: Vec<String>,
+    effort_level: Option<String>,
+    credential: StoredOpenAiCompatibleCredential,
+) -> Result<(), String> {
+    let anthropic_base_url = native_anthropic_base_url(&credential)
+        .ok_or_else(|| "Provider does not expose a native Anthropic endpoint".to_string())?;
+    let claude_path = find_claude_binary()?;
+
+    let (mut args, stdin_payload) = with_prompt_transport(args_prefix, prompt);
+    args.extend(common_claude_args());
+
+    let mut cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref());
+    apply_native_anthropic_provider_env(&mut cmd, &credential, &anthropic_base_url);
+
+    spawn_claude_process(
+        window,
+        cmd,
+        tab_id,
+        stdin_payload,
+        Some(SpawnProviderMetadata {
+            provider: PROVIDER_OPENAI_COMPATIBLE,
+            provider_credential_id: credential.id,
+            model: credential.model,
+        }),
+    )
+    .await
+}
+
+fn apply_native_anthropic_provider_env(
+    cmd: &mut Command,
+    credential: &StoredOpenAiCompatibleCredential,
+    anthropic_base_url: &str,
+) {
+    cmd.env("ANTHROPIC_BASE_URL", anthropic_base_url);
+    cmd.env("ANTHROPIC_AUTH_TOKEN", credential.api_key.as_str());
+    cmd.env_remove("ANTHROPIC_API_KEY");
+    cmd.env("ANTHROPIC_MODEL", credential.model.as_str());
+    cmd.env("ANTHROPIC_SMALL_FAST_MODEL", credential.model.as_str());
+    cmd.env("ANTHROPIC_DEFAULT_OPUS_MODEL", credential.model.as_str());
+    cmd.env("ANTHROPIC_DEFAULT_SONNET_MODEL", credential.model.as_str());
+    cmd.env("ANTHROPIC_DEFAULT_HAIKU_MODEL", credential.model.as_str());
+    cmd.env("CLAUDE_CODE_SUBAGENT_MODEL", credential.model.as_str());
+    cmd.env_remove("CLAUDE_MODEL");
+}
+
+fn uses_native_anthropic_route(credential: &StoredOpenAiCompatibleCredential) -> bool {
+    native_anthropic_base_url(credential).is_some()
+}
+
+fn native_anthropic_base_url(credential: &StoredOpenAiCompatibleCredential) -> Option<String> {
+    let origin = http_origin(&credential.base_url)?;
+    let lower_origin = origin.to_ascii_lowercase();
+    if lower_origin == "https://api.deepseek.com" || lower_origin == "http://api.deepseek.com" {
+        let lower = credential.base_url.to_ascii_lowercase();
+        if let Some(index) = lower.find("/anthropic") {
+            return Some(format!("{}{}", &credential.base_url[..index], "/anthropic"));
+        }
+
+        return Some(format!("{}/anthropic", origin));
+    }
+
+    if is_qwen_anthropic_origin(&lower_origin) {
+        let lower = credential.base_url.to_ascii_lowercase();
+        if let Some(index) = lower.find("/apps/anthropic") {
+            return Some(format!(
+                "{}{}",
+                &credential.base_url[..index],
+                "/apps/anthropic"
+            ));
+        }
+
+        return Some(format!("{}/apps/anthropic", origin));
+    }
+
+    None
+}
+
+fn deepseek_origin_for_anthropic_base_url(base_url: &str) -> Option<String> {
+    let lower = base_url.to_ascii_lowercase();
+    if !lower.contains("api.deepseek.com") || !lower.contains("/anthropic") {
+        return None;
+    }
+    http_origin(base_url)
+}
+
+fn qwen_origin_for_anthropic_base_url(base_url: &str) -> Option<String> {
+    let lower = base_url.to_ascii_lowercase();
+    let origin = http_origin(base_url)?;
+    if !is_qwen_anthropic_origin(&origin.to_ascii_lowercase()) {
+        return None;
+    }
+    if lower.contains("/apps/anthropic") || lower.contains("/compatible-mode/") {
+        return Some(origin);
+    }
+    None
+}
+
+fn is_qwen_anthropic_origin(lower_origin: &str) -> bool {
+    matches!(
+        lower_origin,
+        "https://dashscope.aliyuncs.com"
+            | "http://dashscope.aliyuncs.com"
+            | "https://dashscope-intl.aliyuncs.com"
+            | "http://dashscope-intl.aliyuncs.com"
+    )
+}
+
+fn http_origin(value: &str) -> Option<String> {
+    let value = value.trim().trim_end_matches('/');
+    let scheme_end = value.find("://")?;
+    let after_scheme = &value[scheme_end + 3..];
+    let host_end = after_scheme.find('/').unwrap_or(after_scheme.len());
+    if host_end == 0 {
+        return None;
+    }
+    Some(value[..scheme_end + 3 + host_end].to_string())
+}
+
 #[tauri::command]
 pub async fn execute_claude_code(
     window: WebviewWindow,
@@ -2368,7 +2759,7 @@ pub async fn execute_claude_code(
         {
             credential.model = model;
         }
-        return execute_openai_compatible_via_claude_proxy(
+        return execute_openai_compatible_provider(
             window,
             project_path,
             prompt,
@@ -2411,7 +2802,7 @@ pub async fn continue_claude_code(
         {
             credential.model = model;
         }
-        return execute_openai_compatible_via_claude_proxy(
+        return execute_openai_compatible_provider(
             window,
             project_path,
             prompt,
@@ -2455,7 +2846,7 @@ pub async fn resume_claude_code(
         {
             credential.model = model;
         }
-        return execute_openai_compatible_via_claude_proxy(
+        return execute_openai_compatible_provider(
             window,
             project_path,
             prompt,
@@ -3358,15 +3749,22 @@ mod tests {
                     id: "qwen".to_string(),
                     label: "Qwen".to_string(),
                     api_key: "sk-qwen".to_string(),
-                    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string(),
+                    base_url: "https://dashscope.aliyuncs.com/apps/anthropic".to_string(),
                     model: "qwen3-coder-plus".to_string(),
+                    transformers: vec!["enhancetool".to_string()],
+                    model_transformers: HashMap::new(),
                 },
                 StoredOpenAiCompatibleCredentialConfig {
                     id: "deepseek".to_string(),
                     label: "DeepSeek".to_string(),
                     api_key: "sk-deepseek".to_string(),
-                    base_url: "https://api.deepseek.com".to_string(),
+                    base_url: "https://api.deepseek.com/anthropic".to_string(),
                     model: "deepseek-chat".to_string(),
+                    transformers: vec!["deepseek".to_string()],
+                    model_transformers: HashMap::from([(
+                        "deepseek-chat".to_string(),
+                        vec!["tooluse".to_string()],
+                    )]),
                 },
             ],
             ..Default::default()
@@ -3632,6 +4030,87 @@ mod tests {
     }
 
     #[test]
+    fn test_deepseek_official_root_uses_native_anthropic_route() {
+        let config = test_openai_compatible_auth_config();
+        let credential = openai_compatible_credential_by_id_from_config(&config, Some("deepseek"))
+            .unwrap()
+            .unwrap();
+
+        assert!(uses_native_anthropic_route(&credential));
+        assert_eq!(
+            native_anthropic_base_url(&credential).as_deref(),
+            Some("https://api.deepseek.com/anthropic")
+        );
+    }
+
+    #[test]
+    fn test_qwen_official_anthropic_endpoint_uses_native_route() {
+        let config = test_openai_compatible_auth_config();
+        let credential = openai_compatible_credential_by_id_from_config(&config, Some("qwen"))
+            .unwrap()
+            .unwrap();
+
+        assert!(uses_native_anthropic_route(&credential));
+        assert_eq!(
+            native_anthropic_base_url(&credential).as_deref(),
+            Some("https://dashscope.aliyuncs.com/apps/anthropic")
+        );
+    }
+
+    #[test]
+    fn test_native_anthropic_route_preserves_explicit_anthropic_path() {
+        let credential = StoredOpenAiCompatibleCredential {
+            id: "deepseek-anthropic".to_string(),
+            label: "DeepSeek".to_string(),
+            api_key: "sk-test".to_string(),
+            base_url: "https://api.deepseek.com/anthropic/v1".to_string(),
+            model: "deepseek-v4-pro".to_string(),
+            transformers: Vec::new(),
+            model_transformers: HashMap::new(),
+        };
+
+        assert_eq!(
+            native_anthropic_base_url(&credential).as_deref(),
+            Some("https://api.deepseek.com/anthropic")
+        );
+    }
+
+    #[test]
+    fn test_non_deepseek_anthropic_path_stays_on_proxy_route() {
+        let credential = StoredOpenAiCompatibleCredential {
+            id: "other-anthropic".to_string(),
+            label: "Other".to_string(),
+            api_key: "sk-test".to_string(),
+            base_url: "https://router.example.com/anthropic".to_string(),
+            model: "qwen3".to_string(),
+            transformers: Vec::new(),
+            model_transformers: HashMap::new(),
+        };
+
+        assert!(!uses_native_anthropic_route(&credential));
+        assert_eq!(native_anthropic_base_url(&credential), None);
+    }
+
+    #[test]
+    fn test_qwen_legacy_compatible_mode_uses_native_anthropic_route() {
+        let credential = StoredOpenAiCompatibleCredential {
+            id: "qwen-compatible".to_string(),
+            label: "Qwen".to_string(),
+            api_key: "sk-test".to_string(),
+            base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string(),
+            model: "qwen3-max-2026-01-23".to_string(),
+            transformers: Vec::new(),
+            model_transformers: HashMap::new(),
+        };
+
+        assert!(uses_native_anthropic_route(&credential));
+        assert_eq!(
+            native_anthropic_base_url(&credential).as_deref(),
+            Some("https://dashscope.aliyuncs.com/apps/anthropic")
+        );
+    }
+
+    #[test]
     fn test_provider_id_lookup_rejects_missing_provider() {
         let config = test_openai_compatible_auth_config();
         let error =
@@ -3669,6 +4148,18 @@ mod tests {
     }
 
     #[test]
+    fn test_anthropic_messages_url_matches_deepseek_native_base() {
+        assert_eq!(
+            anthropic_messages_url("https://api.deepseek.com/anthropic"),
+            "https://api.deepseek.com/anthropic/v1/messages"
+        );
+        assert_eq!(
+            anthropic_messages_url("https://api.deepseek.com/anthropic/v1"),
+            "https://api.deepseek.com/anthropic/v1/messages"
+        );
+    }
+
+    #[test]
     fn test_openai_chat_completions_url_keeps_generic_openai_default() {
         assert_eq!(
             openai_chat_completions_url("https://api.openai.com"),
@@ -3699,6 +4190,10 @@ mod tests {
             "https://dashscope.aliyuncs.com/compatible-mode/v1/models"
         );
         assert_eq!(
+            openai_models_url("https://dashscope.aliyuncs.com/apps/anthropic"),
+            "https://dashscope.aliyuncs.com/compatible-mode/v1/models"
+        );
+        assert_eq!(
             openai_models_url("https://generativelanguage.googleapis.com/v1beta/openai/"),
             "https://generativelanguage.googleapis.com/v1beta/openai/models"
         );
@@ -3709,6 +4204,10 @@ mod tests {
         assert_eq!(
             openai_models_url("https://api.openai.com"),
             "https://api.openai.com/v1/models"
+        );
+        assert_eq!(
+            openai_models_url("https://api.deepseek.com/anthropic"),
+            "https://api.deepseek.com/models"
         );
         assert_eq!(
             openai_models_url("http://localhost:11434"),

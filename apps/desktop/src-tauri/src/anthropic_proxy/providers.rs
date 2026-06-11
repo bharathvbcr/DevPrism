@@ -1,3 +1,4 @@
+use super::transformers::ProxyTransformerChain;
 use super::OpenAiProxyCredential;
 use serde_json::{json, Value};
 
@@ -8,26 +9,23 @@ pub(super) fn apply_provider_request_transforms(
     anthropic_request: &Value,
     credential: &OpenAiProxyCredential,
     wants_stream: bool,
+    transformers: &ProxyTransformerChain,
 ) {
-    clean_cache_control(openai_request);
+    if transformers.has_cleancache() {
+        clean_cache_control(openai_request);
+    }
 
-    if wants_stream {
+    if wants_stream && transformers.has_streamoptions() {
         openai_request["stream_options"] = json!({ "include_usage": true });
     }
 
-    if is_deepseek_provider(credential) {
+    if transformers.has_deepseek() {
         cap_number_field(openai_request, "max_tokens", DEEPSEEK_MAX_TOKENS);
     }
 
     apply_reasoning_budget(openai_request, anthropic_request);
     apply_max_completion_tokens_compat(openai_request, credential);
     clean_null_optional_fields(openai_request);
-}
-
-fn is_deepseek_provider(credential: &OpenAiProxyCredential) -> bool {
-    let base_url = credential.base_url.to_ascii_lowercase();
-    let model = credential.model.to_ascii_lowercase();
-    base_url.contains("deepseek") || model.contains("deepseek")
 }
 
 fn cap_number_field(body: &mut Value, key: &str, max: u64) {
@@ -121,6 +119,8 @@ mod tests {
             api_key: "sk-test".to_string(),
             base_url: base_url.to_string(),
             model: model.to_string(),
+            transformers: Vec::new(),
+            model_transformers: Vec::new(),
         }
     }
 
@@ -132,6 +132,7 @@ mod tests {
             &json!({}),
             &credential("https://api.example.com/v1", "qwen-test"),
             true,
+            &ProxyTransformerChain::from_names(&["streamoptions"]),
         );
 
         assert_eq!(body["stream_options"]["include_usage"], true);
@@ -145,6 +146,7 @@ mod tests {
             &json!({}),
             &credential("https://api.deepseek.com", "deepseek-chat"),
             false,
+            &ProxyTransformerChain::from_names(&["deepseek"]),
         );
 
         assert_eq!(body["max_tokens"], DEEPSEEK_MAX_TOKENS);
@@ -163,6 +165,7 @@ mod tests {
             }),
             &credential("https://api.example.com/v1", "qwen-test"),
             false,
+            &ProxyTransformerChain::from_names(&[]),
         );
 
         assert_eq!(body["reasoning"]["max_tokens"], 4096);
@@ -176,6 +179,7 @@ mod tests {
             &json!({}),
             &credential("https://api.openai.com/v1", "o3"),
             false,
+            &ProxyTransformerChain::from_names(&[]),
         );
 
         assert!(body.get("max_tokens").is_none());
@@ -200,6 +204,7 @@ mod tests {
             &json!({}),
             &credential("https://api.example.com/v1", "qwen-test"),
             false,
+            &ProxyTransformerChain::from_names(&["cleancache"]),
         );
 
         assert!(body["messages"][0]["content"][0]

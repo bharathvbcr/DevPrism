@@ -2,10 +2,12 @@ mod messages;
 mod providers;
 mod stream;
 mod tools;
+mod transformers;
 
 use self::messages::{anthropic_to_openai_request, openai_to_anthropic_message};
 use self::providers::apply_provider_request_transforms;
 use self::stream::{sse_response, stream_openai_sse_to_anthropic};
+use self::transformers::ProxyTransformerChain;
 use serde_json::{json, Value};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -17,6 +19,8 @@ pub(crate) struct OpenAiProxyCredential {
     pub(crate) api_key: String,
     pub(crate) base_url: String,
     pub(crate) model: String,
+    pub(crate) transformers: Vec<String>,
+    pub(crate) model_transformers: Vec<String>,
 }
 
 pub(crate) async fn start_openai_anthropic_proxy(
@@ -217,13 +221,16 @@ async fn handle_messages_to_stream(
         .get("stream")
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
-    let mut openai_request = anthropic_to_openai_request(&anthropic_request, credential)?;
+    let transformers = ProxyTransformerChain::for_credential(credential, wants_stream);
+    let mut openai_request =
+        anthropic_to_openai_request(&anthropic_request, credential, &transformers)?;
     openai_request["stream"] = Value::Bool(wants_stream);
     apply_provider_request_transforms(
         &mut openai_request,
         &anthropic_request,
         credential,
         wants_stream,
+        &transformers,
     );
     if request_contains_openai_image_parts(&openai_request)
         && provider_rejects_openai_image_parts(credential)
@@ -399,6 +406,7 @@ fn _assert_local_addr(_: SocketAddr) {}
 
 #[cfg(test)]
 mod tests {
+    use super::transformers::ProxyTransformerChain;
     use super::*;
 
     #[test]
@@ -431,6 +439,8 @@ mod tests {
             api_key: "sk-test".to_string(),
             base_url: "https://api.example.com/v1".to_string(),
             model: "qwen-test".to_string(),
+            transformers: Vec::new(),
+            model_transformers: Vec::new(),
         };
         let request = json!({
             "system": "system prompt",
@@ -460,7 +470,12 @@ mod tests {
             }]
         });
 
-        let converted = anthropic_to_openai_request(&request, &credential).unwrap();
+        let converted = anthropic_to_openai_request(
+            &request,
+            &credential,
+            &ProxyTransformerChain::from_names(&[]),
+        )
+        .unwrap();
         assert_eq!(converted["model"], "qwen-test");
         assert_eq!(converted["messages"][0]["role"], "system");
         assert_eq!(
@@ -477,6 +492,8 @@ mod tests {
             api_key: "sk-test".to_string(),
             base_url: "https://api.example.com/v1".to_string(),
             model: "qwen-test".to_string(),
+            transformers: Vec::new(),
+            model_transformers: Vec::new(),
         };
         let request = json!({
             "messages": [
@@ -506,7 +523,12 @@ mod tests {
             ]
         });
 
-        let converted = anthropic_to_openai_request(&request, &credential).unwrap();
+        let converted = anthropic_to_openai_request(
+            &request,
+            &credential,
+            &ProxyTransformerChain::from_names(&[]),
+        )
+        .unwrap();
         assert_eq!(converted["messages"][0]["role"], "assistant");
         assert_eq!(converted["messages"][1]["role"], "tool");
         assert_eq!(converted["messages"][1]["tool_call_id"], "toolu_1");
@@ -520,6 +542,8 @@ mod tests {
             api_key: "sk-test".to_string(),
             base_url: "https://api.example.com/v1".to_string(),
             model: "qwen-test".to_string(),
+            transformers: Vec::new(),
+            model_transformers: Vec::new(),
         };
         let request = json!({
             "messages": [
@@ -539,7 +563,12 @@ mod tests {
             ]
         });
 
-        let converted = anthropic_to_openai_request(&request, &credential).unwrap();
+        let converted = anthropic_to_openai_request(
+            &request,
+            &credential,
+            &ProxyTransformerChain::from_names(&[]),
+        )
+        .unwrap();
         assert_eq!(converted["messages"][0]["role"], "assistant");
         assert_eq!(converted["messages"][1]["role"], "tool");
         assert_eq!(converted["messages"][1]["tool_call_id"], "toolu_missing");
@@ -553,6 +582,8 @@ mod tests {
             api_key: "sk-test".to_string(),
             base_url: "https://api.example.com/v1".to_string(),
             model: "deepseek-test".to_string(),
+            transformers: Vec::new(),
+            model_transformers: Vec::new(),
         };
         let request = json!({ "model": "claude-sonnet-4" });
         let response = json!({

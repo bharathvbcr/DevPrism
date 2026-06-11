@@ -118,6 +118,41 @@ const STEP_ORDER_INSTALL = [
 ];
 const STEP_ORDER_LOGIN = ["opening-browser", "waiting-auth", "complete"];
 
+function canonicalOpenAiCompatibleBaseUrl(url: string) {
+  const trimmed = url.trim();
+  const lower = trimmed.toLowerCase();
+  const deepseekMatch = trimmed.match(
+    /^(https?:\/\/api\.deepseek\.com)(?:\/|$)/i,
+  );
+  const deepseekOrigin = deepseekMatch?.[1];
+  if (deepseekOrigin && !lower.includes("/anthropic")) {
+    return `${deepseekOrigin}/anthropic`;
+  }
+  if (deepseekOrigin) {
+    const anthropicIndex = lower.indexOf("/anthropic");
+    return `${trimmed.slice(0, anthropicIndex)}/anthropic`;
+  }
+
+  const qwenMatch = trimmed.match(
+    /^(https?:\/\/dashscope(?:-intl)?\.aliyuncs\.com)(?:\/|$)/i,
+  );
+  const qwenOrigin = qwenMatch?.[1];
+  if (
+    qwenOrigin &&
+    (lower.includes("/apps/anthropic") ||
+      lower.includes("/compatible-mode/") ||
+      trimmed.replace(/\/+$/, "").toLowerCase() === qwenOrigin.toLowerCase())
+  ) {
+    const anthropicIndex = lower.indexOf("/apps/anthropic");
+    if (anthropicIndex >= 0) {
+      return `${trimmed.slice(0, anthropicIndex)}/apps/anthropic`;
+    }
+    return `${qwenOrigin}/apps/anthropic`;
+  }
+
+  return trimmed;
+}
+
 function advanceSteps(
   steps: StepInfo[],
   targetId: string,
@@ -298,7 +333,11 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
     credentialLabel?: string,
   ) => {
     const key = apiKey.trim();
-    const url = baseUrl?.trim() ?? "";
+    const rawUrl = baseUrl?.trim() ?? "";
+    const url =
+      provider === "openai-compatible"
+        ? canonicalOpenAiCompatibleBaseUrl(rawUrl)
+        : rawUrl;
     const modelName = model?.trim() ?? "";
     if (provider !== "openai-compatible" && !key) {
       set({ error: "API key is empty" });

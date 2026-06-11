@@ -725,6 +725,8 @@ mod tests {
             api_key: "sk-test".to_string(),
             base_url: "https://api.example.com/v1".to_string(),
             model: "qwen-test".to_string(),
+            transformers: Vec::new(),
+            model_transformers: Vec::new(),
         }
     }
 

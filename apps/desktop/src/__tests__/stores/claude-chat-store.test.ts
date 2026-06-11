@@ -9,6 +9,7 @@ import {
 
 beforeEach(() => {
   localStorage.clear();
+  sessionStorage.clear();
   useClaudeChatStore.setState({ selectedProviderCredentialId: null });
 });
 
@@ -56,25 +57,54 @@ describe("provider selection persistence", () => {
       .getState()
       .setSelectedProviderCredentialId(CLAUDE_CODE_PROVIDER_ID);
 
-    expect(localStorage.getItem(SELECTED_PROVIDER_CREDENTIAL_STORAGE_KEY)).toBe(
-      CLAUDE_CODE_PROVIDER_ID,
-    );
+    expect(
+      sessionStorage.getItem(SELECTED_PROVIDER_CREDENTIAL_STORAGE_KEY),
+    ).toBe(CLAUDE_CODE_PROVIDER_ID);
+    expect(
+      localStorage.getItem(SELECTED_PROVIDER_CREDENTIAL_STORAGE_KEY),
+    ).toBeNull();
     expect(loadSelectedProviderCredentialId()).toBe(CLAUDE_CODE_PROVIDER_ID);
   });
 
   it("persists and clears OpenAI-compatible provider selections", () => {
     useClaudeChatStore.getState().setSelectedProviderCredentialId("qwen");
 
-    expect(localStorage.getItem(SELECTED_PROVIDER_CREDENTIAL_STORAGE_KEY)).toBe(
-      "qwen",
-    );
+    expect(
+      sessionStorage.getItem(SELECTED_PROVIDER_CREDENTIAL_STORAGE_KEY),
+    ).toBe("qwen");
+    expect(
+      localStorage.getItem(SELECTED_PROVIDER_CREDENTIAL_STORAGE_KEY),
+    ).toBeNull();
 
     useClaudeChatStore.getState().setSelectedProviderCredentialId(null);
 
     expect(
-      localStorage.getItem(SELECTED_PROVIDER_CREDENTIAL_STORAGE_KEY),
+      sessionStorage.getItem(SELECTED_PROVIDER_CREDENTIAL_STORAGE_KEY),
     ).toBeNull();
     expect(loadSelectedProviderCredentialId()).toBeNull();
+  });
+
+  it("keeps provider selections isolated between chat tabs", () => {
+    const store = useClaudeChatStore.getState();
+    const firstTabId = store.activeTabId;
+
+    store.setSelectedProviderCredentialId("qwen");
+    const secondTabId = store.createTab();
+    useClaudeChatStore.getState().setSelectedProviderCredentialId("gemini");
+
+    expect(useClaudeChatStore.getState().selectedProviderCredentialId).toBe(
+      "gemini",
+    );
+
+    useClaudeChatStore.getState().setActiveTab(firstTabId);
+    expect(useClaudeChatStore.getState().selectedProviderCredentialId).toBe(
+      "qwen",
+    );
+
+    useClaudeChatStore.getState().setActiveTab(secondTabId);
+    expect(useClaudeChatStore.getState().selectedProviderCredentialId).toBe(
+      "gemini",
+    );
   });
 });
 

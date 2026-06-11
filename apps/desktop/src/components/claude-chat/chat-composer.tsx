@@ -203,28 +203,14 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
     [queuedGuidance],
   );
   const openAiCredentials = useClaudeSetupStore((s) => s.openAiCredentials);
-  const activeOpenAiCredentialId = useClaudeSetupStore(
-    (s) => s.activeOpenAiCredentialId,
-  );
-  const setActiveApiCredential = useClaudeSetupStore(
-    (s) => s.setActiveApiCredential,
-  );
   const deleteApiCredential = useClaudeSetupStore((s) => s.deleteApiCredential);
-  const activeProviderCredential =
-    openAiCredentials.find(
-      (credential) => credential.id === activeOpenAiCredentialId,
-    ) ??
-    openAiCredentials[0] ??
-    null;
   const selectedProviderCredential =
     selectedProviderCredentialId &&
     selectedProviderCredentialId !== CLAUDE_CODE_PROVIDER_ID
       ? (openAiCredentials.find(
           (credential) => credential.id === selectedProviderCredentialId,
         ) ?? null)
-      : selectedProviderCredentialId === CLAUDE_CODE_PROVIDER_ID
-        ? null
-        : activeProviderCredential;
+      : null;
   const selectedProviderModel = selectedProviderCredential
     ? selectedProviderModels[selectedProviderCredential.id] ||
       selectedProviderCredential.model
@@ -299,11 +285,6 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
   }, [modelPickerOpen]);
 
   useEffect(() => {
-    if (!selectedProviderCredentialId && activeProviderCredential?.id) {
-      setSelectedProviderCredentialId(activeProviderCredential.id);
-      return;
-    }
-
     if (
       selectedProviderCredentialId &&
       selectedProviderCredentialId !== CLAUDE_CODE_PROVIDER_ID &&
@@ -311,12 +292,9 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
         (credential) => credential.id === selectedProviderCredentialId,
       )
     ) {
-      setSelectedProviderCredentialId(
-        activeProviderCredential?.id ?? CLAUDE_CODE_PROVIDER_ID,
-      );
+      setSelectedProviderCredentialId(CLAUDE_CODE_PROVIDER_ID);
     }
   }, [
-    activeProviderCredential?.id,
     openAiCredentials,
     selectedProviderCredentialId,
     setSelectedProviderCredentialId,
@@ -352,7 +330,6 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
           const nextCredential = remainingCredentials[0] ?? null;
           if (nextCredential) {
             setSelectedProviderCredentialId(nextCredential.id);
-            void setActiveApiCredential(nextCredential.id);
           } else {
             setSelectedProviderCredentialId(CLAUDE_CODE_PROVIDER_ID);
           }
@@ -368,7 +345,6 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
       openAiCredentials,
       selectedProviderCredential?.id,
       selectedProviderCredentialId,
-      setActiveApiCredential,
       setSelectedProviderCredentialId,
     ],
   );
@@ -1268,7 +1244,6 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                   const selectCredential = () => {
                     if (isDeleting) return;
                     setSelectedProviderCredentialId(credential.id);
-                    void setActiveApiCredential(credential.id);
                   };
 
                   return (
@@ -1484,7 +1459,16 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
             onCancel={() => setProviderSetupOpen(false)}
             onSaved={() => {
               setProviderSetupOpen(false);
-              setSelectedProviderCredentialId(null);
+              const setupState = useClaudeSetupStore.getState();
+              const lastCredential =
+                setupState.openAiCredentials[
+                  setupState.openAiCredentials.length - 1
+                ];
+              setSelectedProviderCredentialId(
+                setupState.activeOpenAiCredentialId ??
+                  lastCredential?.id ??
+                  CLAUDE_CODE_PROVIDER_ID,
+              );
               setProviderModelOptions({});
               setProviderModelError(null);
             }}
@@ -1800,7 +1784,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
               className="size-8 rounded-full"
               onClick={
                 isStreaming && !hasInput
-                  ? () => void cancelExecution()
+                  ? () => void cancelExecution(activeTabId)
                   : handleSend
               }
               disabled={!isStreaming && !hasInput}

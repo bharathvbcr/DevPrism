@@ -84,11 +84,10 @@ export function useClaudeEvents() {
         hasTexChangesRef.current.set(tab.id, false);
         cancelledForAskRef.current.set(tab.id, false);
         lastErrorRef.current.delete(tab.id);
-        const providerId =
-          useClaudeChatStore.getState().selectedProviderCredentialId;
+        const providerKey = tab.sessionProviderKey ?? tab.providerKey;
         directProviderTabRef.current.set(
           tab.id,
-          !!providerId && providerId !== CLAUDE_CODE_PROVIDER_ID,
+          !!providerKey && providerKey !== CLAUDE_CODE_PROVIDER_ID,
         );
         msgCountRef.current.set(tab.id, 0);
         streamStartTimeRef.current.delete(tab.id);

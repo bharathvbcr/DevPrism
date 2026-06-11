@@ -85,16 +85,16 @@ const OPENAI_COMPATIBLE_PRESETS: OpenAICompatiblePreset[] = [
   {
     id: "qwen",
     label: "Qwen",
-    baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    baseUrl: "https://dashscope.aliyuncs.com/apps/anthropic",
     model: "",
-    note: "Alibaba Cloud Model Studio endpoint.",
+    note: "Qwen Anthropic-compatible endpoint for Claude Code.",
   },
   {
     id: "deepseek",
     label: "DeepSeek",
-    baseUrl: "https://api.deepseek.com",
+    baseUrl: "https://api.deepseek.com/anthropic",
     model: "",
-    note: "DeepSeek OpenAI-compatible endpoint.",
+    note: "DeepSeek Anthropic-compatible endpoint for Claude Code.",
   },
   {
     id: "moonshot",
@@ -159,10 +159,71 @@ const CLAUDE_PROVIDER_CARDS: ModelProviderCard[] = [
 ];
 
 const OPENAI_DEFAULT_PRESET_ID = OPENAI_PROVIDER_CARDS[0]?.id ?? "openai";
+const DEEPSEEK_ANTHROPIC_BASE_URL = "https://api.deepseek.com/anthropic";
+const QWEN_ANTHROPIC_BASE_URL = "https://dashscope.aliyuncs.com/apps/anthropic";
+
+function deepseekOrigin(url: string) {
+  const trimmed = url.trim();
+  const match = trimmed.match(/^(https?:\/\/api\.deepseek\.com)(?:\/|$)/i);
+  return match?.[1] ?? null;
+}
+
+function qwenOrigin(url: string) {
+  const trimmed = url.trim();
+  const match = trimmed.match(
+    /^(https?:\/\/dashscope(?:-intl)?\.aliyuncs\.com)(?:\/|$)/i,
+  );
+  return match?.[1] ?? null;
+}
+
+function canonicalOpenAiCompatibleBaseUrl(
+  url: string,
+  presetId?: string | null,
+) {
+  const trimmed = url.trim();
+  const origin = deepseekOrigin(trimmed);
+  if (
+    origin &&
+    (presetId === "deepseek" || !trimmed.toLowerCase().includes("/anthropic"))
+  ) {
+    const lower = trimmed.toLowerCase();
+    const anthropicIndex = lower.indexOf("/anthropic");
+    if (anthropicIndex >= 0) {
+      return `${trimmed.slice(0, anthropicIndex)}/anthropic`;
+    }
+    return `${origin}/anthropic`;
+  }
+
+  const qwenBaseOrigin = qwenOrigin(trimmed);
+  if (
+    qwenBaseOrigin &&
+    (presetId === "qwen" ||
+      trimmed.toLowerCase().includes("/apps/anthropic") ||
+      trimmed.toLowerCase().includes("/compatible-mode/") ||
+      normalizeOriginOnlyUrl(trimmed) ===
+        normalizeOriginOnlyUrl(qwenBaseOrigin))
+  ) {
+    const lower = trimmed.toLowerCase();
+    const anthropicIndex = lower.indexOf("/apps/anthropic");
+    if (anthropicIndex >= 0) {
+      return `${trimmed.slice(0, anthropicIndex)}/apps/anthropic`;
+    }
+    return `${qwenBaseOrigin}/apps/anthropic`;
+  }
+
+  return trimmed;
+}
+
+function normalizeOriginOnlyUrl(value: string) {
+  return value.trim().replace(/\/+$/, "").toLowerCase();
+}
+
+function isNativeAnthropicPreset(cardId?: string | null) {
+  return cardId === "deepseek" || cardId === "qwen";
+}
 
 function normalizePresetBaseUrl(url: string) {
-  return url
-    .trim()
+  return canonicalOpenAiCompatibleBaseUrl(url)
     .replace(/\/chat\/completions$/i, "")
     .replace(/\/+$/, "")
     .toLowerCase();
@@ -461,13 +522,17 @@ export function ClaudeSetup({
     selectedProvider: "claude-code" | "openai-compatible" = provider,
     credentialLabel?: string,
   ) => {
+    const savedBaseUrl =
+      selectedProvider === "openai-compatible"
+        ? canonicalOpenAiCompatibleBaseUrl(baseUrl, providerPreset)
+        : baseUrl.trim();
     const savedPreset =
       selectedProvider === "openai-compatible"
-        ? openAiPresetIdForBaseUrl(baseUrl)
+        ? openAiPresetIdForBaseUrl(savedBaseUrl)
         : "anthropic-direct";
     const success = await saveApiKey(
       apiKey,
-      baseUrl,
+      savedBaseUrl,
       selectedProvider,
       model,
       credentialLabel,
@@ -495,14 +560,17 @@ export function ClaudeSetup({
   };
 
   const beginProviderEdit = (isDirectProvider: boolean) => {
+    const nextBaseUrl = isDirectProvider
+      ? canonicalOpenAiCompatibleBaseUrl(providerBaseUrl || "")
+      : "";
     setProvider(isDirectProvider ? "openai-compatible" : "claude-code");
     setProviderPreset(
       isDirectProvider
-        ? openAiPresetIdForBaseUrl(providerBaseUrl)
+        ? openAiPresetIdForBaseUrl(nextBaseUrl)
         : "anthropic-direct",
     );
     setApiKey("");
-    setBaseUrl(isDirectProvider ? providerBaseUrl || "" : "");
+    setBaseUrl(nextBaseUrl);
     setModel(isDirectProvider ? providerModel || "" : "");
     setModelOptions([]);
     setModelFetchError(null);
@@ -676,14 +744,20 @@ export function ClaudeSetup({
 
           <div className="min-w-0 space-y-1.5">
             <Label htmlFor="anthropic-base-url" className="text-xs">
-              Base URL
+              {isNativeAnthropicPreset(activeCardId)
+                ? "Base URL (Anthropic)"
+                : "Base URL"}
             </Label>
             <Input
               id="anthropic-base-url"
               type="url"
               placeholder={
                 selectedProvider === "openai-compatible"
-                  ? "https://api.deepseek.com or https://dashscope.aliyuncs.com/compatible-mode/v1"
+                  ? activeCardId === "deepseek"
+                    ? DEEPSEEK_ANTHROPIC_BASE_URL
+                    : activeCardId === "qwen"
+                      ? QWEN_ANTHROPIC_BASE_URL
+                      : "https://dashscope.aliyuncs.com/compatible-mode/v1"
                   : "https://mg.aid.pub/claude-proxy"
               }
               value={baseUrl}
@@ -698,6 +772,15 @@ export function ClaudeSetup({
                 if (selectedProvider === "openai-compatible") {
                   if (matchingPreset) {
                     setProviderPreset(matchingPreset);
+                    if (isNativeAnthropicPreset(matchingPreset)) {
+                      const canonicalUrl = canonicalOpenAiCompatibleBaseUrl(
+                        nextUrl,
+                        matchingPreset,
+                      );
+                      if (canonicalUrl !== nextUrl.trim()) {
+                        setBaseUrl(canonicalUrl);
+                      }
+                    }
                   }
                 } else {
                   if (matchingClaudePreset) {
@@ -712,7 +795,11 @@ export function ClaudeSetup({
             />
             <p className="text-[11px] text-muted-foreground">
               {selectedProvider === "openai-compatible"
-                ? "Use either the API root or a full /chat/completions URL."
+                ? activeCardId === "deepseek"
+                  ? "DeepSeek runs through its native Anthropic-compatible Claude Code route."
+                  : activeCardId === "qwen"
+                    ? "Qwen runs through its native Anthropic-compatible Claude Code route."
+                    : "Use either the API root or a full /chat/completions URL."
                 : "Leave blank for Anthropic direct API."}
             </p>
           </div>
@@ -789,7 +876,11 @@ export function ClaudeSetup({
                 </p>
               )}
               <p className="text-[11px] text-muted-foreground">
-                Fetches the provider's real /models list when available.
+                {activeCardId === "deepseek"
+                  ? "Fetches DeepSeek models from the matching provider model endpoint."
+                  : activeCardId === "qwen"
+                    ? "Fetches Qwen models from the matching DashScope model endpoint."
+                    : "Fetches the provider's real /models list when available."}
               </p>
             </div>
           )}

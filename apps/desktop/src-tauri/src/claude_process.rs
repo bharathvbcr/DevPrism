@@ -6,6 +6,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 #[derive(Clone)]
 pub struct ClaudeProcessState {
     pub processes: Arc<Mutex<HashMap<String, Child>>>,
@@ -281,13 +284,14 @@ pub async fn stop_claude_process(
     let process_key = process_key(&window_label, &tab_id);
     let claude_state = window.state::<ClaudeProcessState>();
     let mut processes = claude_state.processes.lock().await;
-    if let Some(child) = processes.get_mut(&process_key) {
+    if let Some(mut child) = processes.remove(&process_key) {
+        drop(processes);
         let stopped = match mode {
             ClaudeStopMode::Terminate => {
-                let _ = child.start_kill();
+                terminate_process_tree(&mut child).await;
                 true
             }
-            ClaudeStopMode::Interrupt => interrupt_or_terminate(child).await,
+            ClaudeStopMode::Interrupt => interrupt_or_terminate(&mut child).await,
         };
         return Ok(stopped);
     }
@@ -315,7 +319,7 @@ async fn interrupt_or_terminate(child: &mut Child) -> bool {
             return true;
         }
     }
-    let _ = child.start_kill();
+    terminate_process_tree(child).await;
     true
 }
 
@@ -325,8 +329,25 @@ async fn interrupt_or_terminate(child: &mut Child) -> bool {
     // Tauri without a PTY/ConPTY session. For guided follow-ups, fall back to
     // terminating the current run so the frontend can immediately continue the
     // same tab with the queued guidance.
-    let _ = child.start_kill();
+    terminate_process_tree(child).await;
     true
+}
+
+#[cfg(windows)]
+async fn terminate_process_tree(child: &mut Child) {
+    if let Some(pid) = child.id() {
+        let _ = Command::new("taskkill")
+            .creation_flags(CREATE_NO_WINDOW)
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .status()
+            .await;
+    }
+    let _ = child.start_kill();
+}
+
+#[cfg(not(windows))]
+async fn terminate_process_tree(child: &mut Child) {
+    let _ = child.start_kill();
 }
 
 /// Kill all Claude processes associated with a specific window label.

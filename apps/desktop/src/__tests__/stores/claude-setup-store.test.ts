@@ -133,7 +133,7 @@ describe("useClaudeSetupStore.saveApiKey", () => {
           provider_kind: "openai-compatible",
           account_email: null,
           provider_model: "deepseek-v4-pro",
-          provider_base_url: "https://api.deepseek.com",
+          provider_base_url: "https://api.deepseek.com/anthropic",
           missing_git: false,
         };
       }
@@ -143,12 +143,43 @@ describe("useClaudeSetupStore.saveApiKey", () => {
             id: "cred-1",
             label: "DeepSeek",
             model: "deepseek-v4-pro",
-            base_url: "https://api.deepseek.com",
+            base_url: "https://api.deepseek.com/anthropic",
           },
         ];
       }
       return null;
     });
+
+    const success = await useClaudeSetupStore
+      .getState()
+      .saveApiKey(
+        "sk-test",
+        "https://api.deepseek.com/anthropic",
+        "openai-compatible",
+        "deepseek-v4-pro",
+      );
+
+    expect(success).toBe(true);
+    expect(invoke).toHaveBeenNthCalledWith(
+      1,
+      "verify_openai_compatible_api_key",
+      {
+        apiKey: "sk-test",
+        baseUrl: "https://api.deepseek.com/anthropic",
+        model: "deepseek-v4-pro",
+      },
+    );
+    expect(invoke).toHaveBeenNthCalledWith(2, "save_anthropic_api_key", {
+      apiKey: "sk-test",
+      baseUrl: "https://api.deepseek.com/anthropic",
+      provider: "openai-compatible",
+      model: "deepseek-v4-pro",
+      credentialLabel: null,
+    });
+  });
+
+  it("normalizes legacy DeepSeek root URLs to the native Anthropic endpoint", async () => {
+    vi.mocked(invoke).mockResolvedValue(null);
 
     const success = await useClaudeSetupStore
       .getState()
@@ -165,15 +196,77 @@ describe("useClaudeSetupStore.saveApiKey", () => {
       "verify_openai_compatible_api_key",
       {
         apiKey: "sk-test",
-        baseUrl: "https://api.deepseek.com",
+        baseUrl: "https://api.deepseek.com/anthropic",
         model: "deepseek-v4-pro",
       },
     );
     expect(invoke).toHaveBeenNthCalledWith(2, "save_anthropic_api_key", {
       apiKey: "sk-test",
-      baseUrl: "https://api.deepseek.com",
+      baseUrl: "https://api.deepseek.com/anthropic",
       provider: "openai-compatible",
       model: "deepseek-v4-pro",
+      credentialLabel: null,
+    });
+  });
+
+  it("normalizes legacy Qwen compatible URLs to the native Anthropic endpoint", async () => {
+    vi.mocked(invoke).mockResolvedValue(null);
+
+    const success = await useClaudeSetupStore
+      .getState()
+      .saveApiKey(
+        "sk-test",
+        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "openai-compatible",
+        "qwen3-max-2026-01-23",
+      );
+
+    expect(success).toBe(true);
+    expect(invoke).toHaveBeenNthCalledWith(
+      1,
+      "verify_openai_compatible_api_key",
+      {
+        apiKey: "sk-test",
+        baseUrl: "https://dashscope.aliyuncs.com/apps/anthropic",
+        model: "qwen3-max-2026-01-23",
+      },
+    );
+    expect(invoke).toHaveBeenNthCalledWith(2, "save_anthropic_api_key", {
+      apiKey: "sk-test",
+      baseUrl: "https://dashscope.aliyuncs.com/apps/anthropic",
+      provider: "openai-compatible",
+      model: "qwen3-max-2026-01-23",
+      credentialLabel: null,
+    });
+  });
+
+  it("preserves Qwen native Anthropic URLs when saving credentials", async () => {
+    vi.mocked(invoke).mockResolvedValue(null);
+
+    const success = await useClaudeSetupStore
+      .getState()
+      .saveApiKey(
+        "sk-test",
+        "https://dashscope.aliyuncs.com/apps/anthropic/v1",
+        "openai-compatible",
+        "qwen3-max-2026-01-23",
+      );
+
+    expect(success).toBe(true);
+    expect(invoke).toHaveBeenNthCalledWith(
+      1,
+      "verify_openai_compatible_api_key",
+      {
+        apiKey: "sk-test",
+        baseUrl: "https://dashscope.aliyuncs.com/apps/anthropic",
+        model: "qwen3-max-2026-01-23",
+      },
+    );
+    expect(invoke).toHaveBeenNthCalledWith(2, "save_anthropic_api_key", {
+      apiKey: "sk-test",
+      baseUrl: "https://dashscope.aliyuncs.com/apps/anthropic",
+      provider: "openai-compatible",
+      model: "qwen3-max-2026-01-23",
       credentialLabel: null,
     });
   });
@@ -244,7 +337,7 @@ describe("useClaudeSetupStore.saveApiKey", () => {
       .getState()
       .saveApiKey(
         "sk-test",
-        "https://api.deepseek.com",
+        "https://api.deepseek.com/anthropic",
         "openai-compatible",
         "deepseek-v4-pro",
       );
@@ -253,7 +346,7 @@ describe("useClaudeSetupStore.saveApiKey", () => {
     expect(invoke).toHaveBeenCalledTimes(1);
     expect(invoke).toHaveBeenCalledWith("verify_openai_compatible_api_key", {
       apiKey: "sk-test",
-      baseUrl: "https://api.deepseek.com",
+      baseUrl: "https://api.deepseek.com/anthropic",
       model: "deepseek-v4-pro",
     });
     expect(useClaudeSetupStore.getState().error).toBe(

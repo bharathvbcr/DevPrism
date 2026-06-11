@@ -39,21 +39,22 @@ pub(super) async fn stream_openai_sse_to_anthropic(
 
     let mut state = OpenAiStreamState::default();
     let mut buffer = String::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|err| format!("Failed to read provider stream: {}", err))?
-    {
+    while let Some(chunk) = match response.chunk().await {
+        Ok(chunk) => chunk,
+        Err(err) => {
+            let rendered =
+                anthropic_stream_error_sse(&format!("Provider stream ended unexpectedly: {}", err));
+            let _ = write_stream_body(stream, &rendered, "provider stream error").await;
+            return Ok(());
+        }
+    } {
         buffer.push_str(&String::from_utf8_lossy(&chunk));
         while let Some((event, rest)) = take_next_sse_event(&buffer) {
             buffer = rest;
             let rendered =
                 openai_sse_event_to_anthropic(&mut state, &event, anthropic_request, credential);
-            if !rendered.is_empty() {
-                stream
-                    .write_all(rendered.as_bytes())
-                    .await
-                    .map_err(|err| format!("Failed to write proxy stream event: {}", err))?;
+            if !write_stream_body(stream, &rendered, "proxy stream event").await {
+                return Ok(());
             }
         }
     }
@@ -61,24 +62,48 @@ pub(super) async fn stream_openai_sse_to_anthropic(
     if !buffer.trim().is_empty() {
         let rendered =
             openai_sse_event_to_anthropic(&mut state, &buffer, anthropic_request, credential);
-        if !rendered.is_empty() {
-            stream
-                .write_all(rendered.as_bytes())
-                .await
-                .map_err(|err| format!("Failed to write final proxy stream event: {}", err))?;
+        if !write_stream_body(stream, &rendered, "final proxy stream event").await {
+            return Ok(());
         }
     }
 
     let rendered = finish_anthropic_stream(&mut state);
-    stream
-        .write_all(rendered.as_bytes())
-        .await
-        .map_err(|err| format!("Failed to write proxy stream completion: {}", err))
+    let _ = write_stream_body(stream, &rendered, "proxy stream completion").await;
+    Ok(())
 }
 
 fn streaming_http_headers() -> String {
     "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n"
         .to_string()
+}
+
+async fn write_stream_body(stream: &mut TcpStream, body: &str, context: &str) -> bool {
+    if body.is_empty() {
+        return true;
+    }
+    match stream.write_all(body.as_bytes()).await {
+        Ok(()) => true,
+        Err(err) => {
+            eprintln!("[anthropic-proxy] failed to write {}: {}", context, err);
+            false
+        }
+    }
+}
+
+fn anthropic_stream_error_sse(message: &str) -> String {
+    let mut body = String::new();
+    push_sse(
+        &mut body,
+        "error",
+        &json!({
+            "type": "error",
+            "error": {
+                "type": "api_error",
+                "message": message,
+            },
+        }),
+    );
+    body
 }
 
 fn take_next_sse_event(buffer: &str) -> Option<(String, String)> {
@@ -728,6 +753,16 @@ mod tests {
             transformers: Vec::new(),
             model_transformers: Vec::new(),
         }
+    }
+
+    #[test]
+    fn renders_provider_stream_errors_as_anthropic_sse_errors() {
+        let rendered = anthropic_stream_error_sse("provider stream broke");
+
+        assert!(rendered.contains("event: error"));
+        assert!(rendered.contains("\"type\":\"error\""));
+        assert!(rendered.contains("\"type\":\"api_error\""));
+        assert!(rendered.contains("\"message\":\"provider stream broke\""));
     }
 
     #[test]

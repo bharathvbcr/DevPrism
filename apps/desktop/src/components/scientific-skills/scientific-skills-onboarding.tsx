@@ -10,6 +10,7 @@ import {
   Trash2Icon,
   Loader2Icon,
   ChevronLeftIcon,
+  XIcon,
 } from "lucide-react";
 import {
   Dialog,
@@ -149,7 +150,19 @@ export function ScientificSkillsOnboarding({
           if (!open) onClose();
         }}
       >
-        <DialogContent className="sm:max-w-md">
+        <DialogContent showCloseButton={false} className="sm:max-w-md">
+          <button
+            type="button"
+            aria-label="Close"
+            className="absolute top-4 right-4 z-10 rounded-xs opacity-70 transition-opacity hover:opacity-100 focus:outline-hidden focus:ring-2 focus:ring-ring focus:ring-offset-2"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onClose();
+            }}
+          >
+            <XIcon className="size-4" />
+          </button>
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-sm">
               {isComplete ? (

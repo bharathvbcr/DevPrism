@@ -312,7 +312,10 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
 
     try {
       // Fire-and-forget — events drive the rest
-      await invoke("install_claude_cli");
+      const success = await invoke<boolean>("install_claude_cli");
+      if (get().isInstalling) {
+        get()._finishInstall(success);
+      }
     } catch (err: any) {
       set({
         isInstalling: false,

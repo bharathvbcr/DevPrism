@@ -331,23 +331,13 @@ function useInstallEvents() {
         useClaudeSetupStore.getState()._appendInstallLog(event.payload);
       });
 
-      const unlistenComplete = await listen<boolean>(
-        "install-complete",
-        (event) => {
-          if (cancelled) return;
-          clearTimeout(timer);
-          useClaudeSetupStore.getState()._finishInstall(event.payload);
-        },
-      );
-
       if (cancelled) {
         unlistenOutput();
         unlistenError();
-        unlistenComplete();
         return;
       }
 
-      unlisteners.push(unlistenOutput, unlistenError, unlistenComplete);
+      unlisteners.push(unlistenOutput, unlistenError);
     })();
 
     return () => {

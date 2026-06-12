@@ -62,9 +62,7 @@ export const ProposedChangesPanel: FC<ProposedChangesPanelProps> = ({
             {change.toolName}
           </span>
         )}
-        {added > 0 && (
-          <span className="shrink-0 text-green-400">+{added}</span>
-        )}
+        {added > 0 && <span className="shrink-0 text-green-400">+{added}</span>}
         {removed > 0 && (
           <span className="shrink-0 text-red-400">-{removed}</span>
         )}

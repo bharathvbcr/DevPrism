@@ -87,7 +87,10 @@ function clampZoomFactor(factor: number, maxFactor: number): number {
   return Math.max(1 / maxFactor, Math.min(maxFactor, factor));
 }
 
-function getWheelZoomFactor(event: WheelEvent, isTrackpadPinch: boolean): number {
+function getWheelZoomFactor(
+  event: WheelEvent,
+  isTrackpadPinch: boolean,
+): number {
   if (event.deltaY === 0) return 1;
 
   if (

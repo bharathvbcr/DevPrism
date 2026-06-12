@@ -32,8 +32,12 @@ describe("useProjectStore", () => {
 
     it("normalizes trailing separators when deduplicating", () => {
       const store = useProjectStore.getState();
-      store.addRecentProject("C:\\Users\\Devlin\\Documents\\ClaudePrism\\paper\\");
-      store.addRecentProject("C:\\Users\\Devlin\\Documents\\ClaudePrism\\paper");
+      store.addRecentProject(
+        "C:\\Users\\Devlin\\Documents\\ClaudePrism\\paper\\",
+      );
+      store.addRecentProject(
+        "C:\\Users\\Devlin\\Documents\\ClaudePrism\\paper",
+      );
       const { recentProjects } = useProjectStore.getState();
       expect(recentProjects).toHaveLength(1);
       expect(recentProjects[0]).toMatchObject({
@@ -92,12 +96,12 @@ describe("useProjectStore", () => {
         path: "/work/new",
         name: "new",
       });
-      expect(recentProjects.some((project) => project.path === "/work/old")).toBe(
-        false,
-      );
-      expect(recentProjects.some((project) => project.path === "/work/other")).toBe(
-        true,
-      );
+      expect(
+        recentProjects.some((project) => project.path === "/work/old"),
+      ).toBe(false);
+      expect(
+        recentProjects.some((project) => project.path === "/work/other"),
+      ).toBe(true);
     });
 
     it("matches renamed paths even when the old recent path has a trailing slash", () => {

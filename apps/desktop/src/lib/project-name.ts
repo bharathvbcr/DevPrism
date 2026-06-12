@@ -8,7 +8,14 @@ export function getProjectNameError(name: string): string | null {
   if (trimmed === "." || trimmed === "..") {
     return "Project name cannot be . or ..";
   }
-  if (/[\x00-\x1f\\/<>:"|?*]/.test(trimmed) || /[\s.]$/.test(trimmed)) {
+  const hasControlCharacter = Array.from(trimmed).some(
+    (char) => char.charCodeAt(0) < 32,
+  );
+  if (
+    hasControlCharacter ||
+    /[\\/<>:"|?*]/.test(trimmed) ||
+    /[\s.]$/.test(trimmed)
+  ) {
     return "Project name contains characters Windows cannot use";
   }
   return null;

@@ -5,7 +5,9 @@ const env = { ...process.env };
 
 function appendEnvFlag(name, flag) {
   const current = env[name] ?? "";
-  env[name] = current.includes(flag) ? current : [current, flag].filter(Boolean).join(" ");
+  env[name] = current.includes(flag)
+    ? current
+    : [current, flag].filter(Boolean).join(" ");
 }
 
 if (process.platform === "win32") {

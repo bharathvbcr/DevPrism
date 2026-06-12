@@ -1978,7 +1978,7 @@ async fn ensure_local_dirs(window: &WebviewWindow) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn install_claude_cli(window: WebviewWindow) -> Result<(), String> {
+pub async fn install_claude_cli(window: WebviewWindow) -> Result<bool, String> {
     // Ensure directories that the Claude Code installer expects exist.
     // The installer fails with EACCES if ~/.local is owned by root
     // (e.g. created by pip or another tool).
@@ -2068,21 +2068,31 @@ pub async fn install_claude_cli(window: WebviewWindow) -> Result<(), String> {
         }
     });
 
-    // Wait for completion and emit result
-    let win_complete = window;
-    tokio::spawn(async move {
-        let _ = stdout_task.await;
-        let _ = stderr_task.await;
-
-        let success = match child.wait().await {
-            Ok(status) => status.success(),
-            Err(_) => false,
+    let success =
+        match tokio::time::timeout(std::time::Duration::from_secs(600), child.wait()).await {
+            Ok(Ok(status)) => status.success(),
+            Ok(Err(err)) => {
+                let _ = window.emit(
+                    "install-error",
+                    format!("Claude Code installer failed to exit cleanly: {}", err),
+                );
+                false
+            }
+            Err(_) => {
+                let _ = window.emit(
+                    "install-error",
+                    "Claude Code installer timed out after 10 minutes.",
+                );
+                let _ = child.kill().await;
+                false
+            }
         };
 
-        let _ = win_complete.emit("install-complete", success);
-    });
+    let _ = stdout_task.await;
+    let _ = stderr_task.await;
+    let _ = window.emit("install-complete", success);
 
-    Ok(())
+    Ok(success)
 }
 
 #[tauri::command]
@@ -2460,9 +2470,12 @@ async fn verify_native_anthropic_credential(
         )
     })?;
     if !anthropic_response_has_message_content(&response_json) {
+        let detail = provider_error_excerpt(&response_text);
         return Err(
-            "Provider verification succeeded but did not return an Anthropic-compatible message response."
-                .to_string(),
+            format!(
+                "Provider verification succeeded but did not return an Anthropic-compatible message response. Response: {}",
+                detail
+            ),
         );
     }
 

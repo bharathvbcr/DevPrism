@@ -333,7 +333,7 @@ describe("useClaudeChatStore.resumeSession", () => {
 
   it("hides internal file and pasted-image context when restoring history", async () => {
     const tempImagePath = [
-      "C:\\Users\\Devlin\\AppData\\Local\\Temp",
+      "C:\\Temp",
       "ClaudePrism",
       "chat-pastes",
       "1781110224092-1-paste-1781110223586-1.png",

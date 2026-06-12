@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   FlaskConicalIcon,
@@ -62,6 +62,13 @@ export function ScientificSkillsOnboarding({
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<SkillsStatus | null>(null);
   const [isUninstalling, setIsUninstalling] = useState(false);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   // Check global install status
   const checkStatus = useCallback(async () => {
@@ -97,14 +104,19 @@ export function ScientificSkillsOnboarding({
     setError(null);
 
     try {
+      await new Promise((resolve) => window.setTimeout(resolve, 50));
+      if (!mountedRef.current) return;
+
       const result = await invoke<InstallResult>(
         "install_scientific_skills_global",
       );
+      if (!mountedRef.current) return;
       setInstallResult(result);
       setIsComplete(true);
       localStorage.setItem(STORAGE_KEY, "true");
       await checkStatus();
     } catch (e) {
+      if (!mountedRef.current) return;
       setError(String(e));
       setIsInstalling(false);
     }
@@ -134,7 +146,7 @@ export function ScientificSkillsOnboarding({
       <Dialog
         open
         onOpenChange={(open) => {
-          if (!open && (isComplete || error)) onClose();
+          if (!open) onClose();
         }}
       >
         <DialogContent className="sm:max-w-md">

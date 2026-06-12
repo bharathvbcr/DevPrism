@@ -4,6 +4,9 @@ use tauri::{Emitter, WebviewWindow};
 
 const TARBALL_URL: &str =
     "https://github.com/K-Dense-AI/scientific-agent-skills/archive/refs/heads/main.tar.gz";
+const SKILLS_DOWNLOAD_TIMEOUT_SECS: u64 = 120;
+const SKILLS_CONNECT_TIMEOUT_SECS: u64 = 20;
+const SKILLS_INSTALL_TIMEOUT_SECS: u64 = 180;
 const RAW_SKILL_URLS: &[&str] = &[
     "https://raw.githubusercontent.com/K-Dense-AI/scientific-agent-skills/main/skills",
     "https://raw.githubusercontent.com/K-Dense-AI/claude-scientific-skills/main/scientific-skills",
@@ -363,7 +366,16 @@ fn skills_dir(project_path: Option<&str>) -> PathBuf {
 
 /// Download and extract tarball.
 async fn download_tarball(tmp_dir: &Path) -> Result<(), String> {
-    let response = reqwest::get(TARBALL_URL)
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(SKILLS_CONNECT_TIMEOUT_SECS))
+        .timeout(std::time::Duration::from_secs(SKILLS_DOWNLOAD_TIMEOUT_SECS))
+        .build()
+        .map_err(|e| format!("Failed to create download client: {}", e))?;
+
+    let response = client
+        .get(TARBALL_URL)
+        .header(reqwest::header::USER_AGENT, "ClaudePrism skills installer")
+        .send()
         .await
         .map_err(|e| format!("Failed to download tarball: {}", e))?;
 
@@ -544,7 +556,7 @@ pub async fn install_scientific_skills(
     project_path: String,
 ) -> Result<InstallResult, String> {
     let target = skills_dir(Some(&project_path));
-    install_skills_to(&window, &target, Some(&project_path)).await
+    install_skills_with_timeout(&window, &target, Some(&project_path)).await
 }
 
 #[tauri::command]
@@ -552,7 +564,7 @@ pub async fn install_scientific_skills_global(
     window: WebviewWindow,
 ) -> Result<InstallResult, String> {
     let target = skills_dir(None);
-    install_skills_to(&window, &target, None).await
+    install_skills_with_timeout(&window, &target, None).await
 }
 
 /// Ensure the target directory is creatable and writable.
@@ -622,6 +634,29 @@ fn ensure_target_writable(target: &Path) -> Result<(), String> {
 fn emit_log(window: &WebviewWindow, msg: &str) {
     eprintln!("[skills] {}", msg);
     let _ = window.emit("skills-install-log", msg);
+}
+
+async fn install_skills_with_timeout(
+    window: &WebviewWindow,
+    target: &Path,
+    project_path: Option<&str>,
+) -> Result<InstallResult, String> {
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(SKILLS_INSTALL_TIMEOUT_SECS),
+        install_skills_to(window, target, project_path),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            let message = format!(
+                "Skills installation timed out after {} seconds. Check your network or try again later.",
+                SKILLS_INSTALL_TIMEOUT_SECS
+            );
+            emit_log(window, &message);
+            Err(message)
+        }
+    }
 }
 
 /// Core installation logic.

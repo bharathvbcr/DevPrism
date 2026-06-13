@@ -10,13 +10,10 @@ interface RecentProject {
 interface ProjectState {
   recentProjects: RecentProject[];
   lastProjectFolder: string | null;
-  skipNextAutoRestore: boolean;
   addRecentProject: (path: string) => void;
   removeRecentProject: (path: string) => void;
   renameRecentProject: (oldPath: string, newPath: string) => void;
   setLastProjectFolder: (path: string) => void;
-  requestSkipAutoRestore: () => void;
-  consumeSkipAutoRestore: () => boolean;
 }
 
 const MAX_RECENT = 10;
@@ -42,18 +39,8 @@ export const useProjectStore = create<ProjectState>()(
     (set) => ({
       recentProjects: [],
       lastProjectFolder: null,
-      skipNextAutoRestore: false,
 
       setLastProjectFolder: (path) => set({ lastProjectFolder: path }),
-      requestSkipAutoRestore: () => set({ skipNextAutoRestore: true }),
-      consumeSkipAutoRestore: () => {
-        let shouldSkip = false;
-        set((state) => {
-          shouldSkip = state.skipNextAutoRestore;
-          return shouldSkip ? { skipNextAutoRestore: false } : state;
-        });
-        return shouldSkip;
-      },
 
       addRecentProject: (path) => {
         const normalizedPath = normalizeRecentPath(path);

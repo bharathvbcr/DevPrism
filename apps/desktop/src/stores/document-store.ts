@@ -536,7 +536,6 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
     clearZoomCache();
     clearEditorStateCache();
     clearPdfBytesCache();
-    useProjectStore.getState().requestSkipAutoRestore();
     set({
       projectRoot: null,
       files: [],

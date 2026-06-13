@@ -126,6 +126,7 @@ export interface TabState {
   sessionProviderKey: string | null;
   messages: ClaudeStreamMessage[];
   isStreaming: boolean;
+  streamingStartedAt: number | null;
   error: string | null;
   totalInputTokens: number;
   totalOutputTokens: number;
@@ -141,6 +142,7 @@ const TAB_FIELDS = [
   "sessionId",
   "messages",
   "isStreaming",
+  "streamingStartedAt",
   "error",
   "totalInputTokens",
   "totalOutputTokens",
@@ -157,6 +159,7 @@ function makeDefaultTab(id: string): TabState {
     sessionProviderKey: null,
     messages: [],
     isStreaming: false,
+    streamingStartedAt: null,
     error: null,
     totalInputTokens: 0,
     totalOutputTokens: 0,
@@ -542,6 +545,7 @@ interface ClaudeChatState {
   messages: ClaudeStreamMessage[];
   sessionId: string | null;
   isStreaming: boolean;
+  streamingStartedAt: number | null;
   error: string | null;
   totalInputTokens: number;
   totalOutputTokens: number;
@@ -640,6 +644,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
   messages: [],
   sessionId: null,
   isStreaming: false,
+  streamingStartedAt: null,
   error: null,
   _cancelledByUser: false,
   totalInputTokens: 0,
@@ -753,6 +758,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       : (sessionId ?? null);
 
     const sendStart = performance.now();
+    const streamingStartedAt = Date.now();
     log.info("sendPrompt start", {
       sessionId: !!sessionId,
       providerChanged,
@@ -816,6 +822,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         providerKey: requestProviderKey,
         sessionProviderKey: requestProviderKey,
         isStreaming: true,
+        streamingStartedAt,
         error: null,
         pendingTemporaryFilePaths: temporaryFilePaths,
       };
@@ -916,6 +923,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       set((s) =>
         applyTabUpdate(s, activeTabId, {
           isStreaming: false,
+          streamingStartedAt: null,
           error: err?.message || String(err),
         }),
       );
@@ -1097,6 +1105,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     set((s) =>
       applyTabUpdate(s, activeTabId, {
         isStreaming: false,
+        streamingStartedAt: null,
         queuedGuidance: [],
         forceQueuedGuidanceOnComplete: false,
         forcedQueuedGuidanceId: null,
@@ -1115,6 +1124,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       applyTabUpdate(s, activeTabId, {
         messages: [],
         error: null,
+        streamingStartedAt: null,
         totalInputTokens: 0,
         totalOutputTokens: 0,
         queuedGuidance: [],
@@ -1142,6 +1152,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         messages: newTab.messages,
         sessionId: newTab.sessionId,
         isStreaming: newTab.isStreaming,
+        streamingStartedAt: newTab.streamingStartedAt,
         error: newTab.error,
         totalInputTokens: newTab.totalInputTokens,
         totalOutputTokens: newTab.totalOutputTokens,
@@ -1162,6 +1173,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         sessionProviderKey: null,
         error: null,
         isStreaming: false,
+        streamingStartedAt: null,
         totalInputTokens: 0,
         totalOutputTokens: 0,
         title: "New Chat",
@@ -1196,6 +1208,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         messages: existingTab.messages,
         sessionId: existingTab.sessionId,
         isStreaming: existingTab.isStreaming,
+        streamingStartedAt: existingTab.streamingStartedAt,
         error: existingTab.error,
         totalInputTokens: existingTab.totalInputTokens,
         totalOutputTokens: existingTab.totalOutputTokens,
@@ -1222,6 +1235,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
           messages: newTab.messages,
           sessionId: newTab.sessionId,
           isStreaming: newTab.isStreaming,
+          streamingStartedAt: newTab.streamingStartedAt,
           error: newTab.error,
           totalInputTokens: newTab.totalInputTokens,
           totalOutputTokens: newTab.totalOutputTokens,
@@ -1243,6 +1257,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         sessionProviderKey: null,
         error: null,
         isStreaming: false,
+        streamingStartedAt: null,
         totalInputTokens: 0,
         totalOutputTokens: 0,
         title: sessionTitle ?? "New Chat",
@@ -1324,6 +1339,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       messages: newTab.messages,
       sessionId: newTab.sessionId,
       isStreaming: newTab.isStreaming,
+      streamingStartedAt: newTab.streamingStartedAt,
       error: newTab.error,
       totalInputTokens: newTab.totalInputTokens,
       totalOutputTokens: newTab.totalOutputTokens,
@@ -1362,6 +1378,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         messages: newActive.messages,
         sessionId: newActive.sessionId,
         isStreaming: newActive.isStreaming,
+        streamingStartedAt: newActive.streamingStartedAt,
         error: newActive.error,
         totalInputTokens: newActive.totalInputTokens,
         totalOutputTokens: newActive.totalOutputTokens,
@@ -1388,6 +1405,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       messages: targetTab.messages,
       sessionId: targetTab.sessionId,
       isStreaming: targetTab.isStreaming,
+      streamingStartedAt: targetTab.streamingStartedAt,
       error: targetTab.error,
       totalInputTokens: targetTab.totalInputTokens,
       totalOutputTokens: targetTab.totalOutputTokens,
@@ -1467,7 +1485,15 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
   },
 
   _setStreaming: (tabId: string, streaming: boolean) => {
-    set((state) => applyTabUpdate(state, tabId, { isStreaming: streaming }));
+    set((state) => {
+      const tab = state.tabs.find((t) => t.id === tabId);
+      return applyTabUpdate(state, tabId, {
+        isStreaming: streaming,
+        streamingStartedAt: streaming
+          ? (tab?.streamingStartedAt ?? Date.now())
+          : null,
+      });
+    });
   },
 
   _setError: (tabId: string, error: string | null) => {

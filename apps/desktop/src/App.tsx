@@ -198,6 +198,12 @@ export function App({ onReady }: { onReady?: () => void }) {
     onReady?.();
   }, [onReady]);
 
+  useEffect(() => {
+    if (!projectRoot) {
+      getCurrentWindow().setTitle("ClaudePrism");
+    }
+  }, [projectRoot]);
+
   // Listen for debug panel toggle (Ctrl+Shift+D)
   useEffect(() => {
     const handler = () => setShowDebug((prev) => !prev);

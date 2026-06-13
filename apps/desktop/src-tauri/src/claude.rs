@@ -2655,7 +2655,10 @@ fn anthropic_response_has_message_content(response: &Value) -> bool {
         .is_some_and(|content| {
             content.iter().any(|block| {
                 block.get("text").and_then(|value| value.as_str()).is_some()
-                    || block.get("type").and_then(|value| value.as_str()) == Some("tool_use")
+                    || block
+                        .get("type")
+                        .and_then(|value| value.as_str())
+                        .is_some_and(|block_type| matches!(block_type, "tool_use" | "thinking"))
             })
         })
 }
@@ -4778,6 +4781,25 @@ mod tests {
             anthropic_messages_url("https://api.deepseek.com/anthropic/v1"),
             "https://api.deepseek.com/anthropic/v1/messages"
         );
+    }
+
+    #[test]
+    fn test_anthropic_response_has_message_content_with_thinking_block() {
+        let response = serde_json::json!({
+            "content": [{
+                "type": "thinking",
+                "thinking": "We need to output ok."
+            }]
+        });
+
+        assert!(anthropic_response_has_message_content(&response));
+    }
+
+    #[test]
+    fn test_anthropic_response_has_message_content_with_empty_content() {
+        let response = serde_json::json!({});
+
+        assert!(!anthropic_response_has_message_content(&response));
     }
 
     #[test]

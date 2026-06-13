@@ -17,6 +17,7 @@ import {
   ListIcon,
   HashIcon,
   GithubIcon,
+  PanelLeftIcon,
   ChevronRightIcon,
   ChevronDownIcon,
   FileCodeIcon,
@@ -25,6 +26,7 @@ import {
   AppWindowIcon,
   FlaskConicalIcon,
   TerminalIcon,
+  type LucideIcon,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -67,6 +69,11 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import {
+  HoverCard,
+  HoverCardContent,
+  HoverCardTrigger,
+} from "@/components/ui/hover-card";
 import { Input } from "@/components/ui/input";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -263,7 +270,134 @@ function useAppVersion() {
 
 // ─── Sidebar ───
 
-export function Sidebar() {
+function LayoutPaneSwitcher({
+  controls,
+  onQuickToggleSidebar,
+  side = "bottom",
+  align = "end",
+  buttonClassName,
+}: {
+  controls?: LayoutControls;
+  onQuickToggleSidebar?: () => void;
+  side?: "top" | "right" | "bottom" | "left";
+  align?: "start" | "center" | "end";
+  buttonClassName?: string;
+}) {
+  const trigger = (
+    <Button
+      variant="ghost"
+      size="icon"
+      className={cn(
+        "transition-transform duration-150 ease-out hover:scale-105",
+        buttonClassName,
+      )}
+      onClick={onQuickToggleSidebar}
+      title="Layout"
+      aria-label="Layout"
+    >
+      <PanelLeftIcon className="size-3.5" />
+    </Button>
+  );
+
+  if (!controls) return trigger;
+
+  return (
+    <HoverCard openDelay={80} closeDelay={140}>
+      <HoverCardTrigger asChild>{trigger}</HoverCardTrigger>
+      <HoverCardContent
+        side={side}
+        align={align}
+        sideOffset={8}
+        className="w-44 rounded-2xl border-border/70 bg-popover/95 p-1.5 shadow-2xl backdrop-blur"
+      >
+        <div className="space-y-1">
+          <LayoutToggleRow
+            icon={FileCodeIcon}
+            label="Code"
+            checked={controls.codeVisible}
+            onCheckedChange={controls.setCodeVisible}
+          />
+          <LayoutToggleRow
+            icon={FileTextIcon}
+            label="PDF"
+            checked={controls.pdfVisible}
+            onCheckedChange={controls.setPdfVisible}
+          />
+          <LayoutToggleRow
+            icon={PanelLeftIcon}
+            label="Sidebar"
+            checked={controls.sidebarVisible}
+            onCheckedChange={controls.setSidebarVisible}
+          />
+        </div>
+      </HoverCardContent>
+    </HoverCard>
+  );
+}
+
+function LayoutToggleRow({
+  icon: Icon,
+  label,
+  checked,
+  onCheckedChange,
+}: {
+  icon: LucideIcon;
+  label: string;
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      className={cn(
+        "flex h-10 w-full items-center gap-2.5 rounded-xl px-2.5 text-left transition-colors hover:bg-accent/70",
+        checked && "bg-accent/45 text-accent-foreground",
+      )}
+      onClick={() => onCheckedChange(!checked)}
+    >
+      <Icon className="size-3.5 shrink-0 text-muted-foreground" />
+      <span className="min-w-0 flex-1 truncate font-medium text-sm">
+        {label}
+      </span>
+      <span
+        className={cn(
+          "relative h-5 w-9 shrink-0 rounded-full transition-colors",
+          checked ? "bg-foreground" : "bg-muted-foreground/30",
+        )}
+      >
+        <span
+          className={cn(
+            "absolute top-0.5 size-4 rounded-full bg-background transition-transform",
+            checked ? "translate-x-[18px]" : "translate-x-0.5",
+          )}
+        />
+      </span>
+    </button>
+  );
+}
+
+interface SidebarProps {
+  collapsed?: boolean;
+  onToggleCollapsed?: () => void;
+  layoutControls?: LayoutControls;
+}
+
+interface LayoutControls {
+  codeVisible: boolean;
+  pdfVisible: boolean;
+  sidebarVisible: boolean;
+  setCodeVisible: (visible: boolean) => void;
+  setPdfVisible: (visible: boolean) => void;
+  setSidebarVisible: (visible: boolean) => void;
+}
+
+export function Sidebar({
+  collapsed = false,
+  onToggleCollapsed,
+  layoutControls,
+}: SidebarProps) {
   const appVersion = useAppVersion();
   const files = useDocumentStore((s) => s.files);
   const activeFileId = useDocumentStore((s) => s.activeFileId);
@@ -1014,484 +1148,598 @@ export function Sidebar() {
   const pendingDeleteCount = pendingDeleteItems?.length ?? 0;
   const pendingDeletePreview = pendingDeleteItems?.slice(0, 4) ?? [];
 
-  return (
-    <div className="flex h-full flex-col bg-sidebar text-sidebar-foreground">
-      {/* Header — padded top for macOS overlay titlebar */}
-      <div className="relative flex h-[calc(var(--workspace-topbar-height)+var(--titlebar-height))] items-center justify-center border-sidebar-border border-b px-3">
-        <button
-          type="button"
-          className={cn(
-            "min-w-0 max-w-[calc(100%-3.5rem)] rounded-md px-2 py-1 font-semibold text-sm transition-colors",
-            projectRoot
-              ? "hover:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              : "cursor-default",
-          )}
-          onClick={openProjectRenameDialog}
-          disabled={!projectRoot}
-          title={projectRoot ? "Rename project folder" : undefined}
-          aria-label="Rename project folder"
-        >
-          <span className="block truncate">{projectName}</span>
-        </button>
-        <div className="absolute right-3 flex items-center gap-0.5">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-6"
-            onClick={closeProject}
-            title="Close Project"
-          >
-            <HomeIcon className="size-3.5" />
-          </Button>
-        </div>
+  const collapsedRail = (
+    <div className="flex h-full w-full min-w-0 flex-col items-center bg-sidebar text-sidebar-foreground">
+      <div className="flex h-[calc(var(--workspace-topbar-height)+var(--titlebar-height))] w-full items-center justify-center border-sidebar-border border-b">
+        <LayoutPaneSwitcher
+          controls={layoutControls}
+          onQuickToggleSidebar={onToggleCollapsed}
+          side="right"
+          align="start"
+          buttonClassName="size-7"
+        />
       </div>
+      <div className="flex min-h-0 flex-1 flex-col items-center gap-1.5 py-2">
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-7 transition-transform duration-150 ease-out hover:scale-105"
+          onClick={onToggleCollapsed}
+          title="Files"
+          aria-label="Expand Files"
+        >
+          <FolderIcon className="size-3.5" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-7 transition-transform duration-150 ease-out hover:scale-105"
+          onClick={onToggleCollapsed}
+          title="Outline"
+          aria-label="Expand Outline"
+        >
+          <ListIcon className="size-3.5" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-7 transition-transform duration-150 ease-out hover:scale-105"
+          onClick={onToggleCollapsed}
+          title="Zotero"
+          aria-label="Expand Zotero"
+        >
+          <FileTextIcon className="size-3.5" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-7 transition-transform duration-150 ease-out hover:scale-105"
+          onClick={onToggleCollapsed}
+          title="Environment"
+          aria-label="Expand Environment"
+        >
+          <AppWindowIcon className="size-3.5" />
+        </Button>
+      </div>
+      <div className="flex h-9 w-full items-center justify-center border-sidebar-border border-t">
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-7 transition-transform duration-150 ease-out hover:scale-105"
+          onClick={closeProject}
+          title="Close Project"
+          aria-label="Close Project"
+        >
+          <HomeIcon className="size-3.5" />
+        </Button>
+      </div>
+    </div>
+  );
 
-      {/* Resizable sections */}
-      <PanelGroup direction="vertical" className="min-h-0 flex-1">
-        {/* Files */}
-        <Panel defaultSize={50} minSize={15}>
-          <div
-            ref={sidebarFilesRef}
-            className="flex h-full flex-col"
-            data-sidebar-files
-          >
-            <div className="flex h-8 shrink-0 items-center justify-between gap-2 border-sidebar-border border-b px-3">
-              <div className="flex min-w-0 items-center gap-2">
-                <FolderIcon className="size-3.5 shrink-0 text-muted-foreground" />
-                <span className="truncate font-medium text-xs">Files</span>
-              </div>
-              <div className="flex shrink-0 items-center gap-0.5">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-5"
-                  title="Refresh"
-                  disabled={isRefreshingFiles}
-                  onClick={() => void runRefreshFiles()}
-                >
-                  <RefreshCwIcon
-                    className={cn(
-                      "size-3",
-                      isRefreshingFiles && "animate-spin",
-                    )}
-                  />
-                </Button>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
+  return (
+    <div className="relative h-full overflow-hidden bg-sidebar text-sidebar-foreground">
+      <div
+        className={cn(
+          "absolute inset-y-0 left-0 z-10 w-full transition-[opacity,transform] duration-150 ease-out",
+          collapsed
+            ? "translate-x-0 opacity-100"
+            : "pointer-events-none -translate-x-1 opacity-0",
+        )}
+        aria-hidden={!collapsed}
+      >
+        {collapsedRail}
+      </div>
+      <div
+        className={cn(
+          "h-full w-full min-w-0 transition-[opacity,transform] duration-150 ease-out",
+          collapsed
+            ? "pointer-events-none -translate-x-2 opacity-0"
+            : "translate-x-0 opacity-100",
+        )}
+        aria-hidden={collapsed}
+      >
+        <div className="flex h-full flex-col bg-sidebar text-sidebar-foreground">
+          {/* Header — padded top for macOS overlay titlebar */}
+          <div className="grid h-[calc(var(--workspace-topbar-height)+var(--titlebar-height))] grid-cols-[2rem_minmax(0,1fr)_2rem] items-center gap-2 border-sidebar-border border-b px-3">
+            <div className="flex items-center justify-start">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-6 transition-all duration-150 ease-out hover:scale-105"
+                onClick={closeProject}
+                title="Close Project"
+                aria-label="Close Project"
+              >
+                <HomeIcon className="size-3.5" />
+              </Button>
+            </div>
+            <button
+              type="button"
+              className={cn(
+                "w-full min-w-0 rounded-md px-2 py-1 font-semibold text-sm transition-colors",
+                projectRoot
+                  ? "hover:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  : "cursor-default",
+              )}
+              onClick={openProjectRenameDialog}
+              disabled={!projectRoot}
+              title={projectRoot ? "Rename project folder" : undefined}
+              aria-label="Rename project folder"
+            >
+              <span className="block truncate">{projectName}</span>
+            </button>
+            <div className="flex items-center justify-end">
+              <LayoutPaneSwitcher
+                controls={layoutControls}
+                onQuickToggleSidebar={onToggleCollapsed}
+                side="bottom"
+                align="end"
+                buttonClassName="size-6"
+              />
+            </div>
+          </div>
+
+          {/* Resizable sections */}
+          <PanelGroup direction="vertical" className="min-h-0 flex-1">
+            {/* Files */}
+            <Panel defaultSize={50} minSize={15}>
+              <div
+                ref={sidebarFilesRef}
+                className="flex h-full flex-col"
+                data-sidebar-files
+              >
+                <div className="flex h-8 shrink-0 items-center justify-between gap-2 border-sidebar-border border-b px-3">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <FolderIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                    <span className="truncate font-medium text-xs">Files</span>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-0.5">
                     <Button
                       variant="ghost"
                       size="icon"
                       className="size-5"
-                      title="Add"
+                      title="Refresh"
+                      disabled={isRefreshingFiles}
+                      onClick={() => void runRefreshFiles()}
                     >
-                      <PlusIcon className="size-3" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem onClick={() => openNewFileDialog()}>
-                      <FileTextIcon className="mr-2 size-4" />
-                      New LaTeX File
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => openNewFolderDialog()}>
-                      <FolderPlusIcon className="mr-2 size-4" />
-                      New Folder
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem onClick={() => handleImport()}>
-                      <UploadIcon className="mr-2 size-4" />
-                      Import File
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-            </div>
-            <DndContext
-              sensors={sensors}
-              onDragStart={handleDragStart}
-              onDragEnd={handleDragEnd}
-            >
-              <ContextMenu>
-                <ContextMenuTrigger asChild>
-                  <DroppableRoot nativeDragOver={nativeDragOver === "__root__"}>
-                    {tree.map((node) => (
-                      <FileTreeNode
-                        key={node.relativePath}
-                        node={node}
-                        depth={0}
-                        activeFileId={activeFileId}
-                        selectedItemKeys={selectedItemKeys}
-                        expandedFolders={expandedFolders}
-                        onToggleFolder={toggleFolder}
-                        onSelectFile={(id: string) => {
-                          const parent = parentFolderOfPath(id);
-                          setPasteTargetFolder(parent);
-                          setActiveFile(id);
-                        }}
-                        onItemClick={handleTreeItemClick}
-                        onItemContextMenu={handleTreeItemContextMenu}
-                        onNewFile={openNewFileDialog}
-                        onNewFolder={openNewFolderDialog}
-                        onImport={handleImport}
-                        onRename={openRenameDialog}
-                        onDeleteSelection={requestDeleteSelection}
-                        canDeleteSelection={canDeleteSelection}
-                        getEffectiveSelectionCount={getEffectiveSelectionCount}
-                        nativeDragOver={nativeDragOver}
+                      <RefreshCwIcon
+                        className={cn(
+                          "size-3",
+                          isRefreshingFiles && "animate-spin",
+                        )}
                       />
-                    ))}
-                  </DroppableRoot>
-                </ContextMenuTrigger>
-                <ContextMenuContent>
-                  <ContextMenuItem onClick={() => openNewFileDialog()}>
-                    <FileTextIcon className="mr-2 size-4" />
-                    New File
-                  </ContextMenuItem>
-                  <ContextMenuItem onClick={() => openNewFolderDialog()}>
-                    <FolderPlusIcon className="mr-2 size-4" />
-                    New Folder
-                  </ContextMenuItem>
-                  <ContextMenuSeparator />
-                  <ContextMenuItem onClick={() => handleImport()}>
-                    <UploadIcon className="mr-2 size-4" />
-                    Import File
-                  </ContextMenuItem>
-                </ContextMenuContent>
-              </ContextMenu>
-              <DragOverlay dropAnimation={null}>
-                {activeDrag && (
-                  <div className="flex items-center gap-2 rounded-md bg-sidebar px-2 py-1 text-sm shadow-lg ring-1 ring-ring">
-                    {activeDrag.type === "folder" ? (
-                      <FolderIcon className="size-4 shrink-0" />
-                    ) : (
-                      <FileTextIcon className="size-4 shrink-0" />
-                    )}
-                    <span className="truncate">
-                      {activeDrag.count > 1
-                        ? `${activeDrag.count} selected`
-                        : activeDrag.name}
-                    </span>
+                    </Button>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="size-5"
+                          title="Add"
+                        >
+                          <PlusIcon className="size-3" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem onClick={() => openNewFileDialog()}>
+                          <FileTextIcon className="mr-2 size-4" />
+                          New LaTeX File
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => openNewFolderDialog()}>
+                          <FolderPlusIcon className="mr-2 size-4" />
+                          New Folder
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem onClick={() => handleImport()}>
+                          <UploadIcon className="mr-2 size-4" />
+                          Import File
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </div>
-                )}
-              </DragOverlay>
-            </DndContext>
-          </div>
-        </Panel>
-
-        <PanelResizeHandle className="h-px bg-sidebar-border transition-colors hover:bg-ring data-resize-handle-active:bg-ring" />
-
-        {/* Outline */}
-        <Panel defaultSize={20} minSize={10}>
-          <div className="flex h-full flex-col">
-            <div className="flex h-8 shrink-0 items-center justify-center gap-2 px-3">
-              <ListIcon className="size-3.5 text-muted-foreground" />
-              <span className="font-medium text-xs">Outline</span>
-            </div>
-            <div className="min-h-0 flex-1 overflow-y-auto p-1">
-              {toc.length > 0 ? (
-                toc.map((item, index) => (
-                  <button
-                    key={index}
-                    className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-sm transition-colors hover:bg-sidebar-accent/50"
-                    style={{ paddingLeft: `${(item.level - 1) * 12 + 8}px` }}
-                    onClick={() => handleTocClick(item.line)}
-                  >
-                    <HashIcon className="size-3 shrink-0 text-muted-foreground" />
-                    <span className="truncate">{item.title}</span>
-                  </button>
-                ))
-              ) : (
-                <div className="px-2 py-1 text-muted-foreground text-xs">
-                  No sections found
                 </div>
-              )}
+                <DndContext
+                  sensors={sensors}
+                  onDragStart={handleDragStart}
+                  onDragEnd={handleDragEnd}
+                >
+                  <ContextMenu>
+                    <ContextMenuTrigger asChild>
+                      <DroppableRoot
+                        nativeDragOver={nativeDragOver === "__root__"}
+                      >
+                        {tree.map((node) => (
+                          <FileTreeNode
+                            key={node.relativePath}
+                            node={node}
+                            depth={0}
+                            activeFileId={activeFileId}
+                            selectedItemKeys={selectedItemKeys}
+                            expandedFolders={expandedFolders}
+                            onToggleFolder={toggleFolder}
+                            onSelectFile={(id: string) => {
+                              const parent = parentFolderOfPath(id);
+                              setPasteTargetFolder(parent);
+                              setActiveFile(id);
+                            }}
+                            onItemClick={handleTreeItemClick}
+                            onItemContextMenu={handleTreeItemContextMenu}
+                            onNewFile={openNewFileDialog}
+                            onNewFolder={openNewFolderDialog}
+                            onImport={handleImport}
+                            onRename={openRenameDialog}
+                            onDeleteSelection={requestDeleteSelection}
+                            canDeleteSelection={canDeleteSelection}
+                            getEffectiveSelectionCount={
+                              getEffectiveSelectionCount
+                            }
+                            nativeDragOver={nativeDragOver}
+                          />
+                        ))}
+                      </DroppableRoot>
+                    </ContextMenuTrigger>
+                    <ContextMenuContent>
+                      <ContextMenuItem onClick={() => openNewFileDialog()}>
+                        <FileTextIcon className="mr-2 size-4" />
+                        New File
+                      </ContextMenuItem>
+                      <ContextMenuItem onClick={() => openNewFolderDialog()}>
+                        <FolderPlusIcon className="mr-2 size-4" />
+                        New Folder
+                      </ContextMenuItem>
+                      <ContextMenuSeparator />
+                      <ContextMenuItem onClick={() => handleImport()}>
+                        <UploadIcon className="mr-2 size-4" />
+                        Import File
+                      </ContextMenuItem>
+                    </ContextMenuContent>
+                  </ContextMenu>
+                  <DragOverlay dropAnimation={null}>
+                    {activeDrag && (
+                      <div className="flex items-center gap-2 rounded-md bg-sidebar px-2 py-1 text-sm shadow-lg ring-1 ring-ring">
+                        {activeDrag.type === "folder" ? (
+                          <FolderIcon className="size-4 shrink-0" />
+                        ) : (
+                          <FileTextIcon className="size-4 shrink-0" />
+                        )}
+                        <span className="truncate">
+                          {activeDrag.count > 1
+                            ? `${activeDrag.count} selected`
+                            : activeDrag.name}
+                        </span>
+                      </div>
+                    )}
+                  </DragOverlay>
+                </DndContext>
+              </div>
+            </Panel>
+
+            <PanelResizeHandle className="h-px bg-sidebar-border transition-colors hover:bg-ring data-resize-handle-active:bg-ring" />
+
+            {/* Outline */}
+            <Panel defaultSize={20} minSize={10}>
+              <div className="flex h-full flex-col">
+                <div className="flex h-8 shrink-0 items-center justify-center gap-2 px-3">
+                  <ListIcon className="size-3.5 text-muted-foreground" />
+                  <span className="font-medium text-xs">Outline</span>
+                </div>
+                <div className="min-h-0 flex-1 overflow-y-auto p-1">
+                  {toc.length > 0 ? (
+                    toc.map((item, index) => (
+                      <button
+                        key={index}
+                        className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-sm transition-colors hover:bg-sidebar-accent/50"
+                        style={{
+                          paddingLeft: `${(item.level - 1) * 12 + 8}px`,
+                        }}
+                        onClick={() => handleTocClick(item.line)}
+                      >
+                        <HashIcon className="size-3 shrink-0 text-muted-foreground" />
+                        <span className="truncate">{item.title}</span>
+                      </button>
+                    ))
+                  ) : (
+                    <div className="px-2 py-1 text-muted-foreground text-xs">
+                      No sections found
+                    </div>
+                  )}
+                </div>
+              </div>
+            </Panel>
+
+            <PanelResizeHandle className="h-px bg-sidebar-border transition-colors hover:bg-ring data-resize-handle-active:bg-ring" />
+
+            {/* Zotero */}
+            <Panel defaultSize={15} minSize={10}>
+              <div className="flex h-full flex-col">
+                <div className="flex h-8 shrink-0 items-center">
+                  <ZoteroHeader />
+                </div>
+                <div className="min-h-0 flex-1 overflow-hidden">
+                  <ZoteroPanel />
+                </div>
+              </div>
+            </Panel>
+          </PanelGroup>
+
+          {/* Environment section — Python + Skills */}
+          <EnvironmentSection projectPath={projectRoot} />
+
+          {/* Footer */}
+          <div className="flex h-9 items-center justify-between border-sidebar-border border-t px-3 text-muted-foreground text-xs">
+            <span className="truncate">ClaudePrism v{appVersion}</span>
+            <div className="flex shrink-0 items-center gap-1">
+              <Button variant="ghost" size="icon" className="size-6" asChild>
+                <a
+                  href="https://github.com/delibae/claude-prism"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title="GitHub"
+                >
+                  <GithubIcon className="size-3.5" />
+                </a>
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-6"
+                onClick={() => {
+                  if (theme === "system") setTheme("light");
+                  else if (theme === "light") setTheme("dark");
+                  else setTheme("system");
+                }}
+                title={
+                  theme === "system"
+                    ? "System theme"
+                    : theme === "light"
+                      ? "Light mode"
+                      : "Dark mode"
+                }
+              >
+                {theme === "system" ? (
+                  <MonitorIcon className="size-3.5" />
+                ) : theme === "light" ? (
+                  <SunIcon className="size-3.5" />
+                ) : (
+                  <MoonIcon className="size-3.5" />
+                )}
+              </Button>
             </div>
           </div>
-        </Panel>
 
-        <PanelResizeHandle className="h-px bg-sidebar-border transition-colors hover:bg-ring data-resize-handle-active:bg-ring" />
-
-        {/* Zotero */}
-        <Panel defaultSize={15} minSize={10}>
-          <div className="flex h-full flex-col">
-            <div className="flex h-8 shrink-0 items-center">
-              <ZoteroHeader />
-            </div>
-            <div className="min-h-0 flex-1 overflow-hidden">
-              <ZoteroPanel />
-            </div>
-          </div>
-        </Panel>
-      </PanelGroup>
-
-      {/* Environment section — Python + Skills */}
-      <EnvironmentSection projectPath={projectRoot} />
-
-      {/* Footer */}
-      <div className="flex h-9 items-center justify-between border-sidebar-border border-t px-3 text-muted-foreground text-xs">
-        <span className="truncate">ClaudePrism v{appVersion}</span>
-        <div className="flex shrink-0 items-center gap-1">
-          <Button variant="ghost" size="icon" className="size-6" asChild>
-            <a
-              href="https://github.com/delibae/claude-prism"
-              target="_blank"
-              rel="noopener noreferrer"
-              title="GitHub"
-            >
-              <GithubIcon className="size-3.5" />
-            </a>
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-6"
-            onClick={() => {
-              if (theme === "system") setTheme("light");
-              else if (theme === "light") setTheme("dark");
-              else setTheme("system");
-            }}
-            title={
-              theme === "system"
-                ? "System theme"
-                : theme === "light"
-                  ? "Light mode"
-                  : "Dark mode"
-            }
-          >
-            {theme === "system" ? (
-              <MonitorIcon className="size-3.5" />
-            ) : theme === "light" ? (
-              <SunIcon className="size-3.5" />
-            ) : (
-              <MoonIcon className="size-3.5" />
-            )}
-          </Button>
-        </div>
-      </div>
-
-      {/* New File Dialog */}
-      <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>
-        <DialogContent className="overflow-hidden sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>
-              New File{addDialogFolder ? ` in ${addDialogFolder}` : ""}
-            </DialogTitle>
-          </DialogHeader>
-          <div className="space-y-2 py-4">
-            <Input
-              placeholder="filename.tex"
-              value={newFileName}
-              onChange={(e) => {
-                setNewFileName(e.target.value);
-                setNameError("");
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleAddFile();
-              }}
-              autoFocus
-            />
-            {nameError && (
-              <p className="text-destructive text-xs">{nameError}</p>
-            )}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setAddDialogOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={handleAddFile} disabled={!newFileName.trim()}>
-              Create
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* New Folder Dialog */}
-      <Dialog open={folderDialogOpen} onOpenChange={setFolderDialogOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>
-              New Folder{folderDialogParent ? ` in ${folderDialogParent}` : ""}
-            </DialogTitle>
-          </DialogHeader>
-          <div className="space-y-2 py-4">
-            <Input
-              placeholder="folder name"
-              value={newFolderName}
-              onChange={(e) => {
-                setNewFolderName(e.target.value);
-                setNameError("");
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleCreateFolder();
-              }}
-              autoFocus
-            />
-            {nameError && (
-              <p className="text-destructive text-xs">{nameError}</p>
-            )}
-          </div>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setFolderDialogOpen(false)}
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={handleCreateFolder}
-              disabled={!newFolderName.trim()}
-            >
-              Create
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Rename Project Dialog */}
-      <Dialog
-        open={projectRenameDialogOpen}
-        onOpenChange={(open) => {
-          if (!isRenamingProject) setProjectRenameDialogOpen(open);
-        }}
-      >
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Rename Project</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-2 py-4">
-            <Input
-              value={projectRenameValue}
-              onChange={(e) => {
-                setProjectRenameValue(e.target.value);
-                setProjectRenameError("");
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleProjectRename();
-              }}
-              autoFocus
-            />
-            {projectRenameError && (
-              <p className="text-destructive text-xs">{projectRenameError}</p>
-            )}
-          </div>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setProjectRenameDialogOpen(false)}
-              disabled={isRenamingProject}
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={handleProjectRename}
-              disabled={!projectRenameValue.trim() || isRenamingProject}
-            >
-              {isRenamingProject ? "Renaming..." : "Rename"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Rename Dialog */}
-      <Dialog open={renameDialogOpen} onOpenChange={setRenameDialogOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Rename</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-2 py-4">
-            <Input
-              value={renameValue}
-              onChange={(e) => {
-                setRenameValue(e.target.value);
-                setNameError("");
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleRename();
-              }}
-              autoFocus
-            />
-            {nameError && (
-              <p className="text-destructive text-xs">{nameError}</p>
-            )}
-          </div>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setRenameDialogOpen(false)}
-            >
-              Cancel
-            </Button>
-            <Button onClick={handleRename}>Rename</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Delete confirmation */}
-      <Dialog
-        open={!!pendingDeleteItems}
-        onOpenChange={(open) => {
-          if (!open && !isDeletingSelection) {
-            setPendingDeleteItems(null);
-            setDeleteError("");
-          }
-        }}
-      >
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>
-              Delete {pendingDeleteCount === 1 ? "Item" : "Items"}
-            </DialogTitle>
-            <DialogDescription>
-              {pendingDeleteCount === 1
-                ? "This item will be removed from disk."
-                : `${pendingDeleteCount} selected items will be removed from disk.`}
-            </DialogDescription>
-          </DialogHeader>
-          {pendingDeletePreview.length > 0 && (
-            <div className="min-w-0 max-w-full overflow-hidden rounded-md border border-border bg-muted/40 px-3 py-2">
-              <div className="space-y-1">
-                {pendingDeletePreview.map((item) => (
-                  <div
-                    key={fileTreeSelectionKey(item)}
-                    className="min-w-0 break-all font-mono text-muted-foreground text-xs"
-                  >
-                    {item.type === "folder" ? "Folder" : "File"}: {item.path}
-                  </div>
-                ))}
-                {pendingDeleteCount > pendingDeletePreview.length && (
-                  <div className="text-muted-foreground text-xs">
-                    +{pendingDeleteCount - pendingDeletePreview.length} more
-                  </div>
+          {/* New File Dialog */}
+          <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>
+            <DialogContent className="overflow-hidden sm:max-w-md">
+              <DialogHeader>
+                <DialogTitle>
+                  New File{addDialogFolder ? ` in ${addDialogFolder}` : ""}
+                </DialogTitle>
+              </DialogHeader>
+              <div className="space-y-2 py-4">
+                <Input
+                  placeholder="filename.tex"
+                  value={newFileName}
+                  onChange={(e) => {
+                    setNewFileName(e.target.value);
+                    setNameError("");
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleAddFile();
+                  }}
+                  autoFocus
+                />
+                {nameError && (
+                  <p className="text-destructive text-xs">{nameError}</p>
                 )}
               </div>
-            </div>
-          )}
-          {deleteError && (
-            <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive text-xs">
-              {deleteError}
-            </p>
-          )}
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => {
-                if (isDeletingSelection) return;
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => setAddDialogOpen(false)}
+                >
+                  Cancel
+                </Button>
+                <Button onClick={handleAddFile} disabled={!newFileName.trim()}>
+                  Create
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
+          {/* New Folder Dialog */}
+          <Dialog open={folderDialogOpen} onOpenChange={setFolderDialogOpen}>
+            <DialogContent className="sm:max-w-md">
+              <DialogHeader>
+                <DialogTitle>
+                  New Folder
+                  {folderDialogParent ? ` in ${folderDialogParent}` : ""}
+                </DialogTitle>
+              </DialogHeader>
+              <div className="space-y-2 py-4">
+                <Input
+                  placeholder="folder name"
+                  value={newFolderName}
+                  onChange={(e) => {
+                    setNewFolderName(e.target.value);
+                    setNameError("");
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleCreateFolder();
+                  }}
+                  autoFocus
+                />
+                {nameError && (
+                  <p className="text-destructive text-xs">{nameError}</p>
+                )}
+              </div>
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => setFolderDialogOpen(false)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleCreateFolder}
+                  disabled={!newFolderName.trim()}
+                >
+                  Create
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
+          {/* Rename Project Dialog */}
+          <Dialog
+            open={projectRenameDialogOpen}
+            onOpenChange={(open) => {
+              if (!isRenamingProject) setProjectRenameDialogOpen(open);
+            }}
+          >
+            <DialogContent className="sm:max-w-md">
+              <DialogHeader>
+                <DialogTitle>Rename Project</DialogTitle>
+              </DialogHeader>
+              <div className="space-y-2 py-4">
+                <Input
+                  value={projectRenameValue}
+                  onChange={(e) => {
+                    setProjectRenameValue(e.target.value);
+                    setProjectRenameError("");
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleProjectRename();
+                  }}
+                  autoFocus
+                />
+                {projectRenameError && (
+                  <p className="text-destructive text-xs">
+                    {projectRenameError}
+                  </p>
+                )}
+              </div>
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => setProjectRenameDialogOpen(false)}
+                  disabled={isRenamingProject}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleProjectRename}
+                  disabled={!projectRenameValue.trim() || isRenamingProject}
+                >
+                  {isRenamingProject ? "Renaming..." : "Rename"}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
+          {/* Rename Dialog */}
+          <Dialog open={renameDialogOpen} onOpenChange={setRenameDialogOpen}>
+            <DialogContent className="sm:max-w-md">
+              <DialogHeader>
+                <DialogTitle>Rename</DialogTitle>
+              </DialogHeader>
+              <div className="space-y-2 py-4">
+                <Input
+                  value={renameValue}
+                  onChange={(e) => {
+                    setRenameValue(e.target.value);
+                    setNameError("");
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleRename();
+                  }}
+                  autoFocus
+                />
+                {nameError && (
+                  <p className="text-destructive text-xs">{nameError}</p>
+                )}
+              </div>
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => setRenameDialogOpen(false)}
+                >
+                  Cancel
+                </Button>
+                <Button onClick={handleRename}>Rename</Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
+          {/* Delete confirmation */}
+          <Dialog
+            open={!!pendingDeleteItems}
+            onOpenChange={(open) => {
+              if (!open && !isDeletingSelection) {
                 setPendingDeleteItems(null);
                 setDeleteError("");
-              }}
-              disabled={isDeletingSelection}
-            >
-              Cancel
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={() => void confirmDeleteSelection()}
-              disabled={!pendingDeleteItems || isDeletingSelection}
-            >
-              {isDeletingSelection ? "Deleting..." : "Delete"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+              }
+            }}
+          >
+            <DialogContent className="sm:max-w-md">
+              <DialogHeader>
+                <DialogTitle>
+                  Delete {pendingDeleteCount === 1 ? "Item" : "Items"}
+                </DialogTitle>
+                <DialogDescription>
+                  {pendingDeleteCount === 1
+                    ? "This item will be removed from disk."
+                    : `${pendingDeleteCount} selected items will be removed from disk.`}
+                </DialogDescription>
+              </DialogHeader>
+              {pendingDeletePreview.length > 0 && (
+                <div className="min-w-0 max-w-full overflow-hidden rounded-md border border-border bg-muted/40 px-3 py-2">
+                  <div className="space-y-1">
+                    {pendingDeletePreview.map((item) => (
+                      <div
+                        key={fileTreeSelectionKey(item)}
+                        className="min-w-0 break-all font-mono text-muted-foreground text-xs"
+                      >
+                        {item.type === "folder" ? "Folder" : "File"}:{" "}
+                        {item.path}
+                      </div>
+                    ))}
+                    {pendingDeleteCount > pendingDeletePreview.length && (
+                      <div className="text-muted-foreground text-xs">
+                        +{pendingDeleteCount - pendingDeletePreview.length} more
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+              {deleteError && (
+                <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive text-xs">
+                  {deleteError}
+                </p>
+              )}
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    if (isDeletingSelection) return;
+                    setPendingDeleteItems(null);
+                    setDeleteError("");
+                  }}
+                  disabled={isDeletingSelection}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="destructive"
+                  onClick={() => void confirmDeleteSelection()}
+                  disabled={!pendingDeleteItems || isDeletingSelection}
+                >
+                  {isDeletingSelection ? "Deleting..." : "Delete"}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </div>
+      </div>
     </div>
   );
 }

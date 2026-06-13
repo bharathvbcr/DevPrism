@@ -78,8 +78,7 @@ export function ScientificSkillsOnboarding({
   const [installedSkills, setInstalledSkills] = useState<SkillInfo[]>([]);
   const [isUninstalling, setIsUninstalling] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
-  const [confirmUninstallAllOpen, setConfirmUninstallAllOpen] =
-    useState(false);
+  const [confirmUninstallAllOpen, setConfirmUninstallAllOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<SkillEntryData | null>(null);
   const [deletingSkillFolder, setDeletingSkillFolder] = useState<string | null>(
     null,
@@ -195,10 +194,7 @@ export function ScientificSkillsOnboarding({
             (line) => !line.startsWith("Preparing installer"),
           );
           if (hasBackendLog) return previous;
-          return [
-            ...previous,
-            "Waiting for the installer command to start...",
-          ];
+          return [...previous, "Waiting for the installer command to start..."];
         });
       }, 2500);
 
@@ -308,7 +304,7 @@ export function ScientificSkillsOnboarding({
   }, [checkStatus, deleteTarget]);
 
   // ─── Installing / Complete state ───
-  if (isInstalling || isComplete) {
+  if (isInstalling || isComplete || error) {
     return (
       <Dialog
         open
@@ -336,10 +332,16 @@ export function ScientificSkillsOnboarding({
             <DialogTitle className="flex items-center gap-2 text-sm">
               {isComplete ? (
                 <CheckCircle2Icon className="size-5 text-foreground" />
+              ) : error ? (
+                <AlertCircleIcon className="size-5 text-destructive" />
               ) : (
                 <FlaskConicalIcon className="size-5 text-muted-foreground" />
               )}
-              {isComplete ? "Installation Complete" : "Installing Skills"}
+              {isComplete
+                ? "Installation Complete"
+                : error
+                  ? "Installation Failed"
+                  : "Installing Skills"}
             </DialogTitle>
             {isComplete && (
               <DialogDescription>
@@ -370,10 +372,7 @@ export function ScientificSkillsOnboarding({
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => {
-                  setError(null);
-                  setIsInstalling(false);
-                }}
+                onClick={handleInstall}
                 className="gap-1.5"
               >
                 <RefreshCwIcon className="size-3.5" />
@@ -404,147 +403,149 @@ export function ScientificSkillsOnboarding({
           showCloseButton={false}
           className="flex h-[min(36rem,calc(100vh-6rem))] w-[min(56rem,calc(100vw-4rem))] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-none"
         >
-        {/* Header */}
-        <DialogHeader className="shrink-0 border-border border-b px-6 py-3">
-          <div className="flex items-center gap-4">
-            <div className="min-w-0 flex-1">
-              <DialogTitle className="text-sm">Skills</DialogTitle>
-              <DialogDescription className="mt-0.5 text-xs">
-                {totalSkills} skills across {displayCategories.length} groups -
-                install curated scientific skills or import a local Claude skill.
-                Curated set powered by{" "}
-                <a
-                  href="https://github.com/K-Dense-AI/scientific-agent-skills"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-0.5 underline decoration-border underline-offset-2 hover:text-foreground"
-                >
-                  K-Dense
-                  <ExternalLinkIcon className="size-2.5" />
-                </a>
-              </DialogDescription>
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
-              {isInstalled ? (
-                <>
-                  <Badge variant="secondary" className="gap-1 text-xs">
-                    <CheckCircle2Icon className="size-3" />
-                    {status?.skill_count} installed
-                  </Badge>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleInstall}
-                    className="gap-1.5"
+          {/* Header */}
+          <DialogHeader className="shrink-0 border-border border-b px-6 py-3">
+            <div className="flex items-center gap-4">
+              <div className="min-w-0 flex-1">
+                <DialogTitle className="text-sm">Skills</DialogTitle>
+                <DialogDescription className="mt-0.5 text-xs">
+                  {totalSkills} skills across {displayCategories.length} groups
+                  - install curated scientific skills or import a local Claude
+                  skill. Curated set powered by{" "}
+                  <a
+                    href="https://github.com/K-Dense-AI/scientific-agent-skills"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-0.5 underline decoration-border underline-offset-2 hover:text-foreground"
                   >
-                    <RefreshCwIcon className="size-3.5" />
-                    Update
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setConfirmUninstallAllOpen(true)}
-                    disabled={isUninstalling}
-                    className="gap-1.5 text-destructive hover:text-destructive"
-                  >
-                    {isUninstalling ? (
-                      <Loader2Icon className="size-3.5 animate-spin" />
-                    ) : (
-                      <Trash2Icon className="size-3.5" />
-                    )}
-                    Uninstall
-                  </Button>
-                </>
-              ) : (
-                <Button size="sm" onClick={handleInstall} className="gap-1.5">
-                  <DownloadIcon className="size-3.5" />
-                  Install All
-                </Button>
-              )}
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleImportSkill}
-                disabled={isImporting || isInstalling || isUninstalling}
-                className="gap-1.5 text-green-600 hover:text-green-700 dark:text-green-400 dark:hover:text-green-300"
-              >
-                {isImporting ? (
-                  <Loader2Icon className="size-3.5 animate-spin" />
-                ) : (
-                  <FolderPlusIcon className="size-3.5" />
-                )}
-                Import Skill
-              </Button>
-            </div>
-          </div>
-        </DialogHeader>
-
-        {/* Body — sidebar + detail */}
-        <div className="flex flex-1 overflow-hidden">
-          {/* Category sidebar */}
-          <nav className="w-64 max-w-64 shrink-0 overflow-hidden border-border border-r">
-            <ScrollArea className="h-full w-full overflow-hidden [&_[data-slot=scroll-area-scrollbar]]:hidden">
-              <div className="box-border flex w-full min-w-0 flex-col gap-0.5 overflow-x-hidden p-2">
-                {displayCategories.map((cat) => {
-                  const Icon = ICON_MAP[cat.icon] || FlaskConicalIcon;
-                  const isActive = selectedId === cat.id;
-                  return (
-                    <button
-                      key={cat.id}
-                      onClick={() => setSelectedId(cat.id)}
-                      className={cn(
-                        "box-border grid w-full max-w-full min-w-0 grid-cols-[1rem_minmax(0,1fr)] items-center gap-2.5 overflow-hidden rounded-lg px-3 py-2 text-left text-sm transition-colors",
-                        isActive
-                          ? "bg-accent font-medium text-accent-foreground"
-                          : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
-                      )}
-                      title={cat.name}
-                    >
-                      <Icon className="size-4 shrink-0" />
-                      <span className="block min-w-0 truncate">{cat.name}</span>
-                    </button>
-                  );
-                })}
+                    K-Dense
+                    <ExternalLinkIcon className="size-2.5" />
+                  </a>
+                </DialogDescription>
               </div>
-            </ScrollArea>
-          </nav>
+              <div className="flex shrink-0 items-center gap-2">
+                {isInstalled ? (
+                  <>
+                    <Badge variant="secondary" className="gap-1 text-xs">
+                      <CheckCircle2Icon className="size-3" />
+                      {status?.skill_count} installed
+                    </Badge>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleInstall}
+                      className="gap-1.5"
+                    >
+                      <RefreshCwIcon className="size-3.5" />
+                      Update
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setConfirmUninstallAllOpen(true)}
+                      disabled={isUninstalling}
+                      className="gap-1.5 text-destructive hover:text-destructive"
+                    >
+                      {isUninstalling ? (
+                        <Loader2Icon className="size-3.5 animate-spin" />
+                      ) : (
+                        <Trash2Icon className="size-3.5" />
+                      )}
+                      Uninstall
+                    </Button>
+                  </>
+                ) : (
+                  <Button size="sm" onClick={handleInstall} className="gap-1.5">
+                    <DownloadIcon className="size-3.5" />
+                    Install All
+                  </Button>
+                )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleImportSkill}
+                  disabled={isImporting || isInstalling || isUninstalling}
+                  className="gap-1.5 text-green-600 hover:text-green-700 dark:text-green-400 dark:hover:text-green-300"
+                >
+                  {isImporting ? (
+                    <Loader2Icon className="size-3.5 animate-spin" />
+                  ) : (
+                    <FolderPlusIcon className="size-3.5" />
+                  )}
+                  Import Skill
+                </Button>
+              </div>
+            </div>
+          </DialogHeader>
 
-          {/* Detail panel */}
-          <div className="flex flex-1 flex-col overflow-hidden">
-            {selected ? (
-              <ScrollArea className="flex-1">
-                <div className="p-6">
-                  <CategoryDetail
-                    category={selected}
-                    isInstalled={isInstalled}
-                    installedSkillFolders={installedSkillFolders}
-                    deletingSkillFolder={deletingSkillFolder}
-                    onDeleteSkill={setDeleteTarget}
-                  />
+          {/* Body — sidebar + detail */}
+          <div className="flex flex-1 overflow-hidden">
+            {/* Category sidebar */}
+            <nav className="w-64 max-w-64 shrink-0 overflow-hidden border-border border-r">
+              <ScrollArea className="h-full w-full overflow-hidden [&_[data-slot=scroll-area-scrollbar]]:hidden">
+                <div className="box-border flex w-full min-w-0 flex-col gap-0.5 overflow-x-hidden p-2">
+                  {displayCategories.map((cat) => {
+                    const Icon = ICON_MAP[cat.icon] || FlaskConicalIcon;
+                    const isActive = selectedId === cat.id;
+                    return (
+                      <button
+                        key={cat.id}
+                        onClick={() => setSelectedId(cat.id)}
+                        className={cn(
+                          "box-border grid w-full min-w-0 max-w-full grid-cols-[1rem_minmax(0,1fr)] items-center gap-2.5 overflow-hidden rounded-lg px-3 py-2 text-left text-sm transition-colors",
+                          isActive
+                            ? "bg-accent font-medium text-accent-foreground"
+                            : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+                        )}
+                        title={cat.name}
+                      >
+                        <Icon className="size-4 shrink-0" />
+                        <span className="block min-w-0 truncate">
+                          {cat.name}
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
               </ScrollArea>
-            ) : (
-              <div className="flex flex-1 items-center justify-center text-muted-foreground text-sm">
-                Select a category
-              </div>
-            )}
-          </div>
-        </div>
+            </nav>
 
-        {/* Footer */}
-        <div className="flex shrink-0 items-center justify-between border-border border-t bg-muted/20 px-6 py-2.5">
-          <p className="font-mono text-[11px] text-muted-foreground/60">
-            {status?.location ?? "~/.claude/skills/"}
-          </p>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onClose}
-            className="text-muted-foreground"
-          >
-            Close
-          </Button>
-        </div>
+            {/* Detail panel */}
+            <div className="flex flex-1 flex-col overflow-hidden">
+              {selected ? (
+                <ScrollArea className="flex-1">
+                  <div className="p-6">
+                    <CategoryDetail
+                      category={selected}
+                      isInstalled={isInstalled}
+                      installedSkillFolders={installedSkillFolders}
+                      deletingSkillFolder={deletingSkillFolder}
+                      onDeleteSkill={setDeleteTarget}
+                    />
+                  </div>
+                </ScrollArea>
+              ) : (
+                <div className="flex flex-1 items-center justify-center text-muted-foreground text-sm">
+                  Select a category
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Footer */}
+          <div className="flex shrink-0 items-center justify-between border-border border-t bg-muted/20 px-6 py-2.5">
+            <p className="font-mono text-[11px] text-muted-foreground/60">
+              {status?.location ?? "~/.claude/skills/"}
+            </p>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onClose}
+              className="text-muted-foreground"
+            >
+              Close
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
 
@@ -558,8 +559,8 @@ export function ScientificSkillsOnboarding({
           <DialogHeader>
             <DialogTitle>Delete Skill</DialogTitle>
             <DialogDescription>
-              Delete {deleteTarget?.name ?? "this skill"} from
-              ~/.claude/skills. This cannot be undone.
+              Delete {deleteTarget?.name ?? "this skill"} from ~/.claude/skills.
+              This cannot be undone.
             </DialogDescription>
           </DialogHeader>
           <div className="rounded-lg border border-border/60 bg-muted/30 px-3 py-2 font-mono text-muted-foreground text-xs">
@@ -823,7 +824,7 @@ function CategoryDetail({
                       event.stopPropagation();
                       onDeleteSkill(skill);
                     }}
-                    className="mr-1 flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-70 transition-colors hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100 disabled:opacity-50"
+                    className="mr-1 flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-70 transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-50 group-hover:opacity-100"
                   >
                     {isDeleting ? (
                       <Loader2Icon className="size-3.5 animate-spin" />

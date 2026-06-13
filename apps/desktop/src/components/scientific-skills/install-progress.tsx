@@ -1,13 +1,13 @@
-import { useEffect, useRef, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { useMemo } from "react";
 import { Progress } from "@/components/ui/progress";
-import { ScrollArea } from "@/components/ui/scroll-area";
 
 const PHASE_MAP: Record<string, number> = {
+  "Preparing installer": 0,
   "Checking directory permissions...": 5,
   "Directory permissions OK": 10,
   "Git available": 15,
   "cloning repository": 20,
+  "Downloading skills": 20,
   "downloading tarball": 20,
   "Download complete": 60,
   "Copying skills": 70,
@@ -16,6 +16,18 @@ const PHASE_MAP: Record<string, number> = {
 };
 
 function pctFromLog(log: string): number | null {
+  const downloadMatch = log.match(/^Download progress\s+(\d+)%/i);
+  if (downloadMatch?.[1]) {
+    const downloadPct = Math.max(0, Math.min(100, Number(downloadMatch[1])));
+    return Math.round(20 + downloadPct * 0.4);
+  }
+
+  const downloadedMatch = log.match(/^Downloaded\s+(\d+)\s+MiB/i);
+  if (downloadedMatch?.[1]) {
+    const mib = Math.max(0, Number(downloadedMatch[1]));
+    return Math.min(55, 20 + mib);
+  }
+
   for (const [key, pct] of Object.entries(PHASE_MAP)) {
     if (log.toLowerCase().includes(key.toLowerCase())) return pct;
   }
@@ -26,37 +38,21 @@ interface InstallProgressProps {
   isInstalling: boolean;
   isComplete: boolean;
   error: string | null;
+  logs: string[];
 }
 
 export function InstallProgress({
-  isInstalling,
   isComplete,
   error,
+  logs,
 }: InstallProgressProps) {
-  const [logs, setLogs] = useState<string[]>([]);
-  const [pct, setPct] = useState(0);
-  const scrollRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!isInstalling) return;
-    const unlisten = listen<string>("skills-install-log", (event) => {
-      setLogs((prev) => [...prev, event.payload]);
-      const p = pctFromLog(event.payload);
-      if (p !== null) setPct(p);
-    });
-    return () => {
-      unlisten.then((fn) => fn());
-    };
-  }, [isInstalling]);
-
-  useEffect(() => {
-    if (isComplete) setPct(100);
-  }, [isComplete]);
-
-  // Auto-scroll to bottom
-  useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [logs]);
+  const pct = useMemo(() => {
+    if (isComplete) return 100;
+    return logs.reduce((current, line) => {
+      const next = pctFromLog(line);
+      return next === null ? current : Math.max(current, next);
+    }, 0);
+  }, [isComplete, logs]);
 
   const label = isComplete
     ? "Done"
@@ -77,18 +73,6 @@ export function InstallProgress({
           {pct}%
         </p>
       </div>
-      {logs.length > 0 && (
-        <ScrollArea className="h-28 rounded-md border border-border/60 bg-muted/30">
-          <div
-            ref={scrollRef}
-            className="p-2 font-mono text-[11px] text-muted-foreground leading-relaxed"
-          >
-            {logs.map((line, i) => (
-              <div key={i}>{line}</div>
-            ))}
-          </div>
-        </ScrollArea>
-      )}
     </div>
   );
 }

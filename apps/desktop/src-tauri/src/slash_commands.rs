@@ -200,23 +200,16 @@ fn load_skills_from_dir(dir: &Path, scope: &str) -> Vec<SlashCommand> {
         return Vec::new();
     }
 
-    let entries = match fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return Vec::new(),
-    };
-
+    let mut skill_dirs = Vec::new();
+    collect_skill_dirs(dir, &mut skill_dirs);
+    skill_dirs.sort();
     let mut skills = Vec::new();
+    let mut seen_ids = std::collections::HashSet::new();
 
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
+    for path in skill_dirs {
+        let Some(skill_md) = find_skill_md(&path) else {
             continue;
-        }
-
-        let skill_md = path.join("SKILL.md");
-        if !skill_md.exists() {
-            continue;
-        }
+        };
 
         let content = match fs::read_to_string(&skill_md) {
             Ok(c) => c,
@@ -248,6 +241,9 @@ fn load_skills_from_dir(dir: &Path, scope: &str) -> Vec<SlashCommand> {
             .map(|d| d.chars().take(200).collect());
 
         let id = format!("skill-{}", folder_name);
+        if !seen_ids.insert(id.clone()) {
+            continue;
+        }
 
         skills.push(SlashCommand {
             id,
@@ -267,6 +263,51 @@ fn load_skills_from_dir(dir: &Path, scope: &str) -> Vec<SlashCommand> {
 
     skills.sort_by(|a, b| a.name.cmp(&b.name));
     skills
+}
+
+fn find_skill_md(skill_dir: &Path) -> Option<PathBuf> {
+    for name in ["SKILL.md", "skill.md"] {
+        let candidate = skill_dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+
+    let entries = fs::read_dir(skill_dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file()
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case("SKILL.md"))
+        {
+            return Some(path);
+        }
+    }
+
+    None
+}
+
+fn collect_skill_dirs(root: &Path, output: &mut Vec<PathBuf>) {
+    if find_skill_md(root).is_some() {
+        output.push(root.to_path_buf());
+        return;
+    }
+
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() || !file_type.is_dir() {
+            continue;
+        }
+        collect_skill_dirs(&entry.path(), output);
+    }
 }
 
 fn create_default_commands() -> Vec<SlashCommand> {

@@ -59,6 +59,11 @@ export function getCurrentPdfBytes(): Uint8Array | null {
     : null;
 }
 
+/** Get the root file id for the currently displayed PDF, if any. */
+export function getCurrentPdfRootId(): string | null {
+  return _currentPdfRootId;
+}
+
 /** Check if any PDF data exists for the current root. */
 export function hasPdfData(): boolean {
   return _currentPdfRootId != null && _pdfBytesCache.has(_currentPdfRootId);
@@ -549,6 +554,15 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
 
   setActiveFile: (id) => {
     const state = get();
+    const file = state.files.find((f) => f.id === id);
+    if (!file || file.type !== "tex") {
+      set({
+        activeFileId: id,
+        selectionRange: null,
+      });
+      return;
+    }
+
     const rootId = resolveTexRoot(id, state.files);
     const newPdfRootId = _pdfBytesCache.has(rootId) ? rootId : null;
     const pdfRootChanged = newPdfRootId !== _currentPdfRootId;

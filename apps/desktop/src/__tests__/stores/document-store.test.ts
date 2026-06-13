@@ -10,6 +10,7 @@ import {
 import {
   useDocumentStore,
   getCurrentPdfBytes,
+  getCurrentPdfRootId,
   clearPdfBytesCache,
   type ProjectFile,
 } from "@/stores/document-store";
@@ -442,6 +443,39 @@ describe("useDocumentStore", () => {
       // cursorPosition is preserved — the editor restores it from per-file cache
       expect(state.cursorPosition).toBe(100);
       expect(state.selectionRange).toBeNull();
+    });
+
+    it("keeps the current PDF when switching to a non-tex file", () => {
+      const pdfBytes = new Uint8Array([1, 2, 3]);
+      useDocumentStore.setState({
+        files: [
+          makeFile({
+            content:
+              "\\documentclass{article}\\begin{document}Hi\\end{document}",
+          }),
+          makeFile({
+            id: "analysis.py",
+            name: "analysis.py",
+            relativePath: "analysis.py",
+            absolutePath: "/project/analysis.py",
+            type: "other",
+            content: "print('hello')",
+          }),
+        ],
+        activeFileId: "main.tex",
+        selectionRange: { start: 0, end: 3 },
+      });
+      useDocumentStore.getState().setPdfData(pdfBytes, "main.tex");
+      const revisionBefore = useDocumentStore.getState().pdfRevision;
+
+      useDocumentStore.getState().setActiveFile("analysis.py");
+
+      const state = useDocumentStore.getState();
+      expect(state.activeFileId).toBe("analysis.py");
+      expect(state.selectionRange).toBeNull();
+      expect(state.pdfRevision).toBe(revisionBefore);
+      expect(getCurrentPdfRootId()).toBe("main.tex");
+      expect(getCurrentPdfBytes()).toEqual(pdfBytes);
     });
   });
 

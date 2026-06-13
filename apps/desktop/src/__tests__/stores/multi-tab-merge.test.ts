@@ -36,6 +36,7 @@ function resetStores() {
     messages: [],
     sessionId: null,
     isStreaming: false,
+    streamingStartedAt: null,
     error: null,
     totalInputTokens: 0,
     totalOutputTokens: 0,
@@ -48,6 +49,7 @@ function resetStores() {
         sessionProviderKey: null,
         messages: [],
         isStreaming: false,
+        streamingStartedAt: null,
         error: null,
         totalInputTokens: 0,
         totalOutputTokens: 0,
@@ -238,6 +240,32 @@ describe("Multi-tab merge triggers", () => {
       const tabBState = state.tabs.find((t) => t.id === tabB)!;
       expect(tabAState.isStreaming).toBe(true);
       expect(tabBState.isStreaming).toBe(true);
+    });
+
+    it("preserves streaming start time when switching tabs", () => {
+      const chat = useClaudeChatStore.getState();
+      const tabB = chat.createTab();
+      const startedAt = Date.now() - 12_000;
+
+      useClaudeChatStore.setState((s) => ({
+        tabs: s.tabs.map((t) =>
+          t.id === "tab-default"
+            ? { ...t, isStreaming: true, streamingStartedAt: startedAt }
+            : t,
+        ),
+        activeTabId: "tab-default",
+        isStreaming: true,
+        streamingStartedAt: startedAt,
+      }));
+
+      chat.setActiveTab(tabB);
+      chat.setActiveTab("tab-default");
+
+      const state = useClaudeChatStore.getState();
+      expect(state.streamingStartedAt).toBe(startedAt);
+      expect(
+        state.tabs.find((t) => t.id === "tab-default")!.streamingStartedAt,
+      ).toBe(startedAt);
     });
 
     it("_appendMessage routes to the specified tab, not the active tab", () => {

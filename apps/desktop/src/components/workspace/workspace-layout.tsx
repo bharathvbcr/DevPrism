@@ -21,10 +21,10 @@ const SIDEBAR_DEFAULT_SIZE = 15;
 const SIDEBAR_MIN_SIZE = 10;
 const SIDEBAR_COLLAPSED_WIDTH_PX = 48;
 const SIDEBAR_COLLAPSED_SIZE_FALLBACK = 8;
-const SIDEBAR_ANIMATION_MS = 200;
+const SIDEBAR_ANIMATION_MS = 280;
 
-function easeOutCubic(progress: number) {
-  return 1 - (1 - progress) ** 3;
+function easeInOutSmooth(progress: number) {
+  return progress * progress * (3 - 2 * progress);
 }
 
 export function WorkspaceLayout() {
@@ -67,7 +67,7 @@ export function WorkspaceLayout() {
 
     const step = (now: number) => {
       const progress = Math.min((now - startedAt) / SIDEBAR_ANIMATION_MS, 1);
-      const nextSize = startSize + sizeDelta * easeOutCubic(progress);
+      const nextSize = startSize + sizeDelta * easeInOutSmooth(progress);
 
       sidebarPanel.resize(nextSize);
 

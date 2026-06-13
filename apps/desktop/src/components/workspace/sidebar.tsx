@@ -290,7 +290,7 @@ function LayoutPaneSwitcher({
       variant="ghost"
       size="icon"
       className={cn(
-        "transition-transform duration-200 ease-out hover:scale-105",
+        "transition-transform duration-300 ease-in-out hover:scale-105",
         buttonClassName,
       )}
       onClick={onQuickToggleSidebar}
@@ -299,7 +299,7 @@ function LayoutPaneSwitcher({
     >
       <PanelLeftIcon
         className={cn(
-          "size-3.5 transition-transform duration-200 ease-out",
+          "size-3.5 transition-transform duration-300 ease-in-out",
           collapsed && "rotate-180",
         )}
       />
@@ -1171,7 +1171,7 @@ export function Sidebar({
         <Button
           variant="ghost"
           size="icon"
-          className="size-7 transition-transform duration-200 ease-out hover:scale-105"
+          className="size-7 transition-transform duration-300 ease-in-out hover:scale-105"
           onClick={onToggleCollapsed}
           title="Files"
           aria-label="Expand Files"
@@ -1181,7 +1181,7 @@ export function Sidebar({
         <Button
           variant="ghost"
           size="icon"
-          className="size-7 transition-transform duration-200 ease-out hover:scale-105"
+          className="size-7 transition-transform duration-300 ease-in-out hover:scale-105"
           onClick={onToggleCollapsed}
           title="Outline"
           aria-label="Expand Outline"
@@ -1191,7 +1191,7 @@ export function Sidebar({
         <Button
           variant="ghost"
           size="icon"
-          className="size-7 transition-transform duration-200 ease-out hover:scale-105"
+          className="size-7 transition-transform duration-300 ease-in-out hover:scale-105"
           onClick={onToggleCollapsed}
           title="Zotero"
           aria-label="Expand Zotero"
@@ -1201,7 +1201,7 @@ export function Sidebar({
         <Button
           variant="ghost"
           size="icon"
-          className="size-7 transition-transform duration-200 ease-out hover:scale-105"
+          className="size-7 transition-transform duration-300 ease-in-out hover:scale-105"
           onClick={onToggleCollapsed}
           title="Environment"
           aria-label="Expand Environment"
@@ -1213,7 +1213,7 @@ export function Sidebar({
         <Button
           variant="ghost"
           size="icon"
-          className="size-7 transition-transform duration-200 ease-out hover:scale-105"
+          className="size-7 transition-transform duration-300 ease-in-out hover:scale-105"
           onClick={closeProject}
           title="Close Project"
           aria-label="Close Project"
@@ -1228,7 +1228,7 @@ export function Sidebar({
     <div className="relative h-full overflow-hidden bg-sidebar text-sidebar-foreground">
       <div
         className={cn(
-          "absolute inset-y-0 left-0 z-10 w-full transition-[opacity,transform] duration-200 ease-out",
+          "absolute inset-y-0 left-0 z-10 w-full transition-[opacity,transform] duration-300 ease-in-out",
           collapsed
             ? "translate-x-0 opacity-100"
             : "pointer-events-none -translate-x-1 opacity-0",
@@ -1239,7 +1239,7 @@ export function Sidebar({
       </div>
       <div
         className={cn(
-          "h-full w-full min-w-0 transition-[opacity,transform] duration-200 ease-out",
+          "h-full w-full min-w-0 transition-[opacity,transform] duration-300 ease-in-out",
           collapsed
             ? "pointer-events-none -translate-x-2 opacity-0"
             : "translate-x-0 opacity-100",

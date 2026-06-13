@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
+import vscodeIcon from "@/assets/vscode.svg";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -50,6 +51,28 @@ const ZOOM_OPTIONS = [
   { value: "3", label: "300%" },
   { value: "4", label: "400%" },
 ];
+
+function OpenEditorIcon({ editor }: { editor: EditorInfo }) {
+  if (editor.id === "vscode") {
+    return (
+      <img
+        src={vscodeIcon}
+        alt=""
+        aria-hidden="true"
+        draggable={false}
+        className="size-5"
+      />
+    );
+  }
+
+  return <ExternalLinkIcon className="size-4" />;
+}
+
+function getOpenEditorButtonClassName(editor: EditorInfo) {
+  return editor.id === "vscode"
+    ? "h-7 w-7 border border-border/70 bg-muted/30 p-1 hover:bg-muted/50"
+    : undefined;
+}
 
 interface EditorToolbarProps {
   editorView: RefObject<EditorView | null>;
@@ -196,8 +219,9 @@ export function EditorToolbar({
             <TooltipIconButton
               tooltip={`Open in ${editors[0].name}`}
               onClick={() => openInEditor(editors[0].id)}
+              className={getOpenEditorButtonClassName(editors[0])}
             >
-              <ExternalLinkIcon className="size-4" />
+              <OpenEditorIcon editor={editors[0]} />
             </TooltipIconButton>
           )}
           {editors.length > 1 && (
@@ -308,8 +332,9 @@ export function EditorToolbar({
         <TooltipIconButton
           tooltip={`Open in ${editors[0].name}`}
           onClick={() => openInEditor(editors[0].id)}
+          className={getOpenEditorButtonClassName(editors[0])}
         >
-          <ExternalLinkIcon className="size-4" />
+          <OpenEditorIcon editor={editors[0]} />
         </TooltipIconButton>
       )}
       {editors.length > 1 && (

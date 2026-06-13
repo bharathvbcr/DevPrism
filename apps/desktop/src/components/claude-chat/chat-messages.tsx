@@ -11,46 +11,49 @@ import { ThinkingWidget, ToolWidget } from "./tool-widgets";
 
 // ─── Streaming Indicator (isolated to prevent re-render storms) ───
 
-const StreamingIndicator: FC = memo(() => {
-  const [elapsed, setElapsed] = useState(0);
-  const startRef = useRef(Date.now());
+const StreamingIndicator: FC<{ startedAt: number | null }> = memo(
+  ({ startedAt }) => {
+    const calculateElapsed = () =>
+      startedAt ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000)) : 0;
 
-  useEffect(() => {
-    startRef.current = Date.now();
-    setElapsed(0);
-    const timer = setInterval(() => {
-      setElapsed(Math.floor((Date.now() - startRef.current) / 1000));
-    }, 1000);
-    return () => clearInterval(timer);
-  }, []);
+    const [elapsed, setElapsed] = useState(calculateElapsed);
 
-  return (
-    <div className="flex items-center gap-1.5 px-1 py-1.5 text-muted-foreground">
-      <div className="flex gap-0.5">
-        <span
-          className="size-1.5 animate-bounce rounded-full bg-muted-foreground/50"
-          style={{ animationDelay: "0ms" }}
-        />
-        <span
-          className="size-1.5 animate-bounce rounded-full bg-muted-foreground/50"
-          style={{ animationDelay: "150ms" }}
-        />
-        <span
-          className="size-1.5 animate-bounce rounded-full bg-muted-foreground/50"
-          style={{ animationDelay: "300ms" }}
-        />
+    useEffect(() => {
+      setElapsed(calculateElapsed());
+      const timer = setInterval(() => {
+        setElapsed(calculateElapsed());
+      }, 1000);
+      return () => clearInterval(timer);
+    }, [startedAt]);
+
+    return (
+      <div className="flex items-center gap-1.5 px-1 py-1.5 text-muted-foreground">
+        <div className="flex gap-0.5">
+          <span
+            className="size-1.5 animate-bounce rounded-full bg-muted-foreground/50"
+            style={{ animationDelay: "0ms" }}
+          />
+          <span
+            className="size-1.5 animate-bounce rounded-full bg-muted-foreground/50"
+            style={{ animationDelay: "150ms" }}
+          />
+          <span
+            className="size-1.5 animate-bounce rounded-full bg-muted-foreground/50"
+            style={{ animationDelay: "300ms" }}
+          />
+        </div>
+        <span className="text-sm">
+          Thinking...
+          {elapsed >= 3 && (
+            <span className="ml-1 text-muted-foreground/60 text-xs">
+              {elapsed}s
+            </span>
+          )}
+        </span>
       </div>
-      <span className="text-sm">
-        Thinking...
-        {elapsed >= 3 && (
-          <span className="ml-1 text-muted-foreground/60 text-xs">
-            {elapsed}s
-          </span>
-        )}
-      </span>
-    </div>
-  );
-});
+    );
+  },
+);
 
 const EMPTY_PENDING_GUIDANCE: QueuedGuidance[] = [];
 
@@ -59,6 +62,7 @@ const EMPTY_PENDING_GUIDANCE: QueuedGuidance[] = [];
 export const ChatMessages: FC = () => {
   const messages = useClaudeChatStore((s) => s.messages) ?? [];
   const isStreaming = useClaudeChatStore((s) => s.isStreaming);
+  const streamingStartedAt = useClaudeChatStore((s) => s.streamingStartedAt);
   const queuedGuidance =
     useClaudeChatStore(
       (s) => s.tabs.find((tab) => tab.id === s.activeTabId)?.queuedGuidance,
@@ -173,7 +177,7 @@ export const ChatMessages: FC = () => {
         <MessageBubble key={idx} message={msg} toolResultMap={toolResultMap} />
       ))}
 
-      {isStreaming && <StreamingIndicator />}
+      {isStreaming && <StreamingIndicator startedAt={streamingStartedAt} />}
 
       {pendingGuidance.map((guidance) => (
         <PendingGuidanceMessage key={guidance.id} guidance={guidance} />

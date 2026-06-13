@@ -89,25 +89,20 @@ export function ProjectPicker() {
   const [showModeDialog, setShowModeDialog] = useState(false);
   const [wizardMode, setWizardMode] = useState<CreationMode | null>(null);
   const [appVersion, setAppVersion] = useState("");
-  const [isRestoringProject, setIsRestoringProject] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [activeSection, setActiveSection] =
     useState<ProjectPickerSection>("projects");
   const [searchQuery, setSearchQuery] = useState("");
   const [removeProjectTarget, setRemoveProjectTarget] =
     useState<RecentProject | null>(null);
-  const recoveryAttemptedRef = useRef(false);
+  const defaultProjectsDiscoveredRef = useRef(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const { status: updateStatus, checkForUpdate, installUpdate } = useUpdater();
   const searchShortcutLabel = "⌘ K";
 
   const recentProjects = useProjectStore((s) => s.recentProjects);
-  const initialRecentProjectsRef = useRef(recentProjects);
   const addRecentProject = useProjectStore((s) => s.addRecentProject);
   const removeRecentProject = useProjectStore((s) => s.removeRecentProject);
-  const consumeSkipAutoRestore = useProjectStore(
-    (s) => s.consumeSkipAutoRestore,
-  );
   const openProject = useDocumentStore((s) => s.openProject);
 
   const claudeStatus = useClaudeSetupStore((s) => s.status);
@@ -143,37 +138,15 @@ export function ProjectPicker() {
   }, []);
 
   useEffect(() => {
-    if (recoveryAttemptedRef.current) return;
-    recoveryAttemptedRef.current = true;
-    if (consumeSkipAutoRestore()) return;
+    if (defaultProjectsDiscoveredRef.current || recentProjects.length > 0) {
+      return;
+    }
+    defaultProjectsDiscoveredRef.current = true;
 
     let cancelled = false;
 
-    async function openFirstAvailableProject(paths: string[]) {
-      for (const path of paths) {
-        if (cancelled) return true;
-
-        try {
-          setIsRestoringProject(true);
-          await openProject(path);
-          addRecentProject(path);
-          return true;
-        } catch (err) {
-          removeRecentProject(path);
-          console.warn("Failed to restore project:", { path, error: err });
-        }
-      }
-
-      return false;
-    }
-
-    async function recoverProjects() {
+    async function discoverDefaultProjects() {
       try {
-        const recentPaths = initialRecentProjectsRef.current.map(
-          (project) => project.path,
-        );
-        if (await openFirstAvailableProject(recentPaths)) return;
-
         const projects = await invoke<DefaultProject[]>(
           "list_default_projects",
         );
@@ -182,30 +155,17 @@ export function ProjectPicker() {
         for (const project of [...projects].reverse()) {
           addRecentProject(project.path);
         }
-
-        await openFirstAvailableProject(
-          projects.map((project) => project.path),
-        );
       } catch (err) {
-        console.warn("Failed to recover projects:", err);
-      } finally {
-        if (!cancelled) {
-          setIsRestoringProject(false);
-        }
+        console.warn("Failed to discover default projects:", err);
       }
     }
 
-    recoverProjects();
+    discoverDefaultProjects();
 
     return () => {
       cancelled = true;
     };
-  }, [
-    addRecentProject,
-    consumeSkipAutoRestore,
-    openProject,
-    removeRecentProject,
-  ]);
+  }, [addRecentProject, recentProjects.length]);
 
   const handleOpenFolder = async () => {
     try {
@@ -353,7 +313,6 @@ export function ProjectPicker() {
                 onClick={handleOpenFolder}
                 variant="secondary"
                 className="h-9 shrink-0 gap-1.5 rounded-lg px-3.5"
-                disabled={isRestoringProject}
               >
                 <FolderOpenIcon className="size-4" />
                 Import
@@ -361,7 +320,6 @@ export function ProjectPicker() {
               <Button
                 onClick={() => setShowModeDialog(true)}
                 className="h-9 shrink-0 gap-1.5 rounded-lg px-4"
-                disabled={isRestoringProject}
               >
                 <PlusIcon className="size-4" />
                 New
@@ -391,13 +349,6 @@ export function ProjectPicker() {
             </div>
           ) : (
             <div className="flex w-full flex-col gap-4 px-5 py-5">
-              {isRestoringProject && (
-                <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-muted/20 px-4 py-3 text-muted-foreground text-sm">
-                  <Loader2Icon className="size-4 animate-spin" />
-                  <span>Restoring last project...</span>
-                </div>
-              )}
-
               {visibleProjects.length === 0 ? (
                 <div className="flex min-h-80 flex-col items-center justify-center rounded-lg border border-border border-dashed bg-muted/10 px-6 text-center">
                   <FileTextIcon className="mb-4 size-10 text-muted-foreground/70" />
@@ -405,30 +356,22 @@ export function ProjectPicker() {
                     {normalizedSearch ? "No matching projects" : "No projects"}
                   </h2>
                   <div className="mt-5 flex flex-wrap justify-center gap-3">
-                    <Button
-                      onClick={() => setShowModeDialog(true)}
-                      disabled={isRestoringProject}
-                    >
+                    <Button onClick={() => setShowModeDialog(true)}>
                       <PlusIcon className="mr-2 size-4" />
                       New
                     </Button>
-                    <Button
-                      onClick={handleOpenFolder}
-                      variant="outline"
-                      disabled={isRestoringProject}
-                    >
+                    <Button onClick={handleOpenFolder} variant="outline">
                       <FolderOpenIcon className="mr-2 size-4" />
                       Import
                     </Button>
                   </div>
                 </div>
               ) : (
-                <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,190px))] gap-x-5 gap-y-6">
+                <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-x-6 gap-y-6">
                   {visibleProjects.map((project) => (
                     <ProjectPreviewCard
                       key={project.path}
                       project={project}
-                      disabled={isRestoringProject}
                       onOpen={() => handleOpenRecent(project.path)}
                       onRemove={() => setRemoveProjectTarget(project)}
                     />
@@ -728,12 +671,10 @@ async function loadProjectPreview(
 
 function ProjectPreviewCard({
   project,
-  disabled,
   onOpen,
   onRemove,
 }: {
   project: RecentProject;
-  disabled: boolean;
   onOpen: () => void;
   onRemove: () => void;
 }) {
@@ -779,7 +720,6 @@ function ProjectPreviewCard({
         <button
           className="relative aspect-[3/4] w-full overflow-hidden rounded-lg border border-border/70 bg-background text-left transition-all duration-200 hover:border-foreground/20 hover:shadow-md"
           onClick={onOpen}
-          disabled={disabled}
         >
           <ProjectPreviewSurface preview={preview} projectName={project.name} />
         </button>
@@ -796,7 +736,6 @@ function ProjectPreviewCard({
       <button
         className="mt-2 block w-full truncate text-left font-medium text-sm leading-tight hover:underline"
         onClick={onOpen}
-        disabled={disabled}
       >
         {project.name}
       </button>

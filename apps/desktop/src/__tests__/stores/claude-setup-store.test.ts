@@ -102,14 +102,14 @@ describe("useClaudeSetupStore.saveApiKey", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     useClaudeSetupStore.setState({
-      status: "not-installed",
+      status: "ready",
       isInstalling: false,
       isLoggingIn: false,
       isSavingApiKey: false,
       isClearingApiKey: false,
       error: null,
-      version: null,
-      providerKind: null,
+      version: "1.0.0",
+      providerKind: "claude-code",
       accountEmail: null,
       providerModel: null,
       providerBaseUrl: null,
@@ -120,6 +120,25 @@ describe("useClaudeSetupStore.saveApiKey", () => {
       installLogsVisible: false,
       loginSteps: [],
     });
+  });
+
+  it("requires Claude Code before saving provider credentials", async () => {
+    useClaudeSetupStore.setState({ status: "not-installed" });
+
+    const success = await useClaudeSetupStore
+      .getState()
+      .saveApiKey(
+        "sk-test",
+        "https://api.deepseek.com/anthropic",
+        "openai-compatible",
+        "deepseek-v4-pro",
+      );
+
+    expect(success).toBe(false);
+    expect(invoke).not.toHaveBeenCalled();
+    expect(useClaudeSetupStore.getState().error).toBe(
+      "Install Claude Code before configuring an AI provider.",
+    );
   });
 
   it("verifies OpenAI-compatible credentials before saving them", async () => {

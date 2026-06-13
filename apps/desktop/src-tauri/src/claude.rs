@@ -108,6 +108,312 @@ pub(crate) fn is_essential_env_var(key: &str) -> bool {
     )
 }
 
+fn normalize_proxy_url_with_default(raw: &str, default_scheme: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if trimmed.contains("://") {
+        Some(trimmed.to_string())
+    } else {
+        Some(format!("{}://{}", default_scheme, trimmed))
+    }
+}
+
+fn normalize_proxy_url(raw: &str) -> Option<String> {
+    normalize_proxy_url_with_default(raw, "http")
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ProxyEnvVar {
+    key: &'static str,
+    value: String,
+    source: String,
+}
+
+fn first_env_value(names: &[&str]) -> Option<(String, String)> {
+    for name in names {
+        let Ok(value) = std::env::var(name) else {
+            continue;
+        };
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return Some(((*name).to_string(), trimmed.to_string()));
+        }
+    }
+
+    None
+}
+
+fn explicit_proxy_env_vars() -> Vec<ProxyEnvVar> {
+    let mut vars = Vec::new();
+    let mut has_https_proxy = false;
+    let mut has_all_proxy = false;
+    let mut http_proxy = None;
+
+    if let Some((source, raw)) = first_env_value(&["HTTPS_PROXY", "https_proxy"]) {
+        if let Some(value) = normalize_proxy_url(&raw) {
+            vars.push(ProxyEnvVar {
+                key: "HTTPS_PROXY",
+                value,
+                source,
+            });
+            has_https_proxy = true;
+        }
+    }
+
+    if let Some((source, raw)) = first_env_value(&["HTTP_PROXY", "http_proxy"]) {
+        if let Some(value) = normalize_proxy_url(&raw) {
+            http_proxy = Some((source.clone(), value.clone()));
+            vars.push(ProxyEnvVar {
+                key: "HTTP_PROXY",
+                value,
+                source,
+            });
+        }
+    }
+
+    if let Some((source, raw)) = first_env_value(&["ALL_PROXY", "all_proxy"]) {
+        if let Some(value) = normalize_proxy_url(&raw) {
+            vars.push(ProxyEnvVar {
+                key: "ALL_PROXY",
+                value,
+                source,
+            });
+            has_all_proxy = true;
+        }
+    }
+
+    if !has_https_proxy && !has_all_proxy {
+        if let Some((source, value)) = http_proxy {
+            vars.insert(
+                0,
+                ProxyEnvVar {
+                    key: "HTTPS_PROXY",
+                    value,
+                    source: format!("{} (HTTPS fallback)", source),
+                },
+            );
+        }
+    }
+
+    vars
+}
+
+#[cfg(target_os = "windows")]
+fn windows_proxy_override_to_no_proxy_env(raw: &str) -> Option<String> {
+    let entries = raw
+        .split([';', ','])
+        .filter_map(|part| {
+            let trimmed = part.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+
+            if trimmed.eq_ignore_ascii_case("<local>") {
+                return Some("localhost,127.0.0.1,::1".to_string());
+            }
+
+            if trimmed == "*" {
+                return Some(trimmed.to_string());
+            }
+
+            if trimmed.contains('*') {
+                return trimmed
+                    .strip_prefix("*.")
+                    .map(|domain| format!(".{}", domain.trim_start_matches('.')));
+            }
+
+            Some(trimmed.to_string())
+        })
+        .collect::<Vec<_>>();
+
+    if entries.is_empty() {
+        None
+    } else {
+        Some(entries.join(","))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_system_no_proxy_env() -> Option<String> {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+
+    let settings = RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Internet Settings")
+        .ok()?;
+    let raw = settings.get_value::<String, _>("ProxyOverride").ok()?;
+    windows_proxy_override_to_no_proxy_env(&raw)
+}
+
+#[cfg(target_os = "windows")]
+fn parse_windows_proxy_server_for_env(raw: &str) -> Vec<ProxyEnvVar> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+
+    if !trimmed.contains('=') {
+        let Some(value) = normalize_proxy_url(trimmed) else {
+            return Vec::new();
+        };
+        return vec![
+            ProxyEnvVar {
+                key: "HTTPS_PROXY",
+                value: value.clone(),
+                source: "Windows system proxy".to_string(),
+            },
+            ProxyEnvVar {
+                key: "HTTP_PROXY",
+                value: value.clone(),
+                source: "Windows system proxy".to_string(),
+            },
+            ProxyEnvVar {
+                key: "ALL_PROXY",
+                value,
+                source: "Windows system proxy".to_string(),
+            },
+        ];
+    }
+
+    let mut vars = Vec::new();
+    let mut has_https_proxy = false;
+    let mut has_all_proxy = false;
+    let mut http_proxy = None;
+
+    for entry in trimmed.split(';') {
+        let Some((scheme, value)) = entry.split_once('=') else {
+            continue;
+        };
+        let scheme = scheme.trim();
+        let (key, default_proxy_scheme) = match scheme.to_ascii_lowercase().as_str() {
+            "http" => ("HTTP_PROXY", "http"),
+            "https" => ("HTTPS_PROXY", "http"),
+            "socks" | "socks5" => ("ALL_PROXY", "socks5"),
+            "socks4" => ("ALL_PROXY", "socks4"),
+            _ => continue,
+        };
+        let Some(value) = normalize_proxy_url_with_default(value, default_proxy_scheme) else {
+            continue;
+        };
+        let source = format!("Windows system proxy ({})", scheme);
+
+        if key == "HTTP_PROXY" {
+            http_proxy = Some((source.clone(), value.clone()));
+        } else if key == "HTTPS_PROXY" {
+            has_https_proxy = true;
+        } else if key == "ALL_PROXY" {
+            has_all_proxy = true;
+        }
+
+        vars.push(ProxyEnvVar { key, value, source });
+    }
+
+    if !has_https_proxy && !has_all_proxy {
+        if let Some((source, value)) = http_proxy {
+            vars.insert(
+                0,
+                ProxyEnvVar {
+                    key: "HTTPS_PROXY",
+                    value,
+                    source: format!("{} (HTTPS fallback)", source),
+                },
+            );
+        }
+    }
+
+    vars
+}
+
+#[cfg(target_os = "windows")]
+fn windows_system_proxy_env_vars() -> Vec<ProxyEnvVar> {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+
+    let Ok(settings) = RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Internet Settings")
+    else {
+        return Vec::new();
+    };
+
+    let proxy_enabled = settings.get_value::<u32, _>("ProxyEnable").unwrap_or(0) != 0;
+    if !proxy_enabled {
+        return Vec::new();
+    }
+
+    settings
+        .get_value::<String, _>("ProxyServer")
+        .map(|raw| parse_windows_proxy_server_for_env(&raw))
+        .unwrap_or_default()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn windows_system_proxy_env_vars() -> Vec<ProxyEnvVar> {
+    Vec::new()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn windows_system_no_proxy_env() -> Option<String> {
+    None
+}
+
+fn redacted_proxy_url(url: &str) -> String {
+    let Ok(mut parsed) = reqwest::Url::parse(url) else {
+        return "<invalid proxy URL>".to_string();
+    };
+
+    if !parsed.username().is_empty() {
+        let _ = parsed.set_username("***");
+        if parsed.password().is_some() {
+            let _ = parsed.set_password(Some("***"));
+        }
+    }
+
+    parsed.to_string()
+}
+
+fn apply_proxy_env_to_command(cmd: &mut Command, window: Option<&WebviewWindow>) {
+    let mut vars = explicit_proxy_env_vars();
+    let mut no_proxy = first_env_value(&["NO_PROXY", "no_proxy"]).map(|(_, value)| value);
+
+    if vars.is_empty() {
+        vars = windows_system_proxy_env_vars();
+        if no_proxy.is_none() {
+            no_proxy = windows_system_no_proxy_env();
+        }
+    }
+
+    if vars.is_empty() {
+        if let Some(window) = window {
+            let _ = window.emit(
+                "install-output",
+                "Using system proxy settings when available",
+            );
+        }
+        return;
+    }
+
+    for var in vars {
+        if let Some(window) = window {
+            let _ = window.emit(
+                "install-output",
+                format!(
+                    "Using proxy from {}: {}",
+                    var.source,
+                    redacted_proxy_url(&var.value)
+                ),
+            );
+        }
+        cmd.env(var.key, var.value);
+    }
+
+    if let Some(no_proxy) = no_proxy {
+        cmd.env("NO_PROXY", no_proxy);
+    }
+}
+
 fn get_claude_prism_auth_path() -> Result<PathBuf, String> {
     let config_dir = dirs::config_dir()
         .or_else(dirs::home_dir)
@@ -2037,6 +2343,7 @@ pub async fn install_claude_cli(window: WebviewWindow) -> Result<bool, String> {
             cmd.env(&key, &value);
         }
     }
+    apply_proxy_env_to_command(&mut cmd, Some(&window));
 
     let mut child = cmd
         .spawn()
@@ -3929,6 +4236,84 @@ mod tests {
             ],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn test_normalize_proxy_url_defaults_to_http() {
+        assert_eq!(
+            normalize_proxy_url("127.0.0.1:7890"),
+            Some("http://127.0.0.1:7890".to_string())
+        );
+        assert_eq!(
+            normalize_proxy_url("socks5://127.0.0.1:7891"),
+            Some("socks5://127.0.0.1:7891".to_string())
+        );
+        assert_eq!(normalize_proxy_url("   "), None);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_parse_windows_proxy_server_single_proxy_for_installer_env() {
+        let vars = parse_windows_proxy_server_for_env("127.0.0.1:7890");
+
+        assert_eq!(
+            vars,
+            vec![
+                ProxyEnvVar {
+                    key: "HTTPS_PROXY",
+                    value: "http://127.0.0.1:7890".to_string(),
+                    source: "Windows system proxy".to_string(),
+                },
+                ProxyEnvVar {
+                    key: "HTTP_PROXY",
+                    value: "http://127.0.0.1:7890".to_string(),
+                    source: "Windows system proxy".to_string(),
+                },
+                ProxyEnvVar {
+                    key: "ALL_PROXY",
+                    value: "http://127.0.0.1:7890".to_string(),
+                    source: "Windows system proxy".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_parse_windows_proxy_server_per_scheme_for_installer_env() {
+        let vars = parse_windows_proxy_server_for_env(
+            "http=127.0.0.1:7890;https=127.0.0.1:7891;socks=127.0.0.1:7892",
+        );
+
+        assert_eq!(
+            vars,
+            vec![
+                ProxyEnvVar {
+                    key: "HTTP_PROXY",
+                    value: "http://127.0.0.1:7890".to_string(),
+                    source: "Windows system proxy (http)".to_string(),
+                },
+                ProxyEnvVar {
+                    key: "HTTPS_PROXY",
+                    value: "http://127.0.0.1:7891".to_string(),
+                    source: "Windows system proxy (https)".to_string(),
+                },
+                ProxyEnvVar {
+                    key: "ALL_PROXY",
+                    value: "socks5://127.0.0.1:7892".to_string(),
+                    source: "Windows system proxy (socks)".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_windows_proxy_override_to_no_proxy_env() {
+        assert_eq!(
+            windows_proxy_override_to_no_proxy_env("<local>;*.example.com;api.test"),
+            Some("localhost,127.0.0.1,::1,.example.com,api.test".to_string())
+        );
     }
 
     #[test]

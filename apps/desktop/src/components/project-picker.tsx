@@ -22,21 +22,23 @@ import {
   CircleIcon,
   DownloadIcon,
   Loader2Icon,
-  RefreshCwIcon,
-  ArrowUpCircleIcon,
   KeyRoundIcon,
   SearchIcon,
   PanelLeftIcon,
   PlusIcon,
   SettingsIcon,
+  GithubIcon,
+  MonitorIcon,
+  MoonIcon,
+  SunIcon,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import { useTheme } from "next-themes";
 import { useProjectStore } from "@/stores/project-store";
 import { useDocumentStore } from "@/stores/document-store";
 import { useClaudeSetupStore } from "@/stores/claude-setup-store";
 import { useUvSetupStore } from "@/stores/uv-setup-store";
 import { useSettingsStore } from "@/stores/settings-store";
-import { useUpdater } from "@/hooks/use-updater";
 import { compileLatex } from "@/lib/latex-compiler";
 import { getMupdfClient } from "@/lib/mupdf/mupdf-client";
 import { exists, join } from "@/lib/tauri/fs";
@@ -61,6 +63,7 @@ interface DefaultProject {
 }
 
 type ProjectPickerSection = "projects" | "settings";
+type SettingsDetailSection = "provider" | "environment";
 
 type RecentProject = {
   path: string;
@@ -92,12 +95,14 @@ export function ProjectPicker() {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [activeSection, setActiveSection] =
     useState<ProjectPickerSection>("projects");
+  const [settingsDetailSection, setSettingsDetailSection] =
+    useState<SettingsDetailSection>("provider");
   const [searchQuery, setSearchQuery] = useState("");
   const [removeProjectTarget, setRemoveProjectTarget] =
     useState<RecentProject | null>(null);
   const defaultProjectsDiscoveredRef = useRef(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const { status: updateStatus, checkForUpdate, installUpdate } = useUpdater();
+  const { theme = "system", setTheme } = useTheme();
   const searchShortcutLabel = "⌘ K";
 
   const recentProjects = useProjectStore((s) => s.recentProjects);
@@ -283,6 +288,58 @@ export function ProjectPicker() {
             Settings
           </ProjectNavButton>
         </nav>
+
+        <div
+          className={cn(
+            "mt-auto flex h-9 items-center border-sidebar-border border-t text-muted-foreground text-xs",
+            isSidebarCollapsed ? "justify-center px-0" : "justify-between px-3",
+          )}
+        >
+          {isSidebarCollapsed ? (
+            <img src="/icon-192.png" alt="ClaudePrism" className="size-4" />
+          ) : (
+            <>
+              <span className="truncate">ClaudePrism v{appVersion}</span>
+              <div className="flex shrink-0 items-center gap-1">
+                <Button variant="ghost" size="icon" className="size-6" asChild>
+                  <a
+                    href="https://github.com/delibae/claude-prism"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title="GitHub"
+                  >
+                    <GithubIcon className="size-3.5" />
+                  </a>
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-6"
+                  onClick={() => {
+                    if (theme === "system") setTheme("light");
+                    else if (theme === "light") setTheme("dark");
+                    else setTheme("system");
+                  }}
+                  title={
+                    theme === "system"
+                      ? "System theme"
+                      : theme === "light"
+                        ? "Light mode"
+                        : "Dark mode"
+                  }
+                >
+                  {theme === "system" ? (
+                    <MonitorIcon className="size-3.5" />
+                  ) : theme === "light" ? (
+                    <SunIcon className="size-3.5" />
+                  ) : (
+                    <MoonIcon className="size-3.5" />
+                  )}
+                </Button>
+              </div>
+            </>
+          )}
+        </div>
       </aside>
 
       <main className="flex min-w-0 flex-1 flex-col">
@@ -330,22 +387,43 @@ export function ProjectPicker() {
 
         <div className="min-h-0 flex-1 overflow-auto">
           {activeSection === "settings" ? (
-            <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-6 py-5">
-              <section className="rounded-lg border border-border/60 bg-background p-4">
-                <h2 className="font-semibold text-sm">Application</h2>
-                <div className="mt-3">
-                  <VersionBadge
-                    version={appVersion}
-                    updateStatus={updateStatus}
-                    onCheck={checkForUpdate}
-                    onInstall={installUpdate}
-                  />
-                </div>
-              </section>
-              <section className="space-y-3">
-                <h2 className="font-semibold text-sm">Environment</h2>
-                {!isClaudeReady ? <ClaudeSetup /> : <EnvironmentStatus />}
-              </section>
+            <div className="mx-auto grid w-full max-w-6xl grid-cols-1 gap-6 px-8 py-7 lg:grid-cols-[13rem_minmax(0,1fr)]">
+              <aside className="space-y-1 lg:border-border/60 lg:border-r lg:pr-4">
+                <SettingsDetailButton
+                  active={settingsDetailSection === "provider"}
+                  icon={KeyRoundIcon}
+                  label="Provider"
+                  meta={isClaudeReady ? "Ready" : "Setup"}
+                  onClick={() => setSettingsDetailSection("provider")}
+                />
+                <SettingsDetailButton
+                  active={settingsDetailSection === "environment"}
+                  icon={CheckCircle2Icon}
+                  label="Environment"
+                  meta="Python / Skills"
+                  onClick={() => setSettingsDetailSection("environment")}
+                />
+              </aside>
+
+              <div className="min-w-0">
+                {settingsDetailSection === "provider" ? (
+                  <SettingsPanel
+                    title="Provider"
+                    icon={KeyRoundIcon}
+                    contentClassName="p-0"
+                  >
+                    <ClaudeSetup variant="embedded" />
+                  </SettingsPanel>
+                ) : (
+                  <SettingsPanel
+                    title="Environment"
+                    icon={CheckCircle2Icon}
+                    contentClassName="p-0"
+                  >
+                    <EnvironmentStatus appVersion={appVersion} />
+                  </SettingsPanel>
+                )}
+              </div>
             </div>
           ) : (
             <div className="flex w-full flex-col gap-4 px-5 py-5">
@@ -832,20 +910,75 @@ function ProjectNavButton({
   );
 }
 
-function EnvironmentStatus() {
-  const [showAiSetup, setShowAiSetup] = useState(false);
-  const claudeVersion = useClaudeSetupStore((s) => s.version);
-  const providerKind = useClaudeSetupStore((s) => s.providerKind);
-  const claudeEmail = useClaudeSetupStore((s) => s.accountEmail);
-  const providerModel = useClaudeSetupStore((s) => s.providerModel);
-  const providerBaseUrl = useClaudeSetupStore((s) => s.providerBaseUrl);
-  const isDirectProvider = providerKind === "openai-compatible";
-  const aiDetail = isDirectProvider
-    ? [claudeVersion, providerModel, providerBaseUrl]
-        .filter(Boolean)
-        .join(" · ")
-    : [claudeVersion, claudeEmail].filter(Boolean).join(" · ");
+function SettingsDetailButton({
+  active,
+  icon: Icon,
+  label,
+  meta,
+  onClick,
+}: {
+  active: boolean;
+  icon: LucideIcon;
+  label: string;
+  meta: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors",
+        active
+          ? "bg-muted text-foreground"
+          : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+      )}
+    >
+      <div
+        className={cn(
+          "flex size-7 shrink-0 items-center justify-center rounded-md border",
+          active
+            ? "border-border/70 bg-background/70"
+            : "border-border/60 bg-muted/20",
+        )}
+      >
+        <Icon className="size-3.5" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="truncate font-medium text-sm">{label}</div>
+        <div className="truncate text-muted-foreground text-xs">{meta}</div>
+      </div>
+    </button>
+  );
+}
 
+function SettingsPanel({
+  title,
+  icon: Icon,
+  contentClassName,
+  children,
+}: {
+  title: string;
+  icon: LucideIcon;
+  contentClassName?: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="overflow-hidden rounded-xl border border-border/60 bg-muted/10">
+      <div className="flex items-center gap-3 border-border/60 border-b px-5 py-4">
+        <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-muted/30 text-muted-foreground">
+          <Icon className="size-4" />
+        </div>
+        <div className="min-w-0">
+          <h2 className="truncate font-semibold text-sm">{title}</h2>
+        </div>
+      </div>
+      <div className={cn("p-4", contentClassName)}>{children}</div>
+    </section>
+  );
+}
+
+function EnvironmentStatus({ appVersion }: { appVersion: string }) {
   const uvStatus = useUvSetupStore((s) => s.status);
   const uvVersion = useUvSetupStore((s) => s.version);
   const uvInstalling = useUvSetupStore((s) => s.isInstalling);
@@ -900,19 +1033,7 @@ function EnvironmentStatus() {
 
   return (
     <>
-      <div className="flex w-full flex-col gap-2 rounded-lg border border-border/60 bg-muted/20 px-3 py-2.5">
-        {/* AI provider — always ready here */}
-        <StatusRow
-          ok={true}
-          label={isDirectProvider ? "AI Provider" : "Claude Code"}
-          detail={aiDetail}
-          action={{
-            label: showAiSetup ? "Hide" : "Manage",
-            onClick: () => setShowAiSetup((value) => !value),
-            icon: "key",
-          }}
-        />
-
+      <div className="divide-y divide-border/60">
         {/* Python (uv) */}
         <StatusRow
           ok={uvStatus === "ready"}
@@ -947,17 +1068,22 @@ function EnvironmentStatus() {
                 : "Not installed"
           }
           action={
-            !skillsStatus?.installed && !skillsInstalling
-              ? {
-                  label: "Install",
+            skillsInstalling
+              ? { label: "Installing...", loading: true }
+              : {
+                  label: skillsStatus?.installed ? "Manage" : "Install",
                   onClick: () => setShowSkillsOnboarding(true),
+                  icon: skillsStatus?.installed ? "settings" : "download",
                 }
-              : undefined
           }
         />
-      </div>
 
-      {showAiSetup && <ClaudeSetup />}
+        <StatusRow
+          ok={true}
+          label="ClaudePrism"
+          detail={appVersion ? `v${appVersion}` : "Checking..."}
+        />
+      </div>
 
       {showSkillsOnboarding && OnboardingComponent && (
         <OnboardingComponent
@@ -984,32 +1110,43 @@ function StatusRow({
     label: string;
     onClick?: () => void;
     loading?: boolean;
-    icon?: "download" | "key";
+    icon?: "download" | "key" | "settings";
   };
 }) {
   return (
-    <div className="flex min-w-0 items-center gap-2.5">
-      {ok ? (
-        <CheckCircle2Icon className="size-3.5 shrink-0 text-foreground" />
-      ) : (
-        <CircleIcon className="size-3.5 shrink-0 text-muted-foreground/40" />
-      )}
-      <span
+    <div className="flex min-h-12 min-w-0 items-center gap-3 px-4 py-3">
+      <div
         className={cn(
-          "shrink-0 text-sm",
-          ok ? "text-foreground" : "text-muted-foreground",
+          "flex size-7 shrink-0 items-center justify-center rounded-md border",
+          ok
+            ? "border-green-500/20 bg-green-500/10 text-green-600"
+            : "border-border/70 bg-muted/30 text-muted-foreground",
         )}
       >
-        {label}
-      </span>
-      <span className="min-w-0 flex-1 truncate text-muted-foreground text-xs">
-        {detail}
-      </span>
+        {ok ? (
+          <CheckCircle2Icon className="size-3.5" />
+        ) : (
+          <CircleIcon className="size-3.5" />
+        )}
+      </div>
+      <div className="flex min-w-0 flex-1 items-baseline gap-3">
+        <span
+          className={cn(
+            "w-32 shrink-0 truncate font-medium text-sm",
+            ok ? "text-foreground" : "text-muted-foreground",
+          )}
+        >
+          {label}
+        </span>
+        <span className="min-w-0 flex-1 truncate text-muted-foreground text-xs">
+          {detail}
+        </span>
+      </div>
       {action && (
         <Button
           variant="ghost"
           size="sm"
-          className="h-6 shrink-0 px-2 text-xs"
+          className="h-7 shrink-0 rounded-md px-2.5 text-xs"
           onClick={action.onClick}
           disabled={action.loading}
         >
@@ -1017,6 +1154,8 @@ function StatusRow({
             <Loader2Icon className="mr-1 size-3 animate-spin" />
           ) : action.icon === "key" ? (
             <KeyRoundIcon className="mr-1 size-3" />
+          ) : action.icon === "settings" ? (
+            <SettingsIcon className="mr-1 size-3" />
           ) : (
             <DownloadIcon className="mr-1 size-3" />
           )}
@@ -1025,110 +1164,4 @@ function StatusRow({
       )}
     </div>
   );
-}
-
-// ─── Version Badge with Update Status ───
-
-function VersionBadge({
-  version,
-  updateStatus,
-  onCheck,
-  onInstall,
-}: {
-  version: string;
-  updateStatus: import("@/hooks/use-updater").UpdateStatus;
-  onCheck: () => void;
-  onInstall: () => void;
-}) {
-  if (!version) return null;
-
-  switch (updateStatus.state) {
-    case "available":
-      return (
-        <button
-          onClick={onInstall}
-          className="flex items-center gap-1.5 rounded-full bg-primary/10 px-3 py-1 text-primary text-xs transition-colors hover:bg-primary/20"
-        >
-          <ArrowUpCircleIcon className="size-3.5" />v{updateStatus.version}{" "}
-          available — click to update
-        </button>
-      );
-
-    case "downloading":
-      return (
-        <div className="flex items-center gap-1.5 rounded-full bg-muted px-3 py-1 text-muted-foreground text-xs">
-          <Loader2Icon className="size-3.5 animate-spin" />
-          Downloading... {updateStatus.percent}%
-        </div>
-      );
-
-    case "installing":
-      return (
-        <div className="flex items-center gap-1.5 rounded-full bg-muted px-3 py-1 text-muted-foreground text-xs">
-          <Loader2Icon className="size-3.5 animate-spin" />
-          Installing...
-        </div>
-      );
-
-    case "ready":
-      return (
-        <div className="flex items-center gap-1.5 rounded-full bg-green-500/10 px-3 py-1 text-green-600 text-xs">
-          <CheckCircle2Icon className="size-3.5" />
-          Update complete — restarting...
-        </div>
-      );
-
-    case "checking":
-      return (
-        <div className="flex items-center gap-1.5 text-muted-foreground text-xs">
-          <Loader2Icon className="size-3 animate-spin" />v{version} — checking
-          for updates...
-        </div>
-      );
-
-    case "error":
-      return (
-        <div className="flex items-center gap-1.5 text-muted-foreground text-xs">
-          <span>v{version}</span>
-          <span className="mx-0.5">·</span>
-          <button
-            onClick={onCheck}
-            className="flex items-center gap-1 transition-colors hover:text-foreground"
-          >
-            <RefreshCwIcon className="size-3" />
-            Retry
-          </button>
-        </div>
-      );
-
-    case "up-to-date":
-      return (
-        <div className="flex items-center gap-1.5 text-muted-foreground text-xs">
-          <span>v{version}</span>
-          <span className="mx-0.5">·</span>
-          <button
-            onClick={onCheck}
-            className="flex items-center gap-1 transition-colors hover:text-foreground"
-          >
-            <CheckCircle2Icon className="size-3 text-green-500" />
-            Up to date
-          </button>
-        </div>
-      );
-
-    default:
-      return (
-        <div className="flex items-center gap-1.5 text-muted-foreground text-xs">
-          <span>v{version}</span>
-          <span className="mx-0.5">·</span>
-          <button
-            onClick={onCheck}
-            className="flex items-center gap-1 transition-colors hover:text-foreground"
-          >
-            <RefreshCwIcon className="size-3" />
-            Check for updates
-          </button>
-        </div>
-      );
-  }
 }

@@ -21,7 +21,7 @@ const SIDEBAR_DEFAULT_SIZE = 15;
 const SIDEBAR_MIN_SIZE = 10;
 const SIDEBAR_COLLAPSED_WIDTH_PX = 48;
 const SIDEBAR_COLLAPSED_SIZE_FALLBACK = 8;
-const SIDEBAR_ANIMATION_MS = 180;
+const SIDEBAR_ANIMATION_MS = 200;
 
 function easeOutCubic(progress: number) {
   return 1 - (1 - progress) ** 3;

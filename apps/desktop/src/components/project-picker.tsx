@@ -262,7 +262,7 @@ export function ProjectPicker() {
       <aside
         className={cn(
           "flex shrink-0 flex-col border-sidebar-border border-r bg-sidebar text-sidebar-foreground transition-[width] duration-200 ease-out",
-          isSidebarCollapsed ? "w-16" : "w-56",
+          isSidebarCollapsed ? "w-12" : "w-56",
         )}
       >
         <div
@@ -282,7 +282,10 @@ export function ProjectPicker() {
           <Button
             variant="ghost"
             size="icon"
-            className="size-8 rounded-lg text-muted-foreground hover:text-foreground"
+            className={cn(
+              "rounded-lg text-muted-foreground hover:text-foreground",
+              isSidebarCollapsed ? "size-7" : "size-8",
+            )}
             onClick={() => setIsSidebarCollapsed((value) => !value)}
             aria-label={
               isSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"
@@ -290,7 +293,7 @@ export function ProjectPicker() {
           >
             <PanelLeftIcon
               className={cn(
-                "size-4 transition-transform duration-200",
+                "size-3.5 transition-transform duration-200",
                 isSidebarCollapsed && "rotate-180",
               )}
             />
@@ -299,8 +302,8 @@ export function ProjectPicker() {
 
         <nav
           className={cn(
-            "flex flex-col gap-1 px-2",
-            isSidebarCollapsed && "items-center",
+            "flex flex-col gap-1",
+            isSidebarCollapsed ? "items-center px-0" : "px-2",
           )}
         >
           <ProjectNavButton
@@ -874,17 +877,17 @@ function ProjectNavButton({
       type="button"
       onClick={onClick}
       className={cn(
-        "flex h-10 items-center rounded-lg font-medium text-sm transition-colors",
+        "flex items-center rounded-lg font-medium text-sm transition-colors",
         collapsed
-          ? "w-10 justify-center"
-          : "w-full justify-start gap-3 px-3 text-left",
+          ? "size-8 justify-center"
+          : "h-10 w-full justify-start gap-3 px-3 text-left",
         active
           ? "bg-muted text-foreground"
           : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
       )}
       title={typeof children === "string" ? children : undefined}
     >
-      <Icon className="size-4 shrink-0" />
+      <Icon className="size-3.5 shrink-0" />
       {!collapsed && <span className="truncate">{children}</span>}
     </button>
   );

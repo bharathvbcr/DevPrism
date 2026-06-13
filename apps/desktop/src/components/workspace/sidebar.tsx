@@ -272,12 +272,14 @@ function useAppVersion() {
 
 function LayoutPaneSwitcher({
   controls,
+  collapsed = false,
   onQuickToggleSidebar,
   side = "bottom",
   align = "end",
   buttonClassName,
 }: {
   controls?: LayoutControls;
+  collapsed?: boolean;
   onQuickToggleSidebar?: () => void;
   side?: "top" | "right" | "bottom" | "left";
   align?: "start" | "center" | "end";
@@ -288,14 +290,19 @@ function LayoutPaneSwitcher({
       variant="ghost"
       size="icon"
       className={cn(
-        "transition-transform duration-150 ease-out hover:scale-105",
+        "transition-transform duration-200 ease-out hover:scale-105",
         buttonClassName,
       )}
       onClick={onQuickToggleSidebar}
       title="Layout"
       aria-label="Layout"
     >
-      <PanelLeftIcon className="size-3.5" />
+      <PanelLeftIcon
+        className={cn(
+          "size-3.5 transition-transform duration-200 ease-out",
+          collapsed && "rotate-180",
+        )}
+      />
     </Button>
   );
 
@@ -1153,6 +1160,7 @@ export function Sidebar({
       <div className="flex h-[calc(var(--workspace-topbar-height)+var(--titlebar-height))] w-full items-center justify-center border-sidebar-border border-b">
         <LayoutPaneSwitcher
           controls={layoutControls}
+          collapsed={collapsed}
           onQuickToggleSidebar={onToggleCollapsed}
           side="right"
           align="start"
@@ -1163,7 +1171,7 @@ export function Sidebar({
         <Button
           variant="ghost"
           size="icon"
-          className="size-7 transition-transform duration-150 ease-out hover:scale-105"
+          className="size-7 transition-transform duration-200 ease-out hover:scale-105"
           onClick={onToggleCollapsed}
           title="Files"
           aria-label="Expand Files"
@@ -1173,7 +1181,7 @@ export function Sidebar({
         <Button
           variant="ghost"
           size="icon"
-          className="size-7 transition-transform duration-150 ease-out hover:scale-105"
+          className="size-7 transition-transform duration-200 ease-out hover:scale-105"
           onClick={onToggleCollapsed}
           title="Outline"
           aria-label="Expand Outline"
@@ -1183,7 +1191,7 @@ export function Sidebar({
         <Button
           variant="ghost"
           size="icon"
-          className="size-7 transition-transform duration-150 ease-out hover:scale-105"
+          className="size-7 transition-transform duration-200 ease-out hover:scale-105"
           onClick={onToggleCollapsed}
           title="Zotero"
           aria-label="Expand Zotero"
@@ -1193,7 +1201,7 @@ export function Sidebar({
         <Button
           variant="ghost"
           size="icon"
-          className="size-7 transition-transform duration-150 ease-out hover:scale-105"
+          className="size-7 transition-transform duration-200 ease-out hover:scale-105"
           onClick={onToggleCollapsed}
           title="Environment"
           aria-label="Expand Environment"
@@ -1205,7 +1213,7 @@ export function Sidebar({
         <Button
           variant="ghost"
           size="icon"
-          className="size-7 transition-transform duration-150 ease-out hover:scale-105"
+          className="size-7 transition-transform duration-200 ease-out hover:scale-105"
           onClick={closeProject}
           title="Close Project"
           aria-label="Close Project"
@@ -1220,7 +1228,7 @@ export function Sidebar({
     <div className="relative h-full overflow-hidden bg-sidebar text-sidebar-foreground">
       <div
         className={cn(
-          "absolute inset-y-0 left-0 z-10 w-full transition-[opacity,transform] duration-150 ease-out",
+          "absolute inset-y-0 left-0 z-10 w-full transition-[opacity,transform] duration-200 ease-out",
           collapsed
             ? "translate-x-0 opacity-100"
             : "pointer-events-none -translate-x-1 opacity-0",
@@ -1231,7 +1239,7 @@ export function Sidebar({
       </div>
       <div
         className={cn(
-          "h-full w-full min-w-0 transition-[opacity,transform] duration-150 ease-out",
+          "h-full w-full min-w-0 transition-[opacity,transform] duration-200 ease-out",
           collapsed
             ? "pointer-events-none -translate-x-2 opacity-0"
             : "translate-x-0 opacity-100",
@@ -1271,6 +1279,7 @@ export function Sidebar({
             <div className="flex items-center justify-end">
               <LayoutPaneSwitcher
                 controls={layoutControls}
+                collapsed={collapsed}
                 onQuickToggleSidebar={onToggleCollapsed}
                 side="bottom"
                 align="end"

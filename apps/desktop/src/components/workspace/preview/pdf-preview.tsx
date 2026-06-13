@@ -20,6 +20,7 @@ import {
   useDocumentStore,
   getPdfBytes,
   getCurrentPdfBytes,
+  getCurrentPdfRootId,
   hasPdfData,
 } from "@/stores/document-store";
 import { useHistoryStore } from "@/stores/history-store";
@@ -134,7 +135,10 @@ export function PdfPreview() {
   const pdfData = useMemo(() => getCurrentPdfBytes(), [pdfRevision]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Keep-alive: track which root files have PdfViewer instances alive (LRU order)
-  const currentRootFileId = resolveTexRoot(activeFile?.id ?? "", files);
+  const currentRootFileId =
+    activeFile?.type === "tex"
+      ? resolveTexRoot(activeFile.id, files)
+      : (getCurrentPdfRootId() ?? resolveTexRoot(activeFile?.id ?? "", files));
   const [aliveOrder, setAliveOrder] = useState<string[]>([]);
   const prevRootRef = useRef(currentRootFileId);
 

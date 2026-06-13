@@ -1767,7 +1767,11 @@ interface SkillsStatus {
   location: string;
 }
 
-function EnvironmentSection({ projectPath }: { projectPath: string | null }) {
+function EnvironmentSection({
+  projectPath: _projectPath,
+}: {
+  projectPath: string | null;
+}) {
   // ── Python / uv ──
   const venvReady = useUvSetupStore((s) => s.venvReady);
   const uvStatus = useUvSetupStore((s) => s.status);
@@ -1785,25 +1789,11 @@ function EnvironmentSection({ projectPath }: { projectPath: string | null }) {
           projectPath: null,
         },
       );
-      if (globalStatus.installed) {
-        setSkillsStatus(globalStatus);
-        return;
-      }
-      if (projectPath) {
-        const projectStatus = await invoke<SkillsStatus>(
-          "check_skills_installed",
-          {
-            projectPath,
-          },
-        );
-        setSkillsStatus(projectStatus);
-      } else {
-        setSkillsStatus(globalStatus);
-      }
+      setSkillsStatus(globalStatus);
     } catch {
       // Ignore errors silently
     }
-  }, [projectPath]);
+  }, []);
 
   useEffect(() => {
     checkSkillsStatus();

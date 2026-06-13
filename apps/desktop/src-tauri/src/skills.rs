@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use tauri::{Emitter, WebviewWindow};
+use tauri::{Emitter, Manager, WebviewWindow};
 
 const TARBALL_URL: &str =
     "https://github.com/K-Dense-AI/scientific-agent-skills/archive/refs/heads/main.tar.gz";
@@ -364,15 +364,74 @@ fn skills_dir(project_path: Option<&str>) -> PathBuf {
     }
 }
 
+fn sanitize_skill_folder_name(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string()
+}
+
+fn find_skill_md(skill_dir: &Path) -> Option<PathBuf> {
+    for name in ["SKILL.md", "skill.md"] {
+        let candidate = skill_dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+
+    let entries = std::fs::read_dir(skill_dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file()
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case("SKILL.md"))
+        {
+            return Some(path);
+        }
+    }
+
+    None
+}
+
+fn collect_skill_dirs(root: &Path, output: &mut Vec<PathBuf>) {
+    if find_skill_md(root).is_some() {
+        output.push(root.to_path_buf());
+        return;
+    }
+
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() || !file_type.is_dir() {
+            continue;
+        }
+        collect_skill_dirs(&entry.path(), output);
+    }
+}
+
 /// Download and extract tarball.
-async fn download_tarball(tmp_dir: &Path) -> Result<(), String> {
+async fn download_tarball(window: &WebviewWindow, tmp_dir: &Path) -> Result<(), String> {
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(SKILLS_CONNECT_TIMEOUT_SECS))
         .timeout(std::time::Duration::from_secs(SKILLS_DOWNLOAD_TIMEOUT_SECS))
         .build()
         .map_err(|e| format!("Failed to create download client: {}", e))?;
 
-    let response = client
+    let mut response = client
         .get(TARBALL_URL)
         .header(reqwest::header::USER_AGENT, "ClaudePrism skills installer")
         .send()
@@ -386,10 +445,33 @@ async fn download_tarball(tmp_dir: &Path) -> Result<(), String> {
         ));
     }
 
-    let bytes = response
-        .bytes()
+    let total_size = response.content_length();
+    let mut bytes =
+        Vec::with_capacity(total_size.unwrap_or_default().min(64 * 1024 * 1024) as usize);
+    let mut downloaded = 0_u64;
+    let mut last_emitted_percent = 0_u64;
+
+    while let Some(chunk) = response
+        .chunk()
         .await
-        .map_err(|e| format!("Failed to read tarball bytes: {}", e))?;
+        .map_err(|e| format!("Failed to read tarball bytes: {}", e))?
+    {
+        downloaded += chunk.len() as u64;
+        bytes.extend_from_slice(&chunk);
+
+        if let Some(total) = total_size {
+            if total > 0 {
+                let percent = ((downloaded.saturating_mul(100)) / total).min(100);
+                if percent >= last_emitted_percent + 5 || percent == 100 {
+                    emit_log(window, &format!("Download progress {}%", percent));
+                    last_emitted_percent = percent;
+                }
+            }
+        } else if downloaded / (1024 * 1024) > last_emitted_percent {
+            last_emitted_percent = downloaded / (1024 * 1024);
+            emit_log(window, &format!("Downloaded {} MiB", last_emitted_percent));
+        }
+    }
 
     // Decompress gzip
     let decoder = flate2::read::GzDecoder::new(&bytes[..]);
@@ -416,13 +498,9 @@ async fn download_tarball(tmp_dir: &Path) -> Result<(), String> {
 }
 
 fn contains_skill_dirs(path: &Path) -> bool {
-    let Ok(entries) = std::fs::read_dir(path) else {
-        return false;
-    };
-
-    entries
-        .flatten()
-        .any(|entry| entry.path().is_dir() && entry.path().join("SKILL.md").exists())
+    let mut dirs = Vec::new();
+    collect_skill_dirs(path, &mut dirs);
+    !dirs.is_empty()
 }
 
 fn find_skills_source(repo_dir: &Path) -> Option<PathBuf> {
@@ -463,19 +541,19 @@ fn copy_skills(repo_dir: &Path, target_dir: &Path) -> Result<usize, String> {
 
     let mut count = 0;
 
-    // Iterate through skill subdirectories
-    let entries =
-        std::fs::read_dir(&src).map_err(|e| format!("Failed to read skills dir: {}", e))?;
+    let mut skill_dirs = Vec::new();
+    collect_skill_dirs(&src, &mut skill_dirs);
+    skill_dirs.sort();
 
-    for entry in entries.flatten() {
-        let entry_path = entry.path();
-        if !entry_path.is_dir() {
+    for entry_path in skill_dirs {
+        let Some(skill_name) = entry_path.file_name().and_then(|name| name.to_str()) else {
             continue;
+        };
+        let target_skill = target_dir.join(skill_name);
+        if target_skill.exists() {
+            std::fs::remove_dir_all(&target_skill)
+                .map_err(|e| format!("Failed to replace {}: {}", target_skill.display(), e))?;
         }
-
-        let skill_name = entry.file_name().to_string_lossy().to_string();
-
-        let target_skill = target_dir.join(&skill_name);
         copy_dir_recursive(&entry_path, &target_skill)?;
         count += 1;
     }
@@ -508,10 +586,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
 
 /// Parse a SKILL.md file to extract skill info.
 fn parse_skill_md(skill_dir: &Path) -> Option<SkillInfo> {
-    let skill_md = skill_dir.join("SKILL.md");
-    if !skill_md.exists() {
-        return None;
-    }
+    let skill_md = find_skill_md(skill_dir)?;
 
     let content = std::fs::read_to_string(&skill_md).ok()?;
     let folder = skill_dir.file_name()?.to_string_lossy().to_string();
@@ -565,6 +640,79 @@ pub async fn install_scientific_skills_global(
 ) -> Result<InstallResult, String> {
     let target = skills_dir(None);
     install_skills_with_timeout(&window, &target, None).await
+}
+
+#[tauri::command]
+pub async fn import_skill_from_folder(source_path: String) -> Result<Vec<SkillInfo>, String> {
+    let source = PathBuf::from(&source_path);
+    if !source.is_dir() {
+        return Err("Selected path is not a folder".into());
+    }
+
+    let mut skill_dirs = Vec::new();
+    collect_skill_dirs(&source, &mut skill_dirs);
+    skill_dirs.sort();
+
+    if skill_dirs.is_empty() {
+        return Err(
+            "Selected folder does not contain any Claude skills. A skill must contain SKILL.md."
+                .into(),
+        );
+    }
+
+    let target_root = skills_dir(None);
+    std::fs::create_dir_all(&target_root).map_err(|e| {
+        format!(
+            "Failed to create skills dir {}: {}",
+            target_root.display(),
+            e
+        )
+    })?;
+
+    let mut imported = Vec::new();
+    for skill_dir in skill_dirs {
+        let raw_folder_name = skill_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| "Selected skill folder has an invalid name".to_string())?;
+        let folder_name = sanitize_skill_folder_name(raw_folder_name);
+        if folder_name.is_empty() {
+            return Err("Selected skill folder has an invalid name".into());
+        }
+
+        let target = target_root.join(folder_name);
+        let source_canon = skill_dir
+            .canonicalize()
+            .map_err(|e| format!("Failed to resolve selected skill folder: {}", e))?;
+
+        if target.exists() {
+            let target_canon = target
+                .canonicalize()
+                .map_err(|e| format!("Failed to resolve existing skill folder: {}", e))?;
+            if target_canon == source_canon {
+                let info = parse_skill_md(&target).ok_or_else(|| {
+                    "Selected skill folder has an unreadable SKILL.md".to_string()
+                })?;
+                imported.push(info);
+                continue;
+            }
+
+            std::fs::remove_dir_all(&target).map_err(|e| {
+                format!(
+                    "Failed to replace existing skill {}: {}",
+                    target.display(),
+                    e
+                )
+            })?;
+        }
+
+        copy_dir_recursive(&skill_dir, &target)?;
+        let info = parse_skill_md(&target)
+            .ok_or_else(|| "Imported skill has an unreadable SKILL.md".to_string())?;
+        imported.push(info);
+    }
+
+    Ok(imported)
 }
 
 /// Ensure the target directory is creatable and writable.
@@ -633,7 +781,9 @@ fn ensure_target_writable(target: &Path) -> Result<(), String> {
 /// Emit a progress log event to the frontend + stderr for terminal debugging.
 fn emit_log(window: &WebviewWindow, msg: &str) {
     eprintln!("[skills] {}", msg);
-    let _ = window.emit("skills-install-log", msg);
+    let _ = window
+        .app_handle()
+        .emit("skills-install-log", msg.to_string());
 }
 
 async fn install_skills_with_timeout(
@@ -691,7 +841,7 @@ async fn install_skills_to(
 
     // Download via tarball (faster, no git/git-lfs dependency)
     emit_log(window, "Downloading skills...");
-    download_tarball(&tmp_dir).await.map_err(|e| {
+    download_tarball(window, &tmp_dir).await.map_err(|e| {
         emit_log(window, &format!("Download failed: {}", e));
         e
     })?;
@@ -733,12 +883,9 @@ pub async fn check_skills_installed(project_path: Option<String>) -> Result<Skil
         });
     }
 
-    // Count subdirectories that contain SKILL.md
-    let count = std::fs::read_dir(&target)
-        .map_err(|e| format!("Failed to read skills dir: {}", e))?
-        .flatten()
-        .filter(|e| e.path().is_dir() && e.path().join("SKILL.md").exists())
-        .count();
+    let mut skill_dirs = Vec::new();
+    collect_skill_dirs(&target, &mut skill_dirs);
+    let count = skill_dirs.len();
 
     Ok(SkillsStatus {
         installed: count > 0,
@@ -756,19 +903,57 @@ pub async fn list_installed_skills(project_path: Option<String>) -> Result<Vec<S
     }
 
     let mut skills = Vec::new();
-    let entries =
-        std::fs::read_dir(&target).map_err(|e| format!("Failed to read skills dir: {}", e))?;
+    let mut skill_dirs = Vec::new();
+    collect_skill_dirs(&target, &mut skill_dirs);
+    skill_dirs.sort();
 
-    for entry in entries.flatten() {
-        if entry.path().is_dir() {
-            if let Some(info) = parse_skill_md(&entry.path()) {
-                skills.push(info);
-            }
+    for skill_dir in skill_dirs {
+        if let Some(info) = parse_skill_md(&skill_dir) {
+            skills.push(info);
         }
     }
 
     skills.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(skills)
+}
+
+#[tauri::command]
+pub async fn delete_installed_skill(skill_folder: String) -> Result<(), String> {
+    if skill_folder.trim().is_empty() {
+        return Err("Skill folder cannot be empty".into());
+    }
+
+    let target = skills_dir(None);
+    if !target.exists() {
+        return Err("No global skills directory found".into());
+    }
+
+    let target_canon = target
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve global skills directory: {}", e))?;
+
+    let mut skill_dirs = Vec::new();
+    collect_skill_dirs(&target, &mut skill_dirs);
+    let skill_dir = skill_dirs
+        .into_iter()
+        .find(|dir| {
+            dir.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name == skill_folder)
+        })
+        .ok_or_else(|| format!("Skill '{}' is not installed", skill_folder))?;
+
+    let skill_canon = skill_dir
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve skill folder: {}", e))?;
+    if !skill_canon.starts_with(&target_canon) {
+        return Err("Refusing to delete a skill outside ~/.claude/skills".into());
+    }
+
+    std::fs::remove_dir_all(&skill_canon)
+        .map_err(|e| format!("Failed to delete skill {}: {}", skill_folder, e))?;
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -801,10 +986,25 @@ pub async fn get_skill_content(
     };
 
     for base in &locations {
-        let skill_md = base.join(&skill_folder).join("SKILL.md");
-        if skill_md.exists() {
+        let skill_dir = base.join(&skill_folder);
+        if let Some(skill_md) = find_skill_md(&skill_dir) {
             return std::fs::read_to_string(&skill_md)
                 .map_err(|e| format!("Failed to read SKILL.md: {}", e));
+        }
+
+        let mut skill_dirs = Vec::new();
+        collect_skill_dirs(base, &mut skill_dirs);
+        for skill_dir in skill_dirs {
+            if skill_dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name == skill_folder)
+            {
+                if let Some(skill_md) = find_skill_md(&skill_dir) {
+                    return std::fs::read_to_string(&skill_md)
+                        .map_err(|e| format!("Failed to read SKILL.md: {}", e));
+                }
+            }
         }
     }
 
@@ -851,6 +1051,18 @@ mod tests {
     fn test_skills_dir_project() {
         let dir = skills_dir(Some("/tmp/my-project"));
         assert_eq!(dir, PathBuf::from("/tmp/my-project/.claude/skills"));
+    }
+
+    #[test]
+    fn test_sanitize_skill_folder_name() {
+        assert_eq!(
+            sanitize_skill_folder_name("My Local Skill!"),
+            "my-local-skill"
+        );
+        assert_eq!(
+            sanitize_skill_folder_name("__Data_Skill-01__"),
+            "__data_skill-01__"
+        );
     }
 
     #[test]

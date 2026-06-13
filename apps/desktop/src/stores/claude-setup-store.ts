@@ -355,6 +355,14 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
     model?: string,
     credentialLabel?: string,
   ) => {
+    const status = get().status;
+    if (status === "missing-git" || status === "not-installed") {
+      set({
+        error: "Install Claude Code before configuring an AI provider.",
+      });
+      return false;
+    }
+
     const key = apiKey.trim();
     const rawUrl = baseUrl?.trim() ?? "";
     const url =

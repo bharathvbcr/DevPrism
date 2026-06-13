@@ -490,7 +490,7 @@ function InstallLogOutput() {
 // ─── Main Component ───
 
 interface ClaudeSetupProps {
-  variant?: "default" | "provider-dialog";
+  variant?: "default" | "provider-dialog" | "embedded";
   onSaved?: () => void;
   onCancel?: () => void;
 }
@@ -534,6 +534,21 @@ export function ClaudeSetup({
 
   useInstallEvents();
   useLoginEvents();
+
+  const isEmbedded = variant === "embedded";
+  const setupSurfaceClass = (
+    tone: "default" | "error" | "warning" = "default",
+  ) =>
+    cn(
+      "flex w-full flex-col gap-3",
+      isEmbedded
+        ? "px-4 py-3"
+        : tone === "error"
+          ? "rounded-xl border border-destructive/30 bg-destructive/5 px-5 py-4"
+          : tone === "warning"
+            ? "rounded-xl border border-amber-500/30 bg-amber-500/5 px-5 py-4"
+            : "rounded-xl border border-border bg-muted/30 px-5 py-4",
+    );
 
   const handleSaveApiKey = async (
     selectedProvider: "claude-code" | "openai-compatible" = provider,
@@ -967,11 +982,75 @@ export function ClaudeSetup({
 
   if (status === "checking") {
     return (
-      <div className="flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-muted/30 px-5 py-4">
+      <div
+        className={cn(
+          "flex w-full items-center justify-center gap-2",
+          isEmbedded
+            ? "px-4 py-3"
+            : "rounded-xl border border-border bg-muted/30 px-5 py-4",
+        )}
+      >
         <LoaderIcon className="size-4 animate-spin text-muted-foreground" />
         <span className="text-muted-foreground text-sm">
           Checking Claude Code...
         </span>
+      </div>
+    );
+  }
+
+  if (variant === "provider-dialog" && status === "missing-git") {
+    return (
+      <div className={setupSurfaceClass("warning")}>
+        <div className="flex items-center gap-2">
+          <GitBranchIcon className="size-5 shrink-0 text-amber-600" />
+          <div>
+            <p className="font-medium text-sm">Install Git first</p>
+            <p className="text-muted-foreground text-xs">
+              Claude Code needs Git for Windows before providers can be added.
+            </p>
+          </div>
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          className="w-full gap-2"
+          onClick={() => {
+            shellOpen("https://git-scm.com/downloads/win");
+          }}
+        >
+          <ExternalLinkIcon className="size-3.5" />
+          Download Git for Windows
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="w-full gap-2 text-muted-foreground"
+          onClick={checkStatus}
+        >
+          <RefreshCwIcon className="size-3.5" />
+          I've installed Git
+        </Button>
+      </div>
+    );
+  }
+
+  if (variant === "provider-dialog" && status === "not-installed") {
+    return (
+      <div className={setupSurfaceClass()}>
+        <div className="flex items-center gap-2">
+          <DownloadIcon className="size-5 shrink-0 text-muted-foreground" />
+          <div>
+            <p className="font-medium text-sm">Install Claude Code first</p>
+            <p className="text-muted-foreground text-xs">
+              AI providers can be configured after the Claude Code CLI is
+              installed.
+            </p>
+          </div>
+        </div>
+        <Button size="sm" className="w-full gap-2" onClick={install}>
+          <DownloadIcon className="size-3.5" />
+          Install Claude Code
+        </Button>
       </div>
     );
   }
@@ -999,13 +1078,24 @@ export function ClaudeSetup({
 
   if (status === "ready") {
     const isDirectProvider = providerKind === "openai-compatible";
+    const configuredProviderCount = isDirectProvider
+      ? Math.max(
+          openAiCredentials.length,
+          providerModel || providerBaseUrl ? 1 : 0,
+        )
+      : 1;
     const readyDetail = isDirectProvider
-      ? [version, providerModel, providerBaseUrl].filter(Boolean).join(" / ")
+      ? [
+          `${configuredProviderCount} provider${configuredProviderCount === 1 ? "" : "s"} configured`,
+          version ? `Claude Code ${version}` : null,
+        ]
+          .filter(Boolean)
+          .join(" / ")
       : [version, accountEmail].filter(Boolean).join(" / ");
 
     if (isEditingProvider) {
       return (
-        <div className="flex w-full flex-col gap-3 rounded-xl border border-border bg-muted/30 px-5 py-4">
+        <div className={setupSurfaceClass()}>
           <div className="flex items-center gap-3">
             <CheckCircle2Icon className="size-5 shrink-0 text-green-600" />
             <div className="min-w-0 flex-1">
@@ -1053,20 +1143,36 @@ export function ClaudeSetup({
     }
 
     return (
-      <div className="flex w-full flex-col gap-2 rounded-xl border border-border bg-muted/30 px-4 py-3">
-        <div className="flex min-w-0 items-center gap-2.5">
-          <CheckCircle2Icon className="size-3.5 shrink-0 text-foreground" />
-          <span className="shrink-0 text-sm">
-            {isDirectProvider ? "AI Providers" : "Claude Code"}
-          </span>
-          <span className="min-w-0 flex-1 truncate text-muted-foreground text-xs">
-            {readyDetail}
-          </span>
+      <div
+        className={cn(
+          "w-full",
+          isEmbedded ? "" : "rounded-xl border border-border bg-muted/30",
+        )}
+      >
+        <div className="flex min-w-0 items-center gap-3 px-4 py-3.5">
+          <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-green-500/20 bg-green-500/10 text-green-600">
+            <CheckCircle2Icon className="size-4" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="truncate font-semibold text-sm">
+                {isDirectProvider ? "AI Providers" : "Claude Code"}
+              </span>
+              {isDirectProvider && (
+                <span className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                  {configuredProviderCount}
+                </span>
+              )}
+            </div>
+            <p className="mt-0.5 truncate text-muted-foreground text-xs">
+              {readyDetail}
+            </p>
+          </div>
           <Button
             type="button"
             size="sm"
             variant="ghost"
-            className="h-6 shrink-0 gap-1 px-2 text-xs"
+            className="h-8 shrink-0 gap-1.5 rounded-md px-2.5 text-xs"
             onClick={() => beginProviderEdit(isDirectProvider)}
           >
             <RefreshCwIcon className="size-3" />
@@ -1076,7 +1182,7 @@ export function ClaudeSetup({
             type="button"
             size="sm"
             variant="ghost"
-            className="h-6 shrink-0 gap-1 px-2 text-destructive text-xs hover:text-destructive"
+            className="h-8 shrink-0 gap-1.5 rounded-md px-2.5 text-destructive text-xs hover:text-destructive"
             onClick={handleClearApiKey}
             disabled={isClearingApiKey}
           >
@@ -1090,7 +1196,7 @@ export function ClaudeSetup({
         </div>
 
         {isDirectProvider && openAiCredentials.length > 0 && (
-          <div className="space-y-1 border-border border-t pt-2">
+          <div className="space-y-1.5 border-border/60 border-t px-4 py-3">
             {openAiCredentials.map((credential) => {
               const displayName = getProviderDisplayName({
                 label: credential.label,
@@ -1106,26 +1212,34 @@ export function ClaudeSetup({
               return (
                 <div
                   key={credential.id}
-                  className="flex min-w-0 items-center gap-2 rounded-md px-2 py-1 text-xs"
+                  className="flex min-h-9 min-w-0 items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-xs transition-colors hover:bg-muted/50"
                 >
                   {iconSrc ? (
                     <img
                       src={iconSrc}
                       alt=""
-                      className="size-3.5 shrink-0 object-contain"
+                      className="size-4 shrink-0 object-contain"
                     />
                   ) : (
-                    <CircleIcon className="size-2.5 shrink-0 text-muted-foreground/50" />
+                    <CircleIcon className="size-3 shrink-0 text-muted-foreground/50" />
                   )}
-                  <span className="shrink-0 font-medium">{displayName}</span>
-                  <span className="min-w-0 flex-1 truncate text-muted-foreground">
-                    {credential.model}
-                  </span>
-                  <ModelCapabilityBadges
-                    label={credential.label}
-                    baseUrl={credential.base_url}
-                    model={credential.model}
-                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span className="shrink-0 font-medium">
+                        {displayName}
+                      </span>
+                      <span className="min-w-0 truncate text-muted-foreground">
+                        {credential.model}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="shrink-0">
+                    <ModelCapabilityBadges
+                      label={credential.label}
+                      baseUrl={credential.base_url}
+                      model={credential.model}
+                    />
+                  </div>
                 </div>
               );
             })}
@@ -1138,7 +1252,7 @@ export function ClaudeSetup({
   // Installation in progress
   if (isInstalling) {
     return (
-      <div className="flex w-full flex-col gap-3 rounded-xl border border-border bg-muted/30 px-5 py-4">
+      <div className={setupSurfaceClass()}>
         <div className="flex items-center gap-2">
           <TerminalIcon className="size-5 shrink-0 text-muted-foreground" />
           <p className="font-medium text-sm">Installing Claude Code</p>
@@ -1158,7 +1272,7 @@ export function ClaudeSetup({
   // Login in progress
   if (isLoggingIn) {
     return (
-      <div className="flex w-full flex-col gap-3 rounded-xl border border-border bg-muted/30 px-5 py-4">
+      <div className={setupSurfaceClass()}>
         <div className="flex items-center gap-2">
           <LogInIcon className="size-5 shrink-0 text-muted-foreground" />
           <p className="font-medium text-sm">Signing in to Claude</p>
@@ -1181,7 +1295,7 @@ export function ClaudeSetup({
     const hasInstallSteps = installSteps.length > 0;
 
     return (
-      <div className="flex w-full flex-col gap-3 rounded-xl border border-destructive/30 bg-destructive/5 px-5 py-4">
+      <div className={setupSurfaceClass("error")}>
         <div className="flex items-center gap-2">
           <AlertCircleIcon className="size-5 shrink-0 text-destructive" />
           <p className="font-medium text-sm">
@@ -1235,22 +1349,16 @@ export function ClaudeSetup({
 
   if (status === "missing-git") {
     return (
-      <div className="flex w-full flex-col gap-3 rounded-xl border border-amber-500/30 bg-amber-500/5 px-5 py-4">
+      <div className={setupSurfaceClass("warning")}>
         <div className="flex items-center gap-2">
           <GitBranchIcon className="size-5 shrink-0 text-amber-600" />
           <div>
-            <p className="font-medium text-sm">Connect AI Provider</p>
+            <p className="font-medium text-sm">Install Git first</p>
             <p className="text-muted-foreground text-xs">
-              OpenAI-compatible providers work without Git. Git for Windows is
-              only needed if you want Claude Code/browser sign-in.
+              Git for Windows is required before Claude Code can be installed
+              and providers can be configured.
             </p>
           </div>
-        </div>
-        {renderApiKeyForm({ forceOpenAiCompatible: true })}
-        <div className="flex items-center gap-2">
-          <div className="h-px flex-1 bg-border" />
-          <span className="text-[11px] text-muted-foreground">Claude Code</span>
-          <div className="h-px flex-1 bg-border" />
         </div>
         <Button
           size="sm"
@@ -1278,26 +1386,19 @@ export function ClaudeSetup({
 
   if (status === "not-installed") {
     return (
-      <div className="flex w-full flex-col gap-3 rounded-xl border border-border bg-muted/30 px-5 py-4">
+      <div className={setupSurfaceClass()}>
         <div className="flex items-center gap-2">
-          <KeyRoundIcon className="size-5 shrink-0 text-muted-foreground" />
+          <DownloadIcon className="size-5 shrink-0 text-muted-foreground" />
           <div>
-            <p className="font-medium text-sm">Connect AI Provider</p>
+            <p className="font-medium text-sm">Install Claude Code first</p>
             <p className="text-muted-foreground text-xs">
-              Use Qwen, DeepSeek, GLM, Gemini, or another OpenAI-compatible
-              endpoint without installing Claude Code.
+              Provider keys can be added after the Claude Code CLI is installed.
             </p>
           </div>
         </div>
-        {renderApiKeyForm({ forceOpenAiCompatible: true })}
-        <div className="flex items-center gap-2">
-          <div className="h-px flex-1 bg-border" />
-          <span className="text-[11px] text-muted-foreground">Claude Code</span>
-          <div className="h-px flex-1 bg-border" />
-        </div>
         <Button
           size="sm"
-          variant="outline"
+          variant="default"
           className="w-full gap-2"
           onClick={install}
         >
@@ -1313,7 +1414,7 @@ export function ClaudeSetup({
 
   if (status === "not-authenticated") {
     return (
-      <div className="flex w-full flex-col gap-3 rounded-xl border border-border bg-muted/30 px-5 py-4">
+      <div className={setupSurfaceClass()}>
         <div className="flex items-center gap-2">
           <KeyRoundIcon className="size-5 shrink-0 text-muted-foreground" />
           <div>

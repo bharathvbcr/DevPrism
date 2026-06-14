@@ -14,6 +14,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { useUvSetupStore } from "@/stores/uv-setup-store";
 import { ErrorFallback } from "@/components/error-fallback";
 import { createLogger } from "@/lib/debug/logger";
+import { EnvironmentOnboarding } from "@/components/environment-onboarding";
 
 const log = createLogger("app");
 
@@ -222,6 +223,7 @@ export function App({ onReady }: { onReady?: () => void }) {
             className="fixed inset-x-0 top-0 z-[9999] h-[var(--titlebar-height)]"
           />
           {projectRoot ? <WorkspaceWithClaude /> : <ProjectPicker />}
+          <EnvironmentOnboarding />
           {showDebug && (
             <div className="fixed inset-0 z-[9998] flex items-end justify-center">
               <div

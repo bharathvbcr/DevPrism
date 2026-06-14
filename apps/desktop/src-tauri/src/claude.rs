@@ -374,7 +374,7 @@ fn redacted_proxy_url(url: &str) -> String {
     parsed.to_string()
 }
 
-fn apply_proxy_env_to_command(cmd: &mut Command, window: Option<&WebviewWindow>) {
+pub(crate) fn apply_proxy_env_to_command(cmd: &mut Command, window: Option<&WebviewWindow>) {
     let mut vars = explicit_proxy_env_vars();
     let mut no_proxy = first_env_value(&["NO_PROXY", "no_proxy"]).map(|(_, value)| value);
 
@@ -2011,6 +2011,7 @@ pub struct ClaudeStatus {
     pub account_email: Option<String>,
     pub provider_model: Option<String>,
     pub provider_base_url: Option<String>,
+    pub claude_provider_configured: bool,
     /// Windows only: true when Git for Windows (git-bash) is not found.
     /// Claude Code requires git-bash to function on Windows.
     pub missing_git: bool,
@@ -2063,6 +2064,13 @@ fn find_git_bash() -> Option<String> {
 #[tauri::command]
 pub async fn check_claude_status() -> Result<ClaudeStatus, String> {
     let auth_config = read_claude_prism_auth_config()?;
+    let claude_provider_configured = stored_claude_credential_from_config(&auth_config).is_some()
+        || std::env::var("ANTHROPIC_API_KEY")
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+        || std::env::var("ANTHROPIC_AUTH_TOKEN")
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false);
     let openai_credential = stored_openai_compatible_credential_from_config(&auth_config, None);
     let provider_kind = if openai_credential.is_some() {
         PROVIDER_OPENAI_COMPATIBLE
@@ -2095,6 +2103,7 @@ pub async fn check_claude_status() -> Result<ClaudeStatus, String> {
                 account_email: None,
                 provider_model: provider_model.clone(),
                 provider_base_url: provider_base_url.clone(),
+                claude_provider_configured,
                 missing_git,
             });
         }
@@ -2119,6 +2128,7 @@ pub async fn check_claude_status() -> Result<ClaudeStatus, String> {
                 account_email: None,
                 provider_model: provider_model.clone(),
                 provider_base_url: provider_base_url.clone(),
+                claude_provider_configured,
                 missing_git,
             });
         }
@@ -2134,6 +2144,7 @@ pub async fn check_claude_status() -> Result<ClaudeStatus, String> {
             account_email: None,
             provider_model,
             provider_base_url,
+            claude_provider_configured,
             missing_git,
         });
     }
@@ -2171,6 +2182,7 @@ pub async fn check_claude_status() -> Result<ClaudeStatus, String> {
         account_email,
         provider_model: None,
         provider_base_url: None,
+        claude_provider_configured,
         missing_git,
     })
 }

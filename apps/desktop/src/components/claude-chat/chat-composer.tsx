@@ -1451,7 +1451,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
           <DialogHeader>
             <DialogTitle>Add AI Provider</DialogTitle>
             <DialogDescription>
-              Configure another OpenAI-compatible provider for this project.
+              Configure Anthropic or another model provider for this project.
             </DialogDescription>
           </DialogHeader>
           <ClaudeSetup

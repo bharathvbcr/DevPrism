@@ -20,6 +20,7 @@ interface ClaudeStatus {
   account_email: string | null;
   provider_model: string | null;
   provider_base_url: string | null;
+  claude_provider_configured: boolean;
   missing_git: boolean;
 }
 
@@ -58,6 +59,7 @@ interface ClaudeSetupState {
   accountEmail: string | null;
   providerModel: string | null;
   providerBaseUrl: string | null;
+  claudeProviderConfigured: boolean;
   openAiCredentials: OpenAiCompatibleCredentialInfo[];
   activeOpenAiCredentialId: string | null;
 
@@ -205,6 +207,7 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
   accountEmail: null,
   providerModel: null,
   providerBaseUrl: null,
+  claudeProviderConfigured: false,
   openAiCredentials: [],
   activeOpenAiCredentialId: null,
 
@@ -244,6 +247,7 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
           accountEmail: null,
           providerModel: null,
           providerBaseUrl: null,
+          claudeProviderConfigured: result.claude_provider_configured,
           openAiCredentials,
           activeOpenAiCredentialId,
         });
@@ -258,6 +262,7 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
           accountEmail: null,
           providerModel: null,
           providerBaseUrl: null,
+          claudeProviderConfigured: result.claude_provider_configured,
           openAiCredentials,
           activeOpenAiCredentialId,
         });
@@ -272,6 +277,7 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
           accountEmail: null,
           providerModel: null,
           providerBaseUrl: null,
+          claudeProviderConfigured: result.claude_provider_configured,
           openAiCredentials,
           activeOpenAiCredentialId,
         });
@@ -285,6 +291,7 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
         accountEmail: result.account_email,
         providerModel: result.provider_model,
         providerBaseUrl: result.provider_base_url,
+        claudeProviderConfigured: result.claude_provider_configured,
         openAiCredentials,
         activeOpenAiCredentialId,
       });

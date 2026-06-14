@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -43,6 +44,9 @@ interface SkillsStatus {
 
 export function EnvironmentOnboarding() {
   const [initialCheckComplete, setInitialCheckComplete] = useState(false);
+  const keepOpenDuringCheckRef = useRef(false);
+  const [hasOpenedForSetup, setHasOpenedForSetup] = useState(false);
+  const [completedDismissed, setCompletedDismissed] = useState(false);
   const [providerDialogOpen, setProviderDialogOpen] = useState(false);
   const [skillsStatus, setSkillsStatus] = useState<SkillsStatus | null>(null);
   const [skillsChecking, setSkillsChecking] = useState(true);
@@ -126,9 +130,38 @@ export function EnvironmentOnboarding() {
     isUvInstalling || (uvStatus !== "checking" && !isUvReady);
   const skillsNeedsAttention =
     !skillsChecking && (!isSkillsReady || !!skillsError);
+  const needsAttention =
+    claudeNeedsAttention || uvNeedsAttention || skillsNeedsAttention;
+  const isCheckingSetup =
+    claudeStatus === "checking" || uvStatus === "checking" || skillsChecking;
+  const setupComplete =
+    initialCheckComplete && !needsAttention && !isCheckingSetup;
   const shouldShow =
     initialCheckComplete &&
-    (claudeNeedsAttention || uvNeedsAttention || skillsNeedsAttention);
+    !completedDismissed &&
+    (needsAttention ||
+      (isCheckingSetup && keepOpenDuringCheckRef.current) ||
+      hasOpenedForSetup);
+
+  useEffect(() => {
+    if (needsAttention) {
+      keepOpenDuringCheckRef.current = true;
+      setHasOpenedForSetup(true);
+      setCompletedDismissed(false);
+      return;
+    }
+
+    if (!isCheckingSetup) {
+      keepOpenDuringCheckRef.current = false;
+    }
+  }, [isCheckingSetup, needsAttention]);
+
+  const handleDone = () => {
+    if (!setupComplete) return;
+    keepOpenDuringCheckRef.current = false;
+    setHasOpenedForSetup(false);
+    setCompletedDismissed(true);
+  };
 
   const openSkillsDialog = () => {
     setSkillsDialogOpen(true);
@@ -352,8 +385,9 @@ export function EnvironmentOnboarding() {
 
           <div className="flex justify-center px-6 pt-1 pb-4">
             <Button
-              disabled
+              disabled={!setupComplete}
               className="h-10 min-w-28 justify-center rounded-full px-7"
+              onClick={handleDone}
             >
               Done
             </Button>

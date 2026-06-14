@@ -522,6 +522,9 @@ export function ClaudeSetup({
   const accountEmail = useClaudeSetupStore((s) => s.accountEmail);
   const providerModel = useClaudeSetupStore((s) => s.providerModel);
   const providerBaseUrl = useClaudeSetupStore((s) => s.providerBaseUrl);
+  const claudeProviderConfigured = useClaudeSetupStore(
+    (s) => s.claudeProviderConfigured,
+  );
   const openAiCredentials = useClaudeSetupStore((s) => s.openAiCredentials);
   const install = useClaudeSetupStore((s) => s.install);
   const login = useClaudeSetupStore((s) => s.login);
@@ -660,7 +663,7 @@ export function ClaudeSetup({
       : provider;
     const providerCards = forceOpenAiCompatible
       ? OPENAI_PROVIDER_CARDS
-      : [...OPENAI_PROVIDER_CARDS, ...CLAUDE_PROVIDER_CARDS];
+      : [...CLAUDE_PROVIDER_CARDS, ...OPENAI_PROVIDER_CARDS];
     const providerCardIds = new Set(providerCards.map((card) => card.id));
     const fallbackCardId =
       selectedProvider === "openai-compatible"
@@ -673,6 +676,10 @@ export function ClaudeSetup({
     const apiKeyOptional =
       selectedProvider === "openai-compatible" && !!activeCard?.apiKeyOptional;
     const apiKeyRequired = !apiKeyOptional;
+    const showBrowserSignIn =
+      allowBrowserSignIn &&
+      selectedProvider === "claude-code" &&
+      activeCardId === "anthropic-direct";
 
     return (
       <>
@@ -956,7 +963,7 @@ export function ClaudeSetup({
           </Button>
         </form>
 
-        {allowBrowserSignIn && (
+        {showBrowserSignIn && (
           <>
             <div className="flex items-center gap-2">
               <div className="h-px flex-1 bg-border" />
@@ -1058,7 +1065,7 @@ export function ClaudeSetup({
   if (variant === "provider-dialog") {
     return (
       <div className="min-w-0 max-w-full space-y-3 overflow-hidden">
-        {renderApiKeyForm({ forceOpenAiCompatible: true })}
+        {renderApiKeyForm({ allowBrowserSignIn: true })}
         <Button
           type="button"
           size="sm"
@@ -1078,20 +1085,22 @@ export function ClaudeSetup({
 
   if (status === "ready") {
     const isDirectProvider = providerKind === "openai-compatible";
-    const configuredProviderCount = isDirectProvider
-      ? Math.max(
-          openAiCredentials.length,
-          providerModel || providerBaseUrl ? 1 : 0,
-        )
-      : 1;
-    const readyDetail = isDirectProvider
-      ? [
-          `${configuredProviderCount} provider${configuredProviderCount === 1 ? "" : "s"} configured`,
-          version ? `Claude Code ${version}` : null,
-        ]
-          .filter(Boolean)
-          .join(" / ")
-      : [version, accountEmail].filter(Boolean).join(" / ");
+    const openAiProviderCount = Math.max(
+      openAiCredentials.length,
+      isDirectProvider && (providerModel || providerBaseUrl) ? 1 : 0,
+    );
+    const includesClaudeProvider =
+      claudeProviderConfigured || !isDirectProvider;
+    const configuredProviderCount =
+      openAiProviderCount + (includesClaudeProvider ? 1 : 0);
+    const readyDetail = [
+      `${configuredProviderCount} provider${configuredProviderCount === 1 ? "" : "s"} configured`,
+      version ? `Claude Code ${version}` : null,
+      !isDirectProvider && accountEmail ? accountEmail : null,
+    ]
+      .filter(Boolean)
+      .join(" / ");
+    const claudeProviderIconSrc = getProviderIconSrc({ label: "Anthropic" });
 
     if (isEditingProvider) {
       return (
@@ -1156,13 +1165,11 @@ export function ClaudeSetup({
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-2">
               <span className="truncate font-semibold text-sm">
-                {isDirectProvider ? "AI Providers" : "Claude Code"}
+                AI Providers
               </span>
-              {isDirectProvider && (
-                <span className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
-                  {configuredProviderCount}
-                </span>
-              )}
+              <span className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                {configuredProviderCount}
+              </span>
             </div>
             <p className="mt-0.5 truncate text-muted-foreground text-xs">
               {readyDetail}
@@ -1195,8 +1202,31 @@ export function ClaudeSetup({
           </Button>
         </div>
 
-        {isDirectProvider && openAiCredentials.length > 0 && (
+        {(includesClaudeProvider || openAiCredentials.length > 0) && (
           <div className="space-y-1.5 border-border/60 border-t px-4 py-3">
+            {includesClaudeProvider && (
+              <div className="flex min-h-9 min-w-0 items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-xs transition-colors hover:bg-muted/50">
+                {claudeProviderIconSrc ? (
+                  <img
+                    src={claudeProviderIconSrc}
+                    alt=""
+                    className="size-4 shrink-0 object-contain"
+                  />
+                ) : (
+                  <KeyRoundIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                )}
+                <div className="min-w-0 flex-1">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="shrink-0 font-medium">
+                      Anthropic / Claude Code
+                    </span>
+                    <span className="min-w-0 truncate text-muted-foreground">
+                      {accountEmail || "Claude Code"}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
             {openAiCredentials.map((credential) => {
               const displayName = getProviderDisplayName({
                 label: credential.label,

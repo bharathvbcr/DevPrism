@@ -323,6 +323,7 @@ pub async fn install_uv(window: WebviewWindow) -> Result<(), String> {
             cmd.env(&key, &value);
         }
     }
+    crate::claude::apply_proxy_env_to_command(&mut cmd, Some(&window));
 
     let mut child = cmd
         .spawn()

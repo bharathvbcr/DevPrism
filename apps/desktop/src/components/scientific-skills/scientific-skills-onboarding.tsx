@@ -465,12 +465,12 @@ export function ScientificSkillsOnboarding({
                   size="sm"
                   onClick={handleImportSkill}
                   disabled={isImporting || isInstalling || isUninstalling}
-                  className="gap-1.5 text-green-600 hover:text-green-700 dark:text-green-400 dark:hover:text-green-300"
+                  className="gap-1.5 border-border/70 bg-muted/30 text-foreground shadow-none hover:bg-muted/60 hover:text-foreground"
                 >
                   {isImporting ? (
-                    <Loader2Icon className="size-3.5 animate-spin" />
+                    <Loader2Icon className="size-3.5 animate-spin text-muted-foreground" />
                   ) : (
-                    <FolderPlusIcon className="size-3.5" />
+                    <FolderPlusIcon className="size-3.5 text-muted-foreground" />
                   )}
                   Import Skill
                 </Button>

@@ -108,6 +108,26 @@ describe("provider selection persistence", () => {
   });
 });
 
+describe("pinned context removal requests", () => {
+  it("queues and consumes pinned context labels to remove", () => {
+    const chat = useClaudeChatStore.getState();
+
+    chat.requestPinnedContextRemoval(["@main.tex:1:1-1:5"]);
+    chat.requestPinnedContextRemoval(["@main.tex:2:1-2:5"]);
+
+    expect(
+      useClaudeChatStore.getState().pendingPinnedContextRemovalLabels,
+    ).toEqual(["@main.tex:1:1-1:5", "@main.tex:2:1-2:5"]);
+
+    expect(
+      useClaudeChatStore.getState().consumePendingPinnedContextRemovals(),
+    ).toEqual(["@main.tex:1:1-1:5", "@main.tex:2:1-2:5"]);
+    expect(
+      useClaudeChatStore.getState().pendingPinnedContextRemovalLabels,
+    ).toEqual([]);
+  });
+});
+
 describe("queued guidance", () => {
   it("queues and consumes guidance for the active tab", () => {
     const chat = useClaudeChatStore.getState();

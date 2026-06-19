@@ -1056,28 +1056,6 @@ export function Sidebar({
   const handleImport = async (targetFolder?: string) => {
     const selected = await openDialog({
       multiple: true,
-      filters: [
-        {
-          name: "All Files",
-          extensions: [
-            "tex",
-            "bib",
-            "sty",
-            "cls",
-            "bst",
-            "png",
-            "jpg",
-            "jpeg",
-            "gif",
-            "svg",
-            "bmp",
-            "webp",
-            "pdf",
-            "txt",
-            "md",
-          ],
-        },
-      ],
     });
     if (selected && projectRoot) {
       const paths = Array.isArray(selected) ? selected : [selected];

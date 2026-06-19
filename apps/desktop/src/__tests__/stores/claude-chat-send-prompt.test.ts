@@ -56,6 +56,7 @@ function resetClaudeChatStore() {
     activeTabId: "tab-default",
     pendingInitialPrompt: null,
     pendingAttachments: [],
+    pendingPinnedContextRemovalLabels: [],
     selectedModel: "opus",
     selectedProviderCredentialId: CLAUDE_CODE_PROVIDER_ID,
     selectedProviderModels: {},

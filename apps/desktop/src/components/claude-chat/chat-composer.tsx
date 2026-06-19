@@ -37,10 +37,11 @@ import { join, tempDir } from "@tauri-apps/api/path";
 import { invoke } from "@tauri-apps/api/core";
 import {
   CLAUDE_CODE_PROVIDER_ID,
-  useClaudeChatStore,
+  loadSelectedProviderCredentialId,
   offsetToLineCol,
   type PromptContextOverride,
   type QueuedGuidance,
+  useClaudeChatStore,
 } from "@/stores/claude-chat-store";
 import {
   useClaudeSetupStore,
@@ -140,6 +141,26 @@ function cleanupTemporaryPinnedContext(context: PinnedContext) {
   void cleanupTemporaryFilePaths([context.filePath]);
 }
 
+function pinnedContextDedupKey(context: PinnedContext) {
+  return context.isTemporary
+    ? `temporary:${context.filePath}`
+    : `label:${context.label}`;
+}
+
+function appendUniquePinnedContexts(
+  current: PinnedContext[],
+  next: PinnedContext[],
+) {
+  const seen = new Set(current.map(pinnedContextDedupKey));
+  const unique = next.filter((context) => {
+    const key = pinnedContextDedupKey(context);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  return [...current, ...unique];
+}
+
 function isPdfPath(path: string) {
   return path.toLowerCase().endsWith(".pdf");
 }
@@ -162,6 +183,65 @@ function formatGuidanceText(guidance: QueuedGuidance) {
   return guidance.contextOverride?.label
     ? `${guidance.contextOverride.label} - ${guidance.prompt}`
     : guidance.prompt;
+}
+
+type EffortLevel = "low" | "medium" | "high";
+const EFFORT_LEVELS: EffortLevel[] = ["low", "medium", "high"];
+
+function effortShortLabel(level: EffortLevel) {
+  return level === "low" ? "L" : level === "medium" ? "M" : "H";
+}
+
+function effortDisplayLabel(level: EffortLevel) {
+  return effortShortLabel(level);
+}
+
+function claudeModelDisplayName(model: string) {
+  switch (model) {
+    case "sonnet":
+      return "Sonnet";
+    case "opus":
+      return "Opus";
+    case "haiku":
+      return "Haiku";
+    case "opusplan":
+      return "OpusPlan";
+    default:
+      return model;
+  }
+}
+
+function EffortControls({
+  effortLevel,
+  setEffortLevel,
+}: {
+  effortLevel: EffortLevel;
+  setEffortLevel: (level: EffortLevel) => void;
+}) {
+  return (
+    <>
+      <div className="my-1 border-border border-t" />
+      <div className="px-2 py-1 font-medium text-muted-foreground text-xs">
+        Effort
+      </div>
+      <div className="flex gap-1 px-2 pb-2">
+        {EFFORT_LEVELS.map((level) => (
+          <button
+            key={level}
+            className={cn(
+              "flex-1 rounded-md py-1 text-center font-medium text-xs transition-colors",
+              effortLevel === level
+                ? "bg-primary text-primary-foreground"
+                : "bg-muted text-muted-foreground hover:bg-muted/80",
+            )}
+            onClick={() => setEffortLevel(level)}
+          >
+            {effortDisplayLabel(level)}
+          </button>
+        ))}
+      </div>
+    </>
+  );
 }
 
 export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
@@ -203,14 +283,40 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
     [queuedGuidance],
   );
   const openAiCredentials = useClaudeSetupStore((s) => s.openAiCredentials);
+  const activeOpenAiCredentialId = useClaudeSetupStore(
+    (s) => s.activeOpenAiCredentialId,
+  );
+  const providerKind = useClaudeSetupStore((s) => s.providerKind);
+  const setupStatus = useClaudeSetupStore((s) => s.status);
+  const claudeProviderConfigured = useClaudeSetupStore(
+    (s) => s.claudeProviderConfigured,
+  );
   const deleteApiCredential = useClaudeSetupStore((s) => s.deleteApiCredential);
-  const selectedProviderCredential =
+  const configuredOpenAiCredential =
     selectedProviderCredentialId &&
     selectedProviderCredentialId !== CLAUDE_CODE_PROVIDER_ID
       ? (openAiCredentials.find(
           (credential) => credential.id === selectedProviderCredentialId,
         ) ?? null)
       : null;
+  const fallbackProviderCredential =
+    (activeOpenAiCredentialId
+      ? openAiCredentials.find(
+          (credential) => credential.id === activeOpenAiCredentialId,
+        )
+      : null) ??
+    openAiCredentials[0] ??
+    null;
+  const showClaudeProvider =
+    claudeProviderConfigured ||
+    (openAiCredentials.length === 0 && setupStatus !== "checking");
+  const selectedProviderCredential =
+    configuredOpenAiCredential ??
+    (!showClaudeProvider ? fallbackProviderCredential : null);
+  const claudeProviderActive =
+    showClaudeProvider && !selectedProviderCredential;
+  const providerSelectionReady =
+    claudeProviderActive || !!selectedProviderCredential;
   const selectedProviderModel = selectedProviderCredential
     ? selectedProviderModels[selectedProviderCredential.id] ||
       selectedProviderCredential.model
@@ -260,6 +366,10 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
   const [input, setInput] = useState("");
   const hasInput = input.trim().length > 0;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const hadStoredProviderSelectionRef = useRef(
+    loadSelectedProviderCredentialId() !== null,
+  );
+  const initialProviderSyncDoneRef = useRef(false);
 
   // Model picker state
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
@@ -286,18 +396,52 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
 
   useEffect(() => {
     if (
+      !initialProviderSyncDoneRef.current &&
+      setupStatus !== "checking" &&
+      setupStatus !== "error"
+    ) {
+      initialProviderSyncDoneRef.current = true;
+      if (
+        !hadStoredProviderSelectionRef.current &&
+        providerKind === "openai-compatible" &&
+        fallbackProviderCredential &&
+        selectedProviderCredentialId !== fallbackProviderCredential.id
+      ) {
+        setSelectedProviderCredentialId(fallbackProviderCredential.id);
+        return;
+      }
+    }
+
+    const selectedOpenAiCredentialMissing =
       selectedProviderCredentialId &&
       selectedProviderCredentialId !== CLAUDE_CODE_PROVIDER_ID &&
       !openAiCredentials.some(
         (credential) => credential.id === selectedProviderCredentialId,
-      )
+      );
+    const selectedClaudeUnavailable =
+      selectedProviderCredentialId === CLAUDE_CODE_PROVIDER_ID &&
+      !showClaudeProvider;
+    const noProviderSelected =
+      !selectedProviderCredentialId && !showClaudeProvider;
+
+    if (
+      selectedOpenAiCredentialMissing ||
+      selectedClaudeUnavailable ||
+      noProviderSelected
     ) {
-      setSelectedProviderCredentialId(CLAUDE_CODE_PROVIDER_ID);
+      setSelectedProviderCredentialId(
+        fallbackProviderCredential?.id ??
+          (showClaudeProvider ? CLAUDE_CODE_PROVIDER_ID : null),
+      );
     }
   }, [
+    fallbackProviderCredential?.id,
     openAiCredentials,
+    providerKind,
     selectedProviderCredentialId,
     setSelectedProviderCredentialId,
+    setupStatus,
+    showClaudeProvider,
   ]);
 
   const handleDeleteProviderCredential = useCallback(
@@ -492,6 +636,12 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
   const consumePendingAttachments = useClaudeChatStore(
     (s) => s.consumePendingAttachments,
   );
+  const pendingPinnedContextRemovalLabels = useClaudeChatStore(
+    (s) => s.pendingPinnedContextRemovalLabels,
+  );
+  const consumePendingPinnedContextRemovals = useClaudeChatStore(
+    (s) => s.consumePendingPinnedContextRemovals,
+  );
 
   // Focus textarea when the drawer opens
   const prevOpenRef = useRef(false);
@@ -507,13 +657,21 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
     const attachments = consumePendingAttachments();
     if (attachments.length === 0) return;
     setPinnedContexts((prev) => {
-      const existingLabels = new Set(prev.map((c) => c.label));
-      const unique = attachments.filter((a) => !existingLabels.has(a.label));
-      return [...prev, ...unique];
+      return appendUniquePinnedContexts(prev, attachments);
     });
     // Focus textarea so user can type immediately
     setTimeout(() => textareaRef.current?.focus(), 0);
   }, [pendingAttachments, consumePendingAttachments]);
+
+  useEffect(() => {
+    if (pendingPinnedContextRemovalLabels.length === 0) return;
+    const labels = consumePendingPinnedContextRemovals();
+    if (labels.length === 0) return;
+    const labelsToRemove = new Set(labels);
+    setPinnedContexts((prev) =>
+      prev.filter((context) => !labelsToRemove.has(context.label)),
+    );
+  }, [pendingPinnedContextRemovalLabels, consumePendingPinnedContextRemovals]);
 
   const currentContextLabel = useMemo(() => {
     if (!selectionRange) return null;
@@ -679,12 +837,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
 
       if (newContexts.length > 0) {
         setPinnedContexts((prev) => {
-          // Deduplicate by label
-          const existingLabels = new Set(prev.map((c) => c.label));
-          const unique = newContexts.filter(
-            (c) => !existingLabels.has(c.label),
-          );
-          return [...prev, ...unique];
+          return appendUniquePinnedContexts(prev, newContexts);
         });
       }
     } finally {
@@ -847,11 +1000,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
         }
 
         setPinnedContexts((prev) => {
-          const existingLabels = new Set(prev.map((c) => c.label));
-          const unique = newContexts.filter(
-            (c) => !existingLabels.has(c.label),
-          );
-          return [...prev, ...unique];
+          return appendUniquePinnedContexts(prev, newContexts);
         });
       }
     },
@@ -861,6 +1010,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
   const handleSend = useCallback(() => {
     const trimmed = input.trim();
     if (!trimmed) return;
+    if (!providerSelectionReady) return;
     if (imageCompatibilityError) {
       setChatError(activeTabId, imageCompatibilityError);
       return;
@@ -925,6 +1075,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
     sendPrompt,
     pinnedContexts,
     imageCompatibilityError,
+    providerSelectionReady,
     setChatError,
     slashCommands,
   ]);
@@ -1124,7 +1275,6 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
   const activeProviderModelsLoading =
     !!selectedProviderCredential &&
     providerModelLoadingId === selectedProviderCredential.id;
-  const claudeProviderActive = !selectedProviderCredential;
   const activeProviderModelOptionsKey = activeProviderModelOptions.join("\0");
 
   useLayoutEffect(() => {
@@ -1185,44 +1335,40 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                 <div className="px-2 py-1 font-medium text-muted-foreground text-xs">
                   Provider
                 </div>
-                <button
-                  className={cn(
-                    "flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition-colors",
-                    claudeProviderActive
-                      ? "bg-accent text-accent-foreground"
-                      : "hover:bg-muted",
-                  )}
-                  onClick={() => {
-                    setSelectedProviderCredentialId(CLAUDE_CODE_PROVIDER_ID);
-                  }}
-                >
-                  {claudeCodeIconSrc ? (
-                    <img
-                      src={claudeCodeIconSrc}
-                      alt=""
-                      className="size-4 shrink-0 object-contain"
-                    />
-                  ) : (
-                    <SparklesIcon className="size-3.5 shrink-0" />
-                  )}
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate font-medium text-xs">
-                      Claude Code
+                {showClaudeProvider && (
+                  <button
+                    className={cn(
+                      "flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition-colors",
+                      claudeProviderActive
+                        ? "bg-accent text-accent-foreground"
+                        : "hover:bg-muted",
+                    )}
+                    onClick={() => {
+                      setSelectedProviderCredentialId(CLAUDE_CODE_PROVIDER_ID);
+                    }}
+                  >
+                    {claudeCodeIconSrc ? (
+                      <img
+                        src={claudeCodeIconSrc}
+                        alt=""
+                        className="size-4 shrink-0 object-contain"
+                      />
+                    ) : (
+                      <SparklesIcon className="size-3.5 shrink-0" />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate font-medium text-xs">
+                        Claude Code
+                      </div>
+                      <div className="truncate text-muted-foreground text-xs">
+                        {claudeModelDisplayName(selectedModel)}
+                      </div>
                     </div>
-                    <div className="truncate text-muted-foreground text-xs">
-                      {selectedModel === "sonnet"
-                        ? "Sonnet"
-                        : selectedModel === "opus"
-                          ? "Opus"
-                          : selectedModel === "haiku"
-                            ? "Haiku"
-                            : "OpusPlan"}
-                    </div>
-                  </div>
-                  {claudeProviderActive && (
-                    <CheckIcon className="size-3 shrink-0" />
-                  )}
-                </button>
+                    {claudeProviderActive && (
+                      <CheckIcon className="size-3 shrink-0" />
+                    )}
+                  </button>
+                )}
 
                 {openAiCredentials.map((credential) => {
                   const active =
@@ -1325,119 +1471,103 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                 </button>
               </div>
 
-              <div
-                ref={providerModelListRef}
-                className="max-h-80 min-w-0 overflow-y-auto p-1"
-              >
-                <div className="px-2 py-1 font-medium text-muted-foreground text-xs">
-                  Model
-                </div>
-                {claudeProviderActive ? (
-                  <>
-                    {claudeModelOptions.map((m) => (
-                      <button
-                        key={m.id}
-                        className={cn(
-                          "flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition-colors",
-                          selectedModel === m.id
-                            ? "bg-accent text-accent-foreground"
-                            : "hover:bg-muted",
-                        )}
-                        onClick={() => setSelectedModel(m.id)}
-                      >
-                        {m.icon}
-                        <div className="min-w-0 flex-1">
-                          <div className="font-medium text-xs">{m.name}</div>
-                          <div className="truncate text-muted-foreground text-xs">
-                            {m.desc}
-                          </div>
-                        </div>
-                        {selectedModel === m.id && (
-                          <CheckIcon className="size-3 shrink-0" />
-                        )}
-                      </button>
-                    ))}
-
-                    <div className="my-1 border-border border-t" />
-                    <div className="px-2 py-1 font-medium text-muted-foreground text-xs">
-                      Effort
-                    </div>
-                    <div className="flex gap-1 px-2 pb-1">
-                      {(["low", "medium", "high"] as const).map((level) => (
+              <div className="flex max-h-80 min-w-0 flex-col">
+                <div
+                  ref={providerModelListRef}
+                  className="min-h-0 flex-1 overflow-y-auto p-1"
+                >
+                  <div className="px-2 py-1 font-medium text-muted-foreground text-xs">
+                    Model
+                  </div>
+                  {claudeProviderActive ? (
+                    <>
+                      {claudeModelOptions.map((m) => (
                         <button
-                          key={level}
+                          key={m.id}
                           className={cn(
-                            "flex-1 rounded-md py-1 text-center font-medium text-xs transition-colors",
-                            effortLevel === level
-                              ? "bg-primary text-primary-foreground"
-                              : "bg-muted text-muted-foreground hover:bg-muted/80",
+                            "flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition-colors",
+                            selectedModel === m.id
+                              ? "bg-accent text-accent-foreground"
+                              : "hover:bg-muted",
                           )}
-                          onClick={() => setEffortLevel(level)}
+                          onClick={() => setSelectedModel(m.id)}
                         >
-                          {level === "low"
-                            ? "L"
-                            : level === "medium"
-                              ? "M"
-                              : "H"}
+                          {m.icon}
+                          <div className="min-w-0 flex-1">
+                            <div className="font-medium text-xs">{m.name}</div>
+                            <div className="truncate text-muted-foreground text-xs">
+                              {m.desc}
+                            </div>
+                          </div>
+                          {selectedModel === m.id && (
+                            <CheckIcon className="size-3 shrink-0" />
+                          )}
                         </button>
                       ))}
-                    </div>
-                  </>
-                ) : selectedProviderCredential ? (
-                  <>
-                    {activeProviderModelsLoading && (
-                      <div className="px-3 py-1.5 text-muted-foreground text-xs">
-                        Fetching models...
-                      </div>
-                    )}
-                    {activeProviderModelOptions.map((modelId) => (
-                      <button
-                        key={modelId}
-                        ref={(node) => {
-                          if (node) {
-                            providerModelItemRefs.current[modelId] = node;
-                          } else {
-                            delete providerModelItemRefs.current[modelId];
-                          }
-                        }}
-                        className={cn(
-                          "flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition-colors",
-                          directProviderModel === modelId
-                            ? "bg-accent text-accent-foreground"
-                            : "hover:bg-muted",
-                        )}
-                        onClick={() => {
-                          setSelectedProviderModel(
-                            selectedProviderCredential.id,
-                            modelId,
-                          );
-                          setModelPickerOpen(false);
-                        }}
-                      >
-                        <span className="flex min-w-0 flex-1 items-center gap-2">
-                          <span className="min-w-0 truncate font-medium text-xs">
-                            {modelId}
+                    </>
+                  ) : selectedProviderCredential ? (
+                    <>
+                      {activeProviderModelsLoading && (
+                        <div className="px-3 py-1.5 text-muted-foreground text-xs">
+                          Fetching models...
+                        </div>
+                      )}
+                      {activeProviderModelOptions.map((modelId) => (
+                        <button
+                          key={modelId}
+                          ref={(node) => {
+                            if (node) {
+                              providerModelItemRefs.current[modelId] = node;
+                            } else {
+                              delete providerModelItemRefs.current[modelId];
+                            }
+                          }}
+                          className={cn(
+                            "flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition-colors",
+                            directProviderModel === modelId
+                              ? "bg-accent text-accent-foreground"
+                              : "hover:bg-muted",
+                          )}
+                          onClick={() => {
+                            setSelectedProviderModel(
+                              selectedProviderCredential.id,
+                              modelId,
+                            );
+                          }}
+                        >
+                          <span className="flex min-w-0 flex-1 items-center gap-2">
+                            <span className="min-w-0 truncate font-medium text-xs">
+                              {modelId}
+                            </span>
+                            <ModelCapabilityBadges
+                              label={selectedProviderCredential.label}
+                              baseUrl={selectedProviderCredential.base_url}
+                              model={modelId}
+                            />
                           </span>
-                          <ModelCapabilityBadges
-                            label={selectedProviderCredential.label}
-                            baseUrl={selectedProviderCredential.base_url}
-                            model={modelId}
-                          />
-                        </span>
-                        {directProviderModel === modelId && (
-                          <CheckIcon className="size-3 shrink-0" />
-                        )}
-                      </button>
-                    ))}
-                    {providerModelError && (
-                      <div className="px-3 py-1 text-amber-600 text-xs">
-                        {providerModelError}
-                      </div>
-                    )}
-                  </>
-                ) : (
-                  <div className="px-3 py-2 text-muted-foreground text-xs">
-                    Select a provider
+                          {directProviderModel === modelId && (
+                            <CheckIcon className="size-3 shrink-0" />
+                          )}
+                        </button>
+                      ))}
+                      {providerModelError && (
+                        <div className="px-3 py-1 text-amber-600 text-xs">
+                          {providerModelError}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="px-3 py-2 text-muted-foreground text-xs">
+                      Select a provider
+                    </div>
+                  )}
+                </div>
+                {(claudeProviderActive || selectedProviderCredential) && (
+                  <div className="shrink-0">
+                    <EffortControls
+                      effortLevel={effortLevel}
+                      setEffortLevel={setEffortLevel}
+                    />
                   </div>
                 )}
               </div>
@@ -1733,9 +1863,12 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                   <span className="max-w-32 truncate text-muted-foreground/60">
                     {directProviderModel}
                   </span>
+                  <span className="text-muted-foreground/60">
+                    {effortShortLabel(effortLevel)}
+                  </span>
                   <ChevronDownIcon className="size-3" />
                 </>
-              ) : (
+              ) : showClaudeProvider ? (
                 <>
                   {claudeCodeIconSrc ? (
                     <img
@@ -1747,21 +1880,20 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                     <SparklesIcon className="size-3" />
                   )}
                   <span>Claude Code</span>
-                  <span>
-                    {selectedModel === "sonnet"
-                      ? "Sonnet"
-                      : selectedModel === "opus"
-                        ? "Opus"
-                        : selectedModel === "haiku"
-                          ? "Haiku"
-                          : "OpusPlan"}
+                  <span className="max-w-32 truncate">
+                    {claudeModelDisplayName(selectedModel)}
                   </span>
                   <span className="text-muted-foreground/60">
-                    {effortLevel === "low"
-                      ? "L"
-                      : effortLevel === "medium"
-                        ? "M"
-                        : "H"}
+                    {effortShortLabel(effortLevel)}
+                  </span>
+                  <ChevronDownIcon className="size-3" />
+                </>
+              ) : (
+                <>
+                  <SparklesIcon className="size-3" />
+                  <span>Provider</span>
+                  <span className="text-muted-foreground/60">
+                    {setupStatus === "checking" ? "Loading" : "Select"}
                   </span>
                   <ChevronDownIcon className="size-3" />
                 </>
@@ -1787,7 +1919,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                   ? () => void cancelExecution(activeTabId)
                   : handleSend
               }
-              disabled={!isStreaming && !hasInput}
+              disabled={!isStreaming && (!hasInput || !providerSelectionReady)}
             >
               {isStreaming && !hasInput ? (
                 <SquareIcon className="size-3.5 fill-current" />

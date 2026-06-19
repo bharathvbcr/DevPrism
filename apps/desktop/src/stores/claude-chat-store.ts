@@ -578,6 +578,9 @@ interface ClaudeChatState {
     selectedText: string;
     imageDataUrl?: string;
   }[];
+  pendingPinnedContextRemovalLabels: string[];
+  requestPinnedContextRemoval: (labels: string[]) => void;
+  consumePendingPinnedContextRemovals: () => string[];
 
   /** Currently selected model (passed per-prompt to Claude CLI) */
   selectedModel: "sonnet" | "opus" | "haiku" | "opusplan";
@@ -704,6 +707,23 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       set({ pendingAttachments: [] });
     }
     return pendingAttachments;
+  },
+  pendingPinnedContextRemovalLabels: [],
+  requestPinnedContextRemoval: (labels) => {
+    if (labels.length === 0) return;
+    set((state) => ({
+      pendingPinnedContextRemovalLabels: [
+        ...state.pendingPinnedContextRemovalLabels,
+        ...labels,
+      ],
+    }));
+  },
+  consumePendingPinnedContextRemovals: () => {
+    const { pendingPinnedContextRemovalLabels } = get();
+    if (pendingPinnedContextRemovalLabels.length > 0) {
+      set({ pendingPinnedContextRemovalLabels: [] });
+    }
+    return pendingPinnedContextRemovalLabels;
   },
 
   anyStreaming: () => get().tabs.some((t) => t.isStreaming),

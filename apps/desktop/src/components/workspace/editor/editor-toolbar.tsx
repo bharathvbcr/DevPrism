@@ -159,10 +159,13 @@ export function EditorToolbar({
 
   if (fileType === "image") {
     return (
-      <div className="flex h-[calc(var(--workspace-topbar-height)+var(--titlebar-height))] items-center justify-between border-border border-b bg-muted/30 px-2">
-        <div className="flex items-center gap-1">
-          <ImageIcon className="size-4 text-muted-foreground" />
-          <span className="font-medium text-muted-foreground text-sm">
+      <div className="flex h-[calc(var(--workspace-topbar-height)+var(--titlebar-height))] min-w-0 items-center justify-between border-border border-b bg-muted/30 px-2">
+        <div className="flex min-w-0 max-w-[min(18rem,35vw)] items-center gap-1.5">
+          <ImageIcon className="size-4 shrink-0 text-muted-foreground" />
+          <span
+            className="min-w-0 truncate font-medium text-muted-foreground text-sm"
+            title={activeFilePath ?? fileName}
+          >
             {fileName}
           </span>
         </div>
@@ -254,12 +257,17 @@ export function EditorToolbar({
   }
 
   return (
-    <div className="flex h-[calc(var(--workspace-topbar-height)+var(--titlebar-height))] items-center gap-1 border-border border-b bg-muted/30 px-2">
-      <FileTextIcon className="size-4 text-muted-foreground" />
-      <span className="mr-2 font-medium text-muted-foreground text-sm">
-        {fileName}
-      </span>
-      <div className="mx-2 h-4 w-px bg-border" />
+    <div className="flex h-[calc(var(--workspace-topbar-height)+var(--titlebar-height))] min-w-0 items-center gap-1 border-border border-b bg-muted/30 px-2">
+      <div className="flex min-w-0 max-w-[min(18rem,35vw)] shrink items-center gap-1.5">
+        <FileTextIcon className="size-4 shrink-0 text-muted-foreground" />
+        <span
+          className="min-w-0 truncate font-medium text-muted-foreground text-sm"
+          title={activeFilePath ?? fileName}
+        >
+          {fileName}
+        </span>
+      </div>
+      <div className="mx-2 h-4 w-px shrink-0 bg-border" />
       <TooltipIconButton
         tooltip="Bold (\\textbf)"
         onClick={() => insertText("\\textbf{", "}")}

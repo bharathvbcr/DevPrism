@@ -4008,6 +4008,10 @@ pub async fn load_session_history(
     project_path: String,
     session_id: String,
 ) -> Result<Vec<serde_json::Value>, String> {
+    if !is_valid_session_id(&session_id) {
+        return Err("Invalid session id".to_string());
+    }
+
     eprintln!(
         "[session] load_session_history called: session_id={} project_path={}",
         session_id, project_path
@@ -4050,11 +4054,7 @@ pub async fn load_session_history(
 
 #[tauri::command]
 pub async fn delete_claude_session(project_path: String, session_id: String) -> Result<(), String> {
-    if session_id.is_empty()
-        || !session_id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-')
-    {
+    if !is_valid_session_id(&session_id) {
         return Err("Invalid session id".to_string());
     }
 
@@ -4387,6 +4387,16 @@ mod tests {
         let path = result.unwrap();
         let dir_name = path.file_name().unwrap().to_str().unwrap();
         assert_eq!(dir_name, "-a-b-c-d-e");
+    }
+
+    #[test]
+    fn test_session_id_validation_rejects_path_components() {
+        assert!(is_valid_session_id("550e8400-e29b-41d4-a716-446655440000"));
+        assert!(is_valid_session_id("session_123"));
+        assert!(!is_valid_session_id(""));
+        assert!(!is_valid_session_id("../other-project/session"));
+        assert!(!is_valid_session_id("..\\other-project\\session"));
+        assert!(!is_valid_session_id("session.jsonl"));
     }
 
     // --- clean_user_message_title ---

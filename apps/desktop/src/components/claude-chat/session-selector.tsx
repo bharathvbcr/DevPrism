@@ -67,10 +67,15 @@ export function SessionSelector() {
     () =>
       new Set(
         tabs
-          .filter((tab) => tab.isStreaming && tab.sessionId)
+          .filter(
+            (tab) =>
+              tab.projectPath === projectRoot &&
+              tab.isStreaming &&
+              tab.sessionId,
+          )
           .map((tab) => tab.sessionId as string),
       ),
-    [tabs],
+    [projectRoot, tabs],
   );
 
   const loadSessions = useCallback(async () => {

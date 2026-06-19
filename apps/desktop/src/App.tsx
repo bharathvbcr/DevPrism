@@ -79,6 +79,7 @@ function WorkspaceWithClaude() {
   const projectRoot = useDocumentStore((s) => s.projectRoot);
   const initialized = useDocumentStore((s) => s.initialized);
   const autoResumedProjectRef = useRef<string | null>(null);
+  const chatProjectRef = useRef<string | null>(null);
 
   // Update window title
   useEffect(() => {
@@ -86,6 +87,12 @@ function WorkspaceWithClaude() {
       const name = projectRoot.split(/[/\\]/).pop() || "ClaudePrism";
       getCurrentWindow().setTitle(`${name} - ClaudePrism`);
     }
+  }, [projectRoot]);
+
+  useEffect(() => {
+    if (chatProjectRef.current === projectRoot) return;
+    chatProjectRef.current = projectRoot;
+    useClaudeChatStore.getState().resetForProject(projectRoot ?? null);
   }, [projectRoot]);
 
   // Auto-setup Python venv when project opens

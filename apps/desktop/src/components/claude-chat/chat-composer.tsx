@@ -1480,31 +1480,29 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                     Model
                   </div>
                   {claudeProviderActive ? (
-                    <>
-                      {claudeModelOptions.map((m) => (
-                        <button
-                          key={m.id}
-                          className={cn(
-                            "flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition-colors",
-                            selectedModel === m.id
-                              ? "bg-accent text-accent-foreground"
-                              : "hover:bg-muted",
-                          )}
-                          onClick={() => setSelectedModel(m.id)}
-                        >
-                          {m.icon}
-                          <div className="min-w-0 flex-1">
-                            <div className="font-medium text-xs">{m.name}</div>
-                            <div className="truncate text-muted-foreground text-xs">
-                              {m.desc}
-                            </div>
+                    claudeModelOptions.map((m) => (
+                      <button
+                        key={m.id}
+                        className={cn(
+                          "flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition-colors",
+                          selectedModel === m.id
+                            ? "bg-accent text-accent-foreground"
+                            : "hover:bg-muted",
+                        )}
+                        onClick={() => setSelectedModel(m.id)}
+                      >
+                        {m.icon}
+                        <div className="min-w-0 flex-1">
+                          <div className="font-medium text-xs">{m.name}</div>
+                          <div className="truncate text-muted-foreground text-xs">
+                            {m.desc}
                           </div>
-                          {selectedModel === m.id && (
-                            <CheckIcon className="size-3 shrink-0" />
-                          )}
-                        </button>
-                      ))}
-                    </>
+                        </div>
+                        {selectedModel === m.id && (
+                          <CheckIcon className="size-3 shrink-0" />
+                        )}
+                      </button>
+                    ))
                   ) : selectedProviderCredential ? (
                     <>
                       {activeProviderModelsLoading && (

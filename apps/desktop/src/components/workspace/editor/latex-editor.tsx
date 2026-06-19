@@ -48,7 +48,10 @@ import {
   useProposedChangesStore,
   type ProposedChange,
 } from "@/stores/proposed-changes-store";
-import { useClaudeChatStore } from "@/stores/claude-chat-store";
+import {
+  useClaudeChatStore,
+  type PromptContextOverride,
+} from "@/stores/claude-chat-store";
 import { useHistoryStore, type FileDiff } from "@/stores/history-store";
 import {
   compileLatex,
@@ -992,14 +995,44 @@ export function LatexEditor() {
     return { top: relTop, left: relLeft };
   }, [selectionCoords]);
 
-  const handleToolbarSendPrompt = useCallback(
+  const buildSelectionContext =
+    useCallback((): PromptContextOverride | null => {
+      if (!selectionRange || !selectionLabel || !activeFile?.content) {
+        return null;
+      }
+      const start = Math.min(selectionRange.start, selectionRange.end);
+      const end = Math.max(selectionRange.start, selectionRange.end);
+      const selectedText = activeFile.content.slice(start, end);
+      if (!selectedText) return null;
+      return {
+        label: selectionLabel,
+        filePath: activeFile.relativePath,
+        selectedText,
+      };
+    }, [selectionRange, selectionLabel, activeFile]);
+
+  const sendToolbarPromptWithSelectionContext = useCallback(
     (prompt: string) => {
+      const context = buildSelectionContext();
       toolbarStickyRef.current = false;
       setSelectionCoords(null);
       setSelectionRange(null);
-      useClaudeChatStore.getState().sendPrompt(prompt);
+      const chat = useClaudeChatStore.getState();
+      if (context) {
+        void chat.sendPrompt(prompt, context);
+        chat.requestPinnedContextRemoval([context.label]);
+      } else {
+        void chat.sendPrompt(prompt);
+      }
     },
-    [setSelectionRange],
+    [buildSelectionContext, setSelectionRange],
+  );
+
+  const handleToolbarSendPrompt = useCallback(
+    (prompt: string) => {
+      sendToolbarPromptWithSelectionContext(prompt);
+    },
+    [sendToolbarPromptWithSelectionContext],
   );
 
   const editorToolbarActions: ToolbarAction[] = useMemo(
@@ -1015,16 +1048,13 @@ export function LatexEditor() {
 
   const handleToolbarAction = useCallback(
     (actionId: string) => {
-      toolbarStickyRef.current = false;
-      setSelectionCoords(null);
-      setSelectionRange(null);
       if (actionId === "proofread") {
-        useClaudeChatStore
-          .getState()
-          .sendPrompt("Proofread and fix any errors in this text");
+        sendToolbarPromptWithSelectionContext(
+          "Proofread and fix any errors in this text",
+        );
       }
     },
-    [setSelectionRange],
+    [sendToolbarPromptWithSelectionContext],
   );
 
   const handleToolbarDismiss = useCallback(() => {

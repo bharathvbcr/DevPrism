@@ -136,26 +136,6 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
     const selected = await open({
       multiple: true,
       title: "Add Reference Files",
-      filters: [
-        {
-          name: "Documents & Images",
-          extensions: [
-            "pdf",
-            "tex",
-            "bib",
-            "txt",
-            "md",
-            "png",
-            "jpg",
-            "jpeg",
-            "gif",
-            "svg",
-            "csv",
-            "tsv",
-            "json",
-          ],
-        },
-      ],
     });
     if (selected) {
       const paths = Array.isArray(selected) ? selected : [selected];

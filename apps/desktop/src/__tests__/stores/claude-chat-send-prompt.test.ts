@@ -41,6 +41,7 @@ function resetClaudeChatStore() {
       {
         id: "tab-default",
         title: "New Chat",
+        projectPath: "/project",
         sessionId: null,
         providerKey: CLAUDE_CODE_PROVIDER_ID,
         sessionProviderKey: null,
@@ -54,6 +55,7 @@ function resetClaudeChatStore() {
       },
     ],
     activeTabId: "tab-default",
+    activeProjectPath: "/project",
     pendingInitialPrompt: null,
     pendingAttachments: [],
     pendingPinnedContextRemovalLabels: [],
@@ -332,6 +334,67 @@ describe("useClaudeChatStore.resumeSession", () => {
     expect(state.messages).toHaveLength(3);
     expect(state.totalInputTokens).toBe(24);
     expect(state.totalOutputTokens).toBe(12);
+  });
+
+  it("does not reuse a tab from another project with the same session id", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce([
+      {
+        type: "user",
+        message: { content: [{ type: "text", text: "from current project" }] },
+      },
+    ]);
+
+    useClaudeChatStore.setState((state) => {
+      const baseTab = state.tabs[0];
+      return {
+        tabs: [
+          {
+            ...baseTab,
+            id: "tab-current",
+            projectPath: "/project",
+            sessionId: null,
+            messages: [],
+          },
+          {
+            ...baseTab,
+            id: "tab-other",
+            title: "Other project",
+            projectPath: "/other-project",
+            sessionId: "shared-session-id",
+            messages: [
+              {
+                type: "user",
+                message: {
+                  content: [{ type: "text", text: "from another project" }],
+                },
+              },
+            ],
+          },
+        ],
+        activeTabId: "tab-current",
+        activeProjectPath: "/project",
+        messages: [],
+        sessionId: null,
+      };
+    });
+
+    await useClaudeChatStore.getState().resumeSession("shared-session-id");
+
+    expect(invoke).toHaveBeenCalledWith("load_session_history", {
+      projectPath: "/project",
+      sessionId: "shared-session-id",
+    });
+
+    const state = useClaudeChatStore.getState();
+    const otherProjectTab = state.tabs.find((tab) => tab.id === "tab-other");
+    expect(state.activeTabId).toBe("tab-current");
+    expect(state.activeProjectPath).toBe("/project");
+    expect(state.messages[0].message?.content?.[0].text).toBe(
+      "from current project",
+    );
+    expect(otherProjectTab?.messages[0].message?.content?.[0].text).toBe(
+      "from another project",
+    );
   });
 
   it("hides internal file and pasted-image context when restoring history", async () => {

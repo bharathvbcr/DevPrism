@@ -44,6 +44,7 @@ function resetStores() {
       {
         id: "tab-default",
         title: "New Chat",
+        projectPath: "/project",
         sessionId: null,
         providerKey: null,
         sessionProviderKey: null,
@@ -57,6 +58,7 @@ function resetStores() {
       },
     ],
     activeTabId: "tab-default",
+    activeProjectPath: "/project",
     _cancelledByUser: false,
   });
   useProposedChangesStore.setState({ changes: [] });

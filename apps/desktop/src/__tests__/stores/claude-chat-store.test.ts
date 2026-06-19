@@ -108,6 +108,56 @@ describe("provider selection persistence", () => {
   });
 });
 
+describe("project-scoped chat state", () => {
+  it("resets tabs for a new project without clearing a pending initial prompt", () => {
+    useClaudeChatStore.setState((state) => {
+      const baseTab = state.tabs[0];
+      const message = {
+        type: "user" as const,
+        message: { content: [{ type: "text" as const, text: "old project" }] },
+      };
+
+      return {
+        pendingInitialPrompt: "build this project",
+        pendingAttachments: [
+          {
+            label: "old attachment",
+            filePath: "/project-a/old.png",
+            selectedText: "old",
+          },
+        ],
+        pendingPinnedContextRemovalLabels: ["@old.tex"],
+        activeProjectPath: "/project-a",
+        activeTabId: "tab-project-a",
+        sessionId: "session-project-a",
+        messages: [message],
+        tabs: [
+          {
+            ...baseTab,
+            id: "tab-project-a",
+            title: "Old project chat",
+            projectPath: "/project-a",
+            sessionId: "session-project-a",
+            messages: [message],
+          },
+        ],
+      };
+    });
+
+    useClaudeChatStore.getState().resetForProject("/project-b");
+
+    const state = useClaudeChatStore.getState();
+    const activeTab = state.tabs.find((tab) => tab.id === state.activeTabId);
+    expect(state.activeProjectPath).toBe("/project-b");
+    expect(activeTab?.projectPath).toBe("/project-b");
+    expect(state.sessionId).toBeNull();
+    expect(state.messages).toEqual([]);
+    expect(state.pendingAttachments).toEqual([]);
+    expect(state.pendingPinnedContextRemovalLabels).toEqual([]);
+    expect(state.pendingInitialPrompt).toBe("build this project");
+  });
+});
+
 describe("pinned context removal requests", () => {
   it("queues and consumes pinned context labels to remove", () => {
     const chat = useClaudeChatStore.getState();

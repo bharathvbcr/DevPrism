@@ -119,6 +119,7 @@ export interface QueuedGuidance {
 export interface TabState {
   id: string;
   title: string;
+  projectPath: string | null;
   sessionId: string | null;
   /** Provider currently selected in the tab UI. */
   providerKey: string | null;
@@ -148,12 +149,16 @@ const TAB_FIELDS = [
   "totalOutputTokens",
 ] as const;
 
-function makeDefaultTab(id: string): TabState {
+function makeDefaultTab(
+  id: string,
+  projectPath: string | null = null,
+): TabState {
   const selectedCredentialId =
     loadSelectedProviderCredentialId() ?? CLAUDE_CODE_PROVIDER_ID;
   return {
     id,
     title: "New Chat",
+    projectPath,
     sessionId: null,
     providerKey: providerKeyForSelectedCredential(selectedCredentialId),
     sessionProviderKey: null,
@@ -553,6 +558,7 @@ interface ClaudeChatState {
   // ── Tab state ──
   tabs: TabState[];
   activeTabId: string;
+  activeProjectPath: string | null;
 
   /** Deferred prompt to send once the workspace is ready (set by project wizard) */
   pendingInitialPrompt: string | null;
@@ -620,6 +626,7 @@ interface ClaudeChatState {
   cancelExecution: (tabId?: string) => Promise<void>;
   clearMessages: () => void;
   newSession: () => void;
+  resetForProject: (projectPath: string | null) => void;
   resumeSession: (sessionId: string, title?: string) => Promise<void>;
 
   // Tab actions
@@ -656,6 +663,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
   // Tab state
   tabs: [makeDefaultTab(DEFAULT_TAB_ID)],
   activeTabId: DEFAULT_TAB_ID,
+  activeProjectPath: null,
 
   selectedModel: "opus",
   setSelectedModel: (model) => set({ selectedModel: model }),
@@ -733,10 +741,25 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     contextOverride?: PromptContextOverride,
     options?: { tabId?: string; preserveTabProvider?: boolean },
   ) => {
-    const state = get();
-    const activeTabId = options?.tabId ?? state.activeTabId;
-    const activeTab = state.tabs.find((t) => t.id === activeTabId);
+    let state = get();
+    let activeTabId = options?.tabId ?? state.activeTabId;
+    let activeTab = state.tabs.find((t) => t.id === activeTabId);
     if (!activeTab || activeTab.isStreaming) return;
+
+    const docState = useDocumentStore.getState();
+    const projectPath = docState.projectRoot;
+    if (!projectPath) {
+      set((s) => applyTabUpdate(s, activeTabId, { error: "No project open" }));
+      return;
+    }
+
+    if (activeTab.projectPath && activeTab.projectPath !== projectPath) {
+      get().resetForProject(projectPath);
+      state = get();
+      activeTabId = state.activeTabId;
+      activeTab = state.tabs.find((t) => t.id === activeTabId);
+      if (!activeTab || activeTab.isStreaming) return;
+    }
 
     const { selectedModel, effortLevel, selectedProviderModels } = state;
     const sessionId = activeTab.sessionId;
@@ -786,13 +809,6 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       tab: activeTabId,
     });
 
-    const docState = useDocumentStore.getState();
-    const projectPath = docState.projectRoot;
-    if (!projectPath) {
-      set((s) => applyTabUpdate(s, activeTabId, { error: "No project open" }));
-      return;
-    }
-
     // Compute context label for display in chat history
     const activeFile = docState.files.find(
       (f) => f.id === docState.activeFileId,
@@ -838,6 +854,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       );
       const tabUpdates: Partial<TabState> = {
         messages: [...(currentTab?.messages ?? []), userMessage],
+        projectPath,
         sessionId: resumeSessionId,
         providerKey: requestProviderKey,
         sessionProviderKey: requestProviderKey,
@@ -849,6 +866,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       if (tabTitle) tabUpdates.title = tabTitle;
       return {
         ...applyTabUpdate(s, activeTabId, tabUpdates),
+        activeProjectPath: projectPath,
         _cancelledByUser: false,
       };
     });
@@ -1154,14 +1172,50 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     );
   },
 
+  resetForProject: (projectPath) => {
+    const state = get();
+    const tabsAlreadyScoped =
+      state.activeProjectPath === projectPath &&
+      state.tabs.every((tab) => tab.projectPath === projectPath);
+    if (tabsAlreadyScoped) return;
+
+    const id = nextTabId();
+    const tab = makeDefaultTab(id, projectPath);
+    const nextSelectedProviderCredentialId =
+      selectedCredentialForProviderKey(tab.providerKey) ??
+      CLAUDE_CODE_PROVIDER_ID;
+    persistSelectedProviderCredentialId(nextSelectedProviderCredentialId);
+
+    set({
+      tabs: [tab],
+      activeTabId: id,
+      activeProjectPath: projectPath,
+      messages: tab.messages,
+      sessionId: tab.sessionId,
+      isStreaming: tab.isStreaming,
+      streamingStartedAt: tab.streamingStartedAt,
+      error: tab.error,
+      totalInputTokens: tab.totalInputTokens,
+      totalOutputTokens: tab.totalOutputTokens,
+      pendingAttachments: [],
+      pendingPinnedContextRemovalLabels: [],
+      selectedProviderCredentialId: nextSelectedProviderCredentialId,
+      _cancelledByUser: false,
+    });
+  },
+
   newSession: () => {
     log.info("Starting new session");
     const { activeTabId, tabs } = get();
     const activeTab = tabs.find((t) => t.id === activeTabId);
+    const projectPath =
+      get().activeProjectPath ??
+      useDocumentStore.getState().projectRoot ??
+      null;
     if (activeTab?.isStreaming) {
       const id = nextTabId();
       const newTab = {
-        ...makeDefaultTab(id),
+        ...makeDefaultTab(id, projectPath),
         providerKey:
           activeTab.providerKey ??
           providerKeyForSelectedCredential(get().selectedProviderCredentialId),
@@ -1169,6 +1223,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       set({
         tabs: [...tabs, newTab],
         activeTabId: id,
+        activeProjectPath: projectPath,
         messages: newTab.messages,
         sessionId: newTab.sessionId,
         isStreaming: newTab.isStreaming,
@@ -1183,10 +1238,11 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       return;
     }
 
-    set((s) =>
-      applyTabUpdate(s, activeTabId, {
+    set((s) => ({
+      ...applyTabUpdate(s, activeTabId, {
         messages: [],
         sessionId: null,
+        projectPath,
         providerKey:
           activeTab?.providerKey ??
           providerKeyForSelectedCredential(s.selectedProviderCredentialId),
@@ -1201,16 +1257,20 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         forceQueuedGuidanceOnComplete: false,
         forcedQueuedGuidanceId: null,
       }),
-    );
+      activeProjectPath: projectPath,
+    }));
   },
 
   resumeSession: async (sessionId: string, title?: string) => {
     log.info(`Resuming session: ${sessionId.slice(0, 8)}`);
     const sessionTitle = title?.trim() || undefined;
+    const projectPath = useDocumentStore.getState().projectRoot;
     const state = get();
     let { activeTabId } = state;
     let { tabs } = state;
-    const existingTab = tabs.find((tab) => tab.sessionId === sessionId);
+    const existingTab = tabs.find(
+      (tab) => tab.sessionId === sessionId && tab.projectPath === projectPath,
+    );
 
     if (existingTab) {
       const nextTitle = sessionTitle ?? existingTab.title;
@@ -1225,6 +1285,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       set({
         tabs: nextTabs,
         activeTabId: existingTab.id,
+        activeProjectPath: projectPath ?? existingTab.projectPath,
         messages: existingTab.messages,
         sessionId: existingTab.sessionId,
         isStreaming: existingTab.isStreaming,
@@ -1240,7 +1301,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       if (activeTab?.isStreaming) {
         const id = nextTabId();
         const newTab = {
-          ...makeDefaultTab(id),
+          ...makeDefaultTab(id, projectPath ?? state.activeProjectPath),
           providerKey:
             activeTab.providerKey ??
             providerKeyForSelectedCredential(
@@ -1252,6 +1313,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         set({
           tabs,
           activeTabId,
+          activeProjectPath: projectPath ?? newTab.projectPath,
           messages: newTab.messages,
           sessionId: newTab.sessionId,
           isStreaming: newTab.isStreaming,
@@ -1266,12 +1328,11 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       }
     }
 
-    const projectPath = useDocumentStore.getState().projectRoot;
-
     // Reset state with new session ID
-    set((s) =>
-      applyTabUpdate(s, activeTabId, {
+    set((s) => ({
+      ...applyTabUpdate(s, activeTabId, {
         messages: [],
+        projectPath: projectPath ?? null,
         sessionId,
         providerKey: null,
         sessionProviderKey: null,
@@ -1285,7 +1346,8 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         forceQueuedGuidanceOnComplete: false,
         forcedQueuedGuidanceId: null,
       }),
-    );
+      activeProjectPath: projectPath ?? null,
+    }));
 
     // Load session history from JSONL file
     if (projectPath) {
@@ -1346,8 +1408,12 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     const id = nextTabId();
     const state = get();
     const activeTab = state.tabs.find((tab) => tab.id === state.activeTabId);
+    const projectPath =
+      state.activeProjectPath ??
+      useDocumentStore.getState().projectRoot ??
+      null;
     const newTab = {
-      ...makeDefaultTab(id),
+      ...makeDefaultTab(id, projectPath),
       providerKey:
         activeTab?.providerKey ??
         providerKeyForSelectedCredential(state.selectedProviderCredentialId),
@@ -1355,6 +1421,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     set((s) => ({
       tabs: [...s.tabs, newTab],
       activeTabId: id,
+      activeProjectPath: projectPath,
       // Project new tab fields to top-level
       messages: newTab.messages,
       sessionId: newTab.sessionId,
@@ -1394,6 +1461,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       set({
         tabs: newTabs,
         activeTabId: newActive.id,
+        activeProjectPath: newActive.projectPath,
         // Project new active tab
         messages: newActive.messages,
         sessionId: newActive.sessionId,
@@ -1422,6 +1490,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     // Project the target tab's fields to top-level
     set({
       activeTabId: tabId,
+      activeProjectPath: targetTab.projectPath,
       messages: targetTab.messages,
       sessionId: targetTab.sessionId,
       isStreaming: targetTab.isStreaming,
@@ -1499,7 +1568,10 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     if (!cleanTitle) return;
     set((state) => ({
       tabs: state.tabs.map((tab) =>
-        tab.sessionId === sessionId ? { ...tab, title: cleanTitle } : tab,
+        tab.sessionId === sessionId &&
+        tab.projectPath === state.activeProjectPath
+          ? { ...tab, title: cleanTitle }
+          : tab,
       ),
     }));
   },

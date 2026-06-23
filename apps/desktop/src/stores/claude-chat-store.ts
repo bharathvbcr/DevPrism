@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useDocumentStore } from "./document-store";
 import { useHistoryStore } from "./history-store";
 import { useClaudeSetupStore } from "./claude-setup-store";
+import { useSettingsStore } from "./settings-store";
 import { createLogger } from "@/lib/debug/logger";
 
 const log = createLogger("claude");
@@ -926,7 +927,18 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     });
 
     try {
-      if (resumeSessionId) {
+      if (useSettingsStore.getState().nativeAgentEnabled) {
+        // DevPrism native runtime: talk directly to a local Ollama model, no
+        // Claude CLI. Single-turn per send (the agent reads project files for
+        // context); emits the same events as the CLI path so the UI is unchanged.
+        await invoke("run_native_agent", {
+          projectPath,
+          prompt,
+          tabId: activeTabId,
+          model: providerModelOverride ?? null,
+          baseUrl: null,
+        });
+      } else if (resumeSessionId) {
         // Resume existing session
         await invoke("resume_claude_code", {
           projectPath,
@@ -1107,11 +1119,16 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     });
 
     try {
-      const interrupted = await invoke<boolean>("interrupt_claude_execution", {
-        tabId,
-      });
-      if (interrupted) {
+      if (useSettingsStore.getState().nativeAgentEnabled) {
+        await invoke("stop_native_agent", { tabId });
         set({ _cancelledByUser: true });
+      } else {
+        const interrupted = await invoke<boolean>("interrupt_claude_execution", {
+          tabId,
+        });
+        if (interrupted) {
+          set({ _cancelledByUser: true });
+        }
       }
     } catch (err: any) {
       set((state) => {

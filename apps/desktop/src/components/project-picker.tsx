@@ -255,6 +255,10 @@ export function ProjectPicker() {
   const deleteSpace = useSpacesStore((s) => s.deleteSpace);
   const assignProject = useSpacesStore((s) => s.assignProject);
   const setSpaceDefaults = useSpacesStore((s) => s.setSpaceDefaults);
+  const nativeAgentEnabled = useSettingsStore((s) => s.nativeAgentEnabled);
+  const setNativeAgentEnabled = useSettingsStore(
+    (s) => s.setNativeAgentEnabled,
+  );
   const activeSpace = useMemo(
     () => spaces.find((s) => s.id === activeSpaceId) ?? null,
     [spaces, activeSpaceId],
@@ -618,6 +622,30 @@ export function ProjectPicker() {
                     icon={KeyRoundIcon}
                     contentClassName="p-0"
                   >
+                    <label className="flex cursor-pointer items-start gap-3 border-border/60 border-b p-4">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 size-4 shrink-0 accent-primary"
+                        checked={nativeAgentEnabled}
+                        onChange={(e) =>
+                          setNativeAgentEnabled(e.target.checked)
+                        }
+                      />
+                      <div className="min-w-0">
+                        <div className="font-medium text-sm">
+                          Native local agent (no Claude CLI)
+                        </div>
+                        <p className="mt-0.5 text-muted-foreground text-xs">
+                          Run the agent fully offline, talking directly to your
+                          local Ollama model — no Claude Code CLI or proxy
+                          required. Make sure Ollama is running with a model
+                          installed (<code className="rounded bg-muted px-1">
+                            ollama pull llama3
+                          </code>). Cloud providers below are used only when this
+                          is off.
+                        </p>
+                      </div>
+                    </label>
                     <ClaudeSetup variant="embedded" />
                   </SettingsPanel>
                 ) : (

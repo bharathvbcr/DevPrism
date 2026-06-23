@@ -6,6 +6,7 @@ mod claude_process;
 mod comments;
 mod history;
 mod latex;
+mod native_agent;
 mod project_context;
 mod skills;
 mod slash_commands;
@@ -647,6 +648,8 @@ pub fn run() {
             skills::install_bundled_skills,
             skills::create_custom_skill,
             project_context::count_project_context,
+            native_agent::run_native_agent,
+            native_agent::stop_native_agent,
             skills::check_skills_installed,
             skills::list_installed_skills,
             skills::delete_installed_skill,

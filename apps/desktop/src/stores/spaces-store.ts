@@ -13,12 +13,8 @@ export interface Space {
   name: string;
   /** A color token used for the space dot/badge in the UI. */
   color: string;
-  /** Default agent provider for projects in this space (e.g. "ollama"). */
-  defaultProvider: string | null;
   /** Default model for projects in this space (empty = auto-detect from Ollama). */
   defaultModel: string | null;
-  /** Bundled skill folder ids to offer/auto-install for projects in this space. */
-  skillIds: string[];
 }
 
 /** Palette used when creating a new space (cycles deterministically). */
@@ -43,12 +39,9 @@ interface SpacesState {
   createSpace: (name: string, color?: string) => Space;
   renameSpace: (id: string, name: string) => void;
   deleteSpace: (id: string) => void;
-  setSpaceColor: (id: string, color: string) => void;
   setSpaceDefaults: (
     id: string,
-    defaults: Partial<
-      Pick<Space, "defaultProvider" | "defaultModel" | "skillIds">
-    >,
+    defaults: Partial<Pick<Space, "defaultModel">>,
   ) => void;
 
   assignProject: (path: string, spaceId: string | null) => void;
@@ -78,9 +71,7 @@ export const useSpacesStore = create<SpacesState>()(
           name: trimmed,
           color:
             color ?? SPACE_COLORS[get().spaces.length % SPACE_COLORS.length],
-          defaultProvider: "ollama",
           defaultModel: "",
-          skillIds: [],
         };
         set((state) => ({ spaces: [...state.spaces, space] }));
         return space;
@@ -106,11 +97,6 @@ export const useSpacesStore = create<SpacesState>()(
               state.activeSpaceId === id ? null : state.activeSpaceId,
           };
         }),
-
-      setSpaceColor: (id, color) =>
-        set((state) => ({
-          spaces: state.spaces.map((s) => (s.id === id ? { ...s, color } : s)),
-        })),
 
       setSpaceDefaults: (id, defaults) =>
         set((state) => ({

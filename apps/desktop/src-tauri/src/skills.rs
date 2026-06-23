@@ -1100,30 +1100,78 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
 }
 
 /// Parse a SKILL.md file to extract skill info.
+/// Strip surrounding single/double quotes from a YAML scalar and unescape the
+/// common `\"` / `\\` sequences inside a double-quoted value.
+fn unquote_yaml_scalar(value: &str) -> String {
+    let v = value.trim();
+    let bytes = v.as_bytes();
+    if v.len() >= 2
+        && ((bytes[0] == b'"' && bytes[v.len() - 1] == b'"')
+            || (bytes[0] == b'\'' && bytes[v.len() - 1] == b'\''))
+    {
+        let inner = &v[1..v.len() - 1];
+        return inner.replace("\\\"", "\"").replace("\\\\", "\\");
+    }
+    v.to_string()
+}
+
+/// Parse the leading `--- ... ---` YAML frontmatter for `name` and `description`.
+fn parse_skill_frontmatter(content: &str) -> (Option<String>, Option<String>) {
+    let trimmed = content.trim_start();
+    if !trimmed.starts_with("---") {
+        return (None, None);
+    }
+    let mut name = None;
+    let mut description = None;
+    // Skip the opening `---`, then read until the closing `---`.
+    for line in trimmed.lines().skip(1) {
+        let l = line.trim();
+        if l == "---" {
+            break;
+        }
+        if let Some(rest) = l.strip_prefix("name:") {
+            name = Some(unquote_yaml_scalar(rest));
+        } else if let Some(rest) = l.strip_prefix("description:") {
+            description = Some(unquote_yaml_scalar(rest));
+        }
+    }
+    (name, description)
+}
+
 fn parse_skill_md(skill_dir: &Path) -> Option<SkillInfo> {
     let skill_md = find_skill_md(skill_dir)?;
 
     let content = std::fs::read_to_string(&skill_md).ok()?;
     let folder = skill_dir.file_name()?.to_string_lossy().to_string();
 
-    // Extract title from first # heading
-    let name = content
-        .lines()
-        .find(|l| l.starts_with("# "))
-        .map(|l| l.trim_start_matches("# ").trim().to_string())
+    // Prefer the SKILL.md YAML frontmatter (the canonical name/description); fall
+    // back to the first `# ` heading + paragraph for skills without frontmatter.
+    let (fm_name, fm_description) = parse_skill_frontmatter(&content);
+
+    let name = fm_name
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            content
+                .lines()
+                .find(|l| l.starts_with("# "))
+                .map(|l| l.trim_start_matches("# ").trim().to_string())
+        })
         .unwrap_or_else(|| folder.clone());
 
-    // Extract description from first paragraph after heading
-    let description = content
-        .lines()
-        .skip_while(|l| !l.starts_with("# "))
-        .skip(1)
-        .skip_while(|l| l.trim().is_empty())
-        .take_while(|l| !l.trim().is_empty() && !l.starts_with('#'))
-        .collect::<Vec<_>>()
-        .join(" ")
+    let description = fm_description
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| {
+            content
+                .lines()
+                .skip_while(|l| !l.starts_with("# "))
+                .skip(1)
+                .skip_while(|l| l.trim().is_empty())
+                .take_while(|l| !l.trim().is_empty() && !l.starts_with('#'))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
         .chars()
-        .take(200)
+        .take(280)
         .collect::<String>();
 
     // Infer domain from folder name prefix (e.g., "bioinformatics-rna-seq" → "bioinformatics")
@@ -1270,25 +1318,40 @@ pub async fn install_bundled_skills(
     std::fs::create_dir_all(&target_root)
         .map_err(|e| format!("Failed to create skills dir {}: {}", target_root.display(), e))?;
 
+    // Install each skill independently so one bad skill doesn't abort the rest.
     let mut installed = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
     for skill_dir in skill_dirs {
-        let raw = skill_dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or_else(|| "Bundled skill has an invalid folder name".to_string())?;
+        let raw = match skill_dir.file_name().and_then(|n| n.to_str()) {
+            Some(r) => r,
+            None => continue,
+        };
         let folder = sanitize_skill_folder_name(raw);
         if folder.is_empty() {
             continue;
         }
         let target = target_root.join(&folder);
-        if target.exists() {
-            std::fs::remove_dir_all(&target)
-                .map_err(|e| format!("Failed to replace skill {}: {}", target.display(), e))?;
+        let result = (|| -> Result<(), String> {
+            if target.exists() {
+                std::fs::remove_dir_all(&target)
+                    .map_err(|e| format!("replace {}: {}", folder, e))?;
+            }
+            copy_dir_recursive(&skill_dir, &target)
+        })();
+        match result {
+            Ok(()) => {
+                if let Some(info) = parse_skill_md(&target) {
+                    installed.push(info);
+                }
+            }
+            Err(e) => errors.push(e),
         }
-        copy_dir_recursive(&skill_dir, &target)?;
-        if let Some(info) = parse_skill_md(&target) {
-            installed.push(info);
-        }
+    }
+
+    // If nothing installed and we hit errors, surface them; otherwise return the
+    // skills that did install (partial success is better than an all-or-nothing fail).
+    if installed.is_empty() && !errors.is_empty() {
+        return Err(format!("Failed to install skills: {}", errors.join("; ")));
     }
     Ok(installed)
 }

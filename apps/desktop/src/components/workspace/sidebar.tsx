@@ -2238,6 +2238,23 @@ function DevPrismSkillsDialog({
   const [description, setDescription] = useState("");
   const [instructions, setInstructions] = useState("");
 
+  // Mirror the backend's folder-name sanitization so the user sees the resulting
+  // slug and we can block names that sanitize to nothing.
+  const skillSlug = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+  // Reset the form whenever the dialog closes so it doesn't reopen pre-filled.
+  useEffect(() => {
+    if (!open) {
+      setName("");
+      setDescription("");
+      setInstructions("");
+    }
+  }, [open]);
+
   const handleInstallBundled = async () => {
     if (!projectPath) {
       toast.error("Open a project first.");
@@ -2264,7 +2281,7 @@ function DevPrismSkillsDialog({
       toast.error("Open a project first.");
       return;
     }
-    if (!name.trim() || !description.trim()) return;
+    if (!skillSlug || !description.trim()) return;
     setCreating(true);
     try {
       await invoke("create_custom_skill", {
@@ -2305,7 +2322,8 @@ function DevPrismSkillsDialog({
           <div className="min-w-0">
             <div className="font-medium text-sm">Bundled skills</div>
             <p className="text-muted-foreground text-xs">
-              resume, manuscript, latex toolkit, thesis, beamer, project space
+              resume, manuscript, latex toolkit, thesis, beamer, project space.
+              Re-installing overwrites same-named skills in this project.
             </p>
           </div>
           <Button
@@ -2334,6 +2352,17 @@ function DevPrismSkillsDialog({
             onChange={(event) => setName(event.target.value)}
             placeholder="Skill name (e.g. Grant Proposal)"
           />
+          {name.trim() &&
+            (skillSlug ? (
+              <p className="text-[11px] text-muted-foreground">
+                Folder:{" "}
+                <code className="rounded bg-muted px-1">{skillSlug}</code>
+              </p>
+            ) : (
+              <p className="text-[11px] text-amber-600">
+                Name must contain letters or numbers.
+              </p>
+            ))}
           <Input
             value={description}
             onChange={(event) => setDescription(event.target.value)}
@@ -2350,7 +2379,7 @@ function DevPrismSkillsDialog({
               size="sm"
               className="gap-1.5"
               disabled={
-                !projectPath || creating || !name.trim() || !description.trim()
+                !projectPath || creating || !skillSlug || !description.trim()
               }
               onClick={() => void handleCreate()}
             >

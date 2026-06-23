@@ -199,10 +199,7 @@ export function ProjectPicker() {
   // the currently-selected provider credential (e.g. the local Ollama provider),
   // so opening a project in a space switches the agent to the space's model.
   const applySpaceModel = (path: string) => {
-    const spacesState = useSpacesStore.getState();
-    const spaceId = spacesState.projectSpace[path];
-    if (!spaceId) return;
-    const space = spacesState.spaces.find((s) => s.id === spaceId);
+    const space = useSpacesStore.getState().spaceForProject(path);
     const model = space?.defaultModel?.trim();
     if (!model) return;
     const chat = useClaudeChatStore.getState();
@@ -298,23 +295,32 @@ export function ProjectPicker() {
       return;
     }
     setInstallingSkills(true);
-    try {
-      let total = 0;
-      for (const project of projectsInSpace) {
+    let succeeded = 0;
+    let failed = 0;
+    let total = 0;
+    for (const project of projectsInSpace) {
+      try {
         const installed = await invoke<unknown[]>("install_bundled_skills", {
           projectPath: project.path,
         });
         total += Array.isArray(installed) ? installed.length : 0;
+        succeeded += 1;
+      } catch (err) {
+        failed += 1;
+        console.warn("Failed to install skills for", project.path, err);
       }
+    }
+    setInstallingSkills(false);
+    if (succeeded > 0) {
       toast.success(
-        `Installed DevPrism skills into ${projectsInSpace.length} project${
-          projectsInSpace.length === 1 ? "" : "s"
-        } (${total} skill folders).`,
+        `Installed DevPrism skills into ${succeeded} project${
+          succeeded === 1 ? "" : "s"
+        } (${total} skill folders)${failed > 0 ? `; ${failed} failed` : ""}.`,
       );
-    } catch (err) {
-      toast.error(`Failed to install skills: ${String(err)}`);
-    } finally {
-      setInstallingSkills(false);
+    } else {
+      toast.error(
+        `Failed to install skills into ${failed} project${failed === 1 ? "" : "s"}.`,
+      );
     }
   };
 
@@ -372,7 +378,10 @@ export function ProjectPicker() {
           )}
         >
           <ProjectNavButton
-            active={activeSection === "projects" && !activeSpaceId}
+            active={
+              activeSection === "projects" &&
+              (!activeSpaceId || isSidebarCollapsed)
+            }
             collapsed={isSidebarCollapsed}
             icon={FolderOpenIcon}
             onClick={() => {
@@ -674,6 +683,9 @@ export function ProjectPicker() {
                       currentSpaceId={projectSpace[project.path] ?? null}
                       onAssign={(spaceId) =>
                         assignProject(project.path, spaceId)
+                      }
+                      onCreateSpace={() =>
+                        setSpaceDialog({ editingId: null, name: "" })
                       }
                     />
                   ))}
@@ -1087,6 +1099,7 @@ function ProjectPreviewCard({
   spaces,
   currentSpaceId,
   onAssign,
+  onCreateSpace,
 }: {
   project: RecentProject;
   onOpen: () => void;
@@ -1094,6 +1107,7 @@ function ProjectPreviewCard({
   spaces: Space[];
   currentSpaceId: string | null;
   onAssign: (spaceId: string | null) => void;
+  onCreateSpace: () => void;
 }) {
   const [preview, setPreview] = useState<ProjectPreviewState>(() => {
     const cached = projectPreviewCache.get(projectPreviewCacheKey(project));
@@ -1177,6 +1191,11 @@ function ProjectPreviewCard({
                   )}
                 </DropdownMenuItem>
               ))}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={onCreateSpace}>
+                <PlusIcon className="size-3.5" />
+                <span className="flex-1">New space…</span>
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
           <Button

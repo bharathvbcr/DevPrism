@@ -8,6 +8,34 @@ use serde_json::{json, Value};
 /// the full system prompt + project context + history + tools are not truncated).
 const CONTEXT_WINDOW: u32 = 8192;
 
+/// A finite request timeout so a hung/cold Ollama server can't block a turn forever.
+const REQUEST_TIMEOUT_SECS: u64 = 300;
+
+fn build_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// Local models often emit tool names lowercased ("read"), padded, or
+/// OpenAI-namespaced ("functions.Read"). Map them back to our canonical
+/// PascalCase names so dispatch and the UI's file-change detection still work.
+fn canonicalize_tool_name(raw: &str) -> String {
+    let base = raw.trim().rsplit('.').next().unwrap_or("").trim();
+    match base.to_lowercase().as_str() {
+        "read" => "Read".to_string(),
+        "write" => "Write".to_string(),
+        "edit" => "Edit".to_string(),
+        "multiedit" => "MultiEdit".to_string(),
+        "ls" => "LS".to_string(),
+        "grep" => "Grep".to_string(),
+        "glob" => "Glob".to_string(),
+        "bash" => "Bash".to_string(),
+        _ => base.to_string(),
+    }
+}
+
 pub struct ToolCall {
     pub name: String,
     pub args: Value,
@@ -46,7 +74,7 @@ pub fn native_base(base_url: &str) -> String {
 /// Query the Ollama server for the first installed model name.
 pub async fn first_installed_model(base_url: &str) -> Option<String> {
     let url = format!("{}/api/tags", native_base(base_url));
-    let client = reqwest::Client::new();
+    let client = build_client();
     let res = client.get(&url).send().await.ok()?;
     if !res.status().is_success() {
         return None;
@@ -70,7 +98,7 @@ impl OllamaClient {
         Self {
             base: native_base(base_url),
             model: model.to_string(),
-            client: reqwest::Client::new(),
+            client: build_client(),
         }
     }
 
@@ -90,6 +118,8 @@ impl OllamaClient {
                 "num_ctx": CONTEXT_WINDOW,
                 "temperature": 0.4,
             },
+            // Keep the model resident between rounds so it isn't reloaded each turn.
+            "keep_alive": "10m",
         });
         if tools.as_array().map(|a| !a.is_empty()).unwrap_or(false) {
             body["tools"] = tools.clone();
@@ -108,6 +138,17 @@ impl OllamaClient {
         let text = resp.text().await.map_err(|e| e.to_string())?;
         if !status.is_success() {
             let snippet: String = text.chars().take(300).collect();
+            // Surface the common "model doesn't support tools" case clearly.
+            let lower = snippet.to_lowercase();
+            if status.as_u16() == 400
+                && (lower.contains("does not support tools") || lower.contains("tool"))
+            {
+                return Err(format!(
+                    "The model '{}' does not support tool-calling. Pick a tool-capable model \
+                     (e.g. llama3.1, qwen2.5, mistral-nemo) in Settings. [{}]",
+                    self.model, snippet
+                ));
+            }
             return Err(format!("Ollama returned HTTP {}: {}", status, snippet));
         }
 
@@ -124,11 +165,9 @@ impl OllamaClient {
         if let Some(arr) = msg.get("tool_calls").and_then(|t| t.as_array()) {
             for call in arr {
                 if let Some(func) = call.get("function") {
-                    let name = func
-                        .get("name")
-                        .and_then(|n| n.as_str())
-                        .unwrap_or("")
-                        .to_string();
+                    let name = canonicalize_tool_name(
+                        func.get("name").and_then(|n| n.as_str()).unwrap_or(""),
+                    );
                     // Ollama returns an object; OpenAI-compatible returns a JSON string.
                     let args = match func.get("arguments") {
                         Some(Value::String(s)) => {
@@ -159,6 +198,15 @@ impl OllamaClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonicalizes_tool_names() {
+        assert_eq!(canonicalize_tool_name(" read "), "Read");
+        assert_eq!(canonicalize_tool_name("functions.read"), "Read");
+        assert_eq!(canonicalize_tool_name("WRITE"), "Write");
+        assert_eq!(canonicalize_tool_name("Edit"), "Edit");
+        assert_eq!(canonicalize_tool_name("unknown_tool"), "unknown_tool");
+    }
 
     #[test]
     fn normalizes_base_url() {

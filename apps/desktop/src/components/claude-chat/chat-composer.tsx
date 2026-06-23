@@ -1901,10 +1901,14 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                     <SparklesIcon className="size-3" />
                   )}
                   <span className="max-w-36 truncate">
-                    {selectedProviderDisplayName}
+                    {nativeAgentEnabled ? "Local" : selectedProviderDisplayName}
                   </span>
                   <span className="max-w-32 truncate text-muted-foreground/60">
-                    {directProviderModel}
+                    {nativeAgentEnabled
+                      ? directProviderModel !== "Provider"
+                        ? directProviderModel
+                        : "Ollama"
+                      : directProviderModel}
                   </span>
                   <span className="text-muted-foreground/60">
                     {effortShortLabel(effortLevel)}

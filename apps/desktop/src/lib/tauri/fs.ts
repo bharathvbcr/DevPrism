@@ -81,6 +81,19 @@ const IGNORED_EXTENSIONS = new Set([
   ".vrb",
   ".run.xml",
   ".bcf",
+  // Compiled / build artifacts and native binaries — never user-editable content,
+  // so hide them. (User document/reference formats like .docx, .xlsx, .zip, media,
+  // and data files stay visible as "other" so imported references aren't lost.)
+  ".pyc",
+  ".pyo",
+  ".pyd",
+  ".so",
+  ".dylib",
+  ".o",
+  ".obj",
+  ".dll",
+  ".exe",
+  ".bin",
 ]);
 
 export function shouldSkipProjectDirectory(name: string): boolean {

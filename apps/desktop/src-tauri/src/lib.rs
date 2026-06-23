@@ -643,6 +643,8 @@ pub fn run() {
             skills::install_scientific_skills,
             skills::install_scientific_skills_global,
             skills::import_skill_from_folder,
+            skills::install_bundled_skills,
+            skills::create_custom_skill,
             skills::check_skills_installed,
             skills::list_installed_skills,
             skills::delete_installed_skill,

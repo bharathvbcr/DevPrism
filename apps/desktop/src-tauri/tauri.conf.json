@@ -56,7 +56,10 @@
       "nsis": {
         "installMode": "perMachine"
       }
-    }
+    },
+    "resources": [
+      "resources/devprism-skills"
+    ]
   },
   "plugins": {
     "updater": {

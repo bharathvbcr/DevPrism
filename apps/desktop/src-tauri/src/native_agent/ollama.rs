@@ -4,6 +4,10 @@
 
 use serde_json::{json, Value};
 
+/// Context window requested from Ollama (overrides the model's small default so
+/// the full system prompt + project context + history + tools are not truncated).
+const CONTEXT_WINDOW: u32 = 8192;
+
 pub struct ToolCall {
     pub name: String,
     pub args: Value,
@@ -78,6 +82,14 @@ impl OllamaClient {
             "model": self.model,
             "messages": messages,
             "stream": false,
+            // Ollama defaults /api/chat to a small context window (often 2048),
+            // which would silently truncate our system prompt + project context +
+            // history + tool schemas. Request a larger window and a low
+            // temperature for more deterministic tool use / editing.
+            "options": {
+                "num_ctx": CONTEXT_WINDOW,
+                "temperature": 0.4,
+            },
         });
         if tools.as_array().map(|a| !a.is_empty()).unwrap_or(false) {
             body["tools"] = tools.clone();

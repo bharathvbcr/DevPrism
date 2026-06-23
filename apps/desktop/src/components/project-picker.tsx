@@ -378,8 +378,9 @@ export function ProjectPicker() {
                       activeSection === "projects" && activeSpaceId === space.id
                     }
                     count={
-                      Object.values(projectSpace).filter((id) => id === space.id)
-                        .length
+                      Object.values(projectSpace).filter(
+                        (id) => id === space.id,
+                      ).length
                     }
                     onSelect={() => {
                       setActiveSection("projects");
@@ -402,7 +403,7 @@ export function ProjectPicker() {
               icon={SettingsIcon}
               onClick={() => setActiveSection("settings")}
             >
-            Settings
+              Settings
             </ProjectNavButton>
           </div>
         </nav>
@@ -517,9 +518,7 @@ export function ProjectPicker() {
 
         {activeSection === "projects" && activeSpace && (
           <div className="flex flex-wrap items-center gap-3 border-border/60 border-b bg-muted/20 px-5 py-2.5">
-            <span className="text-muted-foreground text-xs">
-              Default model
-            </span>
+            <span className="text-muted-foreground text-xs">Default model</span>
             <input
               value={activeSpace.defaultModel ?? ""}
               onChange={(event) =>

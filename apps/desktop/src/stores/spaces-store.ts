@@ -46,7 +46,9 @@ interface SpacesState {
   setSpaceColor: (id: string, color: string) => void;
   setSpaceDefaults: (
     id: string,
-    defaults: Partial<Pick<Space, "defaultProvider" | "defaultModel" | "skillIds">>,
+    defaults: Partial<
+      Pick<Space, "defaultProvider" | "defaultModel" | "skillIds">
+    >,
   ) => void;
 
   assignProject: (path: string, spaceId: string | null) => void;
@@ -74,7 +76,8 @@ export const useSpacesStore = create<SpacesState>()(
         const space: Space = {
           id: newId(),
           name: trimmed,
-          color: color ?? SPACE_COLORS[get().spaces.length % SPACE_COLORS.length],
+          color:
+            color ?? SPACE_COLORS[get().spaces.length % SPACE_COLORS.length],
           defaultProvider: "ollama",
           defaultModel: "",
           skillIds: [],
@@ -106,9 +109,7 @@ export const useSpacesStore = create<SpacesState>()(
 
       setSpaceColor: (id, color) =>
         set((state) => ({
-          spaces: state.spaces.map((s) =>
-            s.id === id ? { ...s, color } : s,
-          ),
+          spaces: state.spaces.map((s) => (s.id === id ? { ...s, color } : s)),
         })),
 
       setSpaceDefaults: (id, defaults) =>

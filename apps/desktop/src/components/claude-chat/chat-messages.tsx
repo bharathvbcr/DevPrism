@@ -1,11 +1,18 @@
 import { type FC, memo, useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircleIcon, CornerDownRightIcon } from "lucide-react";
+import {
+  AlertCircleIcon,
+  CheckIcon,
+  CopyIcon,
+  CornerDownRightIcon,
+} from "lucide-react";
 import {
   useClaudeChatStore,
   type ClaudeStreamMessage,
   type ContentBlock,
   type QueuedGuidance,
 } from "@/stores/claude-chat-store";
+import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import { cn } from "@/lib/utils";
 import { MarkdownRenderer } from "./markdown-renderer";
 import { ThinkingWidget, ToolWidget } from "./tool-widgets";
 
@@ -56,6 +63,48 @@ const StreamingIndicator: FC<{ startedAt: number | null }> = memo(
 );
 
 const EMPTY_PENDING_GUIDANCE: QueuedGuidance[] = [];
+const THREAD_MAX_WIDTH = "max-w-[44rem]";
+
+const MessageActions: FC<{
+  text: string;
+  align?: "left" | "right";
+}> = ({ text, align = "left" }) => {
+  const [copied, setCopied] = useState(false);
+  const canCopy = text.trim().length > 0;
+
+  const handleCopy = async () => {
+    if (!canCopy) return;
+    await navigator.clipboard.writeText(text);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1200);
+  };
+
+  if (!canCopy) return null;
+
+  return (
+    <div
+      className={cn(
+        "flex gap-1 text-muted-foreground",
+        align === "right" ? "justify-end" : "justify-start",
+      )}
+    >
+      <TooltipIconButton
+        tooltip={copied ? "Copied" : "Copy"}
+        side="top"
+        variant="ghost"
+        size="icon"
+        className="size-8 rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+        onClick={handleCopy}
+      >
+        {copied ? (
+          <CheckIcon className="fade-in zoom-in-50 size-4 animate-in duration-200" />
+        ) : (
+          <CopyIcon className="fade-in zoom-in-75 size-4 animate-in duration-150" />
+        )}
+      </TooltipIconButton>
+    </div>
+  );
+};
 
 // ─── Chat Messages (main component) ───
 
@@ -163,7 +212,7 @@ export const ChatMessages: FC = () => {
     <div
       ref={viewportRef}
       onScroll={handleScroll}
-      className="absolute inset-0 overflow-y-auto scroll-smooth px-4 py-2"
+      className="absolute inset-0 overflow-y-auto scroll-smooth px-4 pt-4"
     >
       {displayMessages.length === 0 &&
         pendingGuidance.length === 0 &&
@@ -174,13 +223,24 @@ export const ChatMessages: FC = () => {
         )}
 
       {displayMessages.map((msg, idx) => (
-        <MessageBubble key={idx} message={msg} toolResultMap={toolResultMap} />
+        <div key={idx} className={cn("mx-auto w-full", THREAD_MAX_WIDTH)}>
+          <MessageBubble message={msg} toolResultMap={toolResultMap} />
+        </div>
       ))}
 
-      {isStreaming && <StreamingIndicator startedAt={streamingStartedAt} />}
+      {isStreaming && (
+        <div className={cn("mx-auto w-full px-2", THREAD_MAX_WIDTH)}>
+          <StreamingIndicator startedAt={streamingStartedAt} />
+        </div>
+      )}
 
       {pendingGuidance.map((guidance) => (
-        <PendingGuidanceMessage key={guidance.id} guidance={guidance} />
+        <div
+          key={guidance.id}
+          className={cn("mx-auto w-full", THREAD_MAX_WIDTH)}
+        >
+          <PendingGuidanceMessage guidance={guidance} />
+        </div>
       ))}
     </div>
   );
@@ -249,27 +309,34 @@ const UserMessage: FC<{ message: ClaudeStreamMessage }> = ({ message }) => {
     errors: { message: string; location?: string }[],
     prompt: string,
   ) => (
-    <div className="flex w-full flex-col items-end py-1.5">
-      <div className="max-w-[85%] rounded-xl bg-muted px-3 py-2 text-foreground text-sm">
-        <div className="mb-2 rounded-lg border border-red-500/20 bg-red-500/10 px-2.5 py-2">
-          <div className="mb-1.5 font-medium text-red-400 text-xs">{title}</div>
-          <div className="space-y-1">
-            {errors.map((e, i) => (
-              <div key={i} className="flex items-start gap-1.5">
-                <AlertCircleIcon className="mt-0.5 size-3 shrink-0 text-red-400/70" />
-                <span className="flex-1 text-foreground/80 text-xs">
-                  {e.message}
-                </span>
-                {e.location && (
-                  <span className="shrink-0 font-mono text-muted-foreground text-xs">
-                    {e.location}
+    <div className="fade-in slide-in-from-bottom-1 grid w-full animate-in auto-rows-auto grid-cols-[minmax(72px,1fr)_auto] content-start gap-y-2 px-2 py-3 duration-150 [&:where(>*)]:col-start-2">
+      <div className="relative col-start-2 min-w-0">
+        <div className="wrap-break-word rounded-xl bg-muted px-4 py-2 text-foreground text-sm empty:hidden">
+          <div className="mb-2 rounded-lg border border-red-500/20 bg-red-500/10 px-2.5 py-2">
+            <div className="mb-1.5 font-medium text-red-400 text-xs">
+              {title}
+            </div>
+            <div className="space-y-1">
+              {errors.map((e, i) => (
+                <div key={i} className="flex items-start gap-1.5">
+                  <AlertCircleIcon className="mt-0.5 size-3 shrink-0 text-red-400/70" />
+                  <span className="flex-1 text-foreground/80 text-xs">
+                    {e.message}
                   </span>
-                )}
-              </div>
-            ))}
+                  {e.location && (
+                    <span className="shrink-0 font-mono text-muted-foreground text-xs">
+                      {e.location}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
           </div>
+          <span className="text-muted-foreground">{prompt}</span>
         </div>
-        <span className="text-muted-foreground">{prompt}</span>
+      </div>
+      <div className="col-span-full col-start-1 row-start-2 -mr-1 flex justify-end">
+        <MessageActions text={bodyText} align="right" />
       </div>
     </div>
   );
@@ -313,18 +380,23 @@ const UserMessage: FC<{ message: ClaudeStreamMessage }> = ({ message }) => {
   }
 
   return (
-    <div className="flex w-full flex-col items-end py-1.5">
-      <div className="max-w-[85%] rounded-xl bg-muted px-3 py-1.5 text-foreground text-sm">
-        {contextLabel && (
-          <span className="mb-1 inline-flex items-center rounded-md bg-background/60 px-1.5 py-0.5 font-mono text-muted-foreground text-xs">
-            {contextLabel}
-          </span>
-        )}
-        {contextLabel && bodyText && <br />}
-        <MarkdownRenderer
-          content={bodyText}
-          className="prose prose-sm dark:prose-invert max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
-        />
+    <div className="fade-in slide-in-from-bottom-1 grid w-full animate-in auto-rows-auto grid-cols-[minmax(72px,1fr)_auto] content-start gap-y-2 px-2 py-3 duration-150 [&:where(>*)]:col-start-2">
+      <div className="relative col-start-2 min-w-0">
+        <div className="wrap-break-word rounded-xl bg-muted px-4 py-2 text-foreground text-sm empty:hidden">
+          {contextLabel && (
+            <span className="mb-1 inline-flex items-center rounded-md bg-background/60 px-1.5 py-0.5 font-mono text-muted-foreground text-xs">
+              {contextLabel}
+            </span>
+          )}
+          {contextLabel && bodyText && <br />}
+          <MarkdownRenderer
+            content={bodyText}
+            className="prose prose-sm dark:prose-invert max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
+          />
+        </div>
+      </div>
+      <div className="col-span-full col-start-1 row-start-2 -mr-1 flex justify-end">
+        <MessageActions text={textContent} align="right" />
       </div>
     </div>
   );
@@ -336,23 +408,31 @@ const PendingGuidanceMessage: FC<{ guidance: QueuedGuidance }> = ({
   guidance,
 }) => {
   const contextLabel = guidance.contextOverride?.label ?? null;
+  const copyText = contextLabel
+    ? `${contextLabel}\n${guidance.prompt}`
+    : guidance.prompt;
 
   return (
-    <div className="flex w-full flex-col items-end py-1.5">
-      <div className="max-w-[85%] rounded-xl border border-border/70 bg-muted px-3 py-1.5 text-foreground text-sm shadow-sm">
-        {contextLabel && (
-          <span className="mb-1 inline-flex items-center rounded-md bg-background/60 px-1.5 py-0.5 font-mono text-muted-foreground text-xs">
-            {contextLabel}
-          </span>
-        )}
-        {contextLabel && guidance.prompt && <br />}
-        <div className="flex min-w-0 items-start gap-2">
-          <CornerDownRightIcon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/70" />
-          <MarkdownRenderer
-            content={guidance.prompt}
-            className="prose prose-sm dark:prose-invert min-w-0 max-w-none flex-1 break-words [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
-          />
+    <div className="fade-in slide-in-from-bottom-1 grid w-full animate-in auto-rows-auto grid-cols-[minmax(72px,1fr)_auto] content-start gap-y-2 px-2 py-3 duration-150 [&:where(>*)]:col-start-2">
+      <div className="relative col-start-2 min-w-0">
+        <div className="wrap-break-word rounded-xl bg-muted px-4 py-2 text-foreground text-sm empty:hidden">
+          {contextLabel && (
+            <span className="mb-1 inline-flex items-center rounded-md bg-background/60 px-1.5 py-0.5 font-mono text-muted-foreground text-xs">
+              {contextLabel}
+            </span>
+          )}
+          {contextLabel && guidance.prompt && <br />}
+          <div className="flex min-w-0 items-start gap-2">
+            <CornerDownRightIcon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/70" />
+            <MarkdownRenderer
+              content={guidance.prompt}
+              className="prose prose-sm dark:prose-invert min-w-0 max-w-none flex-1 break-words [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
+            />
+          </div>
         </div>
+      </div>
+      <div className="col-span-full col-start-1 row-start-2 -mr-1 flex justify-end">
+        <MessageActions text={copyText} align="right" />
       </div>
     </div>
   );
@@ -374,9 +454,14 @@ const AssistantMessage: FC<{
 
   if (!hasRenderableContent) return null;
 
+  const copyText = content
+    .filter((block) => block.type === "text" && block.text)
+    .map((block) => block.text)
+    .join("\n\n");
+
   return (
-    <div className="w-full py-1.5">
-      <div className="px-1 text-foreground text-sm leading-relaxed">
+    <div className="fade-in slide-in-from-bottom-1 relative mx-auto w-full animate-in py-3 duration-150">
+      <div className="wrap-break-word px-2 text-foreground text-sm leading-relaxed">
         {content.map((block, idx) => {
           if (block.type === "text" && block.text) {
             return (
@@ -403,6 +488,9 @@ const AssistantMessage: FC<{
           return null;
         })}
       </div>
+      <div className="-mb-7.5 ml-2 flex min-h-7.5 items-center pt-1.5">
+        <MessageActions text={copyText} />
+      </div>
     </div>
   );
 };
@@ -416,8 +504,8 @@ const ResultMessage: FC<{ message: ClaudeStreamMessage }> = ({ message }) => {
   if (!resultText) return null;
 
   return (
-    <div className="w-full py-1.5">
-      <div className="px-1 text-foreground text-sm leading-relaxed">
+    <div className="fade-in slide-in-from-bottom-1 relative mx-auto w-full animate-in py-3 duration-150">
+      <div className="wrap-break-word px-2 text-foreground text-sm leading-relaxed">
         {isError ? (
           <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive text-sm">
             {resultText}
@@ -428,6 +516,9 @@ const ResultMessage: FC<{ message: ClaudeStreamMessage }> = ({ message }) => {
             className="prose prose-sm dark:prose-invert max-w-none"
           />
         )}
+      </div>
+      <div className="-mb-7.5 ml-2 flex min-h-7.5 items-center pt-1.5">
+        <MessageActions text={resultText} />
       </div>
       {message.cost_usd != null && (
         <div className="mt-1 px-1 text-right text-muted-foreground text-xs">

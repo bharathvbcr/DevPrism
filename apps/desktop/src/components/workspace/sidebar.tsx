@@ -80,6 +80,14 @@ import {
   HoverCardTrigger,
 } from "@/components/ui/hover-card";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { toast } from "sonner";
+import {
+  SparklesIcon,
+  DownloadIcon,
+  Loader2Icon,
+  WandSparklesIcon,
+} from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useUvSetupStore } from "@/stores/uv-setup-store";
@@ -2057,7 +2065,7 @@ interface SkillsStatus {
 }
 
 function EnvironmentSection({
-  projectPath: _projectPath,
+  projectPath,
 }: {
   projectPath: string | null;
 }) {
@@ -2069,6 +2077,8 @@ function EnvironmentSection({
   // ── Scientific Skills ──
   const [skillsStatus, setSkillsStatus] = useState<SkillsStatus | null>(null);
   const [showOnboarding, setShowOnboarding] = useState(false);
+  // ── DevPrism custom skills ──
+  const [showDevprismSkills, setShowDevprismSkills] = useState(false);
 
   const checkSkillsStatus = useCallback(async () => {
     try {
@@ -2169,12 +2179,34 @@ function EnvironmentSection({
               {skillsLabel}
             </span>
           </button>
+          {/* DevPrism custom skills row */}
+          <button
+            className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left text-sm transition-colors hover:bg-sidebar-accent/50"
+            onClick={() => setShowDevprismSkills(true)}
+          >
+            <WandSparklesIcon className="size-3.5 shrink-0 text-muted-foreground" />
+            <span className="min-w-0 flex-1 truncate text-xs">
+              DevPrism skills
+            </span>
+            <span className="shrink-0 text-muted-foreground text-xs">
+              Manage
+            </span>
+          </button>
         </div>
       </div>
 
       <UvSetupDialog
         open={showUvDialog}
         onClose={() => setShowUvDialog(false)}
+      />
+
+      <DevPrismSkillsDialog
+        open={showDevprismSkills}
+        projectPath={projectPath}
+        onClose={() => {
+          setShowDevprismSkills(false);
+          checkSkillsStatus();
+        }}
       />
 
       {showOnboarding && OnboardingComponent && (
@@ -2186,6 +2218,161 @@ function EnvironmentSection({
         />
       )}
     </>
+  );
+}
+
+// ─── DevPrism custom skills dialog ───
+//
+// Install the bundled offline skill packages into the current project, or create
+// a brand-new custom skill on the go. Both call Tauri commands and require an
+// open project (so the skills land in <project>/.claude/skills).
+
+function DevPrismSkillsDialog({
+  open,
+  projectPath,
+  onClose,
+}: {
+  open: boolean;
+  projectPath: string | null;
+  onClose: () => void;
+}) {
+  const [installing, setInstalling] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [instructions, setInstructions] = useState("");
+
+  const handleInstallBundled = async () => {
+    if (!projectPath) {
+      toast.error("Open a project first.");
+      return;
+    }
+    setInstalling(true);
+    try {
+      const installed = await invoke<unknown[]>("install_bundled_skills", {
+        projectPath,
+      });
+      const count = Array.isArray(installed) ? installed.length : 0;
+      toast.success(`Installed ${count} DevPrism skill${count === 1 ? "" : "s"}.`);
+    } catch (err) {
+      toast.error(`Failed to install skills: ${String(err)}`);
+    } finally {
+      setInstalling(false);
+    }
+  };
+
+  const handleCreate = async () => {
+    if (!projectPath) {
+      toast.error("Open a project first.");
+      return;
+    }
+    if (!name.trim() || !description.trim()) return;
+    setCreating(true);
+    try {
+      await invoke("create_custom_skill", {
+        projectPath,
+        name: name.trim(),
+        description: description.trim(),
+        instructions: instructions.trim(),
+      });
+      toast.success(`Created skill "${name.trim()}".`);
+      setName("");
+      setDescription("");
+      setInstructions("");
+    } catch (err) {
+      toast.error(`Failed to create skill: ${String(err)}`);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(value) => !value && onClose()}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>DevPrism skills</DialogTitle>
+          <DialogDescription>
+            Install the bundled offline skills, or create your own custom skill
+            for this project. Skills run locally — no internet required.
+          </DialogDescription>
+        </DialogHeader>
+
+        {!projectPath && (
+          <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-amber-600 text-xs">
+            Open a project to manage its skills.
+          </p>
+        )}
+
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-border/70 p-3">
+          <div className="min-w-0">
+            <div className="font-medium text-sm">Bundled skills</div>
+            <p className="text-muted-foreground text-xs">
+              resume, manuscript, latex toolkit, thesis, beamer, project space
+            </p>
+          </div>
+          <Button
+            size="sm"
+            variant="secondary"
+            className="shrink-0 gap-1.5"
+            disabled={!projectPath || installing}
+            onClick={() => void handleInstallBundled()}
+          >
+            {installing ? (
+              <Loader2Icon className="size-3.5 animate-spin" />
+            ) : (
+              <DownloadIcon className="size-3.5" />
+            )}
+            Install
+          </Button>
+        </div>
+
+        <div className="space-y-2.5 rounded-lg border border-border/70 p-3">
+          <div className="flex items-center gap-1.5 font-medium text-sm">
+            <SparklesIcon className="size-3.5" />
+            Create a custom skill
+          </div>
+          <Input
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="Skill name (e.g. Grant Proposal)"
+          />
+          <Input
+            value={description}
+            onChange={(event) => setDescription(event.target.value)}
+            placeholder="When should the agent use this skill?"
+          />
+          <Textarea
+            value={instructions}
+            onChange={(event) => setInstructions(event.target.value)}
+            placeholder="Steps the agent should follow (optional)"
+            rows={4}
+          />
+          <div className="flex justify-end">
+            <Button
+              size="sm"
+              className="gap-1.5"
+              disabled={
+                !projectPath || creating || !name.trim() || !description.trim()
+              }
+              onClick={() => void handleCreate()}
+            >
+              {creating ? (
+                <Loader2Icon className="size-3.5 animate-spin" />
+              ) : (
+                <PlusIcon className="size-3.5" />
+              )}
+              Create skill
+            </Button>
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            Done
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

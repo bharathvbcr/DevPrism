@@ -403,7 +403,7 @@ export function ProjectPicker() {
                   title="New space"
                   aria-label="New space"
                   onClick={() => setSpaceDialog({ editingId: null, name: "" })}
-                  className="flex size-5 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
+                  className="flex size-5 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   <PlusIcon className="size-3.5" />
                 </button>
@@ -566,6 +566,8 @@ export function ProjectPicker() {
                 })
               }
               placeholder="auto (first installed Ollama model)"
+              aria-label={`Default model for ${activeSpace.name}`}
+              title="Local model used by default for projects in this space"
               className="h-8 w-56 rounded-md border border-input bg-background px-2.5 text-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-ring"
             />
             <div className="ml-auto flex items-center gap-2">
@@ -1301,7 +1303,7 @@ function SpaceNavButton({
       <button
         type="button"
         onClick={onSelect}
-        className="flex h-8 min-w-0 flex-1 items-center gap-2 px-2 text-left font-medium text-sm"
+        className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md px-2 text-left font-medium text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
         title={space.name}
       >
         <span
@@ -1319,7 +1321,7 @@ function SpaceNavButton({
         <DropdownMenuTrigger asChild>
           <button
             type="button"
-            className="mr-1 flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/space:opacity-100"
+            className="mr-1 flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/space:opacity-100"
             aria-label={`${space.name} options`}
           >
             <MoreVerticalIcon className="size-3.5" />

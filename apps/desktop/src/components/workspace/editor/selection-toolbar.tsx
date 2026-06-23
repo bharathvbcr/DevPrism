@@ -81,10 +81,15 @@ export function SelectionToolbar({
     };
   }, [onDismiss]);
 
+  // Focus the prompt field on open so the user can type immediately.
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
   return (
     <div
       ref={toolbarRef}
-      className="absolute z-30 w-64 rounded-lg border border-border bg-background shadow-xl"
+      className="absolute z-30 max-h-[min(20rem,60vh)] w-64 overflow-y-auto rounded-lg border border-border bg-background shadow-xl"
       style={{
         top: position.top,
         left: position.left,
@@ -105,7 +110,7 @@ export function SelectionToolbar({
           aria-label="Send prompt"
           onClick={handleSend}
           disabled={!input.trim()}
-          className="flex size-6 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-opacity disabled:opacity-30"
+          className="flex size-6 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground outline-none transition-opacity hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring/50 disabled:opacity-30"
         >
           <ArrowUpIcon className="size-3.5" />
         </button>
@@ -118,7 +123,7 @@ export function SelectionToolbar({
             <button
               key={action.id}
               onClick={() => onAction(action.id)}
-              className="flex items-center gap-2.5 px-3 py-1.5 text-left text-foreground text-sm transition-colors hover:bg-muted"
+              className="flex items-center gap-2.5 px-3 py-1.5 text-left text-foreground text-sm outline-none transition-colors hover:bg-muted focus-visible:bg-muted focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset"
             >
               <span className="size-4 text-muted-foreground">
                 {action.icon}

@@ -235,6 +235,7 @@ export function EditorToolbar({
                   size="icon"
                   className="size-6 p-1"
                   title="Open in Editor"
+                  aria-label="Open in editor"
                 >
                   <ExternalLinkIcon className="size-4" />
                 </Button>
@@ -316,7 +317,12 @@ export function EditorToolbar({
         tooltip="Display math (\\[...\\])"
         onClick={() => insertText("\\[\n  ", "\n\\]")}
       >
-        <span className="font-mono text-xs">∫</span>
+        <span
+          aria-hidden
+          className="flex size-4 items-center justify-center font-mono text-sm leading-none"
+        >
+          ∫
+        </span>
       </TooltipIconButton>
       <div className="mx-2 h-4 w-px bg-border" />
       <TooltipIconButton
@@ -332,6 +338,8 @@ export function EditorToolbar({
         className="h-6 px-2 font-mono text-xs"
         onClick={() => setVimMode(!vimMode)}
         title="Toggle Vim mode"
+        aria-label="Toggle Vim mode"
+        aria-pressed={vimMode}
       >
         VIM
       </Button>
@@ -353,6 +361,7 @@ export function EditorToolbar({
               size="icon"
               className="size-6 p-1"
               title="Open in Editor"
+              aria-label="Open in editor"
             >
               <ExternalLinkIcon className="size-4" />
             </Button>

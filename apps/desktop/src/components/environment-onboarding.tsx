@@ -360,7 +360,7 @@ export function EnvironmentOnboarding() {
                   skillsChecking
                     ? "Checking..."
                     : skillsError
-                      ? skillsError
+                      ? "Couldn't check skills — click Check to retry"
                       : isSkillsReady
                         ? `${skillsStatus?.skill_count ?? 0} skills installed`
                         : "Required for scientific writing"
@@ -383,7 +383,7 @@ export function EnvironmentOnboarding() {
             </div>
           </div>
 
-          <div className="flex justify-center px-6 pt-1 pb-4">
+          <div className="flex flex-col items-center gap-2 px-6 pt-1 pb-4">
             <Button
               disabled={!setupComplete}
               className="h-10 min-w-28 justify-center rounded-full px-7"
@@ -391,6 +391,11 @@ export function EnvironmentOnboarding() {
             >
               Done
             </Button>
+            {!setupComplete && (
+              <p className="text-muted-foreground text-xs">
+                Finish the steps above to continue.
+              </p>
+            )}
           </div>
         </DialogContent>
       </Dialog>
@@ -492,7 +497,7 @@ function SetupItem({
           type="button"
           variant={state === "ready" ? "outline" : "default"}
           size="sm"
-          className="h-8 max-w-24 shrink-0 gap-1.5 rounded-lg px-2.5 text-sm"
+          className="h-8 shrink-0 gap-1.5 rounded-lg px-2.5 text-sm"
           onClick={action.onClick}
           disabled={action.disabled || action.loading}
         >

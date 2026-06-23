@@ -378,10 +378,7 @@ export function ProjectPicker() {
           )}
         >
           <ProjectNavButton
-            active={
-              activeSection === "projects" &&
-              (!activeSpaceId || isSidebarCollapsed)
-            }
+            active={activeSection === "projects" && !activeSpaceId}
             collapsed={isSidebarCollapsed}
             icon={FolderOpenIcon}
             onClick={() => {
@@ -465,6 +462,7 @@ export function ProjectPicker() {
                     target="_blank"
                     rel="noopener noreferrer"
                     title="GitHub"
+                    aria-label="Open GitHub repository"
                   >
                     <GithubIcon className="size-3.5" />
                   </a>
@@ -478,6 +476,13 @@ export function ProjectPicker() {
                     else if (theme === "light") setTheme("dark");
                     else setTheme("system");
                   }}
+                  aria-label={`Switch theme (currently ${theme}, switch to ${
+                    theme === "system"
+                      ? "light"
+                      : theme === "light"
+                        ? "dark"
+                        : "system"
+                  })`}
                   title={
                     theme === "system"
                       ? "System theme"
@@ -529,7 +534,7 @@ export function ProjectPicker() {
                   value={searchQuery}
                   onChange={(event) => setSearchQuery(event.target.value)}
                   placeholder="Search"
-                  className="h-9 w-full rounded-lg border border-input bg-background pr-16 pl-9 text-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-ring"
+                  className="h-9 w-full rounded-lg border border-input bg-background pr-16 pl-9 text-sm outline-none transition-[color,box-shadow] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
                 />
                 <kbd className="pointer-events-none absolute top-1/2 right-2 flex h-6 min-w-10 -translate-y-1/2 items-center justify-center rounded-md border border-border/70 bg-muted/30 px-1.5 font-medium text-[11px] text-muted-foreground leading-none">
                   {searchShortcutLabel}
@@ -568,7 +573,7 @@ export function ProjectPicker() {
               placeholder="auto (first installed Ollama model)"
               aria-label={`Default model for ${activeSpace.name}`}
               title="Local model used by default for projects in this space"
-              className="h-8 w-56 rounded-md border border-input bg-background px-2.5 text-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-ring"
+              className="h-8 w-56 rounded-md border border-input bg-background px-2.5 text-sm outline-none transition-[color,box-shadow] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
             />
             <div className="ml-auto flex items-center gap-2">
               <Button
@@ -576,12 +581,11 @@ export function ProjectPicker() {
                 size="sm"
                 className="h-8 gap-1.5"
                 disabled={installingSkills}
+                title="Install DevPrism skills into every project in this space"
                 onClick={() => void handleInstallSpaceSkills(activeSpace)}
               >
                 <SparklesIcon className="size-3.5" />
-                {installingSkills
-                  ? "Installing…"
-                  : "Install skills to projects"}
+                {installingSkills ? "Installing…" : "Install skills"}
               </Button>
             </div>
           </div>
@@ -631,16 +635,32 @@ export function ProjectPicker() {
             <div className="flex w-full flex-col gap-4 px-5 py-5">
               {visibleProjects.length === 0 ? (
                 <div className="flex min-h-80 flex-col items-center justify-center rounded-lg border border-border border-dashed bg-muted/10 px-6 text-center">
-                  {activeSpace && !normalizedSearch ? (
+                  {normalizedSearch ? (
+                    <>
+                      <SearchIcon className="mb-4 size-10 text-muted-foreground/70" />
+                      <h2 className="font-semibold text-lg">
+                        No projects match “{searchQuery}”
+                      </h2>
+                      <div className="mt-5 flex flex-wrap justify-center gap-3">
+                        <Button
+                          variant="outline"
+                          onClick={() => setSearchQuery("")}
+                        >
+                          <XIcon className="mr-2 size-4" />
+                          Clear search
+                        </Button>
+                      </div>
+                    </>
+                  ) : activeSpace ? (
                     <>
                       <LayersIcon className="mb-4 size-10 text-muted-foreground/70" />
                       <h2 className="font-semibold text-lg">
                         No projects in {activeSpace.name}
                       </h2>
                       <p className="mt-1 max-w-sm text-muted-foreground text-sm">
-                        Open a project, then use its “⋮ → Move to space” menu to
-                        add it here — or assign existing projects from All
-                        Projects.
+                        Open a project, then use its actions menu (top-right of
+                        the card) and choose “Move to space” to add it here — or
+                        assign existing projects from All Projects.
                       </p>
                       <div className="mt-5 flex flex-wrap justify-center gap-3">
                         <Button
@@ -655,11 +675,7 @@ export function ProjectPicker() {
                   ) : (
                     <>
                       <FileTextIcon className="mb-4 size-10 text-muted-foreground/70" />
-                      <h2 className="font-semibold text-lg">
-                        {normalizedSearch
-                          ? "No matching projects"
-                          : "No projects"}
-                      </h2>
+                      <h2 className="font-semibold text-lg">No projects</h2>
                       <div className="mt-5 flex flex-wrap justify-center gap-3">
                         <Button onClick={() => setShowModeDialog(true)}>
                           <PlusIcon className="mr-2 size-4" />
@@ -785,7 +801,7 @@ export function ProjectPicker() {
                 )
               }
               placeholder="e.g. PhD Papers, Job Applications"
-              className="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-ring"
+              className="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm outline-none transition-[color,box-shadow] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
             />
             <DialogFooter className="mt-4">
               <Button
@@ -1151,8 +1167,10 @@ function ProjectPreviewCard({
     <div className="group min-w-0">
       <div className="relative">
         <button
-          className="relative aspect-[3/4] w-full overflow-hidden rounded-lg border border-border/70 bg-background text-left transition-all duration-200 hover:border-foreground/20 hover:shadow-md"
+          className="relative aspect-[3/4] w-full overflow-hidden rounded-lg border border-border/70 bg-background text-left outline-none transition-all duration-200 hover:border-foreground/20 hover:shadow-md focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
           onClick={onOpen}
+          tabIndex={-1}
+          aria-hidden
         >
           <ProjectPreviewSurface preview={preview} projectName={project.name} />
         </button>
@@ -1162,7 +1180,7 @@ function ProjectPreviewCard({
               <Button
                 variant="ghost"
                 size="icon"
-                className="size-7 bg-background/80 shadow-sm backdrop-blur-sm"
+                className="size-7 border border-border/60 bg-background/90 text-foreground shadow-sm backdrop-blur-sm hover:bg-background"
                 aria-label={`Move ${project.name} to a space`}
               >
                 <MoreVerticalIcon className="size-3.5" />
@@ -1203,7 +1221,7 @@ function ProjectPreviewCard({
           <Button
             variant="ghost"
             size="icon"
-            className="size-7 bg-background/80 shadow-sm backdrop-blur-sm"
+            className="size-7 border border-border/60 bg-background/90 text-foreground shadow-sm backdrop-blur-sm hover:bg-background hover:text-destructive"
             onClick={onRemove}
             aria-label={`Remove ${project.name}`}
           >
@@ -1212,8 +1230,9 @@ function ProjectPreviewCard({
         </div>
       </div>
       <button
-        className="mt-2 block w-full truncate text-left font-medium text-sm leading-tight hover:underline"
+        className="mt-2 block w-full truncate rounded-sm text-left font-medium text-sm leading-tight outline-none hover:underline focus-visible:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         onClick={onOpen}
+        aria-label={`Open ${project.name}`}
       >
         {project.name}
       </button>
@@ -1363,7 +1382,7 @@ function ProjectNavButton({
       type="button"
       onClick={onClick}
       className={cn(
-        "flex items-center rounded-lg font-medium text-sm transition-colors",
+        "flex items-center rounded-lg font-medium text-sm outline-none transition-colors focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
         collapsed
           ? "size-8 justify-center"
           : "h-10 w-full justify-start gap-3 px-3 text-left",
@@ -1397,7 +1416,7 @@ function SettingsDetailButton({
       type="button"
       onClick={onClick}
       className={cn(
-        "flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors",
+        "flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left outline-none transition-colors focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
         active
           ? "bg-muted text-foreground"
           : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",

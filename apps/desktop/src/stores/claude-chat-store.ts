@@ -1177,7 +1177,11 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       }),
     );
     try {
-      await invoke("cancel_claude_execution", { tabId: activeTabId });
+      if (useSettingsStore.getState().nativeAgentEnabled) {
+        await invoke("stop_native_agent", { tabId: activeTabId });
+      } else {
+        await invoke("cancel_claude_execution", { tabId: activeTabId });
+      }
     } catch {
       // The UI has already moved to a stopped state; stale output is ignored.
     }

@@ -1,4 +1,5 @@
 import {
+  type CSSProperties,
   type FC,
   type KeyboardEvent,
   useCallback,
@@ -9,6 +10,7 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   ArrowUpIcon,
   SquareIcon,
@@ -845,6 +847,23 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
     }
   };
 
+  const handleAttachFiles = useCallback(async () => {
+    if (!projectRoot) return;
+    const selected = await open({
+      multiple: true,
+      directory: false,
+      title: "Attach files",
+    });
+    const paths =
+      typeof selected === "string"
+        ? [selected]
+        : Array.isArray(selected)
+          ? selected
+          : [];
+    if (paths.length === 0) return;
+    await handleFileDropRef.current(paths);
+  }, [projectRoot]);
+
   // Listen for Tauri drag-drop events (OS file drops)
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -1304,7 +1323,18 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
   ]);
 
   return (
-    <div ref={composerRef} className="relative shrink-0 p-3">
+    <div
+      ref={composerRef}
+      className="relative mx-auto w-full max-w-[44rem] shrink-0 px-4 pb-4"
+      style={
+        {
+          "--composer-bg":
+            "color-mix(in oklab, var(--color-muted) 30%, var(--color-background))",
+          "--composer-radius": "1.5rem",
+          "--composer-padding": "8px",
+        } as CSSProperties
+      }
+    >
       {/* / slash command picker — portal to body to escape all stacking contexts */}
       {slashQuery !== null && (
         <SlashCommandPicker
@@ -1677,7 +1707,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
         mentionFiles.length > 0 && (
           <div
             ref={mentionRef}
-            className="absolute right-3 bottom-full left-3 mb-1 max-h-48 overflow-y-auto rounded-lg border border-border bg-background shadow-lg"
+            className="absolute right-4 bottom-full left-4 mb-2 max-h-48 overflow-y-auto rounded-xl border border-border bg-background shadow-lg"
           >
             {mentionFiles.map((file, i) => {
               const parts = file.relativePath.split("/");
@@ -1714,12 +1744,13 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
 
       <div
         className={cn(
-          "flex w-full flex-col overflow-hidden rounded-2xl border border-input bg-muted/30 transition-colors focus-within:border-ring focus-within:bg-background",
-          isDragOver && "border-ring bg-accent/20",
+          "flex w-full flex-col gap-2 overflow-hidden rounded-(--composer-radius) border border-border/60 bg-(--composer-bg) p-(--composer-padding) shadow-[0_4px_16px_-8px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] transition-[border-color,box-shadow] focus-within:border-border focus-within:shadow-[0_6px_24px_-8px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.05)] dark:border-muted-foreground/15 dark:shadow-none dark:focus-within:border-muted-foreground/30",
+          isDragOver &&
+            "border-ring border-dashed bg-[color-mix(in_oklab,var(--color-accent)_50%,var(--color-background))]",
         )}
       >
         {visibleQueuedGuidance.length > 0 && (
-          <div className="max-h-20 overflow-y-auto border-border/70 border-b bg-muted/35 text-xs">
+          <div className="max-h-20 overflow-y-auto rounded-xl border border-border/60 bg-background/60 text-xs">
             {visibleQueuedGuidance.map((guidance) => {
               const displayText = formatGuidanceText(guidance);
               return (
@@ -1763,7 +1794,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
 
         {/* Pinned context chips */}
         {pinnedContexts.length > 0 && (
-          <div className="flex flex-wrap items-center gap-1.5 px-4 pt-3 pb-0">
+          <div className="flex flex-wrap items-center gap-1.5 px-2.5">
             {pinnedContexts.map((ctx, i) =>
               ctx.imageDataUrl ? (
                 <div
@@ -1813,7 +1844,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
         )}
 
         {isDragOver ? (
-          <div className="flex min-h-10 items-center justify-center px-4 py-3 text-muted-foreground text-sm">
+          <div className="flex min-h-10 items-center justify-center px-2.5 py-1 text-muted-foreground text-sm">
             <PaperclipIcon className="mr-2 size-4" />
             Drop files to attach
           </div>
@@ -1829,20 +1860,32 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                 ? "Add guidance for the next turn..."
                 : "Ask me anything (/ for commands, @ to mention)"
             }
-            className="max-h-40 min-h-10 w-full resize-none bg-transparent px-4 py-2 text-sm outline-none placeholder:text-muted-foreground"
+            className="max-h-32 min-h-10 w-full resize-none bg-transparent px-2.5 py-1 text-base outline-none placeholder:text-muted-foreground/80"
             rows={1}
           />
         )}
 
-        <div className="flex items-center justify-between px-2 pb-2">
-          {/* Model & settings selector */}
-          <div>
+        <div className="relative flex items-center justify-between">
+          {/* Attachments, model & settings selector */}
+          <div className="flex items-center gap-1">
+            <TooltipIconButton
+              tooltip="Attach files"
+              side="top"
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-7 rounded-full"
+              onClick={handleAttachFiles}
+              disabled={!projectRoot}
+            >
+              <PlusIcon className="size-4" />
+            </TooltipIconButton>
             <button
               ref={modelButtonRef}
               type="button"
               onClick={() => setModelPickerOpen((v) => !v)}
               title="Switch provider or model"
-              className="flex items-center gap-1.5 rounded-md px-2 py-1 text-muted-foreground text-xs transition-colors hover:bg-muted hover:text-foreground"
+              className="flex h-7 items-center gap-1.5 rounded-full px-2 text-muted-foreground text-xs transition-colors hover:bg-muted hover:text-foreground"
             >
               {selectedProviderCredential ? (
                 <>
@@ -1911,7 +1954,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
               side="top"
               variant="default"
               size="icon"
-              className="size-8 rounded-full"
+              className="size-7 rounded-full"
               onClick={
                 isStreaming && !hasInput
                   ? () => void cancelExecution(activeTabId)

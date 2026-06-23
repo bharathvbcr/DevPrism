@@ -221,6 +221,18 @@ pub fn comments_update(input: UpdateCommentInput) -> Result<Comment, String> {
     }
     let updated: Comment =
         serde_json::from_value(value).map_err(|e| format!("from value: {}", e))?;
+
+    // Validate enum-like fields so a patch can't set arbitrary status/type
+    // (comments_add already enforces these for new comments).
+    const VALID_STATUS: &[&str] = &["open", "resolved", "rejected", "applied", "orphaned"];
+    const VALID_TY: &[&str] = &["comment", "suggestion"];
+    if !VALID_STATUS.contains(&updated.status.as_str()) {
+        return Err(format!("invalid comment status: {}", updated.status));
+    }
+    if !VALID_TY.contains(&updated.ty.as_str()) {
+        return Err(format!("invalid comment type: {}", updated.ty));
+    }
+
     file.comments[idx] = updated.clone();
     write_all(&input.project_root, &file)?;
     append_notification(

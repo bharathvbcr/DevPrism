@@ -513,6 +513,9 @@ export function ClaudeSetup({
   const [modelOptions, setModelOptions] = useState<string[]>([]);
   const [isFetchingModels, setIsFetchingModels] = useState(false);
   const [modelFetchError, setModelFetchError] = useState<string | null>(null);
+  // Distinguishes "haven't fetched yet" from "fetched and found zero models",
+  // so we can show an actionable empty state (e.g. for a running-but-empty Ollama).
+  const [modelsFetched, setModelsFetched] = useState(false);
   const [isEditingProvider, setIsEditingProvider] = useState(false);
   const status = useClaudeSetupStore((s) => s.status);
   const isInstalling = useClaudeSetupStore((s) => s.isInstalling);
@@ -635,6 +638,7 @@ export function ClaudeSetup({
     setModel(card.model);
     setModelOptions(card.model ? [card.model] : []);
     setModelFetchError(null);
+    setModelsFetched(false);
   };
 
   const handleFetchModels = async () => {
@@ -646,6 +650,7 @@ export function ClaudeSetup({
       if (!models.includes(model)) {
         setModel(models[0] ?? "");
       }
+      setModelsFetched(true);
     } catch (err: any) {
       setModelOptions([]);
       setModelFetchError(err?.message || String(err));
@@ -923,7 +928,11 @@ export function ClaudeSetup({
                 <Input
                   id="provider-model"
                   type="text"
-                  placeholder="Fetch models, or enter qwen3-coder-plus, deepseek-v4-pro, glm-5.1, ..."
+                  placeholder={
+                    activeCardId === "ollama"
+                      ? "Fetch models, or enter llama3, qwen2.5, mistral, ..."
+                      : "Fetch models, or enter qwen3-coder-plus, deepseek-v4-pro, glm-5.1, ..."
+                  }
                   value={model}
                   onChange={(event) => {
                     setModel(event.target.value);
@@ -933,18 +942,50 @@ export function ClaudeSetup({
                 />
               )}
               {modelFetchError && (
-                <p className="max-w-full whitespace-pre-wrap break-all text-[11px] text-amber-600">
-                  {modelFetchError}
-                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="max-w-full whitespace-pre-wrap break-all text-[11px] text-amber-600">
+                    {activeCardId === "ollama" &&
+                    !modelFetchError.includes("ollama")
+                      ? `Couldn't reach Ollama. Is it running? Start it, then retry. (${modelFetchError})`
+                      : modelFetchError}
+                  </p>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 gap-1 px-2 text-xs"
+                    onClick={handleFetchModels}
+                    disabled={isFetchingModels || !baseUrl.trim()}
+                  >
+                    <RefreshCwIcon className="size-3" />
+                    Retry
+                  </Button>
+                </div>
               )}
+              {activeCardId === "ollama" &&
+                modelsFetched &&
+                !isFetchingModels &&
+                !modelFetchError &&
+                modelOptions.length === 0 && (
+                  <p className="text-[11px] text-amber-600">
+                    Connected to Ollama, but no models are installed yet. Run{" "}
+                    <code className="rounded bg-muted px-1">
+                      ollama pull llama3
+                    </code>{" "}
+                    (or qwen2.5, mistral) in a terminal, then click Fetch
+                    Models.
+                  </p>
+                )}
               <p className="text-[11px] text-muted-foreground">
-                {activeCardId === "deepseek"
-                  ? "Fetches DeepSeek models from the matching provider model endpoint."
-                  : activeCardId === "qwen"
-                    ? "Fetches Qwen models from the matching DashScope model endpoint."
-                    : activeCardId === "moonshot"
-                      ? "Fetches Kimi models from the matching Moonshot model endpoint."
-                      : "Fetches the provider's real /models list when available."}
+                {activeCardId === "ollama"
+                  ? "Lists the models you've installed locally. No models yet? Run `ollama pull llama3` (or qwen2.5, mistral) in a terminal, then Fetch Models. Runs fully offline — no API key needed."
+                  : activeCardId === "deepseek"
+                    ? "Fetches DeepSeek models from the matching provider model endpoint."
+                    : activeCardId === "qwen"
+                      ? "Fetches Qwen models from the matching DashScope model endpoint."
+                      : activeCardId === "moonshot"
+                        ? "Fetches Kimi models from the matching Moonshot model endpoint."
+                        : "Fetches the provider's real /models list when available."}
               </p>
             </div>
           )}
@@ -954,6 +995,13 @@ export function ClaudeSetup({
               {error}
             </p>
           )}
+          {selectedProvider === "openai-compatible" &&
+            !!baseUrl.trim() &&
+            !model.trim() && (
+              <p className="text-[11px] text-muted-foreground">
+                Select or enter a model to continue.
+              </p>
+            )}
           <Button
             type="submit"
             size="sm"

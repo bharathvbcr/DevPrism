@@ -27,14 +27,14 @@ const child =
           "/d",
           "/s",
           "/c",
-          "corepack pnpm --filter=@claude-prism/desktop tauri dev",
+          "corepack pnpm --filter=@devprism/desktop tauri dev",
         ],
         {
           env,
           stdio: "inherit",
         },
       )
-    : spawn("pnpm", ["--filter=@claude-prism/desktop", "tauri", "dev"], {
+    : spawn("pnpm", ["--filter=@devprism/desktop", "tauri", "dev"], {
         env,
         stdio: "inherit",
       });

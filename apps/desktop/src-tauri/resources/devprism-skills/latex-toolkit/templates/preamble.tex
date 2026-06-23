@@ -1,0 +1,89 @@
+% =============================================================================
+% preamble.tex  --  Reusable LaTeX preamble for DevPrism documents
+% -----------------------------------------------------------------------------
+% Usage:
+%   \documentclass[11pt]{article}
+%   \input{preamble}          % <- this file (keep it next to your main.tex)
+%   \begin{document}
+%     ...
+%   \end{document}
+%
+% Compile locally and OFFLINE with tectonic:
+%   tectonic main.tex         % produces main.pdf
+%
+% Everything below uses only standard TeXLive packages, so it works without
+% internet once tectonic has cached its package bundle. Load ORDER matters:
+% hyperref loads late, and cleveref loads AFTER hyperref. Do not reorder.
+% =============================================================================
+
+% --- Encoding & fonts --------------------------------------------------------
+% Modern engines (tectonic/xelatex/lualatex) are UTF-8 native; these lines are
+% harmless and also make pdflatex behave. Keep them for portability.
+\usepackage[T1]{fontenc}        % proper hyphenation & copy-pasteable accents
+\usepackage[utf8]{inputenc}     % allow UTF-8 source (no-op on xetex/luatex)
+
+% --- Page geometry -----------------------------------------------------------
+% Sensible 1-inch margins. Adjust the margin value to taste.
+\usepackage[margin=1in]{geometry}
+
+% --- Math --------------------------------------------------------------------
+% amsmath: align, equation*, pmatrix, \text, \frac, etc.
+% amssymb: \mathbb, \mathfrak and many extra math symbols.
+\usepackage{amsmath}
+\usepackage{amssymb}
+
+% --- Graphics / figures ------------------------------------------------------
+% graphicx: \includegraphics. Put images in ./ or ./figures and reference them
+% by a path relative to the .tex file (e.g. figures/plot.pdf).
+\usepackage{graphicx}
+\graphicspath{{figures/}{./}}   % search these folders for images
+
+% --- Tables ------------------------------------------------------------------
+% booktabs: professional rules (\toprule \midrule \bottomrule). No vertical
+% lines, no \hline spam.
+\usepackage{booktabs}
+
+% --- Microtypography ---------------------------------------------------------
+% microtype: subtle spacing/protrusion tweaks; also reduces "Overfull \hbox"
+% warnings automatically. Load before hyperref is fine.
+\usepackage{microtype}
+
+% --- Hyperlinks --------------------------------------------------------------
+% hyperref makes \ref, \cref, \url, the table of contents, and citations
+% clickable. It should load LATE (after most packages, before cleveref).
+\usepackage[
+  colorlinks=true,
+  linkcolor=blue,
+  citecolor=blue,
+  urlcolor=blue,
+  pdfusetitle           % use \title/\author for PDF metadata
+]{hyperref}
+
+% --- Clever cross-references -------------------------------------------------
+% cleveref MUST load AFTER hyperref. Use \cref{label} / \Cref{label} instead of
+% writing "Figure~\ref{...}" by hand; it inserts the right word and number.
+\usepackage{cleveref}
+
+% =============================================================================
+% Optional packages -- UNCOMMENT only what you actually use (keeps compiles
+% fast and avoids loading packages a local setup may not have cached).
+% =============================================================================
+
+% TikZ -- vector diagrams drawn in code. See the SKILL.md TikZ recipe.
+% \usepackage{tikz}
+
+% siunitx -- typeset numbers and units consistently: \SI{9.8}{\meter\per\second\squared}
+% \usepackage{siunitx}
+
+% subcaption -- subfigures/subtables side by side (\begin{subfigure}).
+% \usepackage{subcaption}
+
+% =============================================================================
+% Handy custom macros (examples). Add your own \newcommand definitions here so
+% they are shared across documents that \input this preamble.
+% =============================================================================
+\newcommand{\R}{\mathbb{R}}                 % real numbers
+\newcommand{\abs}[1]{\left|#1\right|}       % absolute value: \abs{x}
+\newcommand{\norm}[1]{\left\lVert#1\right\rVert} % norm: \norm{v}
+
+% End of preamble.tex

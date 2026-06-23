@@ -26,10 +26,12 @@ pub struct AgentProviderSettings {
 
 impl Default for AgentProviderSettings {
     fn default() -> Self {
+        // DevPrism: default to a local Ollama model (offline-first) instead of a
+        // cloud CLI. Other providers remain selectable in Settings.
         Self {
-            provider: "gemini-cli".to_string(),
-            model: "gemini-1.5-pro".to_string(),
-            backend_mode: "cli".to_string(),
+            provider: "ollama".to_string(),
+            model: "llama3".to_string(),
+            backend_mode: "local".to_string(),
             gemini_api_key: None,
             gemini_cli_model: Some("gemini-1.5-pro".to_string()),
             codex_cli_model: Some("gpt-5.2".to_string()),

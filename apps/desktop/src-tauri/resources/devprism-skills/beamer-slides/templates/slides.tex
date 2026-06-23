@@ -1,0 +1,207 @@
+%==============================================================================
+% DevPrism Beamer presentation scaffold
+% Compile locally with:   tectonic slides.tex
+% (or, with a TeXLive install:  pdflatex slides.tex   run twice for the TOC)
+%
+% Uses only the built-in "Madrid" theme + standard TeXLive packages.
+% Optional metropolis theme is commented out and guarded below.
+%==============================================================================
+\documentclass[aspectratio=169]{beamer}  % 16:9 widescreen; use 43 for 4:3
+
+%------------------------------------------------------------------------------
+% Theme
+%------------------------------------------------------------------------------
+% Default: clean built-in theme, no extra fonts required.
+\usetheme{Madrid}
+\usecolortheme{default}
+\setbeamertemplate{navigation symbols}{}  % hide the navigation clutter
+
+% --- Optional modern theme (requires the "metropolis" package) --------------
+% To use it instead of Madrid: comment out the three lines above and
+% uncomment the block below. metropolis is not part of the minimal TeXLive
+% scheme, so leave Madrid unless you know it is installed.
+%
+% \usetheme{metropolis}
+% \metroset{block=fill}
+
+%------------------------------------------------------------------------------
+% Packages (all standard TeXLive; guarded so missing ones do not abort)
+%------------------------------------------------------------------------------
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{graphicx}   % \includegraphics
+\usepackage{booktabs}   % nice tables: \toprule \midrule \bottomrule
+
+% TikZ is optional: only used for the self-contained figure placeholder.
+% It ships with standard TeXLive. If it is missing, the figure frame falls
+% back to a plain framebox (see \DrawPlaceholder below).
+\newif\ifhastikz
+\IfFileExists{tikz.sty}{\usepackage{tikz}\hastikztrue}{\hastikzfalse}
+
+% Define the figure placeholder ONCE in the preamble, where \if..\fi is safe.
+% (Raw \if..\else..\fi inside a beamer frame body can confuse overlay parsing,
+% so we hide it behind a command.) Replace the call in the figure frame with
+% your own \includegraphics when you have a real image.
+\ifhastikz
+  \newcommand{\figureplaceholder}{%
+    \begin{tikzpicture}
+      \draw[thick, rounded corners] (0,0) rectangle (7,4);
+      \node at (3.5,2.2) {\large Replace with \texttt{\textbackslash includegraphics}};
+      \node at (3.5,1.4) {\small put \texttt{figure.png} next to this file};
+    \end{tikzpicture}}
+\else
+  \newcommand{\figureplaceholder}{%
+    \framebox[0.7\textwidth][c]{\rule{0pt}{4cm}Figure placeholder}}
+\fi
+
+%------------------------------------------------------------------------------
+% Title metadata  -- EDIT THESE
+%------------------------------------------------------------------------------
+\title[Short Title]{Your Talk Title}
+\subtitle{An optional subtitle}
+\author[A.~Author]{Ada Author}
+\institute[Inst.]{Your Lab / Institution}
+\date{\today}
+
+%------------------------------------------------------------------------------
+% Auto table of contents at the start of every section
+%------------------------------------------------------------------------------
+\AtBeginSection[]{%
+  \begin{frame}{Outline}
+    \tableofcontents[currentsection]
+  \end{frame}%
+}
+
+\begin{document}
+
+%==============================================================================
+% Title frame
+%==============================================================================
+\begin{frame}[plain]
+  \titlepage
+\end{frame}
+
+%==============================================================================
+% Outline frame
+%==============================================================================
+\begin{frame}{Outline}
+  \tableofcontents
+\end{frame}
+
+%==============================================================================
+\section{Motivation}
+%==============================================================================
+\begin{frame}{Why this matters}
+  \begin{itemize}
+    \item One short phrase per bullet.
+    \item State the problem, not the whole paper.
+    \item End with the question your talk answers.
+  \end{itemize}
+\end{frame}
+
+%==============================================================================
+\section{Method}
+%==============================================================================
+
+%------------------------------------------------------------------------------
+% Two-column frame: text on the left, list/figure slot on the right
+%------------------------------------------------------------------------------
+\begin{frame}{Approach (two columns)}
+  \begin{columns}[T]  % [T] = top-align the columns
+    \begin{column}{0.48\textwidth}
+      \textbf{Idea}
+      \begin{itemize}
+        \item Describe the method in words.
+        \item Keep it to a few phrases.
+        \item Point to the figure on the right.
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.48\textwidth}
+      \textbf{Pipeline}
+      \begin{enumerate}
+        \item Input data
+        \item Transform / model
+        \item Output / result
+      \end{enumerate}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+%------------------------------------------------------------------------------
+% Figure frame: replace the placeholder with \includegraphics{your-figure}
+%------------------------------------------------------------------------------
+\begin{frame}{A key figure}
+  \begin{center}
+    % --- Real usage (uncomment and set your filename): -------------------
+    % \includegraphics[width=0.7\textwidth]{figure}
+    %
+    % --- Self-contained placeholder so the template compiles with no image:
+    \figureplaceholder
+  \end{center}
+  \begin{center}\small Takeaway: state the one thing this figure shows.\end{center}
+\end{frame}
+
+%==============================================================================
+\section{Results}
+%==============================================================================
+
+%------------------------------------------------------------------------------
+% Bulleted list with \pause overlays (step reveal) + \only / \onslide / \alert
+%------------------------------------------------------------------------------
+\begin{frame}{Main results (revealed step by step)}
+  \begin{itemize}
+    \item First finding appears immediately.
+    \pause
+    \item Second finding appears on the next click.
+    \pause
+    \item \alert<4>{Third finding is highlighted on click 4.}
+  \end{itemize}
+
+  \vspace{0.5em}
+  % \only<n-> shows ONLY on step n and later (takes no space before).
+  \only<5->{\textbf{Summary line that appears last.}}
+
+  % \onslide<n-> reserves the space even before it appears (no jumping).
+  \onslide<6->{\par\small (Reserved-space note shown on the final step.)}
+\end{frame}
+
+%------------------------------------------------------------------------------
+% A compact results table (lift a 3-4 row summary from the paper)
+%------------------------------------------------------------------------------
+\begin{frame}{Numbers at a glance}
+  \begin{center}
+    \begin{tabular}{lcc}
+      \toprule
+      Method        & Metric A & Metric B \\
+      \midrule
+      Baseline      & 0.71     & 0.65 \\
+      \textbf{Ours} & \textbf{0.88} & \textbf{0.83} \\
+      \bottomrule
+    \end{tabular}
+  \end{center}
+  \begin{center}\small One sentence: what the table proves.\end{center}
+\end{frame}
+
+%==============================================================================
+\section{Conclusion}
+%==============================================================================
+\begin{frame}{Key takeaways}
+  \begin{itemize}
+    \item Restate the answer to the opening question.
+    \item Name the single most important result.
+    \item State what comes next / future work.
+  \end{itemize}
+\end{frame}
+
+%==============================================================================
+% Closing / thanks frame
+%==============================================================================
+\begin{frame}[plain]
+  \begin{center}
+    {\Huge Thank you!}\\[1em]
+    {\large Questions?}\\[2em]
+    \small Ada Author \quad\textbar\quad ada@example.org
+  \end{center}
+\end{frame}
+
+\end{document}

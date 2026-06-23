@@ -22,7 +22,7 @@ impl ProxyTransformerChain {
             chain.push(DEEPSEEK);
         }
 
-        // ClaudePrism already buffers and repairs tool-call arguments before
+        // DevPrism already buffers and repairs tool-call arguments before
         // returning them to Claude Code. Naming it here keeps the behavior
         // traceable to Claude Code Router's enhancetool transformer.
         chain.push(ENHANCETOOL);

@@ -1473,11 +1473,11 @@ export function Sidebar({
 
           {/* Footer */}
           <div className="flex h-9 items-center justify-between border-sidebar-border border-t px-3 text-muted-foreground text-xs">
-            <span className="truncate">ClaudePrism v{appVersion}</span>
+            <span className="truncate">DevPrism v{appVersion}</span>
             <div className="flex shrink-0 items-center gap-1">
               <Button variant="ghost" size="icon" className="size-6" asChild>
                 <a
-                  href="https://github.com/delibae/claude-prism"
+                  href="https://github.com/bharathvbcr/DevPrism"
                   target="_blank"
                   rel="noopener noreferrer"
                   title="GitHub"

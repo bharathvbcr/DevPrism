@@ -1,0 +1,70 @@
+% =====================================================================
+% Professional one-page cover letter template
+% Compile:  tectonic cover-letter.tex   (offline, recommended)
+%   or:     pdflatex cover-letter.tex    (run twice)
+%
+% Keep to ONE page, 3-4 short paragraphs. Replace every <ANGLE> placeholder.
+% Match the resume's header style so the two documents look like a set.
+% =====================================================================
+\documentclass[letterpaper,11pt]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[margin=1in]{geometry}     % roomier margins read well for letters
+\usepackage{titlesec}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{8pt}            % blank line between paragraphs
+\linespread{1.05}
+
+\begin{document}
+
+% ---------------------- SENDER BLOCK --------------------------------
+{\Large\bfseries <FULL NAME>}\\[2pt]
+<CITY, REGION> $\cdot$
+\href{mailto:<EMAIL>}{<EMAIL>} $\cdot$
+<PHONE>
+
+\vspace{6pt}
+<MONTH DAY, YEAR>          % e.g. June 23, 2026
+
+\vspace{2pt}
+% ---------------------- RECIPIENT BLOCK -----------------------------
+<HIRING MANAGER NAME (or "Hiring Team")>\\
+<Company Name>\\
+<Company Address or City, Region>
+
+\vspace{4pt}
+% ---------------------- SALUTATION ----------------------------------
+Dear <Hiring Manager Name / Hiring Team>,
+
+% ---------------------- BODY ----------------------------------------
+% Paragraph 1: the role + a hook. Name the exact position and where you saw it,
+% then one sentence on why you're a strong fit.
+I am writing to apply for the <Job Title> role at <Company>. <One sentence hook:
+the most relevant thing about you for this specific job, using the posting's own
+language.>
+
+% Paragraph 2: proof. 1-2 concrete, quantified achievements that map to the
+% posting's top requirements. Reuse the strongest bullets from your resume.
+In my current role as <Title> at <Company>, I <quantified achievement no.~1 that
+matches a top requirement in the posting>. Previously, I <quantified achievement
+no.~2 mirroring another required skill>. These experiences map directly to <Company>'s
+need for <the JD's stated priority>.
+
+% Paragraph 3: why THIS company. Show you read about them; tie your goals to theirs.
+I'm drawn to <Company> specifically because <a genuine, specific reason: a product,
+mission, or technical challenge you can name>. <One sentence on what you'd contribute.>
+
+% Paragraph 4: close + call to action.
+I'd welcome the chance to discuss how I can help <Company> <achieve the goal in
+the posting>. Thank you for your time and consideration.
+
+\vspace{6pt}
+Sincerely,\\[16pt]
+<FULL NAME>
+
+\end{document}

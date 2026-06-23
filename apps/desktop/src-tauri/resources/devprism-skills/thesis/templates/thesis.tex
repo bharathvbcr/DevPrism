@@ -1,0 +1,112 @@
+% ============================================================================
+% thesis.tex  --  MASTER DOCUMENT for a multi-chapter thesis / dissertation.
+% Compile THIS file:   tectonic -X compile thesis.tex   (or: tectonic thesis.tex)
+% Each chapter lives in its own file and is pulled in with \include below.
+% Lightweight, standard TeXLive packages only.
+% ============================================================================
+\documentclass[11pt,a4paper,oneside]{report}
+
+% ---- Encoding & fonts (standard, offline) ----------------------------------
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+
+% ---- Page geometry & line spacing ------------------------------------------
+\usepackage[margin=1in]{geometry}
+\usepackage{setspace}
+\onehalfspacing
+
+% ---- Graphics, tables, math ------------------------------------------------
+\usepackage{graphicx}
+\graphicspath{{figures/}}
+\usepackage{booktabs}      % nicer tables: \toprule \midrule \bottomrule
+\usepackage{amsmath}
+\usepackage{amssymb}
+
+% ---- Bibliography (biblatex + biber, run automatically by tectonic) --------
+\usepackage[backend=biber,style=numeric,sorting=nyt]{biblatex}
+\addbibresource{references.bib}
+
+% ---- Cross-references: hyperref FIRST, then cleveref -----------------------
+\usepackage[hidelinks]{hyperref}
+\usepackage{cleveref}      % use \cref{...} / \Cref{...} everywhere
+
+% ============================================================================
+% TITLE-PAGE VARIABLES  --  edit these for your thesis.
+% ============================================================================
+\newcommand{\thesistitle}{An Offline-First Approach to Scientific Writing}
+\newcommand{\thesisauthor}{Your Full Name}
+\newcommand{\thesisdegree}{Doctor of Philosophy}
+\newcommand{\thesisdepartment}{Department of Computer Science}
+\newcommand{\thesisuniversity}{University of Somewhere}
+\newcommand{\thesisyear}{2026}
+
+% ---- Roman/Arabic page-number switch for front vs main matter --------------
+% (report has no \frontmatter, so emulate it with page-numbering changes.)
+
+\begin{document}
+
+% ===========================================================================
+% FRONTMATTER  (roman page numbers, no chapter numbers)
+% ===========================================================================
+\pagenumbering{roman}
+
+% ---- Title page ------------------------------------------------------------
+\begin{titlepage}
+  \centering
+  \vspace*{3cm}
+  {\LARGE\bfseries \thesistitle \par}
+  \vspace{2cm}
+  {\Large \thesisauthor \par}
+  \vspace{1.5cm}
+  {\large A thesis submitted in fulfilment of the requirements\\
+   for the degree of \thesisdegree \par}
+  \vspace{1.5cm}
+  {\large \thesisdepartment \\ \thesisuniversity \par}
+  \vfill
+  {\large \thesisyear \par}
+\end{titlepage}
+
+% ---- Abstract --------------------------------------------------------------
+\chapter*{Abstract}
+\addcontentsline{toc}{chapter}{Abstract}
+\input{frontmatter/abstract}
+
+% ---- Acknowledgements ------------------------------------------------------
+\chapter*{Acknowledgements}
+\addcontentsline{toc}{chapter}{Acknowledgements}
+\input{frontmatter/acknowledgements}
+
+% ---- Tables of contents / figures / tables (auto-generated) ----------------
+\tableofcontents
+\listoffigures
+\listoftables
+
+% ===========================================================================
+% MAINMATTER  (arabic page numbers, numbered chapters)
+% ===========================================================================
+\clearpage
+\pagenumbering{arabic}
+
+% While drafting, uncomment \includeonly and list ONLY the chapter you are
+% editing for a fast incremental build. Remove it for the final compile.
+% \includeonly{chapters/method}
+
+\include{chapters/introduction}
+\include{chapters/background}
+\include{chapters/method}
+\include{chapters/results}
+\include{chapters/conclusion}
+
+% ===========================================================================
+% APPENDICES
+% ===========================================================================
+\appendix
+\include{appendices/appendix-a}
+
+% ===========================================================================
+% BIBLIOGRAPHY  (single shared list for the whole thesis)
+% ===========================================================================
+\printbibliography[heading=bibintoc,title={References}]
+
+\end{document}

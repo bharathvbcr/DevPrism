@@ -238,9 +238,9 @@ export function ProjectPicker() {
         >
           {!isSidebarCollapsed && (
             <div className="flex min-w-0 items-center gap-2">
-              <img src="/icon-192.png" alt="ClaudePrism" className="size-6" />
+              <img src="/icon-192.png" alt="DevPrism" className="size-6" />
               <span className="truncate font-semibold text-sm">
-                ClaudePrism
+                DevPrism
               </span>
             </div>
           )}
@@ -296,14 +296,14 @@ export function ProjectPicker() {
           )}
         >
           {isSidebarCollapsed ? (
-            <img src="/icon-192.png" alt="ClaudePrism" className="size-4" />
+            <img src="/icon-192.png" alt="DevPrism" className="size-4" />
           ) : (
             <>
-              <span className="truncate">ClaudePrism v{appVersion}</span>
+              <span className="truncate">DevPrism v{appVersion}</span>
               <div className="flex shrink-0 items-center gap-1">
                 <Button variant="ghost" size="icon" className="size-6" asChild>
                   <a
-                    href="https://github.com/delibae/claude-prism"
+                    href="https://github.com/bharathvbcr/DevPrism"
                     target="_blank"
                     rel="noopener noreferrer"
                     title="GitHub"
@@ -1080,7 +1080,7 @@ function EnvironmentStatus({ appVersion }: { appVersion: string }) {
 
         <StatusRow
           ok={true}
-          label="ClaudePrism"
+          label="DevPrism"
           detail={appVersion ? `v${appVersion}` : "Checking..."}
         />
       </div>

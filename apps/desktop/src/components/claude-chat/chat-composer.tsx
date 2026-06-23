@@ -928,7 +928,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
             const fileName = safePastedFileName(file, index);
             const tempRoot = await join(
               await tempDir(),
-              "ClaudePrism",
+              "DevPrism",
               "chat-pastes",
             );
             if (!(await exists(tempRoot))) {
@@ -1661,7 +1661,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
               <span className="font-mono text-foreground">
                 {providerDeleteTarget?.model || "unknown"}
               </span>
-              ? The API key will be removed from ClaudePrism.
+              ? The API key will be removed from DevPrism.
             </DialogDescription>
           </DialogHeader>
           {providerDeleteError && (

@@ -96,3 +96,8 @@ build/
 reference_pr
 reference_pr_claude
 external-libs/
+
+# Stale local duplicate clone and GitNexus internals
+devprism-main/
+.gitnexus/
+.gitnexus-*.log

@@ -648,7 +648,16 @@ export function ProjectPicker() {
                             ollama pull llama3
                           </code>
                           ). Cloud providers below are used only when this is
-                          off.
+                          off.{" "}
+                          <a
+                            href="https://github.com/bharathvbcr/DevPrism/blob/main/docs/NATIVE_AGENT.md"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="text-foreground underline underline-offset-2 hover:text-primary"
+                          >
+                            Learn more
+                          </a>
                         </p>
                       </div>
                     </label>

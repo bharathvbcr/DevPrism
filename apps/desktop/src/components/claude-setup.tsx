@@ -76,6 +76,14 @@ const CLAUDE_COMPATIBLE_PRESETS: ClaudeCompatiblePreset[] = [
 
 const OPENAI_COMPATIBLE_PRESETS: OpenAICompatiblePreset[] = [
   {
+    id: "ollama",
+    label: "Ollama (Local)",
+    baseUrl: "http://localhost:11434/v1",
+    model: "",
+    note: "Default. Runs a local model (e.g. llama3, qwen) fully offline — no API key or internet required.",
+    apiKeyOptional: true,
+  },
+  {
     id: "openai",
     label: "OpenAI",
     baseUrl: "https://api.openai.com",
@@ -109,14 +117,6 @@ const OPENAI_COMPATIBLE_PRESETS: OpenAICompatiblePreset[] = [
     baseUrl: "https://open.bigmodel.cn/api/paas/v4",
     model: "",
     note: "Zhipu BigModel chat completions endpoint.",
-  },
-  {
-    id: "ollama",
-    label: "Ollama",
-    baseUrl: "http://localhost:11434/v1",
-    model: "",
-    note: "Local Ollama OpenAI-compatible endpoint.",
-    apiKeyOptional: true,
   },
   {
     id: "gemini",
@@ -500,10 +500,11 @@ export function ClaudeSetup({
   onSaved,
   onCancel,
 }: ClaudeSetupProps = {}) {
+  // DevPrism: default to a local Ollama model (offline-first) instead of Claude.
   const [provider, setProvider] = useState<"claude-code" | "openai-compatible">(
-    "claude-code",
+    "openai-compatible",
   );
-  const [providerPreset, setProviderPreset] = useState("anthropic-direct");
+  const [providerPreset, setProviderPreset] = useState("ollama");
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [model, setModel] = useState("");

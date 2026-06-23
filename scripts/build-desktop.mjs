@@ -19,7 +19,7 @@ if (process.platform === "win32") {
   env.CXXFLAGS = [env.CXXFLAGS, "/std:c++17"].filter(Boolean).join(" ");
 }
 
-const args = ["--filter=@claude-prism/desktop", "tauri", "build"];
+const args = ["--filter=@devprism/desktop", "tauri", "build"];
 
 if (!env.TAURI_SIGNING_PRIVATE_KEY) {
   args.push("--config", "src-tauri/tauri.local-build.conf.json");

@@ -20,7 +20,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 #[derive(Default, serde::Deserialize, serde::Serialize)]
 #[serde(default)]
-struct ClaudePrismAuthConfig {
+struct DevPrismAuthConfig {
     provider: Option<String>,
     anthropic_api_key: Option<String>,
     anthropic_base_url: Option<String>,
@@ -418,13 +418,13 @@ fn get_claude_prism_auth_path() -> Result<PathBuf, String> {
     let config_dir = dirs::config_dir()
         .or_else(dirs::home_dir)
         .ok_or("Could not find config directory")?;
-    Ok(config_dir.join("ClaudePrism").join("anthropic-auth.json"))
+    Ok(config_dir.join("DevPrism").join("anthropic-auth.json"))
 }
 
-fn read_claude_prism_auth_config() -> Result<ClaudePrismAuthConfig, String> {
+fn read_claude_prism_auth_config() -> Result<DevPrismAuthConfig, String> {
     let path = get_claude_prism_auth_path()?;
     if !path.exists() {
-        return Ok(ClaudePrismAuthConfig::default());
+        return Ok(DevPrismAuthConfig::default());
     }
 
     let content = std::fs::read_to_string(&path)
@@ -467,14 +467,14 @@ fn backup_corrupt_auth_config(path: &Path, reason: &str) -> Result<PathBuf, Stri
     Ok(backup)
 }
 
-fn read_claude_prism_auth_config_for_update() -> Result<ClaudePrismAuthConfig, String> {
+fn read_claude_prism_auth_config_for_update() -> Result<DevPrismAuthConfig, String> {
     match read_claude_prism_auth_config() {
         Ok(config) => Ok(config),
         Err(err) => {
             let path = get_claude_prism_auth_path()?;
             if path.exists() {
                 backup_corrupt_auth_config(&path, &err)?;
-                Ok(ClaudePrismAuthConfig::default())
+                Ok(DevPrismAuthConfig::default())
             } else {
                 Err(err)
             }
@@ -482,7 +482,7 @@ fn read_claude_prism_auth_config_for_update() -> Result<ClaudePrismAuthConfig, S
     }
 }
 
-fn write_claude_prism_auth_config(config: &ClaudePrismAuthConfig) -> Result<(), String> {
+fn write_claude_prism_auth_config(config: &DevPrismAuthConfig) -> Result<(), String> {
     let path = get_claude_prism_auth_path()?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -674,7 +674,7 @@ fn stored_claude_credential() -> Option<StoredClaudeCredential> {
 }
 
 fn stored_claude_credential_from_config(
-    config: &ClaudePrismAuthConfig,
+    config: &DevPrismAuthConfig,
 ) -> Option<StoredClaudeCredential> {
     let api_key = config
         .anthropic_api_key
@@ -697,7 +697,7 @@ fn stored_openai_compatible_credential_by_id(
 }
 
 fn normalized_openai_compatible_credentials(
-    config: &ClaudePrismAuthConfig,
+    config: &DevPrismAuthConfig,
 ) -> Vec<StoredOpenAiCompatibleCredential> {
     let mut credentials = Vec::new();
     for credential in &config.openai_credentials {
@@ -765,7 +765,7 @@ fn normalized_openai_compatible_credentials(
 }
 
 fn stored_openai_compatible_credential_from_config(
-    config: &ClaudePrismAuthConfig,
+    config: &DevPrismAuthConfig,
     credential_id: Option<&str>,
 ) -> Option<StoredOpenAiCompatibleCredential> {
     let credentials = normalized_openai_compatible_credentials(config);
@@ -798,7 +798,7 @@ fn stored_openai_compatible_credential_from_config(
 }
 
 fn openai_compatible_credential_by_id_from_config(
-    config: &ClaudePrismAuthConfig,
+    config: &DevPrismAuthConfig,
     credential_id: Option<&str>,
 ) -> Result<Option<StoredOpenAiCompatibleCredential>, String> {
     let credential_id = credential_id
@@ -3808,7 +3808,7 @@ fn session_excerpt_for_model_title(path: &Path) -> Option<String> {
 }
 
 fn session_title_credential_from_config(
-    config: &ClaudePrismAuthConfig,
+    config: &DevPrismAuthConfig,
 ) -> Option<StoredOpenAiCompatibleCredential> {
     let credentials = normalized_openai_compatible_credentials(config);
     if let Some(active_id) = config.active_openai_credential_id.as_deref() {
@@ -4213,8 +4213,8 @@ pub async fn set_claude_fast_mode(enabled: bool) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    fn test_openai_compatible_auth_config() -> ClaudePrismAuthConfig {
-        ClaudePrismAuthConfig {
+    fn test_openai_compatible_auth_config() -> DevPrismAuthConfig {
+        DevPrismAuthConfig {
             provider: Some(PROVIDER_OPENAI_COMPATIBLE.to_string()),
             active_openai_credential_id: Some("qwen".to_string()),
             openai_credentials: vec![

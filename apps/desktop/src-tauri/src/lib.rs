@@ -185,7 +185,7 @@ fn create_new_window(app: tauri::AppHandle) -> Result<(), String> {
 
     #[allow(unused_mut)]
     let mut builder = WebviewWindowBuilder::new(&app, &label, WebviewUrl::default())
-        .title("ClaudePrism")
+        .title("DevPrism")
         .inner_size(1400.0, 900.0)
         .min_inner_size(800.0, 600.0)
         .zoom_hotkeys_enabled(true)
@@ -408,7 +408,7 @@ fn list_default_projects() -> Result<Vec<ProjectCandidate>, String> {
         return Ok(Vec::new());
     };
 
-    let base = home.join("Documents").join("ClaudePrism");
+    let base = home.join("Documents").join("DevPrism");
     if !base.is_dir() {
         return Ok(Vec::new());
     }
@@ -459,7 +459,7 @@ fn open_debug_window(app: tauri::AppHandle) -> Result<(), String> {
 
     let url = WebviewUrl::App("index.html?debug=1".into());
     WebviewWindowBuilder::new(&app, "debug", url)
-        .title("ClaudePrism — Debug")
+        .title("DevPrism — Debug")
         .inner_size(560.0, 700.0)
         .min_inner_size(400.0, 400.0)
         .zoom_hotkeys_enabled(true)

@@ -1,0 +1,17 @@
+% chapters/method.tex  --  \include'd by thesis.tex
+\chapter{Method}
+\label{ch:method}
+
+This chapter describes the approach.
+
+\section{Overview}
+\label{sec:method-overview}
+
+The objective function is given in \cref{eq:method-loss}.
+
+\begin{equation}
+  \label{eq:method-loss}
+  \mathcal{L}(\theta) = \frac{1}{n} \sum_{i=1}^{n} \ell(f_\theta(x_i), y_i)
+\end{equation}
+
+\Cref{eq:method-loss} is minimised over the parameters $\theta$.

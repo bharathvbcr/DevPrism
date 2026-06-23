@@ -1,0 +1,111 @@
+% Journal-agnostic article scaffold.
+% Compile with:  tectonic main.tex
+% or classic:    pdflatex main && bibtex main && pdflatex main && pdflatex main
+\documentclass[11pt]{article}
+
+% --- Core packages (all ship with standard TeX Live / tectonic) ---
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath}      % equations: equation, align, \eqref
+\usepackage{amssymb}      % extra math symbols
+\usepackage{graphicx}     % \includegraphics
+\usepackage{booktabs}     % \toprule \midrule \bottomrule
+\usepackage[numbers]{natbib} % \citep \citet ; numbered style
+\usepackage[margin=1in]{geometry}
+\usepackage{hyperref}     % clickable refs/links (load near last)
+\hypersetup{colorlinks=true, linkcolor=black, citecolor=black, urlcolor=blue}
+
+% Tell graphicx where images live (create a figures/ folder).
+\graphicspath{{figures/}}
+
+% --- Front matter ---
+\title{A Concise, Descriptive Paper Title}
+\author{%
+  First Author\thanks{Corresponding author: \texttt{first.author@example.org}}\\
+  \small Department, Institution\\
+  \and
+  Second Author\\
+  \small Department, Institution%
+}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+State the problem, what you did, and what you found in one paragraph.
+Keep it to roughly 150--250 words (check your venue's limit).
+Avoid citations and undefined acronyms in the abstract.
+\end{abstract}
+
+\noindent\textbf{Keywords:} keyword one; keyword two; keyword three
+
+% =====================================================================
+\section{Introduction}
+\label{sec:intro}
+Introduce the context and motivation, state the gap in prior work, and list
+your contributions. Cite related work parenthetically \citep{smith2020example}
+or in the text as \citet{jones2019book}. Close with a roadmap of the paper:
+Section~\ref{sec:methods} describes the methods, Section~\ref{sec:results}
+reports results, and Section~\ref{sec:discussion} discusses them.
+
+% =====================================================================
+\section{Methods}
+\label{sec:methods}
+Describe your approach in enough detail to reproduce it. Define notation here.
+A numbered equation looks like this:
+\begin{equation}
+  \label{eq:loss}
+  \mathcal{L}(\theta) = \frac{1}{N} \sum_{i=1}^{N} \ell\big(f_\theta(x_i),\, y_i\big).
+\end{equation}
+Refer to it later as Equation~\eqref{eq:loss}. Use inline math like
+$\theta \in \mathbb{R}^d$ for short expressions.
+
+% =====================================================================
+\section{Results}
+\label{sec:results}
+Report findings without interpretation. Reference the table and figure below.
+
+Table~\ref{tab:results} summarizes the main quantitative results.
+
+\begin{table}[t]
+  \centering
+  \caption{Main results. Best value per column in bold.}
+  \label{tab:results}
+  \begin{tabular}{lcc}
+    \toprule
+    Method & Accuracy ($\%$) & Time (s) \\
+    \midrule
+    Baseline      & 81.2 & 12.4 \\
+    Ours          & \textbf{88.7} & \textbf{9.1} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+% Figure block: uncomment and supply figures/overview.pdf to include an image.
+% This template compiles without it.
+% \begin{figure}[t]
+%   \centering
+%   \includegraphics[width=0.8\linewidth]{overview.pdf}
+%   \caption{System overview.}
+%   \label{fig:overview}
+% \end{figure}
+% Then cross-reference with: Figure~\ref{fig:overview}.
+
+% =====================================================================
+\section{Discussion}
+\label{sec:discussion}
+Interpret the results from Section~\ref{sec:results}, compare with prior work
+\citep{smith2020example, brown2021inproc}, and state limitations and threats to
+validity.
+
+% =====================================================================
+\section{Conclusion}
+\label{sec:conclusion}
+Restate the contribution and outline future work.
+
+% --- Bibliography (natbib) ---
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}

@@ -1,4 +1,4 @@
-# Contributing to ClaudePrism
+# Contributing to DevPrism
 
 Contributions are welcome! This guide covers the development environment, workflow, and testing.
 
@@ -37,7 +37,7 @@ vcpkg install harfbuzz[graphite2]:x64-windows freetype:x64-windows icu:x64-windo
 ### Setup
 
 ```bash
-git clone https://github.com/delibae/claude-prism.git
+git clone https://github.com/bharathvbcr/DevPrism.git
 cd claude-prism
 pnpm install
 ```

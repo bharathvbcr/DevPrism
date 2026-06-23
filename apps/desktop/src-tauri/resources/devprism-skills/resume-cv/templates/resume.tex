@@ -1,0 +1,115 @@
+% =====================================================================
+% ATS-friendly single-column resume template
+% Compile:  tectonic resume.tex      (offline, recommended)
+%   or:     pdflatex resume.tex       (run twice)
+%
+% ATS rules baked in:
+%   - single column, no tables / text boxes / images / icons
+%   - standard section headings (Experience, Education, Skills, Projects)
+%   - selectable real text; links are href but render as readable URLs
+% Replace every <ANGLE> placeholder, then delete sections you don't need.
+% Keep it to ONE PAGE (see SKILL.md "Tips" for length levers).
+% =====================================================================
+\documentclass[letterpaper,11pt]{article}
+
+% --- Lightweight, common TeX Live packages only ---
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+% Margin lever for fitting to one page: 0.5in (tight) .. 0.85in (roomy)
+\usepackage[margin=0.7in]{geometry}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+
+% --- Look & feel -----------------------------------------------------
+\definecolor{rulegray}{gray}{0.55}
+\pagestyle{empty}                 % no page numbers (cleaner for ATS)
+\setlength{\parindent}{0pt}
+\setlength{\tabcolsep}{0pt}
+
+% Section headings: bold, uppercase, with a thin rule underneath.
+% \MakeUppercase is applied to the title text only (the rule code in the
+% trailing [] is unaffected, so the color name stays lowercase).
+\titleformat{\section}
+  {\large\bfseries}
+  {}{0pt}{\MakeUppercase}[\vspace{1pt}{\color{rulegray}\titlerule}\vspace{-2pt}]
+\titlespacing{\section}{0pt}{8pt}{4pt}
+
+% Tight bullet list used for experience / projects
+\newlist{bullets}{itemize}{1}
+\setlist[bullets]{leftmargin=1.4em, topsep=2pt, itemsep=1.5pt,
+                  parsep=0pt, label=\textbullet}
+
+% --- Helper macros ---------------------------------------------------
+% One experience/education entry header: role/title (left) + dates (right),
+% then organization (left) + location (right) on the next line.
+\newcommand{\entry}[4]{%
+  \noindent\textbf{#1}\hfill\textbf{#2}\\[1pt]%
+  \textit{#3}\hfill\textit{#4}\par\vspace{2pt}%
+}
+
+% =====================================================================
+\begin{document}
+
+% ---------------------- HEADER --------------------------------------
+% Name big and centered; contact line is plain selectable text.
+\begin{center}
+  {\huge\bfseries <FULL NAME>}\\[4pt]
+  <CITY, REGION> $\cdot$
+  \href{mailto:<EMAIL>}{<EMAIL>} $\cdot$
+  <PHONE>\\[2pt]
+  \href{https://<LINKEDIN URL>}{<linkedin.com/in/handle>} $\cdot$
+  \href{https://<GITHUB URL>}{<github.com/handle>} $\cdot$
+  \href{https://<PORTFOLIO URL>}{<yoursite.com>}
+\end{center}
+
+% ---------------------- SUMMARY (optional) --------------------------
+% 1-2 lines. Mirror the top JD keywords. Delete if you need the space.
+\section{Summary}
+<One or two sentences: who you are, your focus area, and the value you bring,
+using the target role's exact keywords where they are truthful.>
+
+% ---------------------- SKILLS --------------------------------------
+% Group skills; put the JD's required tools first. Plain text, comma-separated.
+\section{Skills}
+\textbf{Languages:} <Python, Go, TypeScript, SQL>\\
+\textbf{Frameworks/Tools:} <React, Node.js, Docker, Kubernetes, Postgres>\\
+\textbf{Practices:} <CI/CD, testing, code review, Agile>
+
+% ---------------------- EXPERIENCE ----------------------------------
+\section{Experience}
+
+\entry{<Job Title>}{<Jan 2022 -- Present>}{<Company>}{<City, Region>}
+\begin{bullets}
+  \item <Strong verb + what you did + tool/method + quantified impact.
+        e.g. Reduced API latency 35\% by adding a Redis cache layer across 5 services.>
+  \item <Mirror a JD keyword here, truthfully, with a number when possible.>
+  \item <Show scope: users served, requests/day, team size, revenue, etc.>
+\end{bullets}
+\vspace{4pt}
+
+\entry{<Previous Job Title>}{<Jun 2019 -- Dec 2021>}{<Company>}{<City, Region>}
+\begin{bullets}
+  \item <Past-tense action verb + outcome + metric.>
+  \item <Another quantified, keyword-aligned bullet.>
+\end{bullets}
+
+% ---------------------- PROJECTS (optional) -------------------------
+\section{Projects}
+
+\entry{<Project Name>}{<2023>}{\href{https://<PROJECT URL>}{<github.com/you/project>}}{}
+\begin{bullets}
+  \item <One line: what it does + the tech used + a result or scale.>
+\end{bullets}
+
+% ---------------------- EDUCATION -----------------------------------
+% New grads: move this section ABOVE Experience.
+\section{Education}
+
+\entry{<Degree, e.g. B.S. in Computer Science>}{<2019>}{<University>}{<City, Region>}
+% Optional extra line (GPA / honors / relevant coursework):
+\vspace{1pt}
+<Optional: GPA 3.8/4.0; Dean's List; relevant coursework: Algorithms, Distributed Systems.>
+
+\end{document}

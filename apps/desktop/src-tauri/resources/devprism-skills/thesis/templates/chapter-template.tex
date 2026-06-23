@@ -1,0 +1,66 @@
+% ============================================================================
+% chapter-template.tex  --  Scaffold for ONE chapter.
+% Copy this into chapters/<name>.tex, then add  \include{chapters/<name>}
+% to thesis.tex in reading order.  Do NOT add a preamble or \documentclass:
+% this file is meant to be \include'd by the master thesis.tex.
+%
+% Replace "Chapter Title" and the label "ch:template" below.
+% ============================================================================
+
+\chapter{Chapter Title}
+\label{ch:template}
+
+This chapter introduces the topic. Reference other parts of the thesis with
+cleveref so the words ("Chapter", "Figure", "Table") are added automatically,
+e.g. background material appears in \cref{ch:template}.
+
+% ---------------------------------------------------------------------------
+\section{A Section}
+\label{sec:template-section}
+
+Write content here. Cite shared references by their key from
+\texttt{references.bib}, for example \textcite{example2020key} or \cite{example2020key}.
+
+% ---- A labelled figure ----------------------------------------------------
+% Place the image file in figures/ . The extension can be omitted.
+\begin{figure}[ht]
+  \centering
+  % \includegraphics[width=0.6\textwidth]{example-image}
+  \fbox{\rule{0pt}{3cm}\rule{6cm}{0pt}}% placeholder box; swap for \includegraphics
+  \caption{An example figure. Replace the placeholder box with \texttt{\textbackslash includegraphics}.}
+  \label{fig:template-figure}
+\end{figure}
+
+The pipeline is shown in \cref{fig:template-figure}.
+
+% ---- A labelled table -----------------------------------------------------
+\begin{table}[ht]
+  \centering
+  \begin{tabular}{lr}
+    \toprule
+    Item & Value \\
+    \midrule
+    Alpha & 1.0 \\
+    Beta  & 2.5 \\
+    \bottomrule
+  \end{tabular}
+  \caption{An example table.}
+  \label{tab:template-table}
+\end{table}
+
+Results are summarised in \cref{tab:template-table}.
+
+% ---- A labelled equation --------------------------------------------------
+\begin{equation}
+  \label{eq:template-loss}
+  \mathcal{L} = \frac{1}{n} \sum_{i=1}^{n} (y_i - \hat{y}_i)^2
+\end{equation}
+
+The objective is defined in \cref{eq:template-loss}.
+
+% ---------------------------------------------------------------------------
+\section{Another Section}
+\label{sec:template-section-two}
+
+Continue the chapter here. Cross-reference an earlier section with
+\cref{sec:template-section}.

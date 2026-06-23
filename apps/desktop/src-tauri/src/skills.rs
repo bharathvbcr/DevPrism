@@ -1321,7 +1321,12 @@ pub async fn create_custom_skill(
         .map_err(|e| format!("Failed to create skill folder {}: {}", target.display(), e))?;
 
     // Escape the description for the single-line YAML double-quoted scalar.
-    let yaml_desc = description.replace('\\', "\\\\").replace('"', "\\\"");
+    // Collapse control characters (newlines/tabs) to spaces so the frontmatter
+    // stays a valid single-line scalar even if the user pasted multiple lines.
+    let yaml_desc = description
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace(|c: char| c == '\n' || c == '\r' || c == '\t', " ");
     let body = if instructions.trim().is_empty() {
         "## Workflow\n\nDescribe the steps the agent should follow for this skill.\n".to_string()
     } else {

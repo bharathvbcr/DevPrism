@@ -4,6 +4,7 @@
 //! project directory.
 
 use serde_json::{json, Value};
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
@@ -30,11 +31,12 @@ pub fn tool_schemas() -> Value {
                 "content": {"type": "string", "description": "Full file contents"}
             }),
             &["file_path", "content"]),
-        schema("Edit", "Replace an exact substring in a project file. old_string must occur exactly once.",
+        schema("Edit", "Replace text in a project file. By default old_string must occur exactly once; pass replace_all to change every occurrence.",
             json!({
                 "file_path": {"type": "string"},
-                "old_string": {"type": "string", "description": "Exact text to replace (must be unique)"},
-                "new_string": {"type": "string", "description": "Replacement text"}
+                "old_string": {"type": "string", "description": "Exact text to replace (must be unique unless replace_all)"},
+                "new_string": {"type": "string", "description": "Replacement text"},
+                "replace_all": {"type": "boolean", "description": "Replace all occurrences (default false)"}
             }),
             &["file_path", "old_string", "new_string"]),
         schema("LS", "List the entries of a directory in the project.",
@@ -49,6 +51,12 @@ pub fn tool_schemas() -> Value {
         schema("Bash", "Run a shell command in the project directory (e.g. `uv run python script.py`). Returns combined stdout+stderr.",
             json!({"command": {"type": "string", "description": "The shell command to run"}}),
             &["command"]),
+        schema("Glob", "Find files by name pattern (e.g. `*.tex`, `*chapter*`). Returns matching project-relative paths.",
+            json!({
+                "pattern": {"type": "string", "description": "Filename glob (* matches any run of characters, ? one)"},
+                "path": {"type": "string", "description": "Optional sub-directory to search under"}
+            }),
+            &["pattern"]),
     ])
 }
 
@@ -92,6 +100,107 @@ fn arg<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
     args.get(key).and_then(|v| v.as_str())
 }
 
+/// Apply an Edit: exact unique match (or replace_all), with a fallback that
+/// retries after normalizing CRLF -> LF so trivial line-ending mismatches don't
+/// fail the edit.
+fn apply_edit(
+    path: &Path,
+    rel: &str,
+    content: &str,
+    old: &str,
+    new: &str,
+    replace_all: bool,
+) -> (String, bool) {
+    let count = content.matches(old).count();
+    if count == 1 || (count > 1 && replace_all) {
+        let updated = if replace_all {
+            content.replace(old, new)
+        } else {
+            content.replacen(old, new, 1)
+        };
+        return write_edit(path, rel, &updated, "");
+    }
+    if count > 1 {
+        return (
+            format!(
+                "Edit failed: old_string occurs {} times; make it unique or pass replace_all=true.",
+                count
+            ),
+            true,
+        );
+    }
+    // No exact match — retry on LF-normalized buffers.
+    let norm_content = content.replace("\r\n", "\n");
+    let norm_old = old.replace("\r\n", "\n");
+    let ncount = norm_content.matches(&norm_old).count();
+    if ncount == 0 {
+        return (
+            "Edit failed: old_string was not found (even after normalizing line endings). \
+             Read the file and copy the exact text to replace."
+                .into(),
+            true,
+        );
+    }
+    if ncount > 1 && !replace_all {
+        return (
+            format!(
+                "Edit failed: old_string occurs {} times; make it unique or pass replace_all=true.",
+                ncount
+            ),
+            true,
+        );
+    }
+    let updated = if replace_all {
+        norm_content.replace(&norm_old, new)
+    } else {
+        norm_content.replacen(&norm_old, new, 1)
+    };
+    write_edit(path, rel, &updated, " (line endings normalized to LF)")
+}
+
+fn write_edit(path: &Path, rel: &str, updated: &str, note: &str) -> (String, bool) {
+    match std::fs::write(path, updated) {
+        Ok(_) => (format!("Edited {}{}.", rel, note), false),
+        Err(e) => (format!("Could not write {}: {}", rel, e), true),
+    }
+}
+
+/// Read at most MAX_READ_BYTES from a file without loading huge files into RAM,
+/// and reject binary files with a clear message instead of mojibake.
+fn read_file(path: &Path, rel: &str) -> (String, bool) {
+    let mut f = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) => return (format!("Could not read {}: {}", rel, e), true),
+    };
+    let mut buf = Vec::new();
+    // Read one byte past the cap so we can tell whether truncation happened.
+    if f.by_ref()
+        .take((MAX_READ_BYTES + 1) as u64)
+        .read_to_end(&mut buf)
+        .is_err()
+    {
+        return (format!("Could not read {}.", rel), true);
+    }
+    if buf.iter().take(8000).any(|&b| b == 0) {
+        return (
+            format!(
+                "{} looks like a binary file and was not shown. Use Bash if you need to inspect it.",
+                rel
+            ),
+            true,
+        );
+    }
+    let truncated = buf.len() > MAX_READ_BYTES;
+    if truncated {
+        buf.truncate(MAX_READ_BYTES);
+    }
+    let mut content = String::from_utf8_lossy(&buf).into_owned();
+    if truncated {
+        content.push_str("\n…[file truncated; read a specific section with Grep/Bash if needed]");
+    }
+    (content, false)
+}
+
 fn cap(mut s: String, max: usize) -> String {
     if s.len() > max {
         let mut cut = max;
@@ -109,10 +218,7 @@ pub async fn execute(project_dir: &Path, name: &str, args: &Value) -> (String, b
     match name {
         "Read" => match arg(args, "file_path") {
             Some(fp) => match resolve(project_dir, fp) {
-                Ok(path) => match std::fs::read_to_string(&path) {
-                    Ok(content) => (cap(content, MAX_READ_BYTES), false),
-                    Err(e) => (format!("Could not read {}: {}", fp, e), true),
-                },
+                Ok(path) => read_file(&path, fp),
                 Err(e) => (e, true),
             },
             None => ("Read requires 'file_path'.".into(), true),
@@ -140,18 +246,9 @@ pub async fn execute(project_dir: &Path, name: &str, args: &Value) -> (String, b
                 (Some(fp), Some(old), Some(new)) => match resolve(project_dir, fp) {
                     Ok(path) => match std::fs::read_to_string(&path) {
                         Ok(content) => {
-                            let count = content.matches(old).count();
-                            if count == 0 {
-                                ("Edit failed: old_string was not found.".into(), true)
-                            } else if count > 1 {
-                                (format!("Edit failed: old_string occurs {} times; make it unique.", count), true)
-                            } else {
-                                let updated = content.replacen(old, new, 1);
-                                match std::fs::write(&path, updated) {
-                                    Ok(_) => (format!("Edited {}.", fp), false),
-                                    Err(e) => (format!("Could not write {}: {}", fp, e), true),
-                                }
-                            }
+                            let replace_all =
+                                args.get("replace_all").and_then(|v| v.as_bool()).unwrap_or(false);
+                            apply_edit(&path, fp, &content, old, new, replace_all)
                         }
                         Err(e) => (format!("Could not read {}: {}", fp, e), true),
                     },
@@ -197,6 +294,16 @@ pub async fn execute(project_dir: &Path, name: &str, args: &Value) -> (String, b
         "Bash" => match arg(args, "command") {
             Some(command) => run_bash(project_dir, command).await,
             None => ("Bash requires 'command'.".into(), true),
+        },
+        "Glob" => match arg(args, "pattern") {
+            Some(pattern) => {
+                let sub = arg(args, "path").unwrap_or("");
+                match resolve(project_dir, sub) {
+                    Ok(root) => (glob_find(&root, project_dir, pattern), false),
+                    Err(e) => (e, true),
+                }
+            }
+            None => ("Glob requires 'pattern'.".into(), true),
         },
         other => (format!("Unknown tool: {}", other), true),
     }
@@ -272,6 +379,84 @@ fn grep_walk(
     }
 }
 
+/// Classic iterative glob match supporting `*` (any run) and `?` (one char),
+/// case-insensitive, matched against a file name.
+fn wildcard_match(text: &str, pat: &str) -> bool {
+    let t: Vec<char> = text.to_lowercase().chars().collect();
+    let p: Vec<char> = pat.to_lowercase().chars().collect();
+    let (mut ti, mut pi) = (0usize, 0usize);
+    let mut star_p: Option<usize> = None;
+    let mut star_t = 0usize;
+    while ti < t.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
+            ti += 1;
+            pi += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star_p = Some(pi);
+            star_t = ti;
+            pi += 1;
+        } else if let Some(sp) = star_p {
+            pi = sp + 1;
+            star_t += 1;
+            ti = star_t;
+        } else {
+            return false;
+        }
+    }
+    while pi < p.len() && p[pi] == '*' {
+        pi += 1;
+    }
+    pi == p.len()
+}
+
+fn glob_find(root: &Path, project_dir: &Path, pattern: &str) -> String {
+    let mut hits: Vec<String> = Vec::new();
+    glob_walk(root, project_dir, pattern, &mut hits);
+    if hits.is_empty() {
+        format!("No files match \"{}\".", pattern)
+    } else {
+        hits.sort();
+        cap(hits.join("\n"), MAX_OUTPUT_BYTES)
+    }
+}
+
+fn glob_walk(dir: &Path, project_dir: &Path, pattern: &str, hits: &mut Vec<String>) {
+    if hits.len() >= GREP_MAX_HITS {
+        return;
+    }
+    let rd = match std::fs::read_dir(dir) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    for entry in rd.flatten() {
+        if hits.len() >= GREP_MAX_HITS {
+            return;
+        }
+        let ft = match entry.file_type() {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+        if ft.is_symlink() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        let path = entry.path();
+        if ft.is_dir() {
+            if EXCLUDE_DIRS.contains(&name.to_lowercase().as_str()) {
+                continue;
+            }
+            glob_walk(&path, project_dir, pattern, hits);
+        } else if ft.is_file() && wildcard_match(&name, pattern) {
+            let rel = path
+                .strip_prefix(project_dir)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            hits.push(rel);
+        }
+    }
+}
+
 async fn run_bash(project_dir: &Path, command: &str) -> (String, bool) {
     let mut cmd = if cfg!(target_os = "windows") {
         let mut c = tokio::process::Command::new("cmd");
@@ -283,6 +468,24 @@ async fn run_bash(project_dir: &Path, command: &str) -> (String, bool) {
         c
     };
     cmd.current_dir(project_dir);
+    // Reap the child if this future is dropped (e.g. the turn is cancelled).
+    cmd.kill_on_drop(true);
+
+    // Activate the project's .venv for THIS child only (the system prompt promises
+    // it). Set VIRTUAL_ENV and prepend the venv bin dir so bare `python`/`pip`
+    // resolve to the project interpreter. We never touch the parent process env.
+    let venv = project_dir.join(".venv");
+    if venv.is_dir() {
+        let bin = if cfg!(target_os = "windows") {
+            venv.join("Scripts")
+        } else {
+            venv.join("bin")
+        };
+        cmd.env("VIRTUAL_ENV", &venv);
+        let sep = if cfg!(target_os = "windows") { ";" } else { ":" };
+        let existing = std::env::var("PATH").unwrap_or_default();
+        cmd.env("PATH", format!("{}{}{}", bin.display(), sep, existing));
+    }
 
     let fut = cmd.output();
     let output = match tokio::time::timeout(Duration::from_secs(BASH_TIMEOUT_SECS), fut).await {
@@ -328,10 +531,18 @@ mod tests {
     fn schemas_are_well_formed() {
         let s = tool_schemas();
         let arr = s.as_array().unwrap();
-        assert_eq!(arr.len(), 6);
+        assert_eq!(arr.len(), 7);
         for t in arr {
             assert_eq!(t["type"], "function");
             assert!(t["function"]["name"].is_string());
         }
+    }
+
+    #[test]
+    fn wildcard_matches() {
+        assert!(wildcard_match("main.tex", "*.tex"));
+        assert!(wildcard_match("chapter1.tex", "*chapter*"));
+        assert!(wildcard_match("a.bib", "?.bib"));
+        assert!(!wildcard_match("main.tex", "*.bib"));
     }
 }

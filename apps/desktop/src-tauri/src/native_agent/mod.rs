@@ -11,13 +11,14 @@
 mod ollama;
 mod tools;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{Emitter, WebviewWindow};
+use tokio::sync::Notify;
 
 const MAX_ITERATIONS: usize = 16;
 
@@ -36,10 +37,37 @@ const SYSTEM_RULES: &str = concat!(
 );
 
 // ─── Cancellation registry (per tab) ───
+//
+// The flag is checked at sync points; the Notify aborts an in-flight HTTP/Bash
+// await (via tokio::select!) so "stop" is responsive mid-generation.
 
-fn cancels() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
-    static C: OnceLock<Mutex<HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
+struct CancelHandle {
+    flag: Arc<AtomicBool>,
+    notify: Arc<Notify>,
+}
+
+fn cancels() -> &'static Mutex<HashMap<String, CancelHandle>> {
+    static C: OnceLock<Mutex<HashMap<String, CancelHandle>>> = OnceLock::new();
     C.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Drop any trailing, incomplete turn so the persisted history always ends at a
+/// clean boundary (a user message or an assistant reply with no pending tools).
+/// A no-op on normal completion; matters when a turn is cancelled mid tool-loop.
+fn repair_tail(messages: &mut Vec<Value>) {
+    while let Some(last) = messages.last() {
+        let role = last.get("role").and_then(|r| r.as_str()).unwrap_or("");
+        let assistant_no_tools = role == "assistant"
+            && !last
+                .get("tool_calls")
+                .and_then(|t| t.as_array())
+                .map(|a| !a.is_empty())
+                .unwrap_or(false);
+        if role == "user" || assistant_no_tools {
+            break;
+        }
+        messages.pop();
+    }
 }
 
 // ─── Per-tab conversation memory (multi-turn) ───
@@ -69,6 +97,16 @@ fn save_history(tab_id: &str, mut history: Vec<Value>) {
         if size <= HISTORY_BYTE_CAP {
             break;
         }
+        history.remove(0);
+    }
+    // After byte-trimming, the front may be an orphaned assistant/tool message;
+    // drop leading non-user messages so the next turn starts at a user boundary
+    // (a dangling assistant-tool_calls or tool message at the head breaks Ollama).
+    while history
+        .first()
+        .map(|m| m.get("role").and_then(|r| r.as_str()) != Some("user"))
+        .unwrap_or(false)
+    {
         history.remove(0);
     }
     if let Ok(mut g) = sessions().lock() {
@@ -131,8 +169,15 @@ pub async fn run_native_agent(
     base_url: Option<String>,
 ) -> Result<(), String> {
     let cancel = Arc::new(AtomicBool::new(false));
+    let notify = Arc::new(Notify::new());
     if let Ok(mut guard) = cancels().lock() {
-        guard.insert(tab_id.clone(), cancel.clone());
+        guard.insert(
+            tab_id.clone(),
+            CancelHandle {
+                flag: cancel.clone(),
+                notify: notify.clone(),
+            },
+        );
     }
 
     let base = base_url.unwrap_or_else(|| "http://localhost:11434".to_string());
@@ -180,6 +225,8 @@ pub async fn run_native_agent(
     let mut success = true;
     let mut final_text = String::new();
     let mut last_prompt_tokens = 0u64;
+    let mut consecutive_empty = 0u32;
+    let mut seen_calls: HashSet<String> = HashSet::new();
 
     'outer: for iter in 0..MAX_ITERATIONS {
         if cancel.load(Ordering::Relaxed) {
@@ -187,14 +234,36 @@ pub async fn run_native_agent(
             break;
         }
 
-        let turn = match client.chat(&messages, &tools).await {
-            Ok(t) => t,
-            Err(e) => {
-                emit_result(&window, &tab_id, false, &e);
-                success = false;
-                break;
-            }
+        // Run the request, but abort it immediately if the user hits stop.
+        let turn = tokio::select! {
+            r = client.chat(&messages, &tools) => match r {
+                Ok(t) => t,
+                Err(e) => {
+                    emit_result(&window, &tab_id, false, &e);
+                    success = false;
+                    break;
+                }
+            },
+            _ = notify.notified() => { success = false; break; }
         };
+
+        // A model that returns neither text nor a tool call: nudge it a couple of
+        // times before giving up, so a transient blank turn doesn't end the chat.
+        if turn.content.trim().is_empty() && turn.tool_calls.is_empty() {
+            consecutive_empty += 1;
+            if consecutive_empty <= 2 {
+                if let Some(arr) = messages.as_array_mut() {
+                    arr.push(json!({
+                        "role": "user",
+                        "content": "Continue. If the task is complete, give a short final summary; otherwise use a tool.",
+                    }));
+                }
+                continue;
+            }
+            emit_result(&window, &tab_id, true, "(the model returned no further output)");
+            break;
+        }
+        consecutive_empty = 0;
 
         // Build the assistant content blocks for the UI and stable tool ids.
         let mut content_blocks: Vec<Value> = Vec::new();
@@ -228,18 +297,19 @@ pub async fn run_native_agent(
             );
         }
 
-        // Record the assistant turn in the model's message history.
+        // Record the assistant turn in the model's message history (omit the
+        // tool_calls field entirely when there are none).
         let assistant_tool_calls: Vec<Value> = turn
             .tool_calls
             .iter()
             .map(|tc| json!({ "type": "function", "function": { "name": tc.name, "arguments": tc.args } }))
             .collect();
         if let Some(arr) = messages.as_array_mut() {
-            arr.push(json!({
-                "role": "assistant",
-                "content": turn.content,
-                "tool_calls": assistant_tool_calls,
-            }));
+            let mut assistant_msg = json!({ "role": "assistant", "content": turn.content });
+            if !assistant_tool_calls.is_empty() {
+                assistant_msg["tool_calls"] = json!(assistant_tool_calls);
+            }
+            arr.push(assistant_msg);
         }
 
         // No tool calls -> the model is done.
@@ -265,7 +335,24 @@ pub async fn run_native_agent(
                 break 'outer;
             }
             let id = &call_ids[idx];
-            let (result, is_error) = tools::execute(project, &tc.name, &tc.args).await;
+
+            // Short-circuit an exact repeat of a call already made this turn so a
+            // confused model can't burn every iteration re-running the same tool.
+            let sig = format!("{}|{}", tc.name.to_lowercase(), tc.args);
+            let (result, is_error) = if !seen_calls.insert(sig) {
+                (
+                    "(skipped: this exact tool call was already run this turn — use the earlier result)"
+                        .to_string(),
+                    false,
+                )
+            } else {
+                // Abort the tool mid-flight if the user hits stop (Bash sets
+                // kill_on_drop, so dropping this future reaps the child process).
+                tokio::select! {
+                    res = tools::execute(project, &tc.name, &tc.args) => res,
+                    _ = notify.notified() => { success = false; break 'outer; }
+                }
+            };
 
             emit_msg(
                 &window,
@@ -282,9 +369,12 @@ pub async fn run_native_agent(
             );
 
             if let Some(arr) = messages.as_array_mut() {
+                // Ollama's chat Message uses `tool_name` (and `tool_call_id`) — not
+                // `name` — to pair a result with its call across multi-tool rounds.
                 arr.push(json!({
                     "role": "tool",
-                    "name": tc.name,
+                    "tool_name": tc.name,
+                    "tool_call_id": id,
                     "content": result,
                 }));
             }
@@ -301,10 +391,12 @@ pub async fn run_native_agent(
     }
 
     // Persist the conversation (everything except the rebuilt system message) so
-    // the next turn in this tab has memory of what happened.
-    if let Some(arr) = messages.as_array() {
-        let new_history: Vec<Value> = arr.iter().skip(1).cloned().collect();
-        save_history(&tab_id, new_history);
+    // the next turn in this tab has memory of what happened. Repair any trailing
+    // incomplete turn (e.g. from a mid-loop cancel) so history stays balanced.
+    if let Some(arr) = messages.as_array_mut() {
+        arr.remove(0); // drop the system message
+        repair_tail(arr);
+        save_history(&tab_id, arr.clone());
     }
 
     if let Ok(mut guard) = cancels().lock() {
@@ -328,8 +420,9 @@ fn finish(window: &WebviewWindow, tab_id: &str, success: bool) {
 #[tauri::command]
 pub fn stop_native_agent(tab_id: String) {
     if let Ok(guard) = cancels().lock() {
-        if let Some(flag) = guard.get(&tab_id) {
-            flag.store(true, Ordering::Relaxed);
+        if let Some(handle) = guard.get(&tab_id) {
+            handle.flag.store(true, Ordering::Relaxed);
+            handle.notify.notify_waiters();
         }
     }
 }

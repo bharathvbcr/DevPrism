@@ -475,10 +475,12 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
         ? chatState.tabs.filter((tab) => tab.isStreaming)
         : [];
     if (streamingTabs.length > 0) {
+      // Stop both backends (each command is a harmless no-op for the other).
       await Promise.all(
-        streamingTabs.map((tab) =>
+        streamingTabs.flatMap((tab) => [
           invoke("cancel_claude_execution", { tabId: tab.id }).catch(() => {}),
-        ),
+          invoke("stop_native_agent", { tabId: tab.id }).catch(() => {}),
+        ]),
       );
       await sleep(250);
     }

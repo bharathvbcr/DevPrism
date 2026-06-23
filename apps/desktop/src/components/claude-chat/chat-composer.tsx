@@ -1511,7 +1511,15 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                   <div className="px-2 py-1 font-medium text-muted-foreground text-xs">
                     Model
                   </div>
-                  {claudeProviderActive ? (
+                  {nativeAgentEnabled ? (
+                    <div className="px-3 py-2 text-muted-foreground text-xs leading-relaxed">
+                      Running your local Ollama model
+                      {directProviderModel !== "Provider"
+                        ? ` (${directProviderModel})`
+                        : ""}
+                      . Change it in Settings → Provider.
+                    </div>
+                  ) : claudeProviderActive ? (
                     claudeModelOptions.map((m) => (
                       <button
                         key={m.id}

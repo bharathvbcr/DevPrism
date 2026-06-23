@@ -155,7 +155,13 @@ fn apply_edit(
     } else {
         norm_content.replacen(&norm_old, new, 1)
     };
-    write_edit(path, rel, &updated, " (line endings normalized to LF)")
+    // Preserve the file's original line-ending convention instead of forcing LF.
+    if content.contains("\r\n") {
+        let crlf = updated.replace("\r\n", "\n").replace('\n', "\r\n");
+        write_edit(path, rel, &crlf, "")
+    } else {
+        write_edit(path, rel, &updated, "")
+    }
 }
 
 fn write_edit(path: &Path, rel: &str, updated: &str, note: &str) -> (String, bool) {
@@ -180,6 +186,23 @@ fn read_file(path: &Path, rel: &str) -> (String, bool) {
         .is_err()
     {
         return (format!("Could not read {}.", rel), true);
+    }
+    // UTF-16 text (with BOM) has null bytes but is not binary — decode it.
+    if buf.len() >= 2
+        && ((buf[0] == 0xFF && buf[1] == 0xFE) || (buf[0] == 0xFE && buf[1] == 0xFF))
+    {
+        let le = buf[0] == 0xFF;
+        let units: Vec<u16> = buf[2..]
+            .chunks_exact(2)
+            .map(|c| {
+                if le {
+                    u16::from_le_bytes([c[0], c[1]])
+                } else {
+                    u16::from_be_bytes([c[0], c[1]])
+                }
+            })
+            .collect();
+        return (cap(String::from_utf16_lossy(&units), MAX_READ_BYTES), false);
     }
     if buf.iter().take(8000).any(|&b| b == 0) {
         return (

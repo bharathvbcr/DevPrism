@@ -1123,9 +1123,12 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         await invoke("stop_native_agent", { tabId });
         set({ _cancelledByUser: true });
       } else {
-        const interrupted = await invoke<boolean>("interrupt_claude_execution", {
-          tabId,
-        });
+        const interrupted = await invoke<boolean>(
+          "interrupt_claude_execution",
+          {
+            tabId,
+          },
+        );
         if (interrupted) {
           set({ _cancelledByUser: true });
         }

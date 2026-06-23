@@ -639,10 +639,12 @@ export function ProjectPicker() {
                           Run the agent fully offline, talking directly to your
                           local Ollama model — no Claude Code CLI or proxy
                           required. Make sure Ollama is running with a model
-                          installed (<code className="rounded bg-muted px-1">
+                          installed (
+                          <code className="rounded bg-muted px-1">
                             ollama pull llama3
-                          </code>). Cloud providers below are used only when this
-                          is off.
+                          </code>
+                          ). Cloud providers below are used only when this is
+                          off.
                         </p>
                       </div>
                     </label>

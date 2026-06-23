@@ -506,7 +506,9 @@ export function ClaudeSetup({
   );
   const [providerPreset, setProviderPreset] = useState("ollama");
   const [apiKey, setApiKey] = useState("");
-  const [baseUrl, setBaseUrl] = useState("");
+  // DevPrism: default to the local Ollama endpoint so installed models are
+  // auto-extracted on first run (see the auto-fetch effect below).
+  const [baseUrl, setBaseUrl] = useState("http://localhost:11434/v1");
   const [model, setModel] = useState("");
   const [modelOptions, setModelOptions] = useState<string[]>([]);
   const [isFetchingModels, setIsFetchingModels] = useState(false);
@@ -651,6 +653,22 @@ export function ClaudeSetup({
       setIsFetchingModels(false);
     }
   };
+
+  // DevPrism: when the local Ollama provider is active, automatically extract the
+  // list of installed models from the running server instead of hard-coding one.
+  useEffect(() => {
+    if (
+      provider === "openai-compatible" &&
+      providerPreset === "ollama" &&
+      baseUrl.trim() &&
+      modelOptions.length === 0 &&
+      !isFetchingModels &&
+      !modelFetchError
+    ) {
+      void handleFetchModels();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [provider, providerPreset, baseUrl]);
 
   const renderApiKeyForm = ({
     forceOpenAiCompatible = false,

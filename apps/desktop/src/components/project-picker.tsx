@@ -239,9 +239,7 @@ export function ProjectPicker() {
           {!isSidebarCollapsed && (
             <div className="flex min-w-0 items-center gap-2">
               <img src="/icon-192.png" alt="DevPrism" className="size-6" />
-              <span className="truncate font-semibold text-sm">
-                DevPrism
-              </span>
+              <span className="truncate font-semibold text-sm">DevPrism</span>
             </div>
           )}
           <Button

@@ -26,17 +26,20 @@ pub struct AgentProviderSettings {
 
 impl Default for AgentProviderSettings {
     fn default() -> Self {
-        // DevPrism: default to a local Ollama model (offline-first) instead of a
-        // cloud CLI. Other providers remain selectable in Settings.
+        // DevPrism: default to a local Ollama backend (offline-first) instead of a
+        // cloud CLI. The model is intentionally left empty so it is resolved from
+        // the user's actually-installed Ollama models at runtime (see the "ollama"
+        // arm in execute_native_agent) rather than hard-coding a specific model.
+        // Other providers remain selectable in Settings.
         Self {
             provider: "ollama".to_string(),
-            model: "llama3".to_string(),
+            model: String::new(),
             backend_mode: "local".to_string(),
             gemini_api_key: None,
             gemini_cli_model: Some("gemini-1.5-pro".to_string()),
             codex_cli_model: Some("gpt-5.2".to_string()),
             ollama_base_url: "http://localhost:11434".to_string(),
-            ollama_model: "llama3".to_string(),
+            ollama_model: String::new(),
         }
     }
 }
@@ -1752,15 +1755,37 @@ async fn execute_native_agent(
             Arc::new(GeminiProvider::with_api_key(key, selected_model.clone())?)
         }
         "ollama" => {
-            let ollama_model = selected_model
+            let base = ollama_base_url.unwrap_or(stored.ollama_base_url.clone());
+            // Resolve the model explicitly chosen (selection > OLLAMA_MODEL env >
+            // stored setting). DevPrism no longer hard-codes "llama3": if none of
+            // these yield a model, auto-detect the first model the user actually
+            // has installed via the Ollama API.
+            let explicit = selected_model
                 .filter(|m| m != "ollama" && !m.trim().is_empty())
                 .or_else(|| {
                     std::env::var("OLLAMA_MODEL")
                         .ok()
                         .filter(|m| !m.trim().is_empty())
                 })
-                .unwrap_or(stored.ollama_model.clone());
-            let base = ollama_base_url.unwrap_or(stored.ollama_base_url.clone());
+                .or_else(|| {
+                    let m = stored.ollama_model.clone();
+                    if m.trim().is_empty() {
+                        None
+                    } else {
+                        Some(m)
+                    }
+                });
+            let ollama_model = match explicit {
+                Some(m) => m,
+                None => first_installed_ollama_model(&base).await.ok_or_else(|| {
+                    format!(
+                        "No Ollama model is selected and none are installed at {}. \
+                         Install one with `ollama pull <model>` (e.g. llama3, qwen2.5, mistral) \
+                         or pick a model in Settings.",
+                        base
+                    )
+                })?,
+            };
             Arc::new(OllamaProvider::new(Some(ollama_model)).with_base_url(base))
         }
         other => {
@@ -2740,6 +2765,30 @@ pub async fn check_gemini_api_status(api_key: Option<String>) -> Result<Provider
         },
         models: Vec::new(),
     })
+}
+
+/// Query a running Ollama server for the first installed model name.
+/// Used to avoid hard-coding a default model: if the user hasn't picked one we
+/// fall back to whatever they actually have pulled. Returns `None` if Ollama is
+/// unreachable or has no models installed.
+async fn first_installed_ollama_model(base_url: &str) -> Option<String> {
+    let url = format!("{}/api/tags", base_url.trim_end_matches('/'));
+    let client = reqwest::Client::new();
+    let res = client.get(&url).send().await.ok()?;
+    if !res.status().is_success() {
+        return None;
+    }
+    let body: serde_json::Value = res.json().await.ok()?;
+    body.get("models")
+        .and_then(|v| v.as_array())
+        .and_then(|items| {
+            items.iter().find_map(|item| {
+                item.get("name")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.trim().is_empty())
+                    .map(|s| s.to_string())
+            })
+        })
 }
 
 #[tauri::command]

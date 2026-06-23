@@ -190,7 +190,6 @@ interface AgentChatState {
     | "opusplan"
     | "gemini-1.5-pro"
     | "gemini-1.5-flash"
-    | "gemini-cli"
     | "codex-cli"
     | "ollama";
   setSelectedModel: (
@@ -201,7 +200,6 @@ interface AgentChatState {
       | "opusplan"
       | "gemini-1.5-pro"
       | "gemini-1.5-flash"
-      | "gemini-cli"
       | "codex-cli"
       | "ollama",
   ) => void;
@@ -312,13 +310,11 @@ export const useAgentChatStore = create<AgentChatState>()((set, get) => ({
     const model =
       provider === "ollama"
         ? providerSettings.ollamaModel
-        : provider === "gemini-cli"
-          ? (providerSettings.geminiCliModel ?? "gemini-1.5-pro")
-          : provider === "codex-cli"
-            ? (providerSettings.codexCliModel ?? "gpt-5.2")
-            : provider === "gemini-api"
-              ? providerSettings.model
-              : selectedModel;
+        : provider === "codex-cli"
+          ? (providerSettings.codexCliModel ?? "gpt-5.2")
+          : provider === "gemini-api"
+            ? providerSettings.model
+            : selectedModel;
 
     const sendStart = performance.now();
     log.info("sendPrompt start", {

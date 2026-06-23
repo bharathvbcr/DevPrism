@@ -79,11 +79,10 @@ function resetAgentChatStore() {
   });
   useSettingsStore.setState({
     agentProviderSettings: {
-      provider: "gemini-cli",
-      model: "gemini-1.5-pro",
-      backendMode: "cli",
+      provider: "ollama",
+      model: "llama3",
+      backendMode: "local",
       geminiApiKey: "",
-      geminiCliModel: "gemini-1.5-pro",
       ollamaBaseUrl: "http://localhost:11434",
       ollamaModel: "llama3",
     },
@@ -144,9 +143,9 @@ describe("useAgentChatStore.sendPrompt context assembly", () => {
       expect.objectContaining({
         projectPath: "/project",
         tabId: "tab-default",
-        provider: "gemini-cli",
-        backendMode: "cli",
-        model: "gemini-1.5-pro",
+        provider: "ollama",
+        backendMode: "local",
+        model: "llama3",
         prompt: expect.stringContaining("[Selection: @main.tex]"),
       }),
     );
@@ -213,7 +212,6 @@ describe("useAgentChatStore.sendPrompt context assembly", () => {
       model: "codellama",
       backendMode: "local",
       geminiApiKey: "",
-      geminiCliModel: "gemini-1.5-pro",
       ollamaBaseUrl: "http://127.0.0.1:11434",
       ollamaModel: "codellama",
     });
@@ -237,7 +235,6 @@ describe("useAgentChatStore.sendPrompt context assembly", () => {
       model: "gpt-5.2",
       backendMode: "cli",
       geminiApiKey: "",
-      geminiCliModel: "gemini-1.5-pro",
       codexCliModel: "gpt-5.2",
       ollamaBaseUrl: "http://localhost:11434",
       ollamaModel: "llama3",
@@ -270,9 +267,9 @@ describe("useAgentChatStore.sendPrompt context assembly", () => {
       "resume_agent_code",
       expect.objectContaining({
         sessionId: "session-123",
-        provider: "gemini-cli",
-        backendMode: "cli",
-        model: "gemini-1.5-pro",
+        provider: "ollama",
+        backendMode: "local",
+        model: "llama3",
       }),
     );
   });
@@ -283,17 +280,16 @@ describe("useAgentChatStore.sendPrompt context assembly", () => {
       model: "llama3",
       backendMode: "local",
       geminiApiKey: "",
-      geminiCliModel: "gemini-1.5-pro",
       ollamaBaseUrl: "http://localhost:11434",
       ollamaModel: "llama3",
     });
     useSettingsStore.setState({
       agentProviderSettings: {
-        provider: "gemini-cli",
-        model: "gemini-2.5-pro",
+        provider: "codex-cli",
+        model: "gpt-5.2",
         backendMode: "cli",
         geminiApiKey: "",
-        geminiCliModel: "gemini-2.5-flash",
+        codexCliModel: "gpt-5.2",
         ollamaBaseUrl: "http://localhost:11434",
         ollamaModel: "llama3",
       },
@@ -306,9 +302,9 @@ describe("useAgentChatStore.sendPrompt context assembly", () => {
     expect(invoke).toHaveBeenCalledWith(
       "execute_agent_code",
       expect.objectContaining({
-        provider: "gemini-cli",
+        provider: "codex-cli",
         backendMode: "cli",
-        model: "gemini-2.5-flash",
+        model: "gpt-5.2",
       }),
     );
   });

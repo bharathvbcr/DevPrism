@@ -202,10 +202,8 @@ export function SettingsDialog({
 
   const providerLabel = useMemo(() => {
     if (agentProviderSettings.provider === "gemini-api") return "Gemini API";
-    if (agentProviderSettings.provider === "gemini-cli") return "Gemini CLI";
     if (agentProviderSettings.provider === "codex-cli") return "Codex CLI";
-    if (agentProviderSettings.provider === "ollama") return "Ollama";
-    return "Gemini CLI";
+    return "Ollama";
   }, [agentProviderSettings.provider]);
 
   const saveKnowledge = async () => {
@@ -221,7 +219,7 @@ export function SettingsDialog({
       backendMode:
         provider === "gemini-api"
           ? "api"
-          : provider === "gemini-cli" || provider === "codex-cli"
+          : provider === "codex-cli"
             ? "cli"
             : "local",
       model:
@@ -229,9 +227,7 @@ export function SettingsDialog({
           ? agentProviderSettings.ollamaModel
           : provider === "codex-cli"
             ? agentProviderSettings.codexCliModel || "gpt-5.2"
-            : provider === "gemini-cli"
-              ? agentProviderSettings.geminiCliModel || "gemini-1.5-pro"
-              : agentProviderSettings.model,
+            : agentProviderSettings.model,
     });
   };
 
@@ -250,10 +246,6 @@ export function SettingsDialog({
       }
       return;
     }
-    if (agentProviderSettings.provider === "gemini-cli") {
-      setHealth(await invoke<ProviderHealth>("check_gemini_cli_status"));
-      return;
-    }
     if (agentProviderSettings.provider === "codex-cli") {
       setHealth(await invoke<ProviderHealth>("check_codex_cli_status"));
       return;
@@ -268,7 +260,7 @@ export function SettingsDialog({
     }
     setHealth({
       ok: false,
-      message: "Select Gemini CLI, Codex CLI, Gemini API, or Ollama.",
+      message: "Select Codex CLI, Gemini API, or Ollama.",
       models: [],
     });
   };
@@ -462,7 +454,6 @@ export function SettingsDialog({
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="gemini-api">Gemini API</SelectItem>
-                      <SelectItem value="gemini-cli">Gemini CLI</SelectItem>
                       <SelectItem value="codex-cli">Codex CLI</SelectItem>
                       <SelectItem value="ollama">Ollama</SelectItem>
                     </SelectContent>
@@ -489,17 +480,6 @@ export function SettingsDialog({
                       value={agentProviderSettings.model}
                       onChange={(event) =>
                         setAgentProviderSettings({ model: event.target.value })
-                      }
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Gemini CLI model</Label>
-                    <Input
-                      value={agentProviderSettings.geminiCliModel ?? ""}
-                      onChange={(event) =>
-                        setAgentProviderSettings({
-                          geminiCliModel: event.target.value,
-                        })
                       }
                     />
                   </div>

@@ -46,12 +46,6 @@ async function checkProvider(
   settings: AgentProviderSettings,
   provider: AgentProviderSettings["provider"],
 ): Promise<{ providerLabel: string; health: ProviderHealth }> {
-  if (provider === "gemini-cli") {
-    return {
-      providerLabel: "Gemini CLI",
-      health: await invoke<ProviderHealth>("check_gemini_cli_status"),
-    };
-  }
   if (provider === "codex-cli") {
     return {
       providerLabel: "Codex CLI",
@@ -79,8 +73,7 @@ async function checkProvider(
     providerLabel: "Configured provider",
     health: {
       ok: false,
-      message:
-        "Select Gemini CLI, Codex CLI, Gemini API, or Ollama in Settings.",
+      message: "Select Codex CLI, Gemini API, or Ollama in Settings.",
       models: [],
     },
   };
@@ -121,7 +114,6 @@ export const useDevEngineSetupStore = create<DevEngineSetupState>(
           new Set([
             configuredProvider,
             "codex-cli",
-            "gemini-cli",
             "ollama",
             "gemini-api",
           ] as AgentProviderSettings["provider"][]),
@@ -160,7 +152,7 @@ export const useDevEngineSetupStore = create<DevEngineSetupState>(
       set({
         status: "error",
         error:
-          "DevPrism uses Codex CLI, Gemini CLI, Gemini API, or Ollama as the primary Dev Engine. Configure one in Settings.",
+          "DevPrism uses Codex CLI, Gemini API, or Ollama as the primary Dev Engine. Configure one in Settings.",
       });
     },
 
@@ -168,7 +160,7 @@ export const useDevEngineSetupStore = create<DevEngineSetupState>(
       set({
         status: "error",
         error:
-          "Sign in through Codex CLI (`codex login`), Gemini CLI (`gemini auth login`), or start Ollama locally, then retry.",
+          "Sign in through Codex CLI (`codex login`), or start Ollama locally, then retry.",
       });
     },
 

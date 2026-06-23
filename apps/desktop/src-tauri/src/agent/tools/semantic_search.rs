@@ -13,7 +13,7 @@ pub struct SemanticSearchTool {
 impl SemanticSearchTool {
     pub async fn get_embedding(text: &str) -> Result<Vec<f32>, String> {
         let api_key = env::var("GEMINI_API_KEY").map_err(|_| {
-            "Semantic search uses Gemini's embedding API, so GEMINI_API_KEY is required for indexing/search even when chat uses Gemini CLI, Codex CLI, or Ollama.".to_string()
+            "Semantic search uses Gemini's embedding API, so GEMINI_API_KEY is required for indexing/search even when chat uses Codex CLI or Ollama.".to_string()
         })?;
         let url = format!("https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key={}", api_key);
 

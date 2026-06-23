@@ -3,15 +3,18 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   readDir,
   readTextFile,
+  rename,
   stat,
   writeTextFile,
 } from "@tauri-apps/plugin-fs";
 import {
   useDocumentStore,
   getCurrentPdfBytes,
+  getCurrentPdfRootId,
   clearPdfBytesCache,
   type ProjectFile,
 } from "@/stores/document-store";
+import { useProjectStore } from "@/stores/project-store";
 
 // Mock history store
 vi.mock("@/stores/history-store", () => ({
@@ -20,6 +23,7 @@ vi.mock("@/stores/history-store", () => ({
       init: vi.fn(() => Promise.resolve()),
       loadSnapshots: vi.fn(() => Promise.resolve()),
       createSnapshot: vi.fn(() => Promise.resolve()),
+      reset: vi.fn(),
     })),
   },
 }));
@@ -65,6 +69,10 @@ describe("useDocumentStore", () => {
       pendingRecompile: false,
       isSaving: false,
       initialized: true,
+    });
+    useProjectStore.setState({
+      recentProjects: [],
+      lastProjectFolder: null,
     });
   });
 
@@ -124,7 +132,8 @@ describe("useDocumentStore", () => {
     it("skips Python cache directories and bytecode files during open", async () => {
       vi.mocked(invoke).mockResolvedValue(undefined as never);
       vi.mocked(readDir).mockImplementation(async (dir: string | URL) => {
-        if (dir === "/project") {
+        const dirPath = String(dir);
+        if (dirPath === "/project") {
           return [
             { name: "__pycache__", isDirectory: true },
             { name: "main.tex", isDirectory: false },
@@ -133,17 +142,18 @@ describe("useDocumentStore", () => {
           ] as any;
         }
 
-        throw new Error(`Unexpected readDir path: ${dir}`);
+        throw new Error(`Unexpected readDir path: ${dirPath}`);
       });
       vi.mocked(stat).mockResolvedValue({ size: 32 } as any);
       vi.mocked(readTextFile).mockImplementation(async (path: string | URL) => {
-        if (path === "/project/main.tex") {
+        const filePath = String(path);
+        if (filePath === "/project/main.tex") {
           return "\\documentclass{article}";
         }
-        if (path === "/project/tool.py") {
+        if (filePath === "/project/tool.py") {
           return "print('hello')";
         }
-        throw new Error(`Unexpected readTextFile path: ${path}`);
+        throw new Error(`Unexpected readTextFile path: ${filePath}`);
       });
 
       await useDocumentStore.getState().openProject("/project");
@@ -157,6 +167,70 @@ describe("useDocumentStore", () => {
       expect(
         useDocumentStore.getState().files.map((file) => file.relativePath),
       ).toEqual(["main.tex", "tool.py"]);
+    });
+  });
+
+  describe("renameProject", () => {
+    it("renames the project folder and reopens the new path", async () => {
+      vi.mocked(invoke).mockResolvedValue(undefined as never);
+      vi.mocked(readDir).mockResolvedValue([
+        { name: "main.tex", isDirectory: false },
+      ] as any);
+      vi.mocked(readTextFile).mockResolvedValue("\\documentclass{article}");
+      useProjectStore.setState({
+        recentProjects: [{ path: "/work/old", name: "old", lastOpened: 1 }],
+        lastProjectFolder: "/work",
+      });
+      useDocumentStore.setState({
+        projectRoot: "/work/old",
+        files: [makeFile({ absolutePath: "/work/old/main.tex" })],
+      });
+
+      await useDocumentStore.getState().renameProject("renamed");
+
+      expect(rename).toHaveBeenCalledWith("/work/old", "/work/renamed");
+      expect(invoke).toHaveBeenCalledWith("migrate_project_sessions", {
+        oldProjectPath: "/work/old",
+        newProjectPath: "/work/renamed",
+      });
+      expect(invoke).toHaveBeenCalledWith("allow_project_directory", {
+        rootPath: "/work/renamed",
+      });
+      expect(useDocumentStore.getState().projectRoot).toBe("/work/renamed");
+      expect(useProjectStore.getState().recentProjects[0]).toMatchObject({
+        path: "/work/renamed",
+        name: "renamed",
+      });
+      expect(
+        useProjectStore
+          .getState()
+          .recentProjects.some((project) => project.path === "/work/old"),
+      ).toBe(false);
+      expect(useProjectStore.getState().lastProjectFolder).toBe("/work");
+    });
+
+    it("saves dirty files before renaming the project folder", async () => {
+      vi.mocked(invoke).mockResolvedValue(undefined as never);
+      vi.mocked(writeTextFile).mockResolvedValue(undefined);
+      vi.mocked(readDir).mockResolvedValue([
+        { name: "main.tex", isDirectory: false },
+      ] as any);
+      vi.mocked(readTextFile).mockResolvedValue("\\documentclass{article}");
+      useDocumentStore.setState({
+        projectRoot: "/work/old",
+        files: [
+          makeFile({
+            absolutePath: "/work/old/main.tex",
+            content: "dirty",
+            isDirty: true,
+          }),
+        ],
+      });
+
+      await useDocumentStore.getState().renameProject("renamed");
+
+      expect(writeTextFile).toHaveBeenCalledWith("/work/old/main.tex", "dirty");
+      expect(rename).toHaveBeenCalledWith("/work/old", "/work/renamed");
     });
   });
 
@@ -369,6 +443,39 @@ describe("useDocumentStore", () => {
       // cursorPosition is preserved — the editor restores it from per-file cache
       expect(state.cursorPosition).toBe(100);
       expect(state.selectionRange).toBeNull();
+    });
+
+    it("keeps the current PDF when switching to a non-tex file", () => {
+      const pdfBytes = new Uint8Array([1, 2, 3]);
+      useDocumentStore.setState({
+        files: [
+          makeFile({
+            content:
+              "\\documentclass{article}\\begin{document}Hi\\end{document}",
+          }),
+          makeFile({
+            id: "analysis.py",
+            name: "analysis.py",
+            relativePath: "analysis.py",
+            absolutePath: "/project/analysis.py",
+            type: "other",
+            content: "print('hello')",
+          }),
+        ],
+        activeFileId: "main.tex",
+        selectionRange: { start: 0, end: 3 },
+      });
+      useDocumentStore.getState().setPdfData(pdfBytes, "main.tex");
+      const revisionBefore = useDocumentStore.getState().pdfRevision;
+
+      useDocumentStore.getState().setActiveFile("analysis.py");
+
+      const state = useDocumentStore.getState();
+      expect(state.activeFileId).toBe("analysis.py");
+      expect(state.selectionRange).toBeNull();
+      expect(state.pdfRevision).toBe(revisionBefore);
+      expect(getCurrentPdfRootId()).toBe("main.tex");
+      expect(getCurrentPdfBytes()).toEqual(pdfBytes);
     });
   });
 

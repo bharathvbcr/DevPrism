@@ -95,11 +95,11 @@ export function ChatTabBar() {
           />
         ))}
       </div>
-      <div className="flex shrink-0 items-center">
+      <div className="flex shrink-0 items-center gap-0.5 pr-3">
         <button
           type="button"
           onClick={handleCreate}
-          className="flex size-7 items-center justify-center text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           aria-label="New tab"
         >
           <PlusIcon className="size-3.5" />

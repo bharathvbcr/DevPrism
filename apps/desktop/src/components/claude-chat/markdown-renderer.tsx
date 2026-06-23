@@ -17,6 +17,7 @@ import { invoke } from "@tauri-apps/api/core";
 import "katex/dist/katex.min.css";
 
 import { useDocumentStore } from "@/stores/document-store";
+import { cn } from "@/lib/utils";
 
 // ─── Shell Detection ───
 
@@ -83,10 +84,55 @@ export const MarkdownRenderer: FC<MarkdownRendererProps> = ({
     <ReactMarkdown
       remarkPlugins={[remarkGfm, remarkMath]}
       rehypePlugins={[rehypeKatex]}
-      className={className ?? "prose prose-sm dark:prose-invert max-w-none"}
+      className={cn(
+        "min-w-0 max-w-full break-words [overflow-wrap:anywhere] [&_*]:max-w-full",
+        className ?? "prose prose-sm dark:prose-invert max-w-none",
+      )}
       components={{
         pre({ children }) {
           return <>{children}</>;
+        },
+        table({ children, node, ...props }) {
+          return (
+            <div className="my-3 w-full overflow-x-auto rounded-lg border border-border">
+              <table
+                className="m-0 w-full border-collapse text-left text-sm"
+                {...props}
+              >
+                {children}
+              </table>
+            </div>
+          );
+        },
+        thead({ children, node, ...props }) {
+          return (
+            <thead className="bg-muted/70" {...props}>
+              {children}
+            </thead>
+          );
+        },
+        th({ children, node, ...props }) {
+          return (
+            <th
+              className="border-border border-r border-b px-3 py-2 font-medium text-foreground last:border-r-0"
+              {...props}
+            >
+              {children}
+            </th>
+          );
+        },
+        td({ children, node, ...props }) {
+          return (
+            <td
+              className="border-border border-t border-r px-3 py-2 align-top text-foreground last:border-r-0"
+              {...props}
+            >
+              {children}
+            </td>
+          );
+        },
+        hr({ node, ...props }) {
+          return <hr className="my-5 border-border border-t" {...props} />;
         },
         code({ className: codeClassName, children, node, ...props }) {
           const match = /language-(\w+)/.exec(codeClassName || "");
@@ -98,7 +144,13 @@ export const MarkdownRenderer: FC<MarkdownRendererProps> = ({
 
           if (!match && !isBlock) {
             return (
-              <code className={codeClassName} {...props}>
+              <code
+                className={cn(
+                  "break-words [overflow-wrap:anywhere]",
+                  codeClassName,
+                )}
+                {...props}
+              >
                 {children}
               </code>
             );

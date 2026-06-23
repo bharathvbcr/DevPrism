@@ -1,4 +1,10 @@
-import { useCallback, useRef, useEffect, useState } from "react";
+import {
+  useCallback,
+  useRef,
+  useEffect,
+  useLayoutEffect,
+  useState,
+} from "react";
 import { LoaderIcon } from "lucide-react";
 import { open as shellOpen } from "@tauri-apps/plugin-shell";
 import { ask } from "@tauri-apps/plugin-dialog";
@@ -14,6 +20,159 @@ import type { PageSize } from "@/lib/mupdf/types";
 
 const log = createLogger("pdf-viewer");
 
+const MIN_PDF_SCALE = 0.25;
+const MAX_PDF_SCALE = 4;
+const MOUSE_WHEEL_ZOOM_SENSITIVITY = 0.00125;
+const TRACKPAD_PINCH_ZOOM_SENSITIVITY = 0.012;
+const MAX_MOUSE_WHEEL_FACTOR_PER_EVENT = 1.22;
+const MAX_TRACKPAD_PINCH_FACTOR_PER_EVENT = 1.28;
+
+type WebKitGestureEvent = Event & {
+  scale?: number;
+  clientX?: number;
+  clientY?: number;
+};
+
+function clampPdfScale(value: number): number {
+  return Math.max(MIN_PDF_SCALE, Math.min(MAX_PDF_SCALE, value));
+}
+
+function isModifiedZoomWheel(event: WheelEvent): boolean {
+  return (event.metaKey || event.ctrlKey) && !event.altKey;
+}
+
+function isWheelInsidePdfViewer(
+  event: WheelEvent,
+  container: HTMLElement,
+): boolean {
+  if (event.target instanceof Node && container.contains(event.target)) {
+    return true;
+  }
+
+  if (
+    event
+      .composedPath()
+      .some((target) => target instanceof Node && container.contains(target))
+  ) {
+    return true;
+  }
+
+  const rect = container.getBoundingClientRect();
+  return (
+    event.clientX >= rect.left &&
+    event.clientX <= rect.right &&
+    event.clientY >= rect.top &&
+    event.clientY <= rect.bottom
+  );
+}
+
+function isTrackpadPinchWheel(
+  event: WheelEvent,
+  isCtrlKeyDown: boolean,
+  isMetaKeyDown: boolean,
+): boolean {
+  return (
+    event.ctrlKey &&
+    !event.metaKey &&
+    !isCtrlKeyDown &&
+    !isMetaKeyDown &&
+    event.deltaMode === WheelEvent.DOM_DELTA_PIXEL &&
+    Math.abs(event.deltaX) < 1 &&
+    event.deltaZ === 0
+  );
+}
+
+function clampZoomFactor(factor: number, maxFactor: number): number {
+  if (!Number.isFinite(factor) || factor <= 0) return 1;
+  return Math.max(1 / maxFactor, Math.min(maxFactor, factor));
+}
+
+function getWheelZoomFactor(
+  event: WheelEvent,
+  isTrackpadPinch: boolean,
+): number {
+  if (event.deltaY === 0) return 1;
+
+  if (
+    !isTrackpadPinch &&
+    (event.deltaMode === WheelEvent.DOM_DELTA_LINE ||
+      event.deltaMode === WheelEvent.DOM_DELTA_PAGE)
+  ) {
+    return event.deltaY < 0 ? 1.16 : 1 / 1.16;
+  }
+
+  const sensitivity = isTrackpadPinch
+    ? TRACKPAD_PINCH_ZOOM_SENSITIVITY
+    : MOUSE_WHEEL_ZOOM_SENSITIVITY;
+  const maxFactor = isTrackpadPinch
+    ? MAX_TRACKPAD_PINCH_FACTOR_PER_EVENT
+    : MAX_MOUSE_WHEEL_FACTOR_PER_EVENT;
+
+  return clampZoomFactor(Math.exp(-event.deltaY * sensitivity), maxFactor);
+}
+
+interface PageZoomAnchor {
+  pageNumber: number;
+  pdfX: number;
+  pdfY: number;
+}
+
+interface PendingZoomScroll {
+  anchorClientX: number;
+  anchorClientY: number;
+  pageAnchor: PageZoomAnchor | null;
+  fallbackAnchorX: number;
+  fallbackAnchorY: number;
+  fallbackRatio: number;
+  nextScale: number;
+  containerLeft: number;
+  containerTop: number;
+}
+
+function findPageZoomAnchor(
+  container: HTMLElement,
+  clientX: number,
+  clientY: number,
+  scale: number,
+): PageZoomAnchor | null {
+  if (scale <= 0) return null;
+
+  const pages = Array.from(container.querySelectorAll(".mupdf-page"));
+  let bestPage: HTMLElement | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  for (const page of pages) {
+    const el = page as HTMLElement;
+    const rect = el.getBoundingClientRect();
+    const distance =
+      clientY >= rect.top && clientY <= rect.bottom
+        ? 0
+        : Math.min(
+            Math.abs(clientY - rect.top),
+            Math.abs(clientY - rect.bottom),
+          );
+
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestPage = el;
+    }
+  }
+
+  if (!bestPage) return null;
+
+  const pageNumber = parseInt(
+    bestPage.getAttribute("data-page-number") || "0",
+    10,
+  );
+  if (!pageNumber) return null;
+
+  const rect = bestPage.getBoundingClientRect();
+  return {
+    pageNumber,
+    pdfX: (clientX - rect.left) / scale,
+    pdfY: (clientY - rect.top) / scale,
+  };
+}
 /** Module-level scroll position cache: rootFileId → page number */
 const scrollPositionCache = new Map<string, number>();
 
@@ -89,6 +248,17 @@ export function PdfViewer({
 
   const scaleRef = useRef(scale);
   scaleRef.current = scale;
+  const renderedScaleRef = useRef(scale);
+  const pendingZoomScrollRef = useRef<PendingZoomScroll | null>(null);
+  const ctrlKeyDownRef = useRef(false);
+  const metaKeyDownRef = useRef(false);
+  const touchPinchRef = useRef<{
+    distance: number;
+    scale: number;
+    x: number;
+    y: number;
+  } | null>(null);
+  const gesturePinchRef = useRef<{ scale: number } | null>(null);
   const synctexClickRef = useRef(onSynctexClick);
   synctexClickRef.current = onSynctexClick;
   const textSelectRef = useRef(onTextSelect);
@@ -106,6 +276,42 @@ export function PdfViewer({
     return () =>
       window.removeEventListener(APP_VISIBILITY_RESTORED, handleRestore);
   }, []);
+
+  useLayoutEffect(() => {
+    renderedScaleRef.current = scale;
+
+    const pending = pendingZoomScrollRef.current;
+    if (!pending || Math.abs(pending.nextScale - scale) > 0.001) return;
+    pendingZoomScrollRef.current = null;
+
+    const container = containerRef.current;
+    if (!container) return;
+
+    if (pending.pageAnchor) {
+      const pageEl = container.querySelector(
+        `.mupdf-page[data-page-number="${pending.pageAnchor.pageNumber}"]`,
+      ) as HTMLElement | null;
+      if (pageEl) {
+        const pageRect = pageEl.getBoundingClientRect();
+        container.scrollLeft +=
+          pageRect.left +
+          pending.pageAnchor.pdfX * scale -
+          pending.anchorClientX;
+        container.scrollTop +=
+          pageRect.top +
+          pending.pageAnchor.pdfY * scale -
+          pending.anchorClientY;
+        return;
+      }
+    }
+
+    container.scrollLeft =
+      pending.fallbackAnchorX * pending.fallbackRatio -
+      (pending.anchorClientX - pending.containerLeft);
+    container.scrollTop =
+      pending.fallbackAnchorY * pending.fallbackRatio -
+      (pending.anchorClientY - pending.containerTop);
+  }, [scale]);
 
   // Keep-alive scroll save/restore
   const savedScrollTop = useRef(0);
@@ -139,6 +345,30 @@ export function PdfViewer({
   const [dragPageNum, setDragPageNum] = useState(0);
 
   const numPages = pageSizes.length;
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Control") ctrlKeyDownRef.current = true;
+      if (event.key === "Meta") metaKeyDownRef.current = true;
+    };
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (event.key === "Control") ctrlKeyDownRef.current = false;
+      if (event.key === "Meta") metaKeyDownRef.current = false;
+    };
+    const resetModifierState = () => {
+      ctrlKeyDownRef.current = false;
+      metaKeyDownRef.current = false;
+    };
+
+    window.addEventListener("keydown", handleKeyDown, true);
+    window.addEventListener("keyup", handleKeyUp, true);
+    window.addEventListener("blur", resetModifierState);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown, true);
+      window.removeEventListener("keyup", handleKeyUp, true);
+      window.removeEventListener("blur", resetModifierState);
+    };
+  }, []);
 
   function getVisiblePage(): number {
     const container = containerRef.current;
@@ -339,7 +569,7 @@ export function PdfViewer({
     pages.forEach((p) => observer.observe(p));
 
     return () => observer.disconnect();
-  }, [pageSizes, scale, isActive, focusGen]);
+  }, [pageSizes, isActive, focusGen]);
 
   // Report container dimensions to parent for fit-to-width/height
   useEffect(() => {
@@ -516,24 +746,199 @@ export function PdfViewer({
     return () => container.removeEventListener("scroll", handleScroll);
   }, []);
 
-  // Pinch-to-zoom
+  const zoomAtPoint = useCallback(
+    (nextScaleValue: number, clientX?: number, clientY?: number) => {
+      if (!onScaleChange) return;
+
+      const container = containerRef.current;
+      const previousScale = scaleRef.current;
+      const renderedScale = renderedScaleRef.current;
+      const nextScale = clampPdfScale(nextScaleValue);
+      if (Math.abs(nextScale - previousScale) < 0.001) return;
+
+      if (!container || previousScale <= 0 || renderedScale <= 0) {
+        scaleRef.current = nextScale;
+        onScaleChange(nextScale);
+        return;
+      }
+
+      const containerRect = container.getBoundingClientRect();
+      const anchorClientX =
+        clientX ?? containerRect.left + containerRect.width / 2;
+      const anchorClientY =
+        clientY ?? containerRect.top + containerRect.height / 2;
+      const pageAnchor = findPageZoomAnchor(
+        container,
+        anchorClientX,
+        anchorClientY,
+        renderedScale,
+      );
+      const fallbackAnchorX =
+        anchorClientX - containerRect.left + container.scrollLeft;
+      const fallbackAnchorY =
+        anchorClientY - containerRect.top + container.scrollTop;
+      const fallbackRatio = nextScale / renderedScale;
+
+      pendingZoomScrollRef.current = {
+        anchorClientX,
+        anchorClientY,
+        pageAnchor,
+        fallbackAnchorX,
+        fallbackAnchorY,
+        fallbackRatio,
+        nextScale,
+        containerLeft: containerRect.left,
+        containerTop: containerRect.top,
+      };
+
+      scaleRef.current = nextScale;
+      onScaleChange(nextScale);
+    },
+    [onScaleChange],
+  );
+
+  // Ctrl/Cmd + wheel zoom. Windows precision touchpad pinch arrives here too.
   useEffect(() => {
     const container = containerRef.current;
     if (!container || !onScaleChange) return;
 
     const handleWheel = (e: WheelEvent) => {
-      if (e.metaKey || e.ctrlKey) {
-        e.preventDefault();
-        const delta = -e.deltaY * 0.005;
-        onScaleChange(Math.max(0.25, Math.min(4, scale + delta)));
+      if (!isModifiedZoomWheel(e) || !isWheelInsidePdfViewer(e, container)) {
+        return;
+      }
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      const isTrackpadPinch = isTrackpadPinchWheel(
+        e,
+        ctrlKeyDownRef.current,
+        metaKeyDownRef.current,
+      );
+      const factor = getWheelZoomFactor(e, isTrackpadPinch);
+      if (Math.abs(factor - 1) < 0.0001) return;
+      zoomAtPoint(scaleRef.current * factor, e.clientX, e.clientY);
+    };
+
+    window.addEventListener("wheel", handleWheel, {
+      passive: false,
+    });
+    return () => {
+      window.removeEventListener("wheel", handleWheel);
+      pendingZoomScrollRef.current = null;
+    };
+  }, [onScaleChange, zoomAtPoint]);
+
+  // Some WebViews report trackpad pinch through non-standard WebKit gesture
+  // events instead of Ctrl/Cmd + wheel.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || !onScaleChange) return;
+
+    const readGestureScale = (event: WebKitGestureEvent) =>
+      typeof event.scale === "number" && Number.isFinite(event.scale)
+        ? event.scale
+        : 1;
+
+    const handleGestureStart: EventListener = (event) => {
+      event.preventDefault();
+      gesturePinchRef.current = { scale: scaleRef.current };
+    };
+
+    const handleGestureChange: EventListener = (event) => {
+      const gesture = event as WebKitGestureEvent;
+      const start = gesturePinchRef.current;
+      if (!start) return;
+
+      event.preventDefault();
+      const factor =
+        (start.scale * readGestureScale(gesture)) / scaleRef.current;
+      zoomAtPoint(scaleRef.current * factor, gesture.clientX, gesture.clientY);
+    };
+
+    const handleGestureEnd: EventListener = () => {
+      gesturePinchRef.current = null;
+    };
+
+    container.addEventListener("gesturestart", handleGestureStart, {
+      passive: false,
+    });
+    container.addEventListener("gesturechange", handleGestureChange, {
+      passive: false,
+    });
+    container.addEventListener("gestureend", handleGestureEnd);
+    return () => {
+      container.removeEventListener("gesturestart", handleGestureStart);
+      container.removeEventListener("gesturechange", handleGestureChange);
+      container.removeEventListener("gestureend", handleGestureEnd);
+      gesturePinchRef.current = null;
+    };
+  }, [onScaleChange, zoomAtPoint]);
+
+  // Two-finger touch pinch for touch-capable screens. Trackpads usually arrive
+  // through the wheel path above.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || !onScaleChange) return;
+
+    const readTouchPinch = (touches: TouchList) => {
+      if (touches.length < 2) return null;
+      const first = touches.item(0);
+      const second = touches.item(1);
+      if (!first || !second) return null;
+      const dx = second.clientX - first.clientX;
+      const dy = second.clientY - first.clientY;
+      return {
+        distance: Math.hypot(dx, dy),
+        x: (first.clientX + second.clientX) / 2,
+        y: (first.clientY + second.clientY) / 2,
+      };
+    };
+
+    const handleTouchStart = (event: TouchEvent) => {
+      const pinch = readTouchPinch(event.touches);
+      if (!pinch) return;
+      event.preventDefault();
+      touchPinchRef.current = {
+        ...pinch,
+        scale: scaleRef.current,
+      };
+    };
+
+    const handleTouchMove = (event: TouchEvent) => {
+      const start = touchPinchRef.current;
+      const pinch = readTouchPinch(event.touches);
+      if (!start || !pinch || start.distance <= 0) return;
+      event.preventDefault();
+      const factor =
+        (start.scale * (pinch.distance / start.distance)) / scaleRef.current;
+      zoomAtPoint(scaleRef.current * factor, pinch.x, pinch.y);
+    };
+
+    const handleTouchEnd = () => {
+      if (containerRef.current && touchPinchRef.current) {
+        touchPinchRef.current = null;
       }
     };
 
-    container.addEventListener("wheel", handleWheel, { passive: false });
-    return () => container.removeEventListener("wheel", handleWheel);
-  }, [scale, onScaleChange]);
+    container.addEventListener("touchstart", handleTouchStart, {
+      passive: false,
+    });
+    container.addEventListener("touchmove", handleTouchMove, {
+      passive: false,
+    });
+    container.addEventListener("touchend", handleTouchEnd);
+    container.addEventListener("touchcancel", handleTouchEnd);
+    return () => {
+      container.removeEventListener("touchstart", handleTouchStart);
+      container.removeEventListener("touchmove", handleTouchMove);
+      container.removeEventListener("touchend", handleTouchEnd);
+      container.removeEventListener("touchcancel", handleTouchEnd);
+      touchPinchRef.current = null;
+    };
+  }, [onScaleChange, zoomAtPoint]);
 
-  // Keyboard zoom (Cmd/Ctrl +/-) — scoped to container to avoid affecting other panels
+  // Keyboard zoom (Cmd/Ctrl +/-), scoped to the PDF viewer.
   useEffect(() => {
     const container = containerRef.current;
     if (!container || !onScaleChange) return;
@@ -544,19 +949,19 @@ export function PdfViewer({
 
       if (e.key === "=" || e.key === "+") {
         e.preventDefault();
-        onScaleChange(Math.min(4, scale + 0.25));
+        zoomAtPoint(scaleRef.current + 0.25);
       } else if (e.key === "-") {
         e.preventDefault();
-        onScaleChange(Math.max(0.25, scale - 0.25));
+        zoomAtPoint(scaleRef.current - 0.25);
       } else if (e.key === "0") {
         e.preventDefault();
-        onScaleChange(1);
+        zoomAtPoint(1);
       }
     };
 
     container.addEventListener("keydown", handleKeyDown);
     return () => container.removeEventListener("keydown", handleKeyDown);
-  }, [scale, onScaleChange]);
+  }, [onScaleChange, zoomAtPoint]);
 
   // Intercept link clicks
   useEffect(() => {
@@ -754,7 +1159,10 @@ export function PdfViewer({
       tabIndex={-1}
       {...{ [LOCAL_ZOOM_SHORTCUTS_ATTR]: "true" }}
       className="min-h-0 flex-1 overflow-auto outline-none"
-      style={{ cursor: captureMode ? "crosshair" : undefined }}
+      style={{
+        cursor: captureMode ? "crosshair" : undefined,
+        touchAction: captureMode ? "none" : "pan-x pan-y",
+      }}
       onMouseDownCapture={() => containerRef.current?.focus()}
       onMouseDown={handleCaptureMouseDown}
       onMouseMove={handleCaptureMouseMove}

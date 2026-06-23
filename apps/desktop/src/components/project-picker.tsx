@@ -392,6 +392,7 @@ export function ProjectPicker() {
                 <button
                   type="button"
                   title="New space"
+                  aria-label="New space"
                   onClick={() => setSpaceDialog({ editingId: null, name: "" })}
                   className="flex size-5 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
                 >
@@ -626,8 +627,9 @@ export function ProjectPicker() {
                         No projects in {activeSpace.name}
                       </h2>
                       <p className="mt-1 max-w-sm text-muted-foreground text-sm">
-                        Open a project, then use its “⋮ → Move to space” menu to add
-                        it here — or assign existing projects from All Projects.
+                        Open a project, then use its “⋮ → Move to space” menu to
+                        add it here — or assign existing projects from All
+                        Projects.
                       </p>
                       <div className="mt-5 flex flex-wrap justify-center gap-3">
                         <Button
@@ -643,7 +645,9 @@ export function ProjectPicker() {
                     <>
                       <FileTextIcon className="mb-4 size-10 text-muted-foreground/70" />
                       <h2 className="font-semibold text-lg">
-                        {normalizedSearch ? "No matching projects" : "No projects"}
+                        {normalizedSearch
+                          ? "No matching projects"
+                          : "No projects"}
                       </h2>
                       <div className="mt-5 flex flex-wrap justify-center gap-3">
                         <Button onClick={() => setShowModeDialog(true)}>

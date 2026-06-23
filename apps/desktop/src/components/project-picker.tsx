@@ -42,6 +42,7 @@ import { useTheme } from "next-themes";
 import { useProjectStore } from "@/stores/project-store";
 import { useSpacesStore, type Space } from "@/stores/spaces-store";
 import { useDocumentStore } from "@/stores/document-store";
+import { useClaudeChatStore } from "@/stores/claude-chat-store";
 import { useClaudeSetupStore } from "@/stores/claude-setup-store";
 import { useUvSetupStore } from "@/stores/uv-setup-store";
 import { useSettingsStore } from "@/stores/settings-store";
@@ -119,6 +120,7 @@ export function ProjectPicker() {
     name: string;
   } | null>(null);
   const [installingSkills, setInstallingSkills] = useState(false);
+  const [deleteSpaceTarget, setDeleteSpaceTarget] = useState<Space | null>(null);
   const defaultProjectsDiscoveredRef = useRef(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const { theme = "system", setTheme } = useTheme();
@@ -191,6 +193,22 @@ export function ProjectPicker() {
     };
   }, [addRecentProject, recentProjects.length]);
 
+  // When a project belongs to a space with a default model, apply that model to
+  // the currently-selected provider credential (e.g. the local Ollama provider),
+  // so opening a project in a space switches the agent to the space's model.
+  const applySpaceModel = (path: string) => {
+    const spacesState = useSpacesStore.getState();
+    const spaceId = spacesState.projectSpace[path];
+    if (!spaceId) return;
+    const space = spacesState.spaces.find((s) => s.id === spaceId);
+    const model = space?.defaultModel?.trim();
+    if (!model) return;
+    const chat = useClaudeChatStore.getState();
+    if (chat.selectedProviderCredentialId) {
+      chat.setSelectedProviderModel(chat.selectedProviderCredentialId, model);
+    }
+  };
+
   const handleOpenFolder = async () => {
     try {
       const selected = await open({
@@ -201,6 +219,7 @@ export function ProjectPicker() {
       if (typeof selected === "string" && selected) {
         await openProject(selected);
         addRecentProject(selected);
+        applySpaceModel(selected);
       }
     } catch (err) {
       console.warn("Failed to open selected project folder:", err);
@@ -214,8 +233,10 @@ export function ProjectPicker() {
     try {
       await openProject(path);
       addRecentProject(path);
+      applySpaceModel(path);
     } catch (err) {
       removeRecentProject(path);
+      assignProject(path, null);
       console.warn("Failed to open recent project:", { path, error: err });
     }
   };
@@ -239,6 +260,16 @@ export function ProjectPicker() {
     () => spaces.find((s) => s.id === activeSpaceId) ?? null,
     [spaces, activeSpaceId],
   );
+  // Count per space from the SAME source as the grid/install handler (recentProjects),
+  // so the badge can't drift from what's actually shown (and ignores orphaned mappings).
+  const spaceCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const project of recentProjects) {
+      const id = projectSpace[project.path];
+      if (id) counts.set(id, (counts.get(id) ?? 0) + 1);
+    }
+    return counts;
+  }, [recentProjects, projectSpace]);
 
   const normalizedSearch = searchQuery.trim().toLowerCase();
   const visibleProjects = useMemo(() => {
@@ -377,11 +408,7 @@ export function ProjectPicker() {
                     active={
                       activeSection === "projects" && activeSpaceId === space.id
                     }
-                    count={
-                      Object.values(projectSpace).filter(
-                        (id) => id === space.id,
-                      ).length
-                    }
+                    count={spaceCounts.get(space.id) ?? 0}
                     onSelect={() => {
                       setActiveSection("projects");
                       setActiveSpace(space.id);
@@ -389,7 +416,7 @@ export function ProjectPicker() {
                     onRename={() =>
                       setSpaceDialog({ editingId: space.id, name: space.name })
                     }
-                    onDelete={() => deleteSpace(space.id)}
+                    onDelete={() => setDeleteSpaceTarget(space)}
                   />
                 ))
               )}
@@ -732,6 +759,55 @@ export function ProjectPicker() {
         </DialogContent>
       </Dialog>
 
+      {/* Delete space confirmation */}
+      <Dialog
+        open={!!deleteSpaceTarget}
+        onOpenChange={(open) => {
+          if (!open) setDeleteSpaceTarget(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Delete space?</DialogTitle>
+            <DialogDescription>
+              {deleteSpaceTarget && (
+                <>
+                  This deletes the space{" "}
+                  <span className="font-medium text-foreground">
+                    {deleteSpaceTarget.name}
+                  </span>
+                  {(() => {
+                    const n = spaceCounts.get(deleteSpaceTarget.id) ?? 0;
+                    return n > 0
+                      ? ` and unassigns its ${n} project${n === 1 ? "" : "s"}`
+                      : "";
+                  })()}
+                  . Your projects and files are not deleted.
+                </>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setDeleteSpaceTarget(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                if (!deleteSpaceTarget) return;
+                deleteSpace(deleteSpaceTarget.id);
+                setDeleteSpaceTarget(null);
+              }}
+            >
+              Delete space
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog
         open={!!removeProjectTarget}
         onOpenChange={(open) => {
@@ -758,6 +834,7 @@ export function ProjectPicker() {
               onClick={() => {
                 if (!removeProjectTarget) return;
                 removeRecentProject(removeProjectTarget.path);
+                assignProject(removeProjectTarget.path, null);
                 setRemoveProjectTarget(null);
               }}
               disabled={!removeProjectTarget}

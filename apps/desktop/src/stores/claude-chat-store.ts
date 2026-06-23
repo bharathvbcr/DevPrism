@@ -762,6 +762,12 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       if (!activeTab || activeTab.isStreaming) return;
     }
 
+    // Base64 of any pasted images, for the native runtime's vision support.
+    const nativeImages = (activeTab.draft.pinnedContexts ?? [])
+      .map((c) => c.imageDataUrl)
+      .filter((u): u is string => !!u)
+      .map((u) => u.replace(/^data:image\/[^;]+;base64,/, ""));
+
     const { selectedModel, effortLevel, selectedProviderModels } = state;
     const sessionId = activeTab.sessionId;
     const tabSelectedProviderCredentialId =
@@ -944,6 +950,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
           tabId: activeTabId,
           model: cred?.model || providerModelOverride || null,
           baseUrl: cred?.base_url || null,
+          images: nativeImages.length ? nativeImages : null,
         });
       } else if (resumeSessionId) {
         // Resume existing session

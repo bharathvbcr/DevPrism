@@ -27,7 +27,6 @@ fn canonicalize_tool_name(raw: &str) -> String {
         "read" => "Read".to_string(),
         "write" => "Write".to_string(),
         "edit" => "Edit".to_string(),
-        "multiedit" => "MultiEdit".to_string(),
         "ls" => "LS".to_string(),
         "grep" => "Grep".to_string(),
         "glob" => "Glob".to_string(),

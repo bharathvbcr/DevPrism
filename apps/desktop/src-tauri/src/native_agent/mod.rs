@@ -22,10 +22,20 @@ use tokio::sync::Notify;
 
 const MAX_ITERATIONS: usize = 16;
 
+/// Synthetic prompt used to nudge a model that returned nothing; never persisted.
+const CONTINUE_NUDGE: &str =
+    "Continue. If the task is complete, give a short final summary; otherwise use a tool.";
+
+fn is_continue_nudge(m: &Value) -> bool {
+    m.get("role").and_then(|r| r.as_str()) == Some("user")
+        && m.get("content").and_then(|c| c.as_str()) == Some(CONTINUE_NUDGE)
+}
+
 const SYSTEM_RULES: &str = concat!(
     "You are DevPrism's writing assistant, working INSIDE the user's project on their machine. ",
-    "You have tools: Read, Write, Edit, LS, Grep, Bash. Use them to inspect and change files — ",
-    "do not ask the user for file contents you can read yourself.\n",
+    "You have tools: Read, Write, Edit, LS, Grep, Glob, Bash. Use Glob to find files by name ",
+    "(e.g. *.tex), Grep to find text inside files, LS to list a directory, and Read before editing. ",
+    "Do not ask the user for file contents you can read yourself.\n",
     "Rules:\n",
     "1. PLAN, then act in small steps. Read a file before editing it.\n",
     "2. Prefer Edit (a unique old_string -> new_string) over rewriting whole files with Write.\n",
@@ -167,6 +177,8 @@ pub async fn run_native_agent(
     tab_id: String,
     model: Option<String>,
     base_url: Option<String>,
+    // Base64 image data (no data: prefix) for vision-capable models.
+    images: Option<Vec<String>>,
 ) -> Result<(), String> {
     let cancel = Arc::new(AtomicBool::new(false));
     let notify = Arc::new(Notify::new());
@@ -211,7 +223,14 @@ pub async fn run_native_agent(
         for m in &history {
             arr.push(m.clone());
         }
-        arr.push(json!({ "role": "user", "content": prompt }));
+        let mut user_msg = json!({ "role": "user", "content": prompt });
+        if let Some(imgs) = &images {
+            if !imgs.is_empty() {
+                // Ollama vision models read base64 images on the user message.
+                user_msg["images"] = json!(imgs);
+            }
+        }
+        arr.push(user_msg);
     }
     let tools = tools::tool_schemas();
 
@@ -253,10 +272,7 @@ pub async fn run_native_agent(
             consecutive_empty += 1;
             if consecutive_empty <= 2 {
                 if let Some(arr) = messages.as_array_mut() {
-                    arr.push(json!({
-                        "role": "user",
-                        "content": "Continue. If the task is complete, give a short final summary; otherwise use a tool.",
-                    }));
+                    arr.push(json!({ "role": "user", "content": CONTINUE_NUDGE }));
                 }
                 continue;
             }
@@ -336,12 +352,12 @@ pub async fn run_native_agent(
             }
             let id = &call_ids[idx];
 
-            // Short-circuit an exact repeat of a call already made this turn so a
-            // confused model can't burn every iteration re-running the same tool.
+            // Short-circuit an exact repeat of an idempotent call (no mutation in
+            // between) so a confused model can't burn iterations re-running it.
             let sig = format!("{}|{}", tc.name.to_lowercase(), tc.args);
             let (result, is_error) = if !seen_calls.insert(sig) {
                 (
-                    "(skipped: this exact tool call was already run this turn — use the earlier result)"
+                    "(skipped: this exact tool call was just run with no changes since — use the earlier result)"
                         .to_string(),
                     false,
                 )
@@ -353,6 +369,12 @@ pub async fn run_native_agent(
                     _ = notify.notified() => { success = false; break 'outer; }
                 }
             };
+
+            // A successful mutation changes the tree, so allow Read/LS/Grep/Glob to
+            // re-run and see fresh state (e.g. Read after Edit, Bash re-build).
+            if !is_error && matches!(tc.name.as_str(), "Write" | "Edit" | "Bash") {
+                seen_calls.clear();
+            }
 
             emit_msg(
                 &window,
@@ -395,6 +417,7 @@ pub async fn run_native_agent(
     // incomplete turn (e.g. from a mid-loop cancel) so history stays balanced.
     if let Some(arr) = messages.as_array_mut() {
         arr.remove(0); // drop the system message
+        arr.retain(|m| !is_continue_nudge(m)); // don't persist synthetic nudges
         repair_tail(arr);
         save_history(&tab_id, arr.clone());
     }

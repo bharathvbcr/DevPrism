@@ -1230,6 +1230,116 @@ pub async fn import_skill_from_folder(source_path: String) -> Result<Vec<SkillIn
     Ok(imported)
 }
 
+/// Resolve the directory containing DevPrism's bundled custom skill packages.
+/// Tries the packaged app resource locations first, then falls back to the
+/// in-repo path so it also works in `tauri dev` / `cargo` runs.
+fn bundled_skills_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        candidates.push(resource_dir.join("devprism-skills"));
+        candidates.push(resource_dir.join("resources").join("devprism-skills"));
+    }
+    // Dev fallback: <crate>/resources/devprism-skills
+    candidates.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("devprism-skills"),
+    );
+    candidates.into_iter().find(|p| p.is_dir())
+}
+
+/// Install DevPrism's bundled, offline custom skill packages (resume-cv,
+/// manuscript-paper, latex-toolkit, thesis, beamer-slides) into a project's
+/// `.claude/skills/` directory. No network required.
+#[tauri::command]
+pub async fn install_bundled_skills(
+    app: tauri::AppHandle,
+    project_path: String,
+) -> Result<Vec<SkillInfo>, String> {
+    let source_root = bundled_skills_dir(&app)
+        .ok_or_else(|| "Bundled DevPrism skills were not found in the app resources.".to_string())?;
+
+    let mut skill_dirs = Vec::new();
+    collect_skill_dirs(&source_root, &mut skill_dirs);
+    skill_dirs.sort();
+    if skill_dirs.is_empty() {
+        return Err("No bundled skills with a SKILL.md were found.".into());
+    }
+
+    let target_root = skills_dir(Some(&project_path));
+    std::fs::create_dir_all(&target_root)
+        .map_err(|e| format!("Failed to create skills dir {}: {}", target_root.display(), e))?;
+
+    let mut installed = Vec::new();
+    for skill_dir in skill_dirs {
+        let raw = skill_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| "Bundled skill has an invalid folder name".to_string())?;
+        let folder = sanitize_skill_folder_name(raw);
+        if folder.is_empty() {
+            continue;
+        }
+        let target = target_root.join(&folder);
+        if target.exists() {
+            std::fs::remove_dir_all(&target)
+                .map_err(|e| format!("Failed to replace skill {}: {}", target.display(), e))?;
+        }
+        copy_dir_recursive(&skill_dir, &target)?;
+        if let Some(info) = parse_skill_md(&target) {
+            installed.push(info);
+        }
+    }
+    Ok(installed)
+}
+
+/// Create a brand-new custom skill "on the go" from user-supplied fields and
+/// install it into the project's `.claude/skills/` directory. Writes a valid
+/// SKILL.md (YAML frontmatter + body) so the agent can use it immediately.
+#[tauri::command]
+pub async fn create_custom_skill(
+    project_path: String,
+    name: String,
+    description: String,
+    instructions: String,
+) -> Result<SkillInfo, String> {
+    let folder = sanitize_skill_folder_name(name.trim());
+    if folder.is_empty() {
+        return Err("Skill name must contain letters or numbers.".into());
+    }
+    let description = description.trim();
+    if description.is_empty() {
+        return Err("Please provide a short description so the agent knows when to use this skill.".into());
+    }
+
+    let target_root = skills_dir(Some(&project_path));
+    let target = target_root.join(&folder);
+    if target.exists() {
+        return Err(format!("A skill named '{}' already exists in this project.", folder));
+    }
+    std::fs::create_dir_all(&target)
+        .map_err(|e| format!("Failed to create skill folder {}: {}", target.display(), e))?;
+
+    // Escape the description for the single-line YAML double-quoted scalar.
+    let yaml_desc = description.replace('\\', "\\\\").replace('"', "\\\"");
+    let body = if instructions.trim().is_empty() {
+        "## Workflow\n\nDescribe the steps the agent should follow for this skill.\n".to_string()
+    } else {
+        format!("## Workflow\n\n{}\n", instructions.trim())
+    };
+    let contents = format!(
+        "---\nname: {folder}\ndescription: \"{yaml_desc}\"\n---\n\n# {name}\n\n{body}",
+        folder = folder,
+        yaml_desc = yaml_desc,
+        name = name.trim(),
+        body = body,
+    );
+    std::fs::write(target.join("SKILL.md"), contents)
+        .map_err(|e| format!("Failed to write SKILL.md: {}", e))?;
+
+    parse_skill_md(&target).ok_or_else(|| "Created skill but its SKILL.md is unreadable.".into())
+}
+
 /// Ensure the target directory is creatable and writable.
 /// If creation fails (e.g. ~/.claude is owned by root), prompt for admin password via osascript.
 fn ensure_target_writable(target: &Path) -> Result<(), String> {

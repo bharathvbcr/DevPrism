@@ -54,6 +54,21 @@ When generating figures with Python, always:
 2. Add corresponding \`\\includegraphics\` in the \`.tex\` file
 3. Use publication-quality formatting (proper labels, legends, font sizes)
 
+## Your project context (master / instruction files)
+
+DevPrism auto-discovers your project's context at the start of every task — you
+don't need to re-paste your details or turn them into a skill. Drop a master file
+at the project root and the agent reads it automatically:
+
+- \`MASTER.md\` (or \`RESUME.md\`, \`CV.md\`, \`PROFILE.md\`, \`*.master.md\`) — your
+  elaborate details (career history, target journal, author info, conventions).
+- \`.devprism/instructions.md\` — standing instructions for this project.
+
+The agent inlines a small master file, lists larger ones (and \`main.tex\`,
+\`references.bib\`, \`*.master.json\`) to open on demand, sees a project map, and
+knows which installed skills to use. See \`docs/CONTEXT_FILES.md\`. (A *skill* is a
+reusable procedure; a *master file* is your data — keep them separate.)
+
 ## Gotchas
 
 - Tectonic compiles with pdfTeX by default. For Unicode-heavy documents, add \`% !TEX program = xelatex\` or \`lualatex\` at the top of \`main.tex\`.

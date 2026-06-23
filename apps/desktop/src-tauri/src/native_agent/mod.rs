@@ -179,6 +179,9 @@ pub async fn run_native_agent(
     base_url: Option<String>,
     // Base64 image data (no data: prefix) for vision-capable models.
     images: Option<Vec<String>>,
+    // Optional Ollama sampling overrides (default num_ctx=8192, temperature=0.4).
+    num_ctx: Option<u32>,
+    temperature: Option<f32>,
 ) -> Result<(), String> {
     let cancel = Arc::new(AtomicBool::new(false));
     let notify = Arc::new(Notify::new());
@@ -210,7 +213,7 @@ pub async fn run_native_agent(
     };
 
     let project = std::path::Path::new(&project_path);
-    let client = ollama::OllamaClient::new(&base, &model);
+    let client = ollama::OllamaClient::new(&base, &model, num_ctx, temperature);
 
     let mut system = String::from(SYSTEM_RULES);
     system.push_str(&crate::project_context::build_project_context_prompt(project));

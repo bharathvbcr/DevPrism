@@ -259,6 +259,10 @@ export function ProjectPicker() {
   const setNativeAgentEnabled = useSettingsStore(
     (s) => s.setNativeAgentEnabled,
   );
+  const nativeNumCtx = useSettingsStore((s) => s.nativeNumCtx);
+  const setNativeNumCtx = useSettingsStore((s) => s.setNativeNumCtx);
+  const nativeTemperature = useSettingsStore((s) => s.nativeTemperature);
+  const setNativeTemperature = useSettingsStore((s) => s.setNativeTemperature);
   const activeSpace = useMemo(
     () => spaces.find((s) => s.id === activeSpaceId) ?? null,
     [spaces, activeSpaceId],
@@ -648,6 +652,45 @@ export function ProjectPicker() {
                         </p>
                       </div>
                     </label>
+                    {nativeAgentEnabled && (
+                      <div className="flex flex-wrap items-end gap-4 border-border/60 border-b px-4 py-3">
+                        <label className="flex flex-col gap-1">
+                          <span className="text-muted-foreground text-xs">
+                            Context window (num_ctx)
+                          </span>
+                          <input
+                            type="number"
+                            min={512}
+                            step={512}
+                            value={nativeNumCtx}
+                            onChange={(e) =>
+                              setNativeNumCtx(Number(e.target.value))
+                            }
+                            className="h-8 w-28 rounded-md border border-input bg-background px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                          />
+                        </label>
+                        <label className="flex flex-col gap-1">
+                          <span className="text-muted-foreground text-xs">
+                            Temperature
+                          </span>
+                          <input
+                            type="number"
+                            min={0}
+                            max={2}
+                            step={0.1}
+                            value={nativeTemperature}
+                            onChange={(e) =>
+                              setNativeTemperature(Number(e.target.value))
+                            }
+                            className="h-8 w-24 rounded-md border border-input bg-background px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                          />
+                        </label>
+                        <p className="text-muted-foreground/70 text-xs">
+                          Larger context = more memory/VRAM. Lower temperature =
+                          more deterministic edits.
+                        </p>
+                      </div>
+                    )}
                     <ClaudeSetup variant="embedded" />
                   </SettingsPanel>
                 ) : (

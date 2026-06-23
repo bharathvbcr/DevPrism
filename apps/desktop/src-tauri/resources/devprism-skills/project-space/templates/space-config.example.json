@@ -1,0 +1,12 @@
+{
+  "id": "spc_research_protein_folding",
+  "name": "research-protein-folding",
+  "color": "#4f8cff",
+  "defaultProvider": "ollama",
+  "defaultModel": "",
+  "skillIds": [
+    "manuscript-paper",
+    "latex-toolkit",
+    "beamer-slides"
+  ]
+}

@@ -31,10 +31,16 @@ import {
   MonitorIcon,
   MoonIcon,
   SunIcon,
+  LayersIcon,
+  CheckIcon,
+  MoreVerticalIcon,
+  PencilIcon,
+  Trash2Icon,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useProjectStore } from "@/stores/project-store";
+import { useSpacesStore, type Space } from "@/stores/spaces-store";
 import { useDocumentStore } from "@/stores/document-store";
 import { useClaudeSetupStore } from "@/stores/claude-setup-store";
 import { useUvSetupStore } from "@/stores/uv-setup-store";
@@ -51,6 +57,14 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
 import { ProjectWizard, type CreationMode } from "./project-wizard";
 import { ClaudeSetup } from "./claude-setup";
 import { cn } from "@/lib/utils";
@@ -100,6 +114,11 @@ export function ProjectPicker() {
   const [searchQuery, setSearchQuery] = useState("");
   const [removeProjectTarget, setRemoveProjectTarget] =
     useState<RecentProject | null>(null);
+  const [spaceDialog, setSpaceDialog] = useState<{
+    editingId: string | null;
+    name: string;
+  } | null>(null);
+  const [installingSkills, setInstallingSkills] = useState(false);
   const defaultProjectsDiscoveredRef = useRef(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const { theme = "system", setTheme } = useTheme();
@@ -206,15 +225,65 @@ export function ProjectPicker() {
     setWizardMode(mode);
   };
 
+  // ─── Project Spaces ───
+  const spaces = useSpacesStore((s) => s.spaces);
+  const projectSpace = useSpacesStore((s) => s.projectSpace);
+  const activeSpaceId = useSpacesStore((s) => s.activeSpaceId);
+  const setActiveSpace = useSpacesStore((s) => s.setActiveSpace);
+  const createSpace = useSpacesStore((s) => s.createSpace);
+  const renameSpace = useSpacesStore((s) => s.renameSpace);
+  const deleteSpace = useSpacesStore((s) => s.deleteSpace);
+  const assignProject = useSpacesStore((s) => s.assignProject);
+  const setSpaceDefaults = useSpacesStore((s) => s.setSpaceDefaults);
+  const activeSpace = useMemo(
+    () => spaces.find((s) => s.id === activeSpaceId) ?? null,
+    [spaces, activeSpaceId],
+  );
+
   const normalizedSearch = searchQuery.trim().toLowerCase();
   const visibleProjects = useMemo(() => {
-    if (!normalizedSearch) return recentProjects;
-    return recentProjects.filter(
-      (project) =>
-        project.name.toLowerCase().includes(normalizedSearch) ||
-        project.path.toLowerCase().includes(normalizedSearch),
+    let list = recentProjects;
+    if (activeSpaceId) {
+      list = list.filter((p) => projectSpace[p.path] === activeSpaceId);
+    }
+    if (normalizedSearch) {
+      list = list.filter(
+        (project) =>
+          project.name.toLowerCase().includes(normalizedSearch) ||
+          project.path.toLowerCase().includes(normalizedSearch),
+      );
+    }
+    return list;
+  }, [normalizedSearch, recentProjects, activeSpaceId, projectSpace]);
+
+  const handleInstallSpaceSkills = async (space: Space) => {
+    const projectsInSpace = recentProjects.filter(
+      (p) => projectSpace[p.path] === space.id,
     );
-  }, [normalizedSearch, recentProjects]);
+    if (projectsInSpace.length === 0) {
+      toast.info("Add projects to this space first.");
+      return;
+    }
+    setInstallingSkills(true);
+    try {
+      let total = 0;
+      for (const project of projectsInSpace) {
+        const installed = await invoke<unknown[]>("install_bundled_skills", {
+          projectPath: project.path,
+        });
+        total += Array.isArray(installed) ? installed.length : 0;
+      }
+      toast.success(
+        `Installed DevPrism skills into ${projectsInSpace.length} project${
+          projectsInSpace.length === 1 ? "" : "s"
+        } (${total} skill folders).`,
+      );
+    } catch (err) {
+      toast.error(`Failed to install skills: ${String(err)}`);
+    } finally {
+      setInstallingSkills(false);
+    }
+  };
 
   if (wizardMode) {
     return (
@@ -270,21 +339,72 @@ export function ProjectPicker() {
           )}
         >
           <ProjectNavButton
-            active={activeSection === "projects"}
+            active={activeSection === "projects" && !activeSpaceId}
             collapsed={isSidebarCollapsed}
             icon={FolderOpenIcon}
-            onClick={() => setActiveSection("projects")}
+            onClick={() => {
+              setActiveSection("projects");
+              setActiveSpace(null);
+            }}
           >
             All Projects
           </ProjectNavButton>
-          <ProjectNavButton
-            active={activeSection === "settings"}
-            collapsed={isSidebarCollapsed}
-            icon={SettingsIcon}
-            onClick={() => setActiveSection("settings")}
-          >
+
+          {!isSidebarCollapsed && (
+            <div className="mt-2 flex flex-col gap-0.5">
+              <div className="flex items-center justify-between px-2 py-1">
+                <span className="font-medium text-[10px] text-muted-foreground/70 uppercase tracking-wider">
+                  Spaces
+                </span>
+                <button
+                  type="button"
+                  title="New space"
+                  onClick={() => setSpaceDialog({ editingId: null, name: "" })}
+                  className="flex size-5 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
+                >
+                  <PlusIcon className="size-3.5" />
+                </button>
+              </div>
+              {spaces.length === 0 ? (
+                <p className="px-2 pb-1 text-[11px] text-muted-foreground/60 leading-snug">
+                  Group related projects into a space.
+                </p>
+              ) : (
+                spaces.map((space) => (
+                  <SpaceNavButton
+                    key={space.id}
+                    space={space}
+                    active={
+                      activeSection === "projects" && activeSpaceId === space.id
+                    }
+                    count={
+                      Object.values(projectSpace).filter((id) => id === space.id)
+                        .length
+                    }
+                    onSelect={() => {
+                      setActiveSection("projects");
+                      setActiveSpace(space.id);
+                    }}
+                    onRename={() =>
+                      setSpaceDialog({ editingId: space.id, name: space.name })
+                    }
+                    onDelete={() => deleteSpace(space.id)}
+                  />
+                ))
+              )}
+            </div>
+          )}
+
+          <div className="mt-2">
+            <ProjectNavButton
+              active={activeSection === "settings"}
+              collapsed={isSidebarCollapsed}
+              icon={SettingsIcon}
+              onClick={() => setActiveSection("settings")}
+            >
             Settings
-          </ProjectNavButton>
+            </ProjectNavButton>
+          </div>
         </nav>
 
         <div
@@ -343,8 +463,20 @@ export function ProjectPicker() {
       <main className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-[calc(48px+var(--titlebar-height))] shrink-0 flex-nowrap items-center gap-3 border-border/70 border-b bg-background px-5">
           <div className="mr-auto flex min-w-0 items-center">
-            <h1 className="truncate font-semibold text-lg leading-none">
-              {activeSection === "settings" ? "Settings" : "All Projects"}
+            <h1 className="flex items-center gap-2 truncate font-semibold text-lg leading-none">
+              {activeSection === "settings" ? (
+                "Settings"
+              ) : activeSpace ? (
+                <>
+                  <span
+                    className="size-2.5 shrink-0 rounded-full"
+                    style={{ backgroundColor: activeSpace.color }}
+                  />
+                  <span className="truncate">{activeSpace.name}</span>
+                </>
+              ) : (
+                "All Projects"
+              )}
             </h1>
           </div>
 
@@ -382,6 +514,38 @@ export function ProjectPicker() {
             </div>
           )}
         </header>
+
+        {activeSection === "projects" && activeSpace && (
+          <div className="flex flex-wrap items-center gap-3 border-border/60 border-b bg-muted/20 px-5 py-2.5">
+            <span className="text-muted-foreground text-xs">
+              Default model
+            </span>
+            <input
+              value={activeSpace.defaultModel ?? ""}
+              onChange={(event) =>
+                setSpaceDefaults(activeSpace.id, {
+                  defaultModel: event.target.value,
+                })
+              }
+              placeholder="auto (first installed Ollama model)"
+              className="h-8 w-56 rounded-md border border-input bg-background px-2.5 text-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-ring"
+            />
+            <div className="ml-auto flex items-center gap-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                className="h-8 gap-1.5"
+                disabled={installingSkills}
+                onClick={() => void handleInstallSpaceSkills(activeSpace)}
+              >
+                <SparklesIcon className="size-3.5" />
+                {installingSkills
+                  ? "Installing…"
+                  : "Install skills to projects"}
+              </Button>
+            </div>
+          </div>
+        )}
 
         <div className="min-h-0 flex-1 overflow-auto">
           {activeSection === "settings" ? (
@@ -450,6 +614,11 @@ export function ProjectPicker() {
                       project={project}
                       onOpen={() => handleOpenRecent(project.path)}
                       onRemove={() => setRemoveProjectTarget(project)}
+                      spaces={spaces}
+                      currentSpaceId={projectSpace[project.path] ?? null}
+                      onAssign={(spaceId) =>
+                        assignProject(project.path, spaceId)
+                      }
                     />
                   ))}
                 </div>
@@ -500,6 +669,67 @@ export function ProjectPicker() {
               </div>
             </button>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Create / rename space dialog */}
+      <Dialog
+        open={!!spaceDialog}
+        onOpenChange={(open) => {
+          if (!open) setSpaceDialog(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>
+              {spaceDialog?.editingId ? "Rename space" : "New space"}
+            </DialogTitle>
+            <DialogDescription>
+              {spaceDialog?.editingId
+                ? "Give this space a clearer name."
+                : "Group related projects with a shared default model and skills."}
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (!spaceDialog) return;
+              const name = spaceDialog.name.trim();
+              if (!name) return;
+              if (spaceDialog.editingId) {
+                renameSpace(spaceDialog.editingId, name);
+              } else {
+                const created = createSpace(name);
+                setActiveSection("projects");
+                setActiveSpace(created.id);
+              }
+              setSpaceDialog(null);
+            }}
+          >
+            <input
+              autoFocus
+              value={spaceDialog?.name ?? ""}
+              onChange={(event) =>
+                setSpaceDialog((prev) =>
+                  prev ? { ...prev, name: event.target.value } : prev,
+                )
+              }
+              placeholder="e.g. PhD Papers, Job Applications"
+              className="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-ring"
+            />
+            <DialogFooter className="mt-4">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setSpaceDialog(null)}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" disabled={!spaceDialog?.name.trim()}>
+                {spaceDialog?.editingId ? "Save" : "Create space"}
+              </Button>
+            </DialogFooter>
+          </form>
         </DialogContent>
       </Dialog>
 
@@ -749,10 +979,16 @@ function ProjectPreviewCard({
   project,
   onOpen,
   onRemove,
+  spaces,
+  currentSpaceId,
+  onAssign,
 }: {
   project: RecentProject;
   onOpen: () => void;
   onRemove: () => void;
+  spaces: Space[];
+  currentSpaceId: string | null;
+  onAssign: (spaceId: string | null) => void;
 }) {
   const [preview, setPreview] = useState<ProjectPreviewState>(() => {
     const cached = projectPreviewCache.get(projectPreviewCacheKey(project));
@@ -799,15 +1035,55 @@ function ProjectPreviewCard({
         >
           <ProjectPreviewSurface preview={preview} projectName={project.name} />
         </button>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="absolute top-2 right-2 size-7 bg-background/80 opacity-0 shadow-sm backdrop-blur-sm transition-opacity focus-visible:opacity-100 group-hover:opacity-100"
-          onClick={onRemove}
-          aria-label={`Remove ${project.name}`}
-        >
-          <XIcon className="size-3.5" />
-        </Button>
+        <div className="absolute top-2 right-2 flex gap-1 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-7 bg-background/80 shadow-sm backdrop-blur-sm"
+                aria-label={`Move ${project.name} to a space`}
+              >
+                <MoreVerticalIcon className="size-3.5" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-48">
+              <DropdownMenuLabel className="flex items-center gap-2">
+                <LayersIcon className="size-3.5" />
+                Move to space
+              </DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => onAssign(null)}>
+                <span className="flex-1">No space</span>
+                {currentSpaceId === null && <CheckIcon className="size-3.5" />}
+              </DropdownMenuItem>
+              {spaces.map((space) => (
+                <DropdownMenuItem
+                  key={space.id}
+                  onClick={() => onAssign(space.id)}
+                >
+                  <span
+                    className="size-2.5 shrink-0 rounded-full"
+                    style={{ backgroundColor: space.color }}
+                  />
+                  <span className="flex-1 truncate">{space.name}</span>
+                  {currentSpaceId === space.id && (
+                    <CheckIcon className="size-3.5" />
+                  )}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7 bg-background/80 shadow-sm backdrop-blur-sm"
+            onClick={onRemove}
+            aria-label={`Remove ${project.name}`}
+          >
+            <XIcon className="size-3.5" />
+          </Button>
+        </div>
       </div>
       <button
         className="mt-2 block w-full truncate text-left font-medium text-sm leading-tight hover:underline"
@@ -870,6 +1146,75 @@ function ProjectPreviewSurface({
     <div className="flex h-full w-full flex-col items-center justify-center bg-muted/10 text-muted-foreground">
       <FileTextIcon className="mb-2 size-5" />
       <span className="text-xs">No preview</span>
+    </div>
+  );
+}
+
+function SpaceNavButton({
+  space,
+  active,
+  count,
+  onSelect,
+  onRename,
+  onDelete,
+}: {
+  space: Space;
+  active: boolean;
+  count: number;
+  onSelect: () => void;
+  onRename: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div
+      className={cn(
+        "group/space flex items-center rounded-lg transition-colors",
+        active
+          ? "bg-muted text-foreground"
+          : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+      )}
+    >
+      <button
+        type="button"
+        onClick={onSelect}
+        className="flex h-8 min-w-0 flex-1 items-center gap-2 px-2 text-left font-medium text-sm"
+        title={space.name}
+      >
+        <span
+          className="size-2.5 shrink-0 rounded-full"
+          style={{ backgroundColor: space.color }}
+        />
+        <span className="truncate">{space.name}</span>
+        {count > 0 && (
+          <span className="ml-auto shrink-0 text-[10px] text-muted-foreground/70">
+            {count}
+          </span>
+        )}
+      </button>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            className="mr-1 flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/space:opacity-100"
+            aria-label={`${space.name} options`}
+          >
+            <MoreVerticalIcon className="size-3.5" />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-40">
+          <DropdownMenuItem onClick={onRename}>
+            <PencilIcon className="size-3.5" />
+            Rename
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onClick={onDelete}
+            className="text-destructive focus:text-destructive"
+          >
+            <Trash2Icon className="size-3.5" />
+            Delete space
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
     </div>
   );
 }

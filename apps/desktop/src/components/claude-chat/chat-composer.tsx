@@ -50,6 +50,7 @@ import {
   type OpenAiCompatibleCredentialInfo,
 } from "@/stores/claude-setup-store";
 import { useDocumentStore, type ProjectFile } from "@/stores/document-store";
+import { useSettingsStore } from "@/stores/settings-store";
 import { getUniqueTargetName } from "@/lib/tauri/fs";
 import {
   getProviderDisplayName,
@@ -315,10 +316,11 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
   const selectedProviderCredential =
     configuredOpenAiCredential ??
     (!showClaudeProvider ? fallbackProviderCredential : null);
+  const nativeAgentEnabled = useSettingsStore((s) => s.nativeAgentEnabled);
   const claudeProviderActive =
     showClaudeProvider && !selectedProviderCredential;
   const providerSelectionReady =
-    claudeProviderActive || !!selectedProviderCredential;
+    nativeAgentEnabled || claudeProviderActive || !!selectedProviderCredential;
   const selectedProviderModel = selectedProviderCredential
     ? selectedProviderModels[selectedProviderCredential.id] ||
       selectedProviderCredential.model

@@ -2064,11 +2064,7 @@ interface SkillsStatus {
   location: string;
 }
 
-function EnvironmentSection({
-  projectPath,
-}: {
-  projectPath: string | null;
-}) {
+function EnvironmentSection({ projectPath }: { projectPath: string | null }) {
   // ── Python / uv ──
   const venvReady = useUvSetupStore((s) => s.venvReady);
   const uvStatus = useUvSetupStore((s) => s.status);
@@ -2253,7 +2249,9 @@ function DevPrismSkillsDialog({
         projectPath,
       });
       const count = Array.isArray(installed) ? installed.length : 0;
-      toast.success(`Installed ${count} DevPrism skill${count === 1 ? "" : "s"}.`);
+      toast.success(
+        `Installed ${count} DevPrism skill${count === 1 ? "" : "s"}.`,
+      );
     } catch (err) {
       toast.error(`Failed to install skills: ${String(err)}`);
     } finally {

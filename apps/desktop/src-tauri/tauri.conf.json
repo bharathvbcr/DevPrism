@@ -57,9 +57,7 @@
         "installMode": "perMachine"
       }
     },
-    "resources": [
-      "resources/devprism-skills"
-    ]
+    "resources": ["resources/devprism-skills"]
   },
   "plugins": {
     "updater": {

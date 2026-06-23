@@ -18,7 +18,6 @@ pub struct AgentProviderSettings {
     pub model: String,
     pub backend_mode: String,
     pub gemini_api_key: Option<String>,
-    pub gemini_cli_model: Option<String>,
     pub codex_cli_model: Option<String>,
     pub ollama_base_url: String,
     pub ollama_model: String,
@@ -27,11 +26,10 @@ pub struct AgentProviderSettings {
 impl Default for AgentProviderSettings {
     fn default() -> Self {
         Self {
-            provider: "gemini-cli".to_string(),
-            model: "gemini-1.5-pro".to_string(),
-            backend_mode: "cli".to_string(),
+            provider: "ollama".to_string(),
+            model: "llama3".to_string(),
+            backend_mode: "local".to_string(),
             gemini_api_key: None,
-            gemini_cli_model: Some("gemini-1.5-pro".to_string()),
             codex_cli_model: Some("gpt-5.2".to_string()),
             ollama_base_url: "http://localhost:11434".to_string(),
             ollama_model: "llama3".to_string(),
@@ -384,41 +382,6 @@ fn find_agent_cli_binary() -> Result<String, String> {
     Err("Not found in any known location. Install from https://claude.ai".to_string())
 }
 
-fn find_gemini_binary() -> Result<String, String> {
-    if let Ok(path) = which::which("gemini") {
-        return Ok(path.to_string_lossy().to_string());
-    }
-
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    let mut candidates = vec![
-        home.join(".devprism").join("local").join("gemini"),
-        home.join(".local").join("bin").join("gemini"),
-        home.join(".npm-global").join("bin").join("gemini"),
-    ];
-
-    #[cfg(target_os = "windows")]
-    {
-        if let Ok(appdata) = std::env::var("APPDATA") {
-            candidates.push(PathBuf::from(appdata).join("npm").join("gemini.cmd"));
-        }
-        candidates.push(PathBuf::from(r"C:\Program Files\nodejs\gemini.cmd"));
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        candidates.push(PathBuf::from("/usr/local/bin/gemini"));
-        candidates.push(PathBuf::from("/opt/homebrew/bin/gemini"));
-    }
-
-    for path in candidates {
-        if path.exists() {
-            return Ok(path.to_string_lossy().to_string());
-        }
-    }
-
-    Err("Gemini CLI not found. Install it from https://github.com/google-gemini/gemini-cli, select Codex CLI, or configure Gemini API/Ollama in Settings.".to_string())
-}
-
 fn find_codex_binary() -> Result<String, String> {
     if let Ok(path) = which::which("codex") {
         return Ok(path.to_string_lossy().to_string());
@@ -453,16 +416,7 @@ fn find_codex_binary() -> Result<String, String> {
         }
     }
 
-    Err("Codex CLI not found. Install Codex CLI, select Gemini CLI, or configure Gemini API/Ollama in Settings.".to_string())
-}
-
-fn gemini_cli_command_args(prompt: &str, model: &str) -> Vec<String> {
-    vec![
-        "--prompt".to_string(),
-        prompt.to_string(),
-        "-m".to_string(),
-        model.to_string(),
-    ]
+    Err("Codex CLI not found. Install Codex CLI, or configure Gemini API/Ollama in Settings.".to_string())
 }
 
 fn codex_cli_command_args(prompt: &str, model: Option<&str>, project_path: &str) -> Vec<String> {
@@ -1745,7 +1699,7 @@ async fn execute_native_agent(
         "gemini-api" => {
             let key = resolve_gemini_api_key(gemini_api_key, &stored)
                 .ok_or_else(|| {
-                    "Gemini API key missing. Select Gemini CLI or Codex CLI in Settings, add a Gemini API key, or set GEMINI_API_KEY.".to_string()
+                    "Gemini API key missing. Select Codex CLI or Ollama in Settings, add a Gemini API key, or set GEMINI_API_KEY.".to_string()
                 })?;
             Arc::new(GeminiProvider::with_api_key(key, selected_model.clone())?)
         }
@@ -1800,73 +1754,6 @@ async fn execute_native_agent(
         }
     });
 
-    Ok(())
-}
-
-async fn execute_gemini_cli(
-    window: WebviewWindow,
-    project_path: String,
-    prompt: String,
-    tab_id: String,
-    model: Option<String>,
-) -> Result<(), String> {
-    let gemini_path = find_gemini_binary()?;
-    let model = model.unwrap_or_else(|| {
-        merge_provider_settings(read_settings_value().unwrap_or_else(|_| serde_json::json!({})))
-            .gemini_cli_model
-            .filter(|model| !model.trim().is_empty())
-            .unwrap_or_else(|| "gemini-1.5-pro".to_string())
-    });
-
-    let mut cmd = Command::new(gemini_path);
-    cmd.current_dir(project_path);
-    cmd.args(gemini_cli_command_args(&prompt, &model));
-    let output = cmd
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run Gemini CLI: {}", e))?;
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-
-    if !output.status.success() {
-        let _ = window.emit(
-            "agent-error",
-            AgentErrorEvent {
-                tab_id: tab_id.clone(),
-                data: stderr.clone(),
-            },
-        );
-        let _ = window.emit(
-            "agent-complete",
-            AgentCompleteEvent {
-                tab_id,
-                success: false,
-            },
-        );
-        return Err(format!("Gemini CLI failed: {}", stderr));
-    }
-
-    let text = if stdout.is_empty() { stderr } else { stdout };
-    let wrapped = serde_json::json!({
-        "type": "assistant",
-        "message": {
-            "content": [{ "type": "text", "text": text }]
-        }
-    });
-    let _ = window.emit(
-        "agent-output",
-        AgentOutputEvent {
-            tab_id: tab_id.clone(),
-            data: wrapped.to_string(),
-        },
-    );
-    let _ = window.emit(
-        "agent-complete",
-        AgentCompleteEvent {
-            tab_id,
-            success: true,
-        },
-    );
     Ok(())
 }
 
@@ -1954,21 +1841,8 @@ pub async fn execute_agent_code(
     let stored_settings =
         merge_provider_settings(read_settings_value().unwrap_or_else(|_| serde_json::json!({})));
     let provider_choice = selected_provider(provider.clone(), &stored_settings);
-    if provider_choice == "gemini-cli" {
-        return execute_gemini_cli(window, project_path, prompt, tab_id, model).await;
-    }
     if provider_choice == "codex-cli" {
         return execute_codex_cli(window, project_path, prompt, tab_id, model).await;
-    }
-    if provider_choice == "gemini-api"
-        && resolve_gemini_api_key(gemini_api_key.clone(), &stored_settings).is_none()
-    {
-        let cli_model = stored_settings
-            .gemini_cli_model
-            .clone()
-            .filter(|model| !model.trim().is_empty())
-            .or_else(|| model.clone());
-        return execute_gemini_cli(window, project_path, prompt, tab_id, cli_model).await;
     }
     if provider_choice == "gemini-api" || provider_choice == "ollama" {
         return execute_native_agent(
@@ -2008,21 +1882,8 @@ pub async fn continue_agent_code(
     let stored_settings =
         merge_provider_settings(read_settings_value().unwrap_or_else(|_| serde_json::json!({})));
     let provider_choice = selected_provider(provider.clone(), &stored_settings);
-    if provider_choice == "gemini-cli" {
-        return execute_gemini_cli(window, project_path, prompt, tab_id, model).await;
-    }
     if provider_choice == "codex-cli" {
         return execute_codex_cli(window, project_path, prompt, tab_id, model).await;
-    }
-    if provider_choice == "gemini-api"
-        && resolve_gemini_api_key(gemini_api_key.clone(), &stored_settings).is_none()
-    {
-        let cli_model = stored_settings
-            .gemini_cli_model
-            .clone()
-            .filter(|model| !model.trim().is_empty())
-            .or_else(|| model.clone());
-        return execute_gemini_cli(window, project_path, prompt, tab_id, cli_model).await;
     }
     if provider_choice == "gemini-api" || provider_choice == "ollama" {
         let agent_state = window.state::<AgentState>();
@@ -2099,21 +1960,8 @@ pub async fn resume_agent_code(
     let stored_settings =
         merge_provider_settings(read_settings_value().unwrap_or_else(|_| serde_json::json!({})));
     let provider_choice = selected_provider(provider.clone(), &stored_settings);
-    if provider_choice == "gemini-cli" {
-        return execute_gemini_cli(window, project_path, prompt, tab_id, model).await;
-    }
     if provider_choice == "codex-cli" {
         return execute_codex_cli(window, project_path, prompt, tab_id, model).await;
-    }
-    if provider_choice == "gemini-api"
-        && resolve_gemini_api_key(gemini_api_key.clone(), &stored_settings).is_none()
-    {
-        let cli_model = stored_settings
-            .gemini_cli_model
-            .clone()
-            .filter(|model| !model.trim().is_empty())
-            .or_else(|| model.clone());
-        return execute_gemini_cli(window, project_path, prompt, tab_id, cli_model).await;
     }
     if provider_choice == "gemini-api" || provider_choice == "ollama" {
         return continue_agent_code(
@@ -2506,7 +2354,7 @@ fn write_settings_value(settings: &serde_json::Value) -> Result<(), String> {
 fn normalize_provider_name(provider: &str) -> String {
     let legacy_provider = ["clau", "de"].join("");
     match provider {
-        "gemini-api" | "gemini-cli" | "codex-cli" | "ollama" => provider.to_string(),
+        "gemini-api" | "codex-cli" | "ollama" => provider.to_string(),
         value if value == legacy_provider => "codex-cli".to_string(),
         _ => AgentProviderSettings::default().provider,
     }
@@ -2546,13 +2394,6 @@ fn merge_provider_settings(settings: serde_json::Value) -> AgentProviderSettings
         .filter(|value| !value.trim().is_empty())
     {
         defaults.gemini_api_key = Some(key.to_string());
-    }
-    if let Some(model) = settings
-        .get("geminiCliModel")
-        .and_then(|v| v.as_str())
-        .filter(|value| !value.trim().is_empty())
-    {
-        defaults.gemini_cli_model = Some(model.to_string());
     }
     if let Some(model) = settings
         .get("codexCliModel")
@@ -2604,10 +2445,6 @@ pub async fn set_agent_provider_settings(settings: AgentProviderSettings) -> Res
             serde_json::json!(settings.gemini_api_key.unwrap_or_default()),
         );
         obj.insert(
-            "geminiCliModel".to_string(),
-            serde_json::json!(settings.gemini_cli_model.unwrap_or_default()),
-        );
-        obj.insert(
             "codexCliModel".to_string(),
             serde_json::json!(settings.codex_cli_model.unwrap_or_default()),
         );
@@ -2621,47 +2458,6 @@ pub async fn set_agent_provider_settings(settings: AgentProviderSettings) -> Res
         );
     }
     write_settings_value(&value)
-}
-
-#[tauri::command]
-pub async fn check_gemini_cli_status() -> Result<ProviderHealth, String> {
-    match find_gemini_binary() {
-        Ok(path) => {
-            let version = run_cli_probe(&path, &["--version"]).await;
-            let auth_status = run_cli_probe(&path, &["auth", "status"]).await;
-            let mut details = vec![format!("Gemini CLI found at {}", path)];
-            match version {
-                Ok(output) if !output.trim().is_empty() => {
-                    details.push(format!("Version: {}", output.trim()))
-                }
-                Ok(_) => {}
-                Err(err) => details.push(format!("Version check unavailable: {}", err)),
-            }
-            match auth_status {
-                Ok(output) if !output.trim().is_empty() => {
-                    details.push(format!("Auth status: {}", output.trim()))
-                }
-                Ok(_) => details.push(
-                    "Auth status command returned no output; run `gemini auth status` in a terminal if prompts fail."
-                        .to_string(),
-                ),
-                Err(err) => details.push(format!(
-                    "Auth status unavailable: {}. If Gemini CLI prompts fail, run `gemini auth login` in a terminal.",
-                    err
-                )),
-            }
-            Ok(ProviderHealth {
-                ok: true,
-                message: details.join("\n"),
-                models: Vec::new(),
-            })
-        }
-        Err(e) => Ok(ProviderHealth {
-            ok: false,
-            message: e,
-            models: Vec::new(),
-        }),
-    }
 }
 
 #[tauri::command]
@@ -2692,10 +2488,6 @@ pub async fn check_codex_cli_status() -> Result<ProviderHealth, String> {
             models: Vec::new(),
         }),
     }
-}
-
-async fn run_cli_probe(binary: &str, args: &[&str]) -> Result<String, String> {
-    run_named_cli_probe("gemini", binary, args).await
 }
 
 async fn run_named_cli_probe(name: &str, binary: &str, args: &[&str]) -> Result<String, String> {
@@ -3109,14 +2901,6 @@ mod tests {
     }
 
     #[test]
-    fn test_gemini_cli_command_args() {
-        assert_eq!(
-            gemini_cli_command_args("hello", "gemini-2.5-pro"),
-            vec!["--prompt", "hello", "-m", "gemini-2.5-pro"]
-        );
-    }
-
-    #[test]
     fn test_codex_cli_command_args_use_project_and_noninteractive_policy() {
         assert_eq!(
             codex_cli_command_args("write intro", Some("gpt-5.2"), "/tmp/project"),
@@ -3139,7 +2923,7 @@ mod tests {
     fn test_provider_normalization_maps_legacy_and_rejects_unknown_fallbacks() {
         let legacy_provider = ["clau", "de"].join("");
         assert_eq!(normalize_provider_name(&legacy_provider), "codex-cli");
-        assert_eq!(normalize_provider_name("unknown-provider"), "gemini-cli");
+        assert_eq!(normalize_provider_name("unknown-provider"), "ollama");
 
         let merged = merge_provider_settings(serde_json::json!({
             "agentProvider": legacy_provider,
@@ -3150,7 +2934,7 @@ mod tests {
 
         assert_eq!(
             selected_provider(Some("bad-provider".to_string()), &merged),
-            "gemini-cli"
+            "ollama"
         );
     }
 

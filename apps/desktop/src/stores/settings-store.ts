@@ -3,11 +3,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
 type CompilerBackend = "tectonic" | "texlive";
-export type AgentProvider =
-  | "gemini-api"
-  | "gemini-cli"
-  | "codex-cli"
-  | "ollama";
+export type AgentProvider = "gemini-api" | "codex-cli" | "ollama";
 
 export function isWindowsRuntime(): boolean {
   return (
@@ -28,7 +24,6 @@ export interface AgentProviderSettings {
   model: string;
   backendMode: "api" | "cli" | "local";
   geminiApiKey?: string | null;
-  geminiCliModel?: string | null;
   codexCliModel?: string | null;
   ollamaBaseUrl: string;
   ollamaModel: string;
@@ -57,11 +52,10 @@ interface SettingsState {
 }
 
 const defaultProviderSettings: AgentProviderSettings = {
-  provider: "gemini-cli",
-  model: "gemini-1.5-pro",
-  backendMode: "cli",
+  provider: "ollama",
+  model: "llama3",
+  backendMode: "local",
   geminiApiKey: "",
-  geminiCliModel: "gemini-1.5-pro",
   codexCliModel: "gpt-5.2",
   ollamaBaseUrl: "http://localhost:11434",
   ollamaModel: "llama3",

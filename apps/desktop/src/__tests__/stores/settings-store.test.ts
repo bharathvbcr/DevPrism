@@ -17,11 +17,10 @@ describe("useSettingsStore provider and knowledge settings", () => {
       redactSecrets: true,
       safeMode: true,
       agentProviderSettings: {
-        provider: "gemini-cli",
-        model: "gemini-1.5-pro",
-        backendMode: "cli",
+        provider: "ollama",
+        model: "llama3",
+        backendMode: "local",
         geminiApiKey: "",
-        geminiCliModel: "gemini-1.5-pro",
         ollamaBaseUrl: "http://localhost:11434",
         ollamaModel: "llama3",
       },
@@ -56,11 +55,11 @@ describe("useSettingsStore provider and knowledge settings", () => {
       if (command === "get_safe_mode") return true;
       if (command === "get_agent_provider_settings") {
         return {
-          provider: "gemini-cli",
-          model: "gemini-2.5-pro",
+          provider: "codex-cli",
+          model: "gpt-5.2",
           backendMode: "cli",
           geminiApiKey: "",
-          geminiCliModel: "gemini-2.5-flash",
+          codexCliModel: "gpt-5.2",
           ollamaBaseUrl: "http://localhost:11434",
           ollamaModel: "llama3",
         };
@@ -81,7 +80,7 @@ describe("useSettingsStore provider and knowledge settings", () => {
     expect(useSettingsStore.getState().redactSecrets).toBe(false);
     expect(useSettingsStore.getState().resumeProfile).toBe("Staff role");
     expect(useSettingsStore.getState().agentProviderSettings.provider).toBe(
-      "gemini-cli",
+      "codex-cli",
     );
   });
 
@@ -96,7 +95,6 @@ describe("useSettingsStore provider and knowledge settings", () => {
           model: "legacy-model",
           backendMode: "cli",
           geminiApiKey: "",
-          geminiCliModel: "gemini-1.5-pro",
           codexCliModel: "gpt-5.2",
           ollamaBaseUrl: "http://localhost:11434",
           ollamaModel: "llama3",

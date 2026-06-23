@@ -62,7 +62,6 @@ describe("SettingsDialog knowledgebase and skills controls", () => {
         model: "gemini-1.5-pro",
         backendMode: "api",
         geminiApiKey: "",
-        geminiCliModel: "gemini-1.5-pro",
         ollamaBaseUrl: "http://localhost:11434",
         ollamaModel: "llama3",
       },

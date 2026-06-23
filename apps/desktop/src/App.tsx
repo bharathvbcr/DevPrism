@@ -4,16 +4,18 @@ import { Toaster } from "@/components/ui/sonner";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 
 import { useDocumentStore } from "@/stores/document-store";
-import { useAgentChatStore } from "@/stores/agent-chat-store";
+import { useClaudeChatStore } from "@/stores/claude-chat-store";
 import { ProjectPicker } from "@/components/project-picker";
 import { WorkspaceLayout } from "@/components/workspace/workspace-layout";
 import { lazy, Suspense, useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import {
+  ScientificSkillsOnboarding,
+  shouldShowOnboarding,
+} from "@/components/scientific-skills/scientific-skills-onboarding";
 import { useUvSetupStore } from "@/stores/uv-setup-store";
-import { useSettingsStore } from "@/stores/settings-store";
 import { ErrorFallback } from "@/components/error-fallback";
-import { SafeModeDialog } from "@/components/agent-chat/safe-mode-dialog";
 import { createLogger } from "@/lib/debug/logger";
 
 const log = createLogger("app");
@@ -24,45 +26,27 @@ const LazyDebugPage = lazy(() =>
   })),
 );
 
-const LazyScientificSkillsOnboarding = lazy(() =>
-  import("@/components/scientific-skills/scientific-skills-onboarding").then(
-    (m) => ({
-      default: m.ScientificSkillsOnboarding,
-    }),
-  ),
-);
-
-function WorkspaceWithAssistant() {
+function WorkspaceWithClaude() {
   const projectRoot = useDocumentStore((s) => s.projectRoot);
   const initialized = useDocumentStore((s) => s.initialized);
   const [showSkillsOnboarding, setShowSkillsOnboarding] = useState(false);
 
-  // Load settings once
-  useEffect(() => {
-    useSettingsStore.getState().loadFromBackend();
-  }, []);
+  // Update window title
   useEffect(() => {
     if (projectRoot) {
-      const name = projectRoot.split(/[/\\]/).pop() || "DevPrism";
-      getCurrentWindow().setTitle(`${name} - DevPrism`);
+      const name = projectRoot.split(/[/\\]/).pop() || "ClaudePrism";
+      getCurrentWindow().setTitle(`${name} - ClaudePrism`);
     }
   }, [projectRoot]);
 
   // Show scientific skills onboarding on first launch
   useEffect(() => {
     if (!initialized) return;
-    let cancelled = false;
-    import("@/components/scientific-skills/scientific-skills-onboarding").then(
-      ({ shouldShowOnboarding }) => {
-        if (cancelled || !shouldShowOnboarding()) return;
-        setTimeout(() => {
-          if (!cancelled) setShowSkillsOnboarding(true);
-        }, 800);
-      },
-    );
-    return () => {
-      cancelled = true;
-    };
+    if (shouldShowOnboarding()) {
+      // Small delay so the workspace renders first
+      const timer = setTimeout(() => setShowSkillsOnboarding(true), 800);
+      return () => clearTimeout(timer);
+    }
   }, [initialized]);
 
   // Auto-setup Python venv when project opens
@@ -85,11 +69,13 @@ function WorkspaceWithAssistant() {
   // Consume pending initial prompt from project wizard
   useEffect(() => {
     if (!initialized) return;
-    // Delay to let AgentChatDrawer mount and register event listeners
+    // Delay to let ClaudeChatDrawer mount and register event listeners
     const timer = setTimeout(() => {
-      const prompt = useAgentChatStore.getState().consumePendingInitialPrompt();
+      const prompt = useClaudeChatStore
+        .getState()
+        .consumePendingInitialPrompt();
       if (prompt) {
-        useAgentChatStore.getState().sendPrompt(prompt);
+        useClaudeChatStore.getState().sendPrompt(prompt);
       }
     }, 500);
     return () => clearTimeout(timer);
@@ -98,13 +84,10 @@ function WorkspaceWithAssistant() {
   return (
     <>
       <WorkspaceLayout />
-      <SafeModeDialog />
       {showSkillsOnboarding && (
-        <Suspense fallback={null}>
-          <LazyScientificSkillsOnboarding
-            onClose={() => setShowSkillsOnboarding(false)}
-          />
-        </Suspense>
+        <ScientificSkillsOnboarding
+          onClose={() => setShowSkillsOnboarding(false)}
+        />
       )}
     </>
   );
@@ -137,7 +120,7 @@ export function App({ onReady }: { onReady?: () => void }) {
             data-tauri-drag-region
             className="fixed inset-x-0 top-0 z-[9999] h-[var(--titlebar-height)]"
           />
-          {projectRoot ? <WorkspaceWithAssistant /> : <ProjectPicker />}
+          {projectRoot ? <WorkspaceWithClaude /> : <ProjectPicker />}
           {showDebug && (
             <div className="fixed inset-0 z-[9998] flex items-end justify-center">
               <div

@@ -147,8 +147,6 @@
       "**",
       "!**/dist",
       "!**/node_modules",
-      "!**/target",
-      "!apps/desktop/src-tauri/gen",
       "!**/.next",
       "!**/.vercel",
       "!**/out",

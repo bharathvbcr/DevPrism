@@ -1,5 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 import { useProjectStore } from "@/stores/project-store";
 
 describe("useProjectStore", () => {
@@ -7,10 +6,8 @@ describe("useProjectStore", () => {
     // Reset the store between tests
     useProjectStore.setState({
       recentProjects: [],
-      linkedProjects: [],
       lastProjectFolder: null,
     });
-    vi.clearAllMocks();
   });
 
   describe("addRecentProject", () => {
@@ -68,41 +65,6 @@ describe("useProjectStore", () => {
       const { recentProjects } = useProjectStore.getState();
       expect(recentProjects).toHaveLength(1);
       expect(recentProjects[0].path).toBe("/b");
-    });
-  });
-
-  describe("linked projects", () => {
-    it("adds detailed linked project metadata through backend command", async () => {
-      vi.mocked(invoke).mockResolvedValue([]);
-
-      await useProjectStore
-        .getState()
-        .addLinkedProject("DevPrism", "/repo/devprism", [], {
-          tags: ["agent", "desktop"],
-          role: "Owner",
-          description: "Native provider integration",
-        });
-
-      expect(invoke).toHaveBeenCalledWith(
-        "add_linked_project",
-        expect.objectContaining({
-          name: "DevPrism",
-          path: "/repo/devprism",
-          tags: ["agent", "desktop"],
-          role: "Owner",
-          description: "Native provider integration",
-        }),
-      );
-    });
-
-    it("refreshes analysis through backend command", async () => {
-      vi.mocked(invoke).mockResolvedValue([]);
-
-      await useProjectStore.getState().analyzeLinkedProject("project-1");
-
-      expect(invoke).toHaveBeenCalledWith("analyze_linked_project", {
-        id: "project-1",
-      });
     });
   });
 });

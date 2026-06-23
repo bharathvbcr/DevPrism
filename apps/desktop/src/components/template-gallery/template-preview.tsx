@@ -1,7 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { mkdir, writeTextFile } from "@tauri-apps/plugin-fs";
-import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { homeDir } from "@tauri-apps/api/path";
 import { toast } from "sonner";
@@ -33,7 +32,7 @@ import { Input } from "@/components/ui/input";
 import { useTemplateStore } from "@/stores/template-store";
 import { useProjectStore } from "@/stores/project-store";
 import { useDocumentStore } from "@/stores/document-store";
-import { useAgentChatStore } from "@/stores/agent-chat-store";
+import { useClaudeChatStore } from "@/stores/claude-chat-store";
 import {
   getTemplateById,
   getTemplateSkeleton,
@@ -162,7 +161,7 @@ export function TemplatePreview() {
       setProjectFolder(lastProjectFolder);
     } else {
       homeDir()
-        .then((home) => join(home, "Documents", "DevPrism"))
+        .then((home) => join(home, "Documents", "ClaudePrism"))
         .then(async (dir) => {
           await mkdir(dir, { recursive: true }).catch(() => {});
           setProjectFolder(dir);
@@ -396,7 +395,6 @@ export function TemplatePreview() {
       title: "Choose Location for New Project",
     });
     if (selected) {
-      await invoke("allow_project_directory", { rootPath: selected });
       setProjectFolder(selected);
       setLastProjectFolder(selected);
     }
@@ -409,7 +407,6 @@ export function TemplatePreview() {
 
     try {
       const projectPath = await join(projectFolder, projectName.trim());
-      await invoke("allow_project_directory", { rootPath: projectFolder });
       await mkdir(projectPath, { recursive: true });
 
       const mainTexPath = await join(projectPath, template.mainFileName);
@@ -457,8 +454,8 @@ export function TemplatePreview() {
           `Please generate the full document content based on my description. Keep the existing preamble and fill in the document body (between \`\\begin{document}\` and \`\\end{document}\`) with appropriate title, author, sections, and content. Make it a complete, well-structured **${template.name.toLowerCase()}** ready for me to refine.`,
         ].join("\n");
 
-        useAgentChatStore.getState().newSession();
-        useAgentChatStore.getState().setPendingInitialPrompt(prompt);
+        useClaudeChatStore.getState().newSession();
+        useClaudeChatStore.getState().setPendingInitialPrompt(prompt);
       }
 
       setLastProjectFolder(projectFolder);
@@ -613,8 +610,8 @@ export function TemplatePreview() {
                       What are you writing?
                     </span>
                     <p className="mt-0.5 text-muted-foreground text-xs leading-relaxed">
-                      Describe your document and Assistant will generate
-                      tailored content.
+                      Describe your document and Claude will generate tailored
+                      content.
                     </p>
                   </div>
                   <Textarea

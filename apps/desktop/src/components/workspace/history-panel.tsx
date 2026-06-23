@@ -41,31 +41,19 @@ function formatRelativeTime(timestamp: number): string {
   return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-const AGENT_SNAPSHOT_PREFIX = "[agent]";
-const LEGACY_AGENT_SNAPSHOT_PREFIX = [91, 99, 108, 97, 117, 100, 101, 93]
-  .map((code) => String.fromCharCode(code))
-  .join("");
-
-function isAgentSnapshot(message: string): boolean {
-  return (
-    message.startsWith(AGENT_SNAPSHOT_PREFIX) ||
-    message.startsWith(LEGACY_AGENT_SNAPSHOT_PREFIX)
-  );
-}
-
 function snapshotTypeLabel(message: string): string {
   if (message.startsWith("[auto]")) return "Auto-save";
   if (message.startsWith("[manual]")) return "Save";
   if (message.startsWith("[compile]")) return "Compile";
-  if (isAgentSnapshot(message))
-    return message.includes("Before") ? "Before agent" : "After agent";
+  if (message.startsWith("[claude]"))
+    return message.includes("Before") ? "Before Claude" : "After Claude";
   if (message.startsWith("[restore]")) return "Restore";
   if (message.startsWith("[init]")) return "Initial";
   return message;
 }
 
 function snapshotTypeBadgeColor(message: string): string {
-  if (isAgentSnapshot(message))
+  if (message.startsWith("[claude]"))
     return "bg-violet-500/15 text-violet-600 dark:text-violet-400";
   if (message.startsWith("[restore]"))
     return "bg-amber-500/15 text-amber-600 dark:text-amber-400";

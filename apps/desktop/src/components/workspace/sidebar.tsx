@@ -24,10 +24,7 @@ import {
   FileSpreadsheetIcon,
   AppWindowIcon,
   FlaskConicalIcon,
-  LinkIcon,
   TerminalIcon,
-  UserCircleIcon,
-  WrenchIcon,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -46,7 +43,6 @@ import { useTheme } from "next-themes";
 import { useDocumentStore, type ProjectFile } from "@/stores/document-store";
 import { useHistoryStore } from "@/stores/history-store";
 import { cn } from "@/lib/utils";
-import { DevPrismLogo } from "@/components/devprism-logo";
 import { ZoteroPanel, ZoteroHeader } from "@/components/workspace/zotero-panel";
 import { Button } from "@/components/ui/button";
 import {
@@ -626,14 +622,11 @@ export function Sidebar() {
     <div className="flex h-full flex-col bg-sidebar text-sidebar-foreground">
       {/* Header — padded top for macOS overlay titlebar */}
       <div className="relative flex h-[calc(48px+var(--titlebar-height))] items-center justify-center border-sidebar-border border-b px-3 pt-[var(--titlebar-height)]">
-        <div className="flex min-w-0 items-center gap-2">
-          <DevPrismLogo imageClassName="size-6" />
-          <div className="flex min-w-0 flex-col">
-            <span className="truncate font-semibold text-sm">DevPrism</span>
-            <span className="truncate text-muted-foreground text-xs">
-              {projectRoot?.split(/[/\\]/).pop() || "Desktop"}
-            </span>
-          </div>
+        <div className="flex flex-col items-center">
+          <span className="font-semibold text-sm">ClaudePrism</span>
+          <span className="text-muted-foreground text-xs">
+            {projectRoot?.split(/[/\\]/).pop() || "Desktop"}
+          </span>
         </div>
         <div className="absolute right-3 flex items-center gap-0.5">
           <Button
@@ -819,17 +812,11 @@ export function Sidebar() {
 
       {/* Footer */}
       <div className="flex items-center justify-between border-sidebar-border border-t px-3 py-2 text-muted-foreground text-xs">
-        <DevPrismLogo
-          className="min-w-0 gap-1.5"
-          imageClassName="size-4"
-          withWordmark
-          wordmarkClassName="truncate font-medium text-xs"
-        />
-        <span className="mx-2 min-w-0 flex-1 truncate">v{appVersion}</span>
+        <span className="truncate">ClaudePrism v{appVersion}</span>
         <div className="flex shrink-0 items-center gap-1">
           <Button variant="ghost" size="icon" className="size-6" asChild>
             <a
-              href="https://github.com/bharathvbcr/DevPrism"
+              href="https://github.com/delibae/claude-prism"
               target="_blank"
               rel="noopener noreferrer"
               title="GitHub"
@@ -1197,17 +1184,11 @@ interface SkillsStatus {
   location: string;
 }
 
-import { SettingsDialog } from "../settings-dialog";
-
 function EnvironmentSection({ projectPath }: { projectPath: string | null }) {
   // ── Python / uv ──
   const venvReady = useUvSetupStore((s) => s.venvReady);
   const uvStatus = useUvSetupStore((s) => s.status);
   const [showUvDialog, setShowUvDialog] = useState(false);
-  const [showSettingsDialog, setShowSettingsDialog] = useState(false);
-  const [settingsInitialTab, setSettingsInitialTab] = useState<
-    "providers" | "general" | "knowledge" | "skills" | "security"
-  >("providers");
 
   // ── Scientific Skills ──
   const [skillsStatus, setSkillsStatus] = useState<SkillsStatus | null>(null);
@@ -1271,12 +1252,6 @@ function EnvironmentSection({ projectPath }: { projectPath: string | null }) {
   const skillsLabel = skillsStatus?.installed
     ? `${skillsStatus.skill_count} skills`
     : "Not installed";
-  const openSettings = (
-    tab: "providers" | "general" | "knowledge" | "skills" | "security",
-  ) => {
-    setSettingsInitialTab(tab);
-    setShowSettingsDialog(true);
-  };
 
   return (
     <>
@@ -1332,40 +1307,6 @@ function EnvironmentSection({ projectPath }: { projectPath: string | null }) {
               {skillsLabel}
             </span>
           </button>
-          <button
-            className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left text-sm transition-colors hover:bg-sidebar-accent/50"
-            onClick={() => openSettings("general")}
-          >
-            <UserCircleIcon className="size-3.5 shrink-0 text-muted-foreground" />
-            <span className="min-w-0 flex-1 truncate text-xs">Resume</span>
-            <span className="shrink-0 text-muted-foreground text-xs">
-              Profile
-            </span>
-          </button>
-          <button
-            className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left text-sm transition-colors hover:bg-sidebar-accent/50"
-            onClick={() => openSettings("knowledge")}
-          >
-            <LinkIcon className="size-3.5 shrink-0 text-muted-foreground" />
-            <span className="min-w-0 flex-1 truncate text-xs">
-              Knowledgebase
-            </span>
-            <span className="shrink-0 text-muted-foreground text-xs">
-              Projects
-            </span>
-          </button>
-          <button
-            className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left text-sm transition-colors hover:bg-sidebar-accent/50"
-            onClick={() => openSettings("skills")}
-          >
-            <WrenchIcon className="size-3.5 shrink-0 text-muted-foreground" />
-            <span className="min-w-0 flex-1 truncate text-xs">
-              Manual Skills
-            </span>
-            <span className="shrink-0 text-muted-foreground text-xs">
-              Add/edit
-            </span>
-          </button>
         </div>
       </div>
 
@@ -1382,12 +1323,6 @@ function EnvironmentSection({ projectPath }: { projectPath: string | null }) {
           }}
         />
       )}
-
-      <SettingsDialog
-        open={showSettingsDialog}
-        onClose={() => setShowSettingsDialog(false)}
-        initialTab={settingsInitialTab}
-      />
     </>
   );
 }

@@ -23,8 +23,8 @@ import {
   hasPdfData,
 } from "@/stores/document-store";
 import { useHistoryStore } from "@/stores/history-store";
-import { useAgentChatStore } from "@/stores/agent-chat-store";
-import { isWindowsRuntime, useSettingsStore } from "@/stores/settings-store";
+import { useClaudeChatStore } from "@/stores/claude-chat-store";
+import { useSettingsStore } from "@/stores/settings-store";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -89,7 +89,6 @@ const ZOOM_OPTIONS = [
 export function PdfPreview() {
   const compilerBackend = useSettingsStore((s) => s.compilerBackend);
   const setCompilerBackend = useSettingsStore((s) => s.setCompilerBackend);
-  const isWindows = isWindowsRuntime();
   const pdfRevision = useDocumentStore((s) => s.pdfRevision);
   const compileError = useDocumentStore((s) => s.compileError);
   const isCompiling = useDocumentStore((s) => s.isCompiling);
@@ -327,7 +326,7 @@ export function PdfPreview() {
       const sel = pdfSelection;
       setPdfSelection(null);
       window.getSelection()?.removeAllRanges();
-      useAgentChatStore.getState().sendPrompt(prompt, {
+      useClaudeChatStore.getState().sendPrompt(prompt, {
         label,
         filePath: resolvedSource?.file ?? "document.pdf",
         selectedText: buildPdfContext(sel.text),
@@ -361,7 +360,7 @@ export function PdfPreview() {
       setPdfSelection(null);
       window.getSelection()?.removeAllRanges();
       if (actionId === "proofread") {
-        useAgentChatStore
+        useClaudeChatStore
           .getState()
           .sendPrompt("Proofread and fix any errors in this text", {
             label,
@@ -601,7 +600,7 @@ export function PdfPreview() {
 
       await useDocumentStore.getState().refreshFiles();
 
-      useAgentChatStore.getState().addPendingAttachment({
+      useClaudeChatStore.getState().addPendingAttachment({
         label: `@${relativePath}`,
         filePath: relativePath,
         selectedText: `[Captured region from PDF page ${result.pageNumber}]`,
@@ -635,7 +634,7 @@ export function PdfPreview() {
 
       const handleFixWithChat = () => {
         const errorList = errors.map((e) => `- ${e}`).join("\n");
-        useAgentChatStore
+        useClaudeChatStore
           .getState()
           .sendPrompt(
             `[Compilation errors]\n${errorList}\n\nFix these LaTeX compilation errors.`,
@@ -813,7 +812,7 @@ export function PdfPreview() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {!isWindows && <SelectItem value="tectonic">Tectonic</SelectItem>}
+              <SelectItem value="tectonic">Tectonic</SelectItem>
               <SelectItem value="texlive">TeXLive</SelectItem>
             </SelectContent>
           </Select>

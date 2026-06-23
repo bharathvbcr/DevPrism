@@ -19,7 +19,7 @@ import {
 } from "lucide-react";
 import { useProjectStore } from "@/stores/project-store";
 import { useDocumentStore } from "@/stores/document-store";
-import { useDevEngineSetupStore } from "@/stores/dev-engine-setup-store";
+import { useClaudeSetupStore } from "@/stores/claude-setup-store";
 import { useUvSetupStore } from "@/stores/uv-setup-store";
 import { useUpdater } from "@/hooks/use-updater";
 import { Button } from "@/components/ui/button";
@@ -31,9 +31,8 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { ProjectWizard, type CreationMode } from "./project-wizard";
-import { DevEngineSetup } from "./dev-engine-setup";
+import { ClaudeSetup } from "./claude-setup";
 import { cn } from "@/lib/utils";
-import { DevPrismLogo } from "@/components/devprism-logo";
 
 export function ProjectPicker() {
   const [showModeDialog, setShowModeDialog] = useState(false);
@@ -46,14 +45,14 @@ export function ProjectPicker() {
   const removeRecentProject = useProjectStore((s) => s.removeRecentProject);
   const openProject = useDocumentStore((s) => s.openProject);
 
-  const devEngineStatus = useDevEngineSetupStore((s) => s.status);
-  const checkDevEngineStatus = useDevEngineSetupStore((s) => s.checkStatus);
-  const isDevEngineReady = devEngineStatus === "ready";
+  const claudeStatus = useClaudeSetupStore((s) => s.status);
+  const checkClaudeStatus = useClaudeSetupStore((s) => s.checkStatus);
+  const isClaudeReady = claudeStatus === "ready";
 
   useEffect(() => {
-    checkDevEngineStatus();
+    checkClaudeStatus();
     getVersion().then(setAppVersion);
-  }, [checkDevEngineStatus]);
+  }, [checkClaudeStatus]);
 
   const handleOpenFolder = async () => {
     const selected = await open({
@@ -87,12 +86,8 @@ export function ProjectPicker() {
     <div className="flex h-full items-center justify-center bg-background">
       <div className="flex w-full max-w-md flex-col items-center gap-8 px-8">
         <div className="flex flex-col items-center gap-2">
-          <DevPrismLogo
-            className="flex-col gap-2"
-            imageClassName="size-16"
-            withWordmark
-            wordmarkClassName="font-bold text-2xl"
-          />
+          <img src="/icon-192.png" alt="ClaudePrism" className="size-16" />
+          <h1 className="font-bold text-2xl">ClaudePrism</h1>
           <VersionBadge
             version={appVersion}
             updateStatus={updateStatus}
@@ -104,17 +99,17 @@ export function ProjectPicker() {
           </p>
         </div>
 
-        {!isDevEngineReady ? <DevEngineSetup /> : <EnvironmentStatus />}
+        {!isClaudeReady ? <ClaudeSetup /> : <EnvironmentStatus />}
 
         <div
-          className={`flex w-full gap-3 ${!isDevEngineReady ? "pointer-events-none opacity-50" : ""}`}
+          className={`flex w-full gap-3 ${!isClaudeReady ? "pointer-events-none opacity-50" : ""}`}
         >
           <Button
             onClick={() => setShowModeDialog(true)}
             size="lg"
             variant="outline"
             className="flex-1 gap-2"
-            disabled={!isDevEngineReady}
+            disabled={!isClaudeReady}
           >
             <FolderPlusIcon className="size-5" />
             New Project
@@ -123,7 +118,7 @@ export function ProjectPicker() {
             onClick={handleOpenFolder}
             size="lg"
             className="flex-1 gap-2"
-            disabled={!isDevEngineReady}
+            disabled={!isClaudeReady}
           >
             <FolderOpenIcon className="size-5" />
             Open Folder
@@ -218,7 +213,7 @@ export function ProjectPicker() {
   );
 }
 
-// ─── Environment Status (shown when Dev Engine is ready) ───
+// ─── Environment Status (shown when Claude is ready) ───
 
 interface SkillsStatus {
   installed: boolean;
@@ -227,8 +222,8 @@ interface SkillsStatus {
 }
 
 function EnvironmentStatus() {
-  const devEngineVersion = useDevEngineSetupStore((s) => s.version);
-  const devEngineEmail = useDevEngineSetupStore((s) => s.accountEmail);
+  const claudeVersion = useClaudeSetupStore((s) => s.version);
+  const claudeEmail = useClaudeSetupStore((s) => s.accountEmail);
 
   const uvStatus = useUvSetupStore((s) => s.status);
   const uvVersion = useUvSetupStore((s) => s.version);
@@ -286,13 +281,11 @@ function EnvironmentStatus() {
   return (
     <>
       <div className="flex w-full flex-col gap-2 rounded-xl border border-border bg-muted/30 px-4 py-3">
-        {/* Dev Engine — always ready here */}
+        {/* Claude Code — always ready here */}
         <StatusRow
           ok={true}
-          label="Dev Engine"
-          detail={[devEngineVersion, devEngineEmail]
-            .filter(Boolean)
-            .join(" · ")}
+          label="Claude Code"
+          detail={[claudeVersion, claudeEmail].filter(Boolean).join(" · ")}
         />
 
         {/* Python (uv) */}

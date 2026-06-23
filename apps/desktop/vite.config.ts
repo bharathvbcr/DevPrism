@@ -19,8 +19,6 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "src"),
-      "node:fs": path.resolve(__dirname, "src/lib/browser-node-shim.ts"),
-      module: path.resolve(__dirname, "src/lib/browser-node-shim.ts"),
     },
   },
   define: {
@@ -54,33 +52,5 @@ export default defineConfig({
       process.env.TAURI_ENV_PLATFORM === "windows" ? "chrome105" : "safari14",
     minify: !process.env.TAURI_ENV_DEBUG ? "esbuild" : false,
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
-    chunkSizeWarningLimit: 900,
-    rollupOptions: {
-      output: {
-        manualChunks(id) {
-          if (
-            id.includes("node_modules/react") ||
-            id.includes("node_modules/react-dom")
-          ) {
-            return "react-vendor";
-          }
-          if (id.includes("node_modules/@codemirror")) {
-            return "codemirror-vendor";
-          }
-          if (
-            id.includes("node_modules/radix-ui") ||
-            id.includes("node_modules/@radix-ui")
-          ) {
-            return "ui-vendor";
-          }
-          if (id.includes("node_modules/katex")) {
-            return "katex-vendor";
-          }
-          if (id.includes("node_modules/mupdf")) {
-            return "mupdf-vendor";
-          }
-        },
-      },
-    },
   },
 });

@@ -1,4 +1,4 @@
-# Contributing to DevPrism
+# Contributing to ClaudePrism
 
 Contributions are welcome! This guide covers the development environment, workflow, and testing.
 
@@ -37,27 +37,27 @@ vcpkg install harfbuzz[graphite2]:x64-windows freetype:x64-windows icu:x64-windo
 ### Setup
 
 ```bash
-git clone https://github.com/bharathvbcr/DevPrism.git
-cd DevPrism
+git clone https://github.com/delibae/claude-prism.git
+cd claude-prism
 pnpm install
 ```
 
 ### Run
 
 ```bash
-pnpm dev
+pnpm dev:desktop
 ```
 
 ### Build
 
 ```bash
-pnpm build
+pnpm build:desktop
 ```
 
 ## Project Structure
 
 ```
-devprism/
+claude-prism/
 ├── apps/
 │   └── desktop/              # Tauri desktop app
 │       ├── src/              # React frontend (TypeScript)
@@ -66,14 +66,11 @@ devprism/
 │           │   ├── lib.rs           # Tauri plugin registration
 │           │   ├── history.rs       # Git-based version history
 │           │   ├── latex.rs         # Tectonic compilation & SyncTeX
-│           │   ├── agent_runtime.rs # Agent CLI integration & sessions
-│           │   ├── skills.rs        # Scientific skill installation
+│           │   ├── claude.rs        # Claude CLI integration & sessions
 │           │   ├── slash_commands.rs # Slash command discovery & CRUD
-│           │   ├── uv.rs            # uv and project virtualenv orchestration
 │           │   └── zotero.rs        # Zotero OAuth & citations
 │           └── Cargo.toml
 ├── .github/workflows/        # CI/CD (build + release)
-├── docs/                     # Architecture and release documentation
 ├── biome.json                # Linter config
 └── turbo.json                # Turborepo config
 ```

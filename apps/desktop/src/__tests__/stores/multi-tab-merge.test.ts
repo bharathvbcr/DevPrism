@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { useAgentChatStore } from "@/stores/agent-chat-store";
+import { useClaudeChatStore } from "@/stores/claude-chat-store";
 import { useProposedChangesStore } from "@/stores/proposed-changes-store";
 
 // ─── Mocks ───
@@ -32,7 +32,7 @@ vi.mock("@/lib/tauri/fs", () => ({
 }));
 
 function resetStores() {
-  useAgentChatStore.setState({
+  useClaudeChatStore.setState({
     messages: [],
     sessionId: null,
     isStreaming: false,
@@ -50,11 +50,9 @@ function resetStores() {
         totalInputTokens: 0,
         totalOutputTokens: 0,
         draft: { input: "", pinnedContexts: [] },
-        chatMode: "project",
       },
     ],
     activeTabId: "tab-default",
-    chatMode: "project",
     _cancelledByUser: false,
   });
   useProposedChangesStore.setState({ changes: [] });
@@ -67,7 +65,7 @@ describe("Multi-tab merge triggers", () => {
 
   describe("proposed-changes-store is tab-independent (file-scoped)", () => {
     it("changes from tab A are visible when viewing tab B", () => {
-      const chat = useAgentChatStore.getState();
+      const chat = useClaudeChatStore.getState();
 
       // Create two tabs
       const tabB = chat.createTab();
@@ -95,7 +93,7 @@ describe("Multi-tab merge triggers", () => {
     });
 
     it("resolving a change from tab B works even though tab A triggered it", () => {
-      const chat = useAgentChatStore.getState();
+      const chat = useClaudeChatStore.getState();
       const tabB = chat.createTab();
 
       // Tab A triggered a change
@@ -214,11 +212,11 @@ describe("Multi-tab merge triggers", () => {
 
   describe("per-tab independent streaming", () => {
     it("tab A streaming does not block tab B from streaming", () => {
-      const chat = useAgentChatStore.getState();
+      const chat = useClaudeChatStore.getState();
       const tabB = chat.createTab();
 
       // Tab A starts streaming
-      useAgentChatStore.setState((s) => ({
+      useClaudeChatStore.setState((s) => ({
         tabs: s.tabs.map((t) =>
           t.id === "tab-default" ? { ...t, isStreaming: true } : t,
         ),
@@ -226,14 +224,14 @@ describe("Multi-tab merge triggers", () => {
       }));
 
       // Tab B can also be streaming independently
-      useAgentChatStore.setState((s) => ({
+      useClaudeChatStore.setState((s) => ({
         tabs: s.tabs.map((t) =>
           t.id === tabB ? { ...t, isStreaming: true } : t,
         ),
         isStreaming: s.activeTabId === tabB,
       }));
 
-      const state = useAgentChatStore.getState();
+      const state = useClaudeChatStore.getState();
       const tabAState = state.tabs.find((t) => t.id === "tab-default")!;
       const tabBState = state.tabs.find((t) => t.id === tabB)!;
       expect(tabAState.isStreaming).toBe(true);
@@ -241,11 +239,11 @@ describe("Multi-tab merge triggers", () => {
     });
 
     it("_appendMessage routes to the specified tab, not the active tab", () => {
-      const chat = useAgentChatStore.getState();
+      const chat = useClaudeChatStore.getState();
       const tabB = chat.createTab();
 
       // Mark tab A as streaming
-      useAgentChatStore.setState((s) => ({
+      useClaudeChatStore.setState((s) => ({
         tabs: s.tabs.map((t) =>
           t.id === "tab-default" ? { ...t, isStreaming: true } : t,
         ),
@@ -254,12 +252,12 @@ describe("Multi-tab merge triggers", () => {
       // User is viewing tab B (active), but message is for tab A
       chat.setActiveTab(tabB);
 
-      useAgentChatStore.getState()._appendMessage("tab-default", {
+      useClaudeChatStore.getState()._appendMessage("tab-default", {
         type: "assistant",
         message: { content: [{ type: "text", text: "Hello from stream" }] },
       });
 
-      const state = useAgentChatStore.getState();
+      const state = useClaudeChatStore.getState();
       const tabAState = state.tabs.find((t) => t.id === "tab-default")!;
       const tabBState = state.tabs.find((t) => t.id === tabB)!;
 
@@ -274,14 +272,14 @@ describe("Multi-tab merge triggers", () => {
     });
 
     it("_setSessionId routes to the specified tab", () => {
-      const chat = useAgentChatStore.getState();
+      const chat = useClaudeChatStore.getState();
       const tabB = chat.createTab();
 
       // Viewing tab B, set session on tab A
       chat.setActiveTab(tabB);
       chat._setSessionId("tab-default", "session-123");
 
-      const state = useAgentChatStore.getState();
+      const state = useClaudeChatStore.getState();
       const tabA = state.tabs.find((t) => t.id === "tab-default")!;
       expect(tabA.sessionId).toBe("session-123");
       // Active tab (tab B) projected sessionId should not change
@@ -289,11 +287,11 @@ describe("Multi-tab merge triggers", () => {
     });
 
     it("_setStreaming(tabId, false) only affects that specific tab", () => {
-      const chat = useAgentChatStore.getState();
+      const chat = useClaudeChatStore.getState();
       const tabB = chat.createTab();
 
       // Both tabs streaming
-      useAgentChatStore.setState((s) => ({
+      useClaudeChatStore.setState((s) => ({
         tabs: s.tabs.map((t) => ({ ...t, isStreaming: true })),
         isStreaming: true,
       }));
@@ -301,7 +299,7 @@ describe("Multi-tab merge triggers", () => {
       // Tab A finishes
       chat._setStreaming("tab-default", false);
 
-      const state = useAgentChatStore.getState();
+      const state = useClaudeChatStore.getState();
       expect(state.tabs.find((t) => t.id === "tab-default")!.isStreaming).toBe(
         false,
       );
@@ -309,14 +307,14 @@ describe("Multi-tab merge triggers", () => {
     });
 
     it("_setError routes to the specified tab, not active tab", () => {
-      const chat = useAgentChatStore.getState();
+      const chat = useClaudeChatStore.getState();
       const tabB = chat.createTab();
 
       // Viewing tab B, error on tab A
       chat.setActiveTab(tabB);
       chat._setError("tab-default", "Rate limited");
 
-      const state = useAgentChatStore.getState();
+      const state = useClaudeChatStore.getState();
       const tabA = state.tabs.find((t) => t.id === "tab-default")!;
       expect(tabA.error).toBe("Rate limited");
       // Active tab (tab B) projected error should be null
@@ -324,7 +322,7 @@ describe("Multi-tab merge triggers", () => {
     });
 
     it("concurrent messages to different tabs are independent", () => {
-      const chat = useAgentChatStore.getState();
+      const chat = useClaudeChatStore.getState();
       const tabB = chat.createTab();
 
       // Simulate concurrent streaming on both tabs
@@ -341,7 +339,7 @@ describe("Multi-tab merge triggers", () => {
         message: { content: [{ type: "text", text: "Tab A message 2" }] },
       });
 
-      const state = useAgentChatStore.getState();
+      const state = useClaudeChatStore.getState();
       const tabAMsgs = state.tabs.find((t) => t.id === "tab-default")!.messages;
       const tabBMsgs = state.tabs.find((t) => t.id === tabB)!.messages;
 
@@ -355,7 +353,7 @@ describe("Multi-tab merge triggers", () => {
 
   describe("tab switching preserves merge state across views", () => {
     it("switching tabs does not lose proposed changes", () => {
-      const chat = useAgentChatStore.getState();
+      const chat = useClaudeChatStore.getState();
       const tabB = chat.createTab();
 
       useProposedChangesStore.getState().addChange({
@@ -380,7 +378,7 @@ describe("Multi-tab merge triggers", () => {
     });
 
     it("keepAll clears all changes regardless of which tab is active", () => {
-      const chat = useAgentChatStore.getState();
+      const chat = useClaudeChatStore.getState();
       const tabB = chat.createTab();
 
       useProposedChangesStore.getState().addChange({
@@ -409,7 +407,7 @@ describe("Multi-tab merge triggers", () => {
 
   describe("tab lifecycle does not affect proposed changes", () => {
     it("closing a tab does not remove its triggered proposed changes", () => {
-      const chat = useAgentChatStore.getState();
+      const chat = useClaudeChatStore.getState();
       const tabB = chat.createTab();
 
       chat.setActiveTab(tabB);
@@ -440,7 +438,7 @@ describe("Multi-tab merge triggers", () => {
         toolName: "Edit",
       });
 
-      useAgentChatStore.getState().createTab();
+      useClaudeChatStore.getState().createTab();
 
       expect(useProposedChangesStore.getState().changes).toHaveLength(1);
     });

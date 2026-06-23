@@ -1353,7 +1353,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
         createPortal(
           <div
             ref={modelPickerRef}
-            className="fixed w-[28rem] max-w-[calc(100vw-1rem)] rounded-lg border border-border bg-background shadow-lg"
+            className="fixed w-[28rem] max-w-[calc(100vw-1rem)] overflow-hidden rounded-xl border border-border bg-popover/95 p-1.5 text-popover-foreground shadow-lg backdrop-blur-sm"
             style={{
               left: pickerPos.left,
               bottom: pickerPos.bottom,
@@ -1361,14 +1361,14 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
             }}
           >
             <div className="grid grid-cols-[minmax(0,11.5rem)_minmax(0,1fr)]">
-              <div className="max-h-80 overflow-y-auto border-border border-r p-1">
+              <div className="max-h-80 overflow-y-auto border-border border-r pr-1">
                 <div className="px-2 py-1 font-medium text-muted-foreground text-xs">
                   Provider
                 </div>
                 {showClaudeProvider && (
                   <button
                     className={cn(
-                      "flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition-colors",
+                      "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors",
                       claudeProviderActive
                         ? "bg-accent text-accent-foreground"
                         : "hover:bg-muted",
@@ -1428,7 +1428,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                       role="button"
                       tabIndex={0}
                       className={cn(
-                        "group/provider flex w-full cursor-pointer items-center gap-2 rounded-md py-1.5 pr-1 pl-3 text-left text-sm transition-colors",
+                        "group/provider flex w-full cursor-pointer items-center gap-2 rounded-lg py-2 pr-1 pl-3 text-left text-sm transition-colors",
                         active
                           ? "bg-accent text-accent-foreground"
                           : "hover:bg-muted",
@@ -1463,7 +1463,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                         {active && <CheckIcon className="size-3 shrink-0" />}
                         <button
                           type="button"
-                          className="flex size-6 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                           aria-label={`Delete ${displayName}`}
                           title="Delete provider"
                           disabled={!!deletingProviderId}
@@ -1485,7 +1485,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                   );
                 })}
                 <button
-                  className="mt-1 flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-muted-foreground text-sm transition-colors hover:bg-muted hover:text-foreground"
+                  className="mt-1 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-muted-foreground text-sm transition-colors hover:bg-muted hover:text-foreground"
                   onClick={() => {
                     setModelPickerOpen(false);
                     setProviderSetupOpen(true);
@@ -1501,10 +1501,10 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                 </button>
               </div>
 
-              <div className="flex max-h-80 min-w-0 flex-col">
+              <div className="flex max-h-80 min-w-0 flex-col pl-1">
                 <div
                   ref={providerModelListRef}
-                  className="min-h-0 flex-1 overflow-y-auto p-1"
+                  className="min-h-0 flex-1 overflow-y-auto"
                 >
                   <div className="px-2 py-1 font-medium text-muted-foreground text-xs">
                     Model
@@ -1514,7 +1514,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                       <button
                         key={m.id}
                         className={cn(
-                          "flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition-colors",
+                          "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors",
                           selectedModel === m.id
                             ? "bg-accent text-accent-foreground"
                             : "hover:bg-muted",
@@ -1551,7 +1551,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                             }
                           }}
                           className={cn(
-                            "flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition-colors",
+                            "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors",
                             directProviderModel === modelId
                               ? "bg-accent text-accent-foreground"
                               : "hover:bg-muted",

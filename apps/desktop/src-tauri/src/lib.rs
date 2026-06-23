@@ -1,5 +1,4 @@
-mod agent;
-mod agent_runtime;
+mod claude;
 mod history;
 mod latex;
 mod skills;
@@ -8,155 +7,14 @@ mod uv;
 mod zotero;
 
 use std::path::Path;
-use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_fs::FsExt;
-
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct KnowledgebaseBundle {
-    version: u32,
-    exported_at: String,
-    linked_projects: Vec<agent::knowledge::LinkedProject>,
-    #[serde(default)]
-    project_summaries: Vec<agent::knowledge::cache::ProjectSummaryRecord>,
-    settings: serde_json::Value,
-}
-
-const KNOWLEDGEBASE_IMPORT_KEYS: &[&str] = &[
-    "agentProvider",
-    "agentModel",
-    "agentBackendMode",
-    "geminiCliModel",
-    "ollamaBaseUrl",
-    "ollamaModel",
-    "resumeProfile",
-    "manualExperience",
-    "evidenceEntries",
-    "personalBio",
-    "redactSecrets",
-    "safeMode",
-];
-
-fn portable_knowledgebase_settings(settings: serde_json::Value) -> serde_json::Value {
-    let Some(settings_obj) = settings.as_object() else {
-        return serde_json::json!({});
-    };
-
-    let mut portable = serde_json::Map::new();
-    for key in KNOWLEDGEBASE_IMPORT_KEYS {
-        if let Some(value) = settings_obj.get(*key) {
-            portable.insert((*key).to_string(), value.clone());
-        }
-    }
-    portable.insert(
-        "geminiApiKey".to_string(),
-        serde_json::Value::String(String::new()),
-    );
-    serde_json::Value::Object(portable)
-}
-
-fn merge_imported_knowledgebase_settings(
-    current: serde_json::Value,
-    imported: serde_json::Value,
-) -> serde_json::Value {
-    let mut merged = current
-        .as_object()
-        .cloned()
-        .unwrap_or_else(serde_json::Map::new);
-
-    if let Some(imported_obj) = imported.as_object() {
-        for key in KNOWLEDGEBASE_IMPORT_KEYS {
-            if let Some(value) = imported_obj.get(*key) {
-                merged.insert((*key).to_string(), value.clone());
-            }
-        }
-    }
-
-    serde_json::Value::Object(merged)
-}
-
-#[cfg(test)]
-mod knowledgebase_tests {
-    use super::*;
-
-    #[test]
-    fn portable_settings_exclude_secrets_and_unlisted_keys() {
-        let portable = portable_knowledgebase_settings(serde_json::json!({
-            "geminiApiKey": "secret-key",
-            "resumeProfile": "Staff Engineer",
-            "ollamaModel": "llama3.1",
-            "unrelated": "do-not-export"
-        }));
-
-        assert_eq!(portable["geminiApiKey"], "");
-        assert_eq!(portable["resumeProfile"], "Staff Engineer");
-        assert_eq!(portable["ollamaModel"], "llama3.1");
-        assert!(portable.get("unrelated").is_none());
-    }
-
-    #[test]
-    fn imported_settings_merge_without_overwriting_api_key() {
-        let merged = merge_imported_knowledgebase_settings(
-            serde_json::json!({
-                "geminiApiKey": "keep-me",
-                "safeMode": false,
-                "unrelated": "keep"
-            }),
-            serde_json::json!({
-                "geminiApiKey": "do-not-import",
-                "safeMode": true,
-                "resumeProfile": "Research engineer"
-            }),
-        );
-
-        assert_eq!(merged["geminiApiKey"], "keep-me");
-        assert_eq!(merged["safeMode"], true);
-        assert_eq!(merged["resumeProfile"], "Research engineer");
-        assert_eq!(merged["unrelated"], "keep");
-    }
-
-    #[test]
-    fn config_migration_moves_historical_product_dir() {
-        let dir = tempfile::tempdir().unwrap();
-        let old_dir = dir.path().join(historical_config_dir_name());
-        let marker = old_dir.join("settings.json");
-        std::fs::create_dir_all(&old_dir).unwrap();
-        std::fs::write(&marker, "{}").unwrap();
-
-        migrate_config_directory_in_home(dir.path());
-
-        assert!(!old_dir.exists());
-        assert!(dir.path().join(".devprism").join("settings.json").exists());
-    }
-
-    #[test]
-    fn config_migration_keeps_legacy_when_new_dir_exists() {
-        let dir = tempfile::tempdir().unwrap();
-        let old_dir = dir.path().join(historical_config_dir_name());
-        let new_dir = dir.path().join(".devprism");
-        std::fs::create_dir_all(&old_dir).unwrap();
-        std::fs::create_dir_all(&new_dir).unwrap();
-
-        migrate_config_directory_in_home(dir.path());
-
-        assert!(old_dir.exists());
-        assert!(new_dir.exists());
-    }
-}
+use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 /// Entry point for the `--tectonic-compile` subprocess mode.
 /// Runs tectonic compilation in an isolated process so that C-level global state
 /// (font cache, etc.) is cleaned up on exit, preventing assertion failures on retry.
 pub fn tectonic_compile_subprocess(work_dir: &Path, main_file: &str) -> Result<(), String> {
     latex::compile_with_tectonic(work_dir, main_file)
-}
-
-pub async fn run_repl(model: Option<String>) -> Result<(), String> {
-    agent::cli::run_repl(model).await
-}
-
-pub async fn run_chat(prompt: String, model: Option<String>) -> Result<(), String> {
-    agent::cli::run_chat(prompt, model).await
 }
 
 // --- External editor detection & opening ---
@@ -322,7 +180,7 @@ fn create_new_window(app: tauri::AppHandle) -> Result<(), String> {
 
     #[allow(unused_mut)]
     let mut builder = WebviewWindowBuilder::new(&app, &label, WebviewUrl::default())
-        .title("DevPrism")
+        .title("ClaudePrism")
         .inner_size(1400.0, 900.0)
         .min_inner_size(800.0, 600.0)
         .visible(false);
@@ -363,6 +221,28 @@ fn js_log(msg: String) {
     eprintln!("[js] {}", msg);
 }
 
+// --- Debug window ---
+
+#[tauri::command]
+fn open_debug_window(app: tauri::AppHandle) -> Result<(), String> {
+    // If a debug window already exists, just focus it
+    if let Some(win) = app.get_webview_window("debug") {
+        win.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    let url = WebviewUrl::App("index.html?debug=1".into());
+    WebviewWindowBuilder::new(&app, "debug", url)
+        .title("ClaudePrism — Debug")
+        .inner_size(560.0, 700.0)
+        .min_inner_size(400.0, 400.0)
+        .visible(true)
+        .build()
+        .map_err(|e| format!("Failed to create debug window: {}", e))?;
+
+    Ok(())
+}
+
 // --- System info for debug panel & bug reports ---
 
 #[derive(serde::Serialize)]
@@ -371,186 +251,6 @@ struct SystemInfo {
     os_version: String,
     arch: String,
     app_version: String,
-}
-
-#[tauri::command]
-async fn add_linked_project(
-    state: tauri::State<'_, agent::knowledge::ProjectState>,
-    name: String,
-    path: String,
-    tech_stack: Vec<String>,
-    tags: Option<Vec<String>>,
-    role: Option<String>,
-    start_date: Option<String>,
-    end_date: Option<String>,
-    description: Option<String>,
-    notes: Option<String>,
-) -> Result<agent::knowledge::LinkedProject, String> {
-    Ok(state
-        .add_project_detailed(
-            name,
-            std::path::PathBuf::from(path),
-            tech_stack,
-            tags.unwrap_or_default(),
-            role,
-            start_date,
-            end_date,
-            description,
-            notes,
-        )
-        .await)
-}
-
-#[tauri::command]
-async fn remove_linked_project(
-    state: tauri::State<'_, agent::knowledge::ProjectState>,
-    id: String,
-) -> Result<(), String> {
-    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
-    state.remove_project(uuid).await;
-    Ok(())
-}
-
-#[tauri::command]
-async fn list_linked_projects(
-    state: tauri::State<'_, agent::knowledge::ProjectState>,
-) -> Result<Vec<agent::knowledge::LinkedProject>, String> {
-    Ok(state.list_projects().await)
-}
-
-#[tauri::command]
-async fn analyze_linked_project(
-    state: tauri::State<'_, agent::knowledge::ProjectState>,
-    id: String,
-) -> Result<agent::knowledge::LinkedProject, String> {
-    let uuid = uuid::Uuid::parse_str(&id).map_err(|e| e.to_string())?;
-    state
-        .analyze_project(uuid)
-        .await
-        .ok_or_else(|| format!("Linked project not found: {}", id))
-}
-
-#[tauri::command]
-async fn list_project_summaries(
-) -> Result<Vec<agent::knowledge::cache::ProjectSummaryRecord>, String> {
-    agent::knowledge::cache::list_project_summaries().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn save_project_summary(
-    project_id: String,
-    summary: String,
-) -> Result<agent::knowledge::cache::ProjectSummaryRecord, String> {
-    agent::knowledge::cache::upsert_project_summary(&project_id, &summary)
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn list_project_observations(
-    project_id: String,
-) -> Result<Vec<agent::knowledge::cache::Observation>, String> {
-    agent::knowledge::cache::list_observations_for_project(&project_id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn export_knowledgebase(
-    state: tauri::State<'_, agent::knowledge::ProjectState>,
-    path: String,
-) -> Result<(), String> {
-    let settings_path = dirs::home_dir()
-        .ok_or_else(|| "Could not find home directory".to_string())?
-        .join(".devprism")
-        .join("settings.json");
-    let settings = match std::fs::read_to_string(&settings_path) {
-        Ok(content) => serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({})),
-        Err(_) => serde_json::json!({}),
-    };
-    let bundle = KnowledgebaseBundle {
-        version: 1,
-        exported_at: chrono::Utc::now().to_rfc3339(),
-        linked_projects: state.list_projects().await,
-        project_summaries: agent::knowledge::cache::list_project_summaries().unwrap_or_default(),
-        settings: portable_knowledgebase_settings(settings),
-    };
-    let content = serde_json::to_string_pretty(&bundle)
-        .map_err(|e| format!("Failed to serialize knowledgebase: {}", e))?;
-    std::fs::write(path, content).map_err(|e| format!("Failed to export knowledgebase: {}", e))
-}
-
-#[tauri::command]
-async fn import_knowledgebase(
-    state: tauri::State<'_, agent::knowledge::ProjectState>,
-    path: String,
-) -> Result<Vec<agent::knowledge::LinkedProject>, String> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("Failed to read knowledgebase: {}", e))?;
-    let bundle: KnowledgebaseBundle = serde_json::from_str(&content)
-        .map_err(|e| format!("Invalid knowledgebase export: {}", e))?;
-    let settings_path = dirs::home_dir()
-        .ok_or_else(|| "Could not find home directory".to_string())?
-        .join(".devprism")
-        .join("settings.json");
-    if let Some(parent) = settings_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create settings directory: {}", e))?;
-    }
-    let current_settings = match std::fs::read_to_string(&settings_path) {
-        Ok(content) => serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({})),
-        Err(_) => serde_json::json!({}),
-    };
-    let merged_settings = merge_imported_knowledgebase_settings(current_settings, bundle.settings);
-    let settings = serde_json::to_string_pretty(&merged_settings)
-        .map_err(|e| format!("Failed to serialize settings: {}", e))?;
-    std::fs::write(settings_path, settings)
-        .map_err(|e| format!("Failed to import settings: {}", e))?;
-    let _ = agent::knowledge::cache::sync_project_summaries(&bundle.project_summaries);
-    Ok(state.upsert_projects(bundle.linked_projects).await)
-}
-
-#[tauri::command]
-async fn resolve_agent_approval(
-    state: tauri::State<'_, agent::ApprovalState>,
-    action_id: String,
-    approved: bool,
-) -> Result<(), String> {
-    let sender = state.pending.lock().await.remove(&action_id);
-    if let Some(sender) = sender {
-        let _ = sender.send(approved);
-    }
-    Ok(())
-}
-
-#[tauri::command]
-async fn list_authorized_paths(
-    state: tauri::State<'_, agent::knowledge::ProjectState>,
-) -> Result<Vec<String>, String> {
-    let paths = state.list_authorized_paths().await;
-    Ok(paths
-        .into_iter()
-        .map(|p| p.to_string_lossy().to_string())
-        .collect())
-}
-
-#[tauri::command]
-async fn add_authorized_path(
-    state: tauri::State<'_, agent::knowledge::ProjectState>,
-    path: String,
-) -> Result<(), String> {
-    state
-        .add_authorized_path(std::path::PathBuf::from(path))
-        .await;
-    Ok(())
-}
-
-#[tauri::command]
-async fn remove_authorized_path(
-    state: tauri::State<'_, agent::knowledge::ProjectState>,
-    path: String,
-) -> Result<(), String> {
-    state
-        .remove_authorized_path(std::path::PathBuf::from(path))
-        .await;
-    Ok(())
 }
 
 #[tauri::command]
@@ -627,55 +327,8 @@ async fn read_clipboard_file_paths() -> Result<Vec<String>, String> {
     }
 }
 
-fn historical_config_dir_name() -> String {
-    String::from_utf8(vec![46, 100, 101, 118, 99, 111, 117, 110, 99, 105, 108]).unwrap_or_default()
-}
-
-fn migrate_config_directory_in_home(home: &Path) {
-    let legacy_product_dir = home.join(historical_config_dir_name());
-    let legacy_prism_dir = home.join(".prism");
-    let legacy_agent_dir = home.join(format!(".{}{}", "clau", "de"));
-    let new_dir = home.join(".devprism");
-
-    let source = if legacy_product_dir.exists() {
-        Some(legacy_product_dir)
-    } else if legacy_prism_dir.exists() {
-        Some(legacy_prism_dir)
-    } else if legacy_agent_dir.exists() {
-        Some(legacy_agent_dir)
-    } else {
-        None
-    };
-
-    if let Some(old_dir) = source {
-        if !new_dir.exists() {
-            eprintln!(
-                "[migration] Found legacy {} directory, migrating to .devprism",
-                old_dir.display()
-            );
-            if let Err(e) = std::fs::rename(&old_dir, &new_dir) {
-                eprintln!("[migration] Failed to rename directory: {}", e);
-            }
-        } else {
-            eprintln!(
-                "[migration] Keeping legacy {} because .devprism already exists",
-                old_dir.display()
-            );
-        }
-    }
-}
-
-fn migrate_config_directory() {
-    if let Some(home) = dirs::home_dir() {
-        migrate_config_directory_in_home(&home);
-    }
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Migrate legacy configuration if present
-    migrate_config_directory();
-
     // Load .env file (walks up from cwd to find it)
     let _ = dotenvy::dotenv();
 
@@ -686,23 +339,10 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
-        .manage(agent_runtime::AgentProcessState::default())
-        .manage(agent::AgentState::default())
-        .manage(agent::ApprovalState::default())
-        .manage(agent::knowledge::ProjectState::default())
+        .manage(claude::ClaudeProcessState::default())
         .manage(latex::LatexCompilerState::default())
         .manage(zotero::ZoteroOAuthState::default())
         .setup(|app| {
-            // Initialize knowledge state (managed state)
-            match agent::knowledge::cache::KnowledgeState::new() {
-                Ok(state) => {
-                    app.manage(state);
-                }
-                Err(e) => {
-                    eprintln!("[knowledge] Failed to initialize database: {}", e);
-                }
-            }
-
             // Safety net: force-show the main window after a timeout if the
             // frontend JS never calls `getCurrentWindow().show()`.
             // This prevents the window from staying permanently hidden when
@@ -713,7 +353,9 @@ pub fn run() {
                 tokio::time::sleep(std::time::Duration::from_secs(8)).await;
                 if let Some(window) = handle.get_webview_window("main") {
                     if !window.is_visible().unwrap_or(true) {
-                        eprintln!("[safety] Main window still hidden after 8s, force-showing");
+                        eprintln!(
+                            "[safety] Main window still hidden after 8s, force-showing"
+                        );
                         let _ = window.show();
                         let _ = window.set_focus();
                     }
@@ -731,26 +373,18 @@ pub fn run() {
             latex::compile_latex,
             latex::synctex_edit,
             latex::detect_texlive,
-            agent_runtime::execute_agent_code,
-            agent_runtime::resume_agent_code,
-            agent_runtime::cancel_agent_execution,
-            agent_runtime::run_shell_command,
-            agent_runtime::get_redact_secrets,
-            agent_runtime::set_redact_secrets,
-            agent_runtime::get_safe_mode,
-            agent_runtime::set_safe_mode,
-            agent_runtime::get_agent_provider_settings,
-            agent_runtime::set_agent_provider_settings,
-            agent_runtime::check_gemini_api_status,
-            agent_runtime::check_gemini_cli_status,
-            agent_runtime::check_codex_cli_status,
-            agent_runtime::check_ollama_status,
-            agent_runtime::get_resume_knowledge_settings,
-            agent_runtime::set_resume_knowledge_settings,
-            agent_runtime::get_personal_bio,
-            agent_runtime::set_personal_bio,
-            agent_runtime::list_agent_sessions,
-            agent_runtime::load_session_history,
+            claude::check_claude_status,
+            claude::install_claude_cli,
+            claude::login_claude,
+            claude::execute_claude_code,
+            claude::continue_claude_code,
+            claude::resume_claude_code,
+            claude::cancel_claude_execution,
+            claude::run_shell_command,
+            claude::get_claude_fast_mode,
+            claude::set_claude_fast_mode,
+            claude::list_claude_sessions,
+            claude::load_session_history,
             zotero::zotero_start_oauth,
             zotero::zotero_complete_oauth,
             zotero::zotero_cancel_oauth,
@@ -766,8 +400,6 @@ pub fn run() {
             slash_commands::slash_command_get,
             slash_commands::slash_command_save,
             slash_commands::slash_command_delete,
-            slash_commands::manual_skill_save,
-            slash_commands::manual_skill_delete,
             skills::install_scientific_skills,
             skills::install_scientific_skills_global,
             skills::check_skills_installed,
@@ -780,20 +412,8 @@ pub fn run() {
             uv::setup_project_venv,
             uv::uv_add_packages,
             uv::uv_run_command,
-            add_linked_project,
-            remove_linked_project,
-            list_linked_projects,
-            analyze_linked_project,
-            export_knowledgebase,
-            import_knowledgebase,
-            list_project_summaries,
-            save_project_summary,
-            list_project_observations,
-            resolve_agent_approval,
-            add_authorized_path,
-            remove_authorized_path,
-            list_authorized_paths,
             get_system_info,
+            open_debug_window,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -837,7 +457,7 @@ pub fn run() {
                         let _ = window.eval(
                             "document.body.style.display='none';\
                              document.body.offsetHeight;\
-                             document.body.style.display='';",
+                             document.body.style.display='';"
                         );
                     }
                     let _ = window.emit("window-focus-restored", ());
@@ -848,11 +468,12 @@ pub fn run() {
                 event: tauri::WindowEvent::Destroyed,
                 ..
             } => {
-                // Kill agent process associated with this window
-                let handle_clone = app_handle.clone();
+                // Kill Claude process associated with this window
+                let claude_state = app_handle.state::<claude::ClaudeProcessState>();
                 let label_clone = label.clone();
+                let state_clone = claude_state.inner().clone();
                 tauri::async_runtime::spawn(async move {
-                    agent_runtime::kill_process_for_window(&handle_clone, &label_clone).await;
+                    claude::kill_process_for_window(&state_clone, &label_clone).await;
                 });
 
                 // Quit the app when the last window is closed

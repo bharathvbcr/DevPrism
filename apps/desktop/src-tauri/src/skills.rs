@@ -2,11 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tauri::{Emitter, WebviewWindow};
 
-const TARBALL_URL: &str = concat!(
-    "https://github.com/K-Dense-AI/",
-    "clau",
-    "de-scientific-skills/archive/refs/heads/main.tar.gz"
-);
+const TARBALL_URL: &str =
+    "https://github.com/K-Dense-AI/claude-scientific-skills/archive/refs/heads/main.tar.gz";
 const SKILLS_SUBFOLDER: &str = "scientific-skills";
 
 // ─── Data Types ───
@@ -352,10 +349,10 @@ fn skill_categories() -> Vec<SkillCategory> {
 /// Resolve the target skills directory.
 fn skills_dir(project_path: Option<&str>) -> PathBuf {
     match project_path {
-        Some(p) => PathBuf::from(p).join(".devprism").join("skills"),
+        Some(p) => PathBuf::from(p).join(".claude").join("skills"),
         None => dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join(".devprism")
+            .join(".claude")
             .join("skills"),
     }
 }
@@ -386,7 +383,7 @@ async fn download_tarball(tmp_dir: &Path) -> Result<(), String> {
         .unpack(tmp_dir.join("repo-raw"))
         .map_err(|e| format!("Failed to extract tarball: {}", e))?;
 
-    // The tarball extracts to the repository's main branch directory.
+    // The tarball extracts to claude-scientific-skills-main/
     // We need to find it and rename to repo/
     let raw_dir = tmp_dir.join("repo-raw");
     if let Ok(mut entries) = std::fs::read_dir(&raw_dir) {
@@ -523,7 +520,7 @@ pub async fn install_scientific_skills_global(
 }
 
 /// Ensure the target directory is creatable and writable.
-/// If creation fails (e.g. ~/.devprism is owned by root), prompt for admin password via osascript.
+/// If creation fails (e.g. ~/.claude is owned by root), prompt for admin password via osascript.
 fn ensure_target_writable(target: &Path) -> Result<(), String> {
     // Try without elevation first
     if std::fs::create_dir_all(target).is_ok() {
@@ -534,13 +531,13 @@ fn ensure_target_writable(target: &Path) -> Result<(), String> {
     {
         let home = dirs::home_dir().ok_or("Could not determine home directory")?;
         let user = std::env::var("USER").unwrap_or_default();
-        let skills_root = home.join(".devprism");
+        let claude_dir = home.join(".claude");
 
         let script = format!(
             "mkdir -p '{}' && chown -R {} '{}'",
             target.display(),
             user,
-            skills_root.display()
+            claude_dir.display()
         );
 
         let output = std::process::Command::new("osascript")
@@ -558,7 +555,7 @@ fn ensure_target_writable(target: &Path) -> Result<(), String> {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(format!(
                 "Failed to fix directory permissions. Error: {}. \
-                 You can fix this manually by running: sudo chown -R $(whoami) ~/.devprism",
+                 You can fix this manually by running: sudo chown -R $(whoami) ~/.claude",
                 stderr.trim()
             ));
         }
@@ -609,7 +606,7 @@ async fn install_skills_to(
 
     // Create a temporary directory for the clone/download
     let tmp_dir = std::env::temp_dir().join(format!(
-        "devprism-scientific-skills-{}",
+        "claude-scientific-skills-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -742,11 +739,7 @@ pub async fn get_skill_content(
 
     // Fallback: fetch from GitHub
     let url = format!(
-        concat!(
-            "https://raw.githubusercontent.com/K-Dense-AI/",
-            "clau",
-            "de-scientific-skills/main/scientific-skills/{}/SKILL.md"
-        ),
+        "https://raw.githubusercontent.com/K-Dense-AI/claude-scientific-skills/main/scientific-skills/{}/SKILL.md",
         skill_folder
     );
 
@@ -777,14 +770,14 @@ mod tests {
     #[test]
     fn test_skills_dir_global() {
         let dir = skills_dir(None);
-        assert!(dir.to_string_lossy().contains(".devprism"));
+        assert!(dir.to_string_lossy().contains(".claude"));
         assert!(dir.to_string_lossy().ends_with("skills"));
     }
 
     #[test]
     fn test_skills_dir_project() {
         let dir = skills_dir(Some("/tmp/my-project"));
-        assert_eq!(dir, PathBuf::from("/tmp/my-project/.devprism/skills"));
+        assert_eq!(dir, PathBuf::from("/tmp/my-project/.claude/skills"));
     }
 
     #[test]

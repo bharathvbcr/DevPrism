@@ -16,7 +16,6 @@ pub struct SlashCommand {
     pub has_bash_commands: bool,
     pub has_file_references: bool,
     pub accepts_arguments: bool,
-    pub is_manual_skill: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -160,7 +159,6 @@ fn load_command_from_file(file_path: &Path, base_path: &Path, scope: &str) -> Op
         has_bash_commands,
         has_file_references,
         accepts_arguments,
-        is_manual_skill: false,
     })
 }
 
@@ -195,7 +193,7 @@ fn find_markdown_files(dir: &Path, files: &mut Vec<PathBuf>) {
     }
 }
 
-/// Load skills from a `.devprism/skills/` directory.
+/// Load skills from a `.claude/skills/` directory.
 /// Each skill is a subdirectory containing a `SKILL.md` file.
 fn load_skills_from_dir(dir: &Path, scope: &str) -> Vec<SlashCommand> {
     if !dir.exists() {
@@ -264,7 +262,6 @@ fn load_skills_from_dir(dir: &Path, scope: &str) -> Vec<SlashCommand> {
             has_bash_commands: false,
             has_file_references: false,
             accepts_arguments: true,
-            is_manual_skill: false,
         });
     }
 
@@ -287,7 +284,6 @@ fn create_default_commands() -> Vec<SlashCommand> {
             has_bash_commands: false,
             has_file_references: false,
             accepts_arguments: false,
-            is_manual_skill: false,
         },
         SlashCommand {
             id: "default-init".to_string(),
@@ -296,13 +292,12 @@ fn create_default_commands() -> Vec<SlashCommand> {
             scope: "default".to_string(),
             namespace: None,
             file_path: String::new(),
-            content: "Initialize project with AGENTS.md guide".to_string(),
-            description: Some("Initialize project with AGENTS.md guide".to_string()),
+            content: "Initialize project with CLAUDE.md guide".to_string(),
+            description: Some("Initialize project with CLAUDE.md guide".to_string()),
             allowed_tools: vec![],
             has_bash_commands: false,
             has_file_references: false,
             accepts_arguments: false,
-            is_manual_skill: false,
         },
         SlashCommand {
             id: "default-review".to_string(),
@@ -317,73 +312,6 @@ fn create_default_commands() -> Vec<SlashCommand> {
             has_bash_commands: false,
             has_file_references: false,
             accepts_arguments: false,
-            is_manual_skill: false,
-        },
-        SlashCommand {
-            id: "default-resume".to_string(),
-            name: "resume".to_string(),
-            full_command: "/resume".to_string(),
-            scope: "default".to_string(),
-            namespace: None,
-            file_path: String::new(),
-            content: "You are an expert Resume Writer and Career Coach.\nYour goal is to draft an evidence-based resume.\n\nSteps:\n1. Call 'get_personal_bio', 'get_resume_profile', and 'get_manual_experience'.\n2. Call 'list_linked_projects' to see what projects are linked.\n3. Use 'compare_linked_projects', 'cross_reference_project', and 'summarize_project_evidence' for relevant projects.\n4. Use 'git_insight', 'search_linked_project', or 'generate_resume_bullets' to find concrete Proof of Work.\n5. Draft a high-impact, LaTeX-compatible resume with evidence-backed bullets and cite the evidence source names.".to_string(),
-            description: Some("Draft an evidence-based resume".to_string()),
-            allowed_tools: vec![
-                "cross_reference_project".to_string(),
-                "git_insight".to_string(),
-                "get_personal_bio".to_string(),
-                "get_resume_profile".to_string(),
-                "get_manual_experience".to_string(),
-                "list_linked_projects".to_string(),
-                "compare_linked_projects".to_string(),
-                "search_linked_project".to_string(),
-                "summarize_project_evidence".to_string(),
-                "generate_resume_bullets".to_string(),
-            ],
-            has_bash_commands: false,
-            has_file_references: false,
-            accepts_arguments: false,
-            is_manual_skill: false,
-        },
-        SlashCommand {
-            id: "default-resume-bullets".to_string(),
-            name: "resume-bullets".to_string(),
-            full_command: "/resume-bullets".to_string(),
-            scope: "default".to_string(),
-            namespace: None,
-            file_path: String::new(),
-            content: "Generate evidence-backed resume bullets. Call 'get_resume_profile', 'get_manual_experience', 'list_linked_projects', and 'generate_resume_bullets'. Use citations from the tool output and keep bullets concise.".to_string(),
-            description: Some("Generate resume bullets with evidence citations".to_string()),
-            allowed_tools: vec![
-                "get_resume_profile".to_string(),
-                "get_manual_experience".to_string(),
-                "list_linked_projects".to_string(),
-                "generate_resume_bullets".to_string(),
-            ],
-            has_bash_commands: false,
-            has_file_references: false,
-            accepts_arguments: false,
-            is_manual_skill: false,
-        },
-        SlashCommand {
-            id: "default-compare-projects".to_string(),
-            name: "compare-projects".to_string(),
-            full_command: "/compare-projects".to_string(),
-            scope: "default".to_string(),
-            namespace: None,
-            file_path: String::new(),
-            content: "Compare linked projects for reusable architecture, implementation patterns, differentiators, and evidence gaps. Call 'list_linked_projects', 'compare_linked_projects', 'summarize_project_evidence', and 'search_linked_project' when useful. Cite project names and paths.".to_string(),
-            description: Some("Compare linked projects".to_string()),
-            allowed_tools: vec![
-                "list_linked_projects".to_string(),
-                "compare_linked_projects".to_string(),
-                "summarize_project_evidence".to_string(),
-                "search_linked_project".to_string(),
-            ],
-            has_bash_commands: false,
-            has_file_references: false,
-            accepts_arguments: false,
-            is_manual_skill: false,
         },
     ]
 }
@@ -398,7 +326,7 @@ pub async fn slash_commands_list(
 
     // Load project commands
     if let Some(ref proj_path) = project_path {
-        let project_commands_dir = PathBuf::from(proj_path).join(".devprism").join("commands");
+        let project_commands_dir = PathBuf::from(proj_path).join(".claude").join("commands");
         if project_commands_dir.exists() {
             let mut md_files = Vec::new();
             find_markdown_files(&project_commands_dir, &mut md_files);
@@ -414,7 +342,7 @@ pub async fn slash_commands_list(
 
     // Load user commands
     if let Some(home_dir) = dirs::home_dir() {
-        let user_commands_dir = home_dir.join(".devprism").join("commands");
+        let user_commands_dir = home_dir.join(".claude").join("commands");
         if user_commands_dir.exists() {
             let mut md_files = Vec::new();
             find_markdown_files(&user_commands_dir, &mut md_files);
@@ -428,11 +356,11 @@ pub async fn slash_commands_list(
 
     // Load installed skills (project-level first, then global)
     if let Some(proj_path) = &project_path {
-        let project_skills_dir = PathBuf::from(proj_path).join(".devprism").join("skills");
+        let project_skills_dir = PathBuf::from(proj_path).join(".claude").join("skills");
         commands.extend(load_skills_from_dir(&project_skills_dir, "skill"));
     }
     if let Some(home_dir) = dirs::home_dir() {
-        let global_skills_dir = home_dir.join(".devprism").join("skills");
+        let global_skills_dir = home_dir.join(".claude").join("skills");
         // Avoid duplicates if project and global have same skill
         let existing_ids: std::collections::HashSet<String> =
             commands.iter().map(|c| c.id.clone()).collect();
@@ -441,54 +369,6 @@ pub async fn slash_commands_list(
             if !existing_ids.contains(&skill.id) {
                 commands.push(skill);
             }
-        }
-    }
-    if let Ok(db_skills) =
-        crate::agent::knowledge::cache::list_manual_skills_from_db(project_path.as_deref())
-    {
-        for skill in db_skills {
-            let id = format!("skill-{}", sanitize_name(&skill.name));
-            if let Some(command) = commands.iter_mut().find(|cmd| cmd.id == id) {
-                command.is_manual_skill = true;
-                continue;
-            }
-            let skill_md = if skill.scope == "project" {
-                skill
-                    .project_path
-                    .as_ref()
-                    .map(|path| {
-                        PathBuf::from(path)
-                            .join(".devprism")
-                            .join("skills")
-                            .join(sanitize_name(&skill.name))
-                            .join("SKILL.md")
-                    })
-                    .unwrap_or_else(|| PathBuf::from("sqlite:manual_skills"))
-            } else {
-                dirs::home_dir()
-                    .map(|home| {
-                        home.join(".devprism")
-                            .join("skills")
-                            .join(sanitize_name(&skill.name))
-                            .join("SKILL.md")
-                    })
-                    .unwrap_or_else(|| PathBuf::from("sqlite:manual_skills"))
-            };
-            commands.push(SlashCommand {
-                id,
-                name: skill.name.clone(),
-                full_command: format!("/{}", sanitize_name(&skill.name)),
-                scope: "skill".to_string(),
-                namespace: None,
-                file_path: skill_md.to_string_lossy().to_string(),
-                content: skill.content,
-                description: skill.description,
-                allowed_tools: vec![],
-                has_bash_commands: false,
-                has_file_references: false,
-                accepts_arguments: true,
-                is_manual_skill: true,
-            });
         }
     }
 
@@ -524,14 +404,14 @@ pub async fn slash_command_save(
 
     let base_dir = if scope == "project" {
         if let Some(proj_path) = project_path {
-            PathBuf::from(proj_path).join(".devprism").join("commands")
+            PathBuf::from(proj_path).join(".claude").join("commands")
         } else {
             return Err("Project path required for project scope".to_string());
         }
     } else {
         dirs::home_dir()
             .ok_or_else(|| "Could not find home directory".to_string())?
-            .join(".devprism")
+            .join(".claude")
             .join("commands")
     };
 
@@ -592,151 +472,6 @@ pub async fn slash_command_delete(
     }
 
     Ok(format!("Deleted command: {}", command.full_command))
-}
-
-#[tauri::command]
-pub async fn manual_skill_save(
-    scope: String,
-    name: String,
-    content: String,
-    description: Option<String>,
-    project_path: Option<String>,
-) -> Result<SlashCommand, String> {
-    if name.trim().is_empty() {
-        return Err("Skill name cannot be empty".to_string());
-    }
-    if !["project", "global"].contains(&scope.as_str()) {
-        return Err("Invalid scope. Must be 'project' or 'global'.".to_string());
-    }
-
-    let folder = sanitize_name(&name);
-    let base_dir = if scope == "project" {
-        let project_path = project_path
-            .clone()
-            .ok_or_else(|| "Project path required for project skill".to_string())?;
-        PathBuf::from(project_path).join(".devprism").join("skills")
-    } else {
-        dirs::home_dir()
-            .ok_or_else(|| "Could not find home directory".to_string())?
-            .join(".devprism")
-            .join("skills")
-    };
-    let skill_dir = base_dir.join(&folder);
-    fs::create_dir_all(&skill_dir)
-        .map_err(|e| format!("Failed to create skill directory: {}", e))?;
-    let skill_md = skill_dir.join("SKILL.md");
-
-    let mut full_content = String::from("---\n");
-    full_content.push_str(&format!("name: {}\n", folder));
-    if let Some(desc) = &description {
-        full_content.push_str(&format!("description: {}\n", desc.replace('\n', " ")));
-    }
-    full_content.push_str("---\n\n");
-    full_content.push_str(&content);
-    if !full_content.ends_with('\n') {
-        full_content.push('\n');
-    }
-
-    fs::write(&skill_md, full_content).map_err(|e| format!("Failed to write skill: {}", e))?;
-    crate::agent::knowledge::cache::sync_manual_skill(
-        &scope,
-        &folder,
-        description.as_deref(),
-        &content,
-        if scope == "project" {
-            project_path.as_deref()
-        } else {
-            None
-        },
-    )
-    .map_err(|e| format!("Failed to sync manual skill metadata: {}", e))?;
-    let skill_file = skill_md.to_string_lossy().to_string();
-    load_skills_from_dir(&base_dir, "skill")
-        .into_iter()
-        .find(|cmd| cmd.file_path == skill_file)
-        .map(|mut cmd| {
-            cmd.is_manual_skill = true;
-            cmd
-        })
-        .ok_or_else(|| "Failed to load saved skill".to_string())
-}
-
-#[tauri::command]
-pub async fn manual_skill_delete(
-    skill_id: String,
-    project_path: Option<String>,
-) -> Result<String, String> {
-    let project_skills_dir = project_path
-        .as_ref()
-        .map(|path| PathBuf::from(path).join(".devprism").join("skills"));
-    let global_skills_dir = dirs::home_dir().map(|home| home.join(".devprism").join("skills"));
-
-    let commands = slash_commands_list(project_path.clone()).await?;
-    let command = commands
-        .into_iter()
-        .find(|cmd| cmd.id == skill_id && cmd.scope == "skill")
-        .ok_or_else(|| format!("Skill not found: {}", skill_id))?;
-    if !command.is_manual_skill {
-        return Err("Refusing to delete an installed skill from Manual Skills.".to_string());
-    }
-
-    let skill_path = PathBuf::from(&command.file_path);
-    let skill_dir = skill_path
-        .parent()
-        .ok_or_else(|| "Invalid skill path".to_string())?;
-    let canonical_skill_dir = skill_dir
-        .canonicalize()
-        .map_err(|e| format!("Failed to resolve skill path: {}", e))?;
-    let allowed_manual_roots = [project_skills_dir.clone(), global_skills_dir]
-        .into_iter()
-        .flatten()
-        .filter_map(|root| root.canonicalize().ok())
-        .collect::<Vec<_>>();
-    if !allowed_manual_roots
-        .iter()
-        .any(|root| canonical_skill_dir.starts_with(root))
-    {
-        return Err("Refusing to delete a non-manual skill directory.".to_string());
-    }
-    let skill_name = skill_dir
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or(&command.name)
-        .to_string();
-    let db_scope = if project_skills_dir.is_some()
-        && project_skills_dir
-            .as_ref()
-            .and_then(|root| root.canonicalize().ok())
-            .is_some_and(|root| canonical_skill_dir.starts_with(root))
-    {
-        "project"
-    } else {
-        "global"
-    };
-    fs::remove_dir_all(skill_dir).map_err(|e| format!("Failed to delete skill: {}", e))?;
-    crate::agent::knowledge::cache::delete_manual_skill(
-        db_scope,
-        &skill_name,
-        if db_scope == "project" {
-            project_path.as_deref()
-        } else {
-            None
-        },
-    )
-    .map_err(|e| format!("Failed to delete manual skill metadata: {}", e))?;
-    Ok(format!("Deleted skill: {}", command.full_command))
-}
-
-fn sanitize_name(name: &str) -> String {
-    let mut out = String::new();
-    for ch in name.trim().to_lowercase().chars() {
-        if ch.is_ascii_alphanumeric() {
-            out.push(ch);
-        } else if (ch.is_whitespace() || ch == '-' || ch == '_') && !out.ends_with('-') {
-            out.push('-');
-        }
-    }
-    out.trim_matches('-').to_string()
 }
 
 fn remove_empty_dirs(dir: &Path) {
@@ -950,7 +685,7 @@ mod tests {
     #[test]
     fn test_real_skills_dir() {
         // Test against actual installed skills if available
-        let skills_dir = dirs::home_dir().unwrap().join(".devprism").join("skills");
+        let skills_dir = dirs::home_dir().unwrap().join(".claude").join("skills");
         if !skills_dir.exists() {
             eprintln!("SKIP: no skills installed at {:?}", skills_dir);
             return;
@@ -1158,14 +893,11 @@ mod tests {
     #[test]
     fn test_create_default_commands_structure() {
         let cmds = create_default_commands();
-        assert_eq!(cmds.len(), 6);
+        assert_eq!(cmds.len(), 3);
         let names: Vec<&str> = cmds.iter().map(|c| c.name.as_str()).collect();
         assert!(names.contains(&"add-dir"));
         assert!(names.contains(&"init"));
         assert!(names.contains(&"review"));
-        assert!(names.contains(&"resume"));
-        assert!(names.contains(&"resume-bullets"));
-        assert!(names.contains(&"compare-projects"));
         for cmd in &cmds {
             assert_eq!(cmd.scope, "default");
             assert!(cmd.full_command.starts_with('/'));
@@ -1199,7 +931,7 @@ mod tests {
         // Verify file was created
         let file = dir
             .path()
-            .join(".devprism")
+            .join(".claude")
             .join("commands")
             .join("test-cmd.md");
         assert!(file.exists());
@@ -1227,11 +959,7 @@ mod tests {
         assert_eq!(cmd.allowed_tools, vec!["Bash", "Read"]);
 
         // Verify frontmatter in file
-        let file = dir
-            .path()
-            .join(".devprism")
-            .join("commands")
-            .join("lint.md");
+        let file = dir.path().join(".claude").join("commands").join("lint.md");
         let content = fs::read_to_string(&file).unwrap();
         assert!(content.starts_with("---\n"));
         assert!(content.contains("description: Lint all files"));
@@ -1262,7 +990,7 @@ mod tests {
         // Verify nested directory structure
         let file = dir
             .path()
-            .join(".devprism")
+            .join(".claude")
             .join("commands")
             .join("tools")
             .join("rust")

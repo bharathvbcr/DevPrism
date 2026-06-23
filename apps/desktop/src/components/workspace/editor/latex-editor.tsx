@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import { Compartment, EditorState, Prec, Transaction } from "@codemirror/state";
 import {
   EditorView,
+  drawSelection,
   keymap,
   lineNumbers,
   highlightActiveLine,
@@ -47,7 +48,7 @@ import {
   useProposedChangesStore,
   type ProposedChange,
 } from "@/stores/proposed-changes-store";
-import { useAgentChatStore } from "@/stores/agent-chat-store";
+import { useClaudeChatStore } from "@/stores/claude-chat-store";
 import { useHistoryStore, type FileDiff } from "@/stores/history-store";
 import {
   compileLatex,
@@ -73,8 +74,8 @@ import {
   CopyIcon,
   XIcon,
 } from "lucide-react";
-import { AgentChatDrawer } from "@/components/agent-chat/agent-chat-drawer";
-import { ProposedChangesPanel } from "@/components/agent-chat/proposed-changes-panel";
+import { ClaudeChatDrawer } from "@/components/claude-chat/claude-chat-drawer";
+import { ProposedChangesPanel } from "@/components/claude-chat/proposed-changes-panel";
 import { ImagePreview } from "./image-preview";
 import { SearchPanel } from "./search-panel";
 import { ProblemsPanel, type DiagnosticItem } from "./problems-panel";
@@ -162,11 +163,13 @@ export function LatexEditor() {
   const parentRef = useRef<HTMLDivElement>(null);
 
   const { resolvedTheme } = useTheme();
+  const vimMode = useSettingsStore((s) => s.vimMode);
 
   const compileRef = useRef<() => void>(() => {});
   const isSearchOpenRef = useRef(false);
   const themeCompartmentRef = useRef(new Compartment());
   const mergeCompartmentRef = useRef(new Compartment());
+  const vimCompartmentRef = useRef(new Compartment());
   const isMergeActiveRef = useRef(false);
   const pendingChangeRef = useRef<ProposedChange | null>(null);
   const handleKeepAllRef = useRef<() => void>(() => {});
@@ -618,6 +621,7 @@ export function LatexEditor() {
       extensions: [
         compileKeymap,
         lineNumbers(),
+        drawSelection(),
         highlightActiveLine(),
         highlightActiveLineGutter(),
         history(),
@@ -651,7 +655,7 @@ export function LatexEditor() {
                         );
                         const fileName = file?.relativePath ?? "main.tex";
                         const ctx = `[Lint error in ${fileName}:${line.number}]\n[Error: ${d.message}]`;
-                        useAgentChatStore
+                        useClaudeChatStore
                           .getState()
                           .sendPrompt(`${ctx}\n\nFix this lint error.`);
                       },
@@ -670,6 +674,7 @@ export function LatexEditor() {
         search(),
         highlightSelectionMatches(),
         mergeCompartmentRef.current.of([]),
+        vimCompartmentRef.current.of([]),
         updateListener,
         EditorView.lineWrapping,
         scrollPastEnd(),
@@ -823,6 +828,23 @@ export function LatexEditor() {
 
   useEffect(() => {
     const view = viewRef.current;
+    if (!view) return;
+    if (!vimMode) {
+      view.dispatch({
+        effects: vimCompartmentRef.current.reconfigure([]),
+      });
+      return;
+    }
+    import("@replit/codemirror-vim").then(({ vim }) => {
+      if (viewRef.current !== view) return;
+      view.dispatch({
+        effects: vimCompartmentRef.current.reconfigure(vim()),
+      });
+    });
+  }, [vimMode, activeFileId, isTextFile]);
+
+  useEffect(() => {
+    const view = viewRef.current;
     if (!view || !isTextFile || isMergeActiveRef.current) return;
     const content = activeFileContent ?? "";
     const currentContent = view.state.doc.toString();
@@ -969,7 +991,7 @@ export function LatexEditor() {
       toolbarStickyRef.current = false;
       setSelectionCoords(null);
       setSelectionRange(null);
-      useAgentChatStore.getState().sendPrompt(prompt);
+      useClaudeChatStore.getState().sendPrompt(prompt);
     },
     [setSelectionRange],
   );
@@ -991,7 +1013,7 @@ export function LatexEditor() {
       setSelectionCoords(null);
       setSelectionRange(null);
       if (actionId === "proofread") {
-        useAgentChatStore
+        useClaudeChatStore
           .getState()
           .sendPrompt("Proofread and fix any errors in this text");
       }
@@ -1123,7 +1145,7 @@ export function LatexEditor() {
           </div>
         </div>
       )}
-      {/* Main content area — single wrapper keeps AgentChatDrawer stable */}
+      {/* Main content area — single wrapper keeps ClaudeChatDrawer stable */}
       <div
         ref={isPdf || isImage ? undefined : parentRef}
         className="relative flex min-h-0 flex-1 flex-col overflow-hidden"
@@ -1294,7 +1316,7 @@ export function LatexEditor() {
           </>
         )}
         {/* Chat drawer — single stable instance across all file types */}
-        <AgentChatDrawer />
+        <ClaudeChatDrawer />
       </div>
       {/* Text-editor-only bottom panels */}
       {!isPdf &&
@@ -1316,7 +1338,7 @@ export function LatexEditor() {
             onFixWithChat={(message, line) => {
               const fileName = activeFile?.relativePath ?? "main.tex";
               const ctx = `[Lint error in ${fileName}:${line}]\n[Error: ${message}]`;
-              useAgentChatStore
+              useClaudeChatStore
                 .getState()
                 .sendPrompt(`${ctx}\n\nFix this lint error.`);
             }}
@@ -1325,7 +1347,7 @@ export function LatexEditor() {
               const errorList = diagnostics
                 .map((d) => `- ${fileName}:${d.line} — ${d.message}`)
                 .join("\n");
-              useAgentChatStore
+              useClaudeChatStore
                 .getState()
                 .sendPrompt(
                   `[Lint errors in ${fileName}]\n${errorList}\n\nFix all these lint errors.`,

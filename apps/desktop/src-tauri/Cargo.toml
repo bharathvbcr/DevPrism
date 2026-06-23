@@ -1,11 +1,11 @@
 [package]
-name = "devprism"
-version = "0.0.7"
+name = "claude-prism-desktop"
+version = "1.2.0"
 description = "AI-powered LaTeX writing workspace"
 edition = "2021"
 
 [lib]
-name = "dev_prism_desktop_lib"
+name = "claude_prism_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -21,40 +21,24 @@ tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
-regex = "1"
-async-trait = "0.1"
 tokio = { version = "1", features = ["full"] }
 dirs = "5"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 hmac = "0.12"
 sha1 = "0.10"
 base64 = "0.22"
 dotenvy = "0.15"
 git2 = { version = "0.20", default-features = false, features = ["vendored-libgit2"] }
-chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1", features = ["v4", "serde"] }
-rusqlite = { version = "0.32", features = ["bundled"] }
+chrono = "0.4"
+uuid = { version = "1", features = ["v4"] }
 which = "7"
+tectonic = { version = "0.15", default-features = true, features = ["external-harfbuzz"] }
 # NOTE: Building tectonic requires external harfbuzz/graphite2/icu/freetype:
 #   macOS:   brew install icu4c harfbuzz pkg-config
 #   Linux:   apt install libicu-dev libgraphite2-dev libharfbuzz-dev libfreetype-dev libfontconfig-dev
 #   Windows: vcpkg install harfbuzz[graphite2] freetype icu fontconfig (with TECTONIC_DEP_BACKEND=vcpkg)
 flate2 = "1"
 tar = "0.4"
-futures = "0.3"
-async-stream = "0.3"
-clap = { version = "4.6.1", features = ["derive"] }
-colored = "3.1.1"
-rustyline = "18.0.0"
-lazy_static = "1"
-indicatif = "0.17"
-walkdir = "2.5.0"
-similar = "3.1.0"
-tectonic = { version = "0.15", default-features = true, features = ["external-harfbuzz"], optional = true }
-
-[features]
-default = []
-latex-tectonic = ["dep:tectonic"]
 
 [lints.clippy]
 unwrap_used = "deny"

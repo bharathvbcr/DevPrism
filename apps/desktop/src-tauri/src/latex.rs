@@ -231,7 +231,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
         if src_path.is_dir() {
-            // Skip hidden directories (.git, .devprism, etc.)
+            // Skip hidden directories (.git, .claudeprism, etc.)
             let name = entry.file_name();
             if name.to_string_lossy().starts_with('.') {
                 continue;
@@ -258,7 +258,8 @@ fn sync_source_files(src: &Path, dst: &Path) -> std::io::Result<()> {
         let dst_path = dst.join(&file_name);
         if src_path.is_dir() {
             let name = file_name.to_string_lossy();
-            if name.starts_with('.') || matches!(name.as_ref(), "node_modules" | "target" | "dist")
+            if name.starts_with('.')
+                || matches!(name.as_ref(), "node_modules" | "target" | "dist")
             {
                 continue;
             }
@@ -357,7 +358,6 @@ fn lower_thread_priority() {
 
 // --- Tectonic Compilation ---
 
-#[cfg(all(not(target_os = "windows"), feature = "latex-tectonic"))]
 pub(crate) fn compile_with_tectonic(work_dir: &Path, main_file: &str) -> Result<(), String> {
     use tectonic::config::PersistentConfig;
     use tectonic::driver::{OutputFormat, PassSetting, ProcessingSessionBuilder};
@@ -403,11 +403,6 @@ pub(crate) fn compile_with_tectonic(work_dir: &Path, main_file: &str) -> Result<
     Ok(())
 }
 
-#[cfg(any(target_os = "windows", not(feature = "latex-tectonic")))]
-pub(crate) fn compile_with_tectonic(_work_dir: &Path, _main_file: &str) -> Result<(), String> {
-    Err("Tectonic compilation is not enabled in this build. Install TeXLive or build with the 'latex-tectonic' feature.".to_string())
-}
-
 /// Run tectonic compilation in an isolated subprocess.
 ///
 /// This avoids the font cache assertion failure (`font_cache.fonts == NULL`)
@@ -417,7 +412,6 @@ pub(crate) fn compile_with_tectonic(_work_dir: &Path, _main_file: &str) -> Resul
 ///
 /// By spawning a subprocess, each compilation gets a fresh process with
 /// clean global state, and cleanup happens automatically on process exit.
-#[cfg(all(not(target_os = "windows"), feature = "latex-tectonic"))]
 fn compile_with_tectonic_subprocess(work_dir: &Path, main_file: &str) -> Result<(), String> {
     let exe = std::env::current_exe()
         .map_err(|e| format!("Failed to get current executable path: {}", e))?;
@@ -426,6 +420,8 @@ fn compile_with_tectonic_subprocess(work_dir: &Path, main_file: &str) -> Result<
     cmd.args(["--tectonic-compile", &work_dir.to_string_lossy(), main_file])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW);
     let output = cmd
         .output()
         .map_err(|e| format!("Failed to spawn tectonic subprocess: {}", e))?;
@@ -436,15 +432,6 @@ fn compile_with_tectonic_subprocess(work_dir: &Path, main_file: &str) -> Result<
         let stderr = String::from_utf8_lossy(&output.stderr);
         Err(stderr.trim().to_string())
     }
-}
-
-#[cfg(any(target_os = "windows", not(feature = "latex-tectonic")))]
-fn compile_with_tectonic_subprocess(_work_dir: &Path, _main_file: &str) -> Result<(), String> {
-    Err("Tectonic compilation is not enabled in this build. Install TeXLive or build with the 'latex-tectonic' feature.".to_string())
-}
-
-fn tectonic_enabled_in_this_build() -> bool {
-    cfg!(all(not(target_os = "windows"), feature = "latex-tectonic"))
 }
 
 // --- TeXLive Compilation ---
@@ -520,11 +507,7 @@ fn compile_with_texlive(
 
     let engine_path = find_texlive_binary(engine_name)?;
     let env_path = texlive_env_path(&engine_path);
-    eprintln!(
-        "[texlive] backend: {} ({})",
-        engine_name,
-        engine_path.display()
-    );
+    eprintln!("[texlive] backend: {} ({})", engine_name, engine_path.display());
     let bib_tool = detect_bib_tool(tex_content);
 
     // Use "." as output-directory since current_dir is already work_dir.
@@ -535,7 +518,11 @@ fn compile_with_texlive(
     // With -halt-on-error, recoverable warnings (e.g. missing font shapes) cause xetex to
     // exit non-zero, and the xelatex wrapper skips the xdvipdfmx step — producing .xdv but
     // no .pdf.  -interaction=nonstopmode alone is sufficient to avoid interactive prompts.
-    let common_args: Vec<&str> = vec!["-synctex=1", "-interaction=nonstopmode", &output_dir_arg];
+    let common_args: Vec<&str> = vec![
+        "-synctex=1",
+        "-interaction=nonstopmode",
+        &output_dir_arg,
+    ];
 
     let main_file_path = Path::new(main_file);
 
@@ -840,8 +827,7 @@ pub async fn compile_latex(
     let _project_guard = project_lock.lock().await;
 
     let t0 = std::time::Instant::now();
-    let requested_texlive = use_texlive.unwrap_or(false);
-    let use_texlive = requested_texlive || !tectonic_enabled_in_this_build();
+    let use_texlive = use_texlive.unwrap_or(false);
 
     let main_file_name = Path::new(&main_file)
         .file_stem()
@@ -912,18 +898,11 @@ pub async fn compile_latex(
         "Tectonic".to_string()
     };
 
-    if !requested_texlive && use_texlive {
-        eprintln!(
-            "[latex] Tectonic is not enabled in this build; using TeXLive/{}",
-            engine_name_for_label
-        );
-    }
-
     if !use_texlive {
         if let Some(TexEngine::LuaLaTeX) = engine {
             return Err(
                 "Compilation failed\n\nThis document requires LuaLaTeX (% !TEX program = lualatex), \
-                 which is not supported. DevPrism uses a XeTeX-based engine (Tectonic). \
+                 which is not supported. Prism uses a XeTeX-based engine (Tectonic). \
                  Please switch to XeLaTeX or remove the magic comment."
                     .to_string(),
             );
@@ -1129,8 +1108,7 @@ mod tests {
 
     #[test]
     fn test_detect_bib_tool_biber() {
-        let content =
-            "\\documentclass{article}\n\\usepackage{biblatex}\n\\begin{document}\n\\end{document}";
+        let content = "\\documentclass{article}\n\\usepackage{biblatex}\n\\begin{document}\n\\end{document}";
         assert_eq!(detect_bib_tool(content), BibTool::Biber);
     }
 
@@ -1624,10 +1602,10 @@ Postamble:
         let dst = tempfile::tempdir().unwrap();
 
         std::fs::create_dir_all(src.path().join("chapters")).unwrap();
-        std::fs::create_dir_all(src.path().join(".devprism")).unwrap();
+        std::fs::create_dir_all(src.path().join(".claudeprism")).unwrap();
         std::fs::write(src.path().join("chapters").join("ch1.tex"), "ch1").unwrap();
         std::fs::write(src.path().join("chapters").join("ch1.aux"), "aux").unwrap();
-        std::fs::write(src.path().join(".devprism").join("data"), "data").unwrap();
+        std::fs::write(src.path().join(".claudeprism").join("data"), "data").unwrap();
 
         sync_source_files(src.path(), dst.path()).unwrap();
 
@@ -1636,7 +1614,7 @@ Postamble:
             "ch1"
         );
         assert!(!dst.path().join("chapters").join("ch1.aux").exists());
-        assert!(!dst.path().join(".devprism").exists());
+        assert!(!dst.path().join(".claudeprism").exists());
     }
 
     // --- sync_source_files copies figure PDFs ---

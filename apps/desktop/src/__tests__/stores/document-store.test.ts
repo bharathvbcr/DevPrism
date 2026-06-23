@@ -24,9 +24,9 @@ vi.mock("@/stores/history-store", () => ({
   },
 }));
 
-// Mock agent-chat-store
-vi.mock("@/stores/agent-chat-store", () => ({
-  useAgentChatStore: {
+// Mock claude-chat-store
+vi.mock("@/stores/claude-chat-store", () => ({
+  useClaudeChatStore: {
     getState: vi.fn(() => ({
       newSession: vi.fn(),
     })),
@@ -124,8 +124,7 @@ describe("useDocumentStore", () => {
     it("skips Python cache directories and bytecode files during open", async () => {
       vi.mocked(invoke).mockResolvedValue(undefined as never);
       vi.mocked(readDir).mockImplementation(async (dir: string | URL) => {
-        const dirPath = dir.toString();
-        if (dirPath === "/project") {
+        if (dir === "/project") {
           return [
             { name: "__pycache__", isDirectory: true },
             { name: "main.tex", isDirectory: false },
@@ -134,18 +133,17 @@ describe("useDocumentStore", () => {
           ] as any;
         }
 
-        throw new Error(`Unexpected readDir path: ${dirPath}`);
+        throw new Error(`Unexpected readDir path: ${dir}`);
       });
       vi.mocked(stat).mockResolvedValue({ size: 32 } as any);
       vi.mocked(readTextFile).mockImplementation(async (path: string | URL) => {
-        const filePath = path.toString();
-        if (filePath === "/project/main.tex") {
+        if (path === "/project/main.tex") {
           return "\\documentclass{article}";
         }
-        if (filePath === "/project/tool.py") {
+        if (path === "/project/tool.py") {
           return "print('hello')";
         }
-        throw new Error(`Unexpected readTextFile path: ${filePath}`);
+        throw new Error(`Unexpected readTextFile path: ${path}`);
       });
 
       await useDocumentStore.getState().openProject("/project");

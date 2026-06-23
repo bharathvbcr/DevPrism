@@ -112,15 +112,9 @@ export function getFallbackThumbnail(
 
 interface TemplateCardProps {
   template: TemplateDefinition;
-  selected?: boolean;
-  onFocusTemplate?: (id: string) => void;
 }
 
-export function TemplateCard({
-  template,
-  selected = false,
-  onFocusTemplate,
-}: TemplateCardProps) {
+export function TemplateCard({ template }: TemplateCardProps) {
   const openPreview = useTemplateStore((s) => s.openPreview);
   const FallbackThumbnail = getFallbackThumbnail(template);
 
@@ -143,12 +137,9 @@ export function TemplateCard({
       {/* Fixed-height thumbnail area — centers cards with different aspect ratios */}
       <div className="flex aspect-3/4 items-center justify-center">
         <button
-          data-template-id={template.id}
           onClick={() => openPreview(template.id)}
-          onFocus={() => onFocusTemplate?.(template.id)}
-          onMouseEnter={() => onFocusTemplate?.(template.id)}
           style={{ aspectRatio: template.aspectRatio }}
-          className={`relative max-h-full w-full overflow-hidden rounded-xl border bg-card transition-all duration-200 hover:border-foreground/20 hover:shadow-md group-hover:scale-[1.02] ${selected ? "border-primary shadow-md ring-2 ring-primary/30" : "border-border"}`}
+          className="relative max-h-full w-full overflow-hidden rounded-xl border border-border bg-card transition-all duration-200 hover:border-foreground/20 hover:shadow-md group-hover:scale-[1.02]"
         >
           {thumbnailUrl ? (
             <img

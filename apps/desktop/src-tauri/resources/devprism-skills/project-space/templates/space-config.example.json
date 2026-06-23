@@ -4,9 +4,5 @@
   "color": "#4f8cff",
   "defaultProvider": "ollama",
   "defaultModel": "",
-  "skillIds": [
-    "manuscript-paper",
-    "latex-toolkit",
-    "beamer-slides"
-  ]
+  "skillIds": ["manuscript-paper", "latex-toolkit", "beamer-slides"]
 }

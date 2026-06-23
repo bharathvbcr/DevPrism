@@ -619,20 +619,44 @@ export function ProjectPicker() {
             <div className="flex w-full flex-col gap-4 px-5 py-5">
               {visibleProjects.length === 0 ? (
                 <div className="flex min-h-80 flex-col items-center justify-center rounded-lg border border-border border-dashed bg-muted/10 px-6 text-center">
-                  <FileTextIcon className="mb-4 size-10 text-muted-foreground/70" />
-                  <h2 className="font-semibold text-lg">
-                    {normalizedSearch ? "No matching projects" : "No projects"}
-                  </h2>
-                  <div className="mt-5 flex flex-wrap justify-center gap-3">
-                    <Button onClick={() => setShowModeDialog(true)}>
-                      <PlusIcon className="mr-2 size-4" />
-                      New
-                    </Button>
-                    <Button onClick={handleOpenFolder} variant="outline">
-                      <FolderOpenIcon className="mr-2 size-4" />
-                      Import
-                    </Button>
-                  </div>
+                  {activeSpace && !normalizedSearch ? (
+                    <>
+                      <LayersIcon className="mb-4 size-10 text-muted-foreground/70" />
+                      <h2 className="font-semibold text-lg">
+                        No projects in {activeSpace.name}
+                      </h2>
+                      <p className="mt-1 max-w-sm text-muted-foreground text-sm">
+                        Open a project, then use its “⋮ → Move to space” menu to add
+                        it here — or assign existing projects from All Projects.
+                      </p>
+                      <div className="mt-5 flex flex-wrap justify-center gap-3">
+                        <Button
+                          variant="outline"
+                          onClick={() => setActiveSpace(null)}
+                        >
+                          <FolderOpenIcon className="mr-2 size-4" />
+                          View All Projects
+                        </Button>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <FileTextIcon className="mb-4 size-10 text-muted-foreground/70" />
+                      <h2 className="font-semibold text-lg">
+                        {normalizedSearch ? "No matching projects" : "No projects"}
+                      </h2>
+                      <div className="mt-5 flex flex-wrap justify-center gap-3">
+                        <Button onClick={() => setShowModeDialog(true)}>
+                          <PlusIcon className="mr-2 size-4" />
+                          New
+                        </Button>
+                        <Button onClick={handleOpenFolder} variant="outline">
+                          <FolderOpenIcon className="mr-2 size-4" />
+                          Import
+                        </Button>
+                      </div>
+                    </>
+                  )}
                 </div>
               ) : (
                 <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-x-6 gap-y-6">

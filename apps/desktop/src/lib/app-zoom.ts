@@ -7,6 +7,8 @@ export const MIN_APP_ZOOM = 0.5;
 export const MAX_APP_ZOOM = 3;
 export const APP_ZOOM_STEP = 0.1;
 
+let nativeWheelZoomGuardInstalled = false;
+
 export type AppZoomAction = "in" | "out" | "reset";
 
 type ZoomShortcutEvent = Pick<
@@ -45,7 +47,9 @@ export async function persistAppZoom(value: number): Promise<number> {
 }
 
 export function initializeAppZoom(): Promise<number> {
-  return applyAppZoom(readStoredAppZoom());
+  installNativeWheelZoomGuard();
+  window.localStorage.removeItem(APP_ZOOM_STORAGE_KEY);
+  return applyAppZoom(DEFAULT_APP_ZOOM);
 }
 
 export function zoomInApp(): Promise<number> {
@@ -101,4 +105,45 @@ export function shouldHandleAppZoomShortcut(
 ): boolean {
   if (!(target instanceof Element)) return true;
   return !target.closest(`[${LOCAL_ZOOM_SHORTCUTS_ATTR}]`);
+}
+
+function hasLocalZoomSurfaceAtPoint(event: WheelEvent): boolean {
+  if (typeof document.elementsFromPoint !== "function") return false;
+
+  return document
+    .elementsFromPoint(event.clientX, event.clientY)
+    .some((element) => element.closest(`[${LOCAL_ZOOM_SHORTCUTS_ATTR}]`));
+}
+
+function hasLocalZoomSurfaceInPath(event: WheelEvent): boolean {
+  return event
+    .composedPath()
+    .some(
+      (target) =>
+        target instanceof Element &&
+        !!target.closest(`[${LOCAL_ZOOM_SHORTCUTS_ATTR}]`),
+    );
+}
+
+function shouldHandleNativeWheelZoom(event: WheelEvent): boolean {
+  return (
+    shouldHandleAppZoomShortcut(event.target) &&
+    !hasLocalZoomSurfaceInPath(event) &&
+    !hasLocalZoomSurfaceAtPoint(event)
+  );
+}
+
+export function installNativeWheelZoomGuard(): void {
+  if (nativeWheelZoomGuardInstalled || typeof document === "undefined") return;
+  nativeWheelZoomGuardInstalled = true;
+
+  document.addEventListener(
+    "wheel",
+    (event) => {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
+      if (!shouldHandleNativeWheelZoom(event)) return;
+      event.preventDefault();
+    },
+    { passive: false },
+  );
 }

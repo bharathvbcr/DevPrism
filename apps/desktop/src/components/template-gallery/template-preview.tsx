@@ -43,41 +43,15 @@ import { getMupdfClient } from "@/lib/mupdf/mupdf-client";
 import { exists, join } from "@/lib/tauri/fs";
 import type { PageSize } from "@/lib/mupdf/types";
 import { createLogger } from "@/lib/debug/logger";
+import {
+  buildReferenceFilesSection,
+  importReferenceFiles,
+} from "@/lib/project-attachments";
+import { getProjectNameError, normalizeProjectName } from "@/lib/project-name";
 
 const log = createLogger("template-preview");
 
 // ─── Helpers ───
-
-function randomProjectName(): string {
-  const adjectives = [
-    "swift",
-    "bright",
-    "calm",
-    "bold",
-    "keen",
-    "warm",
-    "pure",
-    "vast",
-    "deep",
-    "fair",
-  ];
-  const nouns = [
-    "paper",
-    "draft",
-    "thesis",
-    "note",
-    "study",
-    "essay",
-    "report",
-    "brief",
-    "folio",
-    "opus",
-  ];
-  const adj = adjectives[Math.floor(Math.random() * adjectives.length)];
-  const noun = nouns[Math.floor(Math.random() * nouns.length)];
-  const id = Math.random().toString(36).slice(2, 6);
-  return `${adj}-${noun}-${id}`;
-}
 
 // ─── Component ───
 
@@ -108,11 +82,13 @@ export function TemplatePreview() {
   const [purpose, setPurpose] = useState("");
   const [attachments, setAttachments] = useState<string[]>([]);
   const [projectFolder, setProjectFolder] = useState<string | null>(null);
-  const [projectName, setProjectName] = useState(randomProjectName);
+  const [projectName, setProjectName] = useState("");
+  const [projectNameError, setProjectNameError] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const [refFilesOpen, setRefFilesOpen] = useState(false);
   const [locationOpen, setLocationOpen] = useState(false);
+  const projectNameRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // ── Store access ──
@@ -148,7 +124,8 @@ export function TemplatePreview() {
       setModalStep("preview");
       setPurpose("");
       setAttachments([]);
-      setProjectName(randomProjectName());
+      setProjectName("");
+      setProjectNameError("");
       setRefFilesOpen(false);
       setLocationOpen(false);
     }
@@ -175,7 +152,7 @@ export function TemplatePreview() {
   // Auto-focus textarea in details step
   useEffect(() => {
     if (modalStep === "details") {
-      const timer = setTimeout(() => textareaRef.current?.focus(), 150);
+      const timer = setTimeout(() => projectNameRef.current?.focus(), 150);
       return () => clearTimeout(timer);
     }
   }, [modalStep]);
@@ -354,26 +331,6 @@ export function TemplatePreview() {
     const selected = await open({
       multiple: true,
       title: "Add Reference Files",
-      filters: [
-        {
-          name: "Documents & Images",
-          extensions: [
-            "pdf",
-            "tex",
-            "bib",
-            "txt",
-            "md",
-            "png",
-            "jpg",
-            "jpeg",
-            "gif",
-            "svg",
-            "csv",
-            "tsv",
-            "json",
-          ],
-        },
-      ],
     });
     if (selected) {
       const paths = Array.isArray(selected) ? selected : [selected];
@@ -402,11 +359,20 @@ export function TemplatePreview() {
 
   // ── Create project ──
   const handleCreate = async () => {
-    if (!template || !projectFolder || !projectName.trim()) return;
+    const name = normalizeProjectName(projectName);
+    const nameError = getProjectNameError(projectName);
+    if (!template || !projectFolder || nameError) {
+      setProjectNameError(nameError ?? "");
+      return;
+    }
     setIsCreating(true);
 
     try {
-      const projectPath = await join(projectFolder, projectName.trim());
+      const projectPath = await join(projectFolder, name);
+      if (await exists(projectPath)) {
+        setProjectNameError("A folder with this name already exists here");
+        return;
+      }
       await mkdir(projectPath, { recursive: true });
 
       const mainTexPath = await join(projectPath, template.mainFileName);
@@ -423,19 +389,13 @@ export function TemplatePreview() {
         }
       }
 
-      if (attachments.length > 0) {
-        const attachmentsDir = await join(projectPath, "attachments");
-        await mkdir(attachmentsDir, { recursive: true });
-      }
+      const referenceFiles =
+        attachments.length > 0
+          ? await importReferenceFiles(projectPath, attachments)
+          : [];
 
       if (purpose.trim()) {
-        const attachmentNames = attachments
-          .map((p) => p.split(/[/\\]/).pop())
-          .filter(Boolean);
-        const attachmentSection =
-          attachmentNames.length > 0
-            ? `\n### Reference Files\n${attachmentNames.map((n) => `- \`${n}\``).join("\n")}\n\nPlease review them and incorporate relevant information.\n`
-            : "";
+        const attachmentSection = buildReferenceFilesSection(referenceFiles);
 
         const prompt = [
           `## New ${template.name} Project`,
@@ -462,12 +422,6 @@ export function TemplatePreview() {
       addRecentProject(projectPath);
       await openProject(projectPath);
 
-      if (attachments.length > 0) {
-        await useDocumentStore
-          .getState()
-          .importFiles(attachments, "attachments");
-      }
-
       // Close modal on success
       closePreview();
     } catch (err) {
@@ -480,7 +434,9 @@ export function TemplatePreview() {
     }
   };
 
-  const canCreate = template && projectFolder && projectName.trim();
+  const canCreate = Boolean(
+    template && projectFolder && !getProjectNameError(projectName),
+  );
 
   if (!template) return null;
 
@@ -603,6 +559,34 @@ export function TemplatePreview() {
             {/* Form content */}
             <div className="flex-1 overflow-y-auto">
               <div className="space-y-4 p-5">
+                <div className="space-y-2">
+                  <div>
+                    <span className="font-semibold text-sm">Project name</span>
+                    <p className="mt-0.5 text-muted-foreground text-xs leading-relaxed">
+                      This becomes the folder name on disk.
+                    </p>
+                  </div>
+                  <Input
+                    ref={projectNameRef}
+                    placeholder="e.g., conference-paper"
+                    value={projectName}
+                    onChange={(e) => {
+                      setProjectName(e.target.value);
+                      setProjectNameError("");
+                    }}
+                    onBlur={() =>
+                      setProjectNameError(
+                        getProjectNameError(projectName) ?? "",
+                      )
+                    }
+                    className="rounded-xl border-border/60 bg-card/30 text-sm focus-visible:bg-card/50"
+                  />
+                  {projectNameError && (
+                    <p className="text-destructive text-xs">
+                      {projectNameError}
+                    </p>
+                  )}
+                </div>
                 {/* Purpose — hero element */}
                 <div className="space-y-2">
                   <div>
@@ -724,7 +708,7 @@ export function TemplatePreview() {
                       {!locationOpen && projectFolder && projectName.trim() && (
                         <span className="min-w-0 max-w-35 truncate rounded-md bg-muted/40 px-2 py-0.5 font-mono text-[11px] text-muted-foreground/60">
                           .../{projectFolder.split(/[/\\]/).pop()}/
-                          {projectName.trim()}
+                          {normalizeProjectName(projectName)}
                         </span>
                       )}
                       <ChevronDownIcon
@@ -733,13 +717,12 @@ export function TemplatePreview() {
                     </button>
                     {locationOpen && (
                       <div className="space-y-2 px-4 pb-3">
-                        <div className="flex gap-2">
-                          <Input
-                            placeholder="Project name"
-                            value={projectName}
-                            onChange={(e) => setProjectName(e.target.value)}
-                            className="flex-1 rounded-lg border-border/60 bg-background/50"
-                          />
+                        <div className="flex items-center gap-2">
+                          <p className="min-w-0 flex-1 truncate rounded-md bg-muted/30 px-2.5 py-1.5 font-mono text-[11px] text-muted-foreground/60">
+                            {projectFolder
+                              ? `${projectFolder}/${normalizeProjectName(projectName) || "..."}`
+                              : "Choose a location"}
+                          </p>
                           <Button
                             variant="outline"
                             size="sm"
@@ -750,11 +733,6 @@ export function TemplatePreview() {
                             {projectFolder ? "Change" : "Choose"}
                           </Button>
                         </div>
-                        {projectFolder && (
-                          <p className="truncate rounded-md bg-muted/30 px-2.5 py-1.5 font-mono text-[11px] text-muted-foreground/60">
-                            {projectFolder}/{projectName.trim() || "..."}
-                          </p>
-                        )}
                       </div>
                     )}
                   </div>

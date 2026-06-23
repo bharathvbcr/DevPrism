@@ -1,7 +1,9 @@
 import { useEffect, useRef } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+import { remove } from "@tauri-apps/plugin-fs";
 import {
+  CLAUDE_CODE_PROVIDER_ID,
   useClaudeChatStore,
   type ClaudeStreamMessage,
 } from "@/stores/claude-chat-store";
@@ -18,6 +20,21 @@ import {
 import { createLogger } from "@/lib/debug/logger";
 
 const log = createLogger("claude-event");
+
+async function cleanupTemporaryFiles(paths: string[]) {
+  await Promise.all(
+    paths.map(async (path) => {
+      try {
+        await remove(path);
+      } catch (err) {
+        log.warn("failed to remove temporary chat file", {
+          path,
+          error: String(err),
+        });
+      }
+    }),
+  );
+}
 
 /** Backend event payload shapes (include tab_id for routing) */
 interface ClaudeOutputPayload {
@@ -50,6 +67,8 @@ export function useClaudeEvents() {
   );
   const hasTexChangesRef = useRef(new Map<string, boolean>());
   const cancelledForAskRef = useRef(new Map<string, boolean>());
+  const lastErrorRef = useRef(new Map<string, string>());
+  const directProviderTabRef = useRef(new Map<string, boolean>());
   const listenersRef = useRef<UnlistenFn[]>([]);
   const msgCountRef = useRef(new Map<string, number>());
   const streamStartTimeRef = useRef(new Map<string, number>());
@@ -64,6 +83,12 @@ export function useClaudeEvents() {
         pendingToolUsesRef.current.set(tab.id, new Map());
         hasTexChangesRef.current.set(tab.id, false);
         cancelledForAskRef.current.set(tab.id, false);
+        lastErrorRef.current.delete(tab.id);
+        const providerKey = tab.sessionProviderKey ?? tab.providerKey;
+        directProviderTabRef.current.set(
+          tab.id,
+          !!providerKey && providerKey !== CLAUDE_CODE_PROVIDER_ID,
+        );
         msgCountRef.current.set(tab.id, 0);
         streamStartTimeRef.current.delete(tab.id);
         lastMsgTimeRef.current.delete(tab.id);
@@ -78,6 +103,36 @@ export function useClaudeEvents() {
 
   // ── One-time listener setup (mount only) ──
   useEffect(() => {
+    function setUserVisibleError(tabId: string, message: string) {
+      lastErrorRef.current.set(tabId, message);
+      useClaudeChatStore.getState()._setError(tabId, message);
+    }
+
+    function providerErrorMessage(payload: string): string | null {
+      const trimmed = payload.trim();
+      if (!trimmed) return null;
+      const lower = trimmed.toLowerCase();
+      const looksProviderRelated =
+        lower.includes("provider") ||
+        lower.includes("openai") ||
+        lower.includes("api key") ||
+        lower.includes("unauthorized") ||
+        lower.includes("401") ||
+        lower.includes("403") ||
+        lower.includes("404") ||
+        lower.includes("429") ||
+        lower.includes("too many requests") ||
+        lower.includes("rate limit") ||
+        lower.includes("invalid model") ||
+        lower.includes("model access") ||
+        lower.includes("tool_calls") ||
+        lower.includes("unsupported parameter") ||
+        lower.includes("does not support") ||
+        lower.includes("base url");
+      if (!looksProviderRelated) return null;
+      return trimmed.length > 800 ? `${trimmed.slice(0, 800)}...` : trimmed;
+    }
+
     async function registerProposedChange(
       filePath: string,
       toolUseId: string,
@@ -193,6 +248,14 @@ export function useClaudeEvents() {
         log.info(
           `[${tabId}] ${elapsed(tabId)} result cost=$${msg.cost_usd} api=${msg.duration_api_ms}ms total=${msg.duration_ms}ms`,
         );
+        if (
+          msg.is_error &&
+          msg.subtype !== "cancelled" &&
+          typeof msg.result === "string" &&
+          msg.result.trim()
+        ) {
+          setUserVisibleError(tabId, msg.result.trim());
+        }
       }
 
       // Extract session_id from system:init
@@ -267,15 +330,17 @@ export function useClaudeEvents() {
 
       chatStore._appendMessage(tabId, msg);
 
-      // When AskUserQuestion is detected, cancel the process so the user
+      // When a UI-pause tool is detected, cancel the process so the user
       // can interact with the widget before Claude continues.
       if (msg.type === "assistant" && msg.message?.content) {
-        const hasAskUser = msg.message.content.some(
-          (b: any) => b.type === "tool_use" && b.name === "AskUserQuestion",
+        const hasUiPauseTool = msg.message.content.some(
+          (b: any) =>
+            b.type === "tool_use" &&
+            (b.name === "AskUserQuestion" || b.name === "ExitPlanMode"),
         );
-        if (hasAskUser) {
+        if (hasUiPauseTool) {
           log.info(
-            `[${tabId}] ${elapsed(tabId)} AskUserQuestion detected — cancelling process for user input`,
+            `[${tabId}] ${elapsed(tabId)} UI-pause tool detected - cancelling process for user input`,
           );
           cancelledForAskRef.current.set(tabId, true);
           invoke("cancel_claude_execution", { tabId }).catch(() => {});
@@ -304,21 +369,27 @@ export function useClaudeEvents() {
       if (
         !success &&
         !tab.error &&
+        !lastErrorRef.current.get(tabId) &&
         !cancelledForAskRef.current.get(tabId) &&
         !chatStore._cancelledByUser
       ) {
+        const isDirectProvider = directProviderTabRef.current.get(tabId);
         if (count === 0) {
           const isWindows = navigator.userAgent.includes("Windows");
           chatStore._setError(
             tabId,
-            isWindows
-              ? "Claude process failed to start. Check that Claude Code CLI is installed and git-bash is available."
-              : "Claude process failed to start. Check that Claude Code CLI is installed.",
+            isDirectProvider
+              ? "AI provider request failed to start. Check the provider API key, Base URL, model name, and model access."
+              : isWindows
+                ? "Claude process failed to start. Check that Claude Code CLI is installed and git-bash is available."
+                : "Claude process failed to start. Check that Claude Code CLI is installed.",
           );
         } else {
           chatStore._setError(
             tabId,
-            "Claude process exited unexpectedly. This may be due to rate limiting or an API error.",
+            isDirectProvider
+              ? "AI provider request stopped unexpectedly. Check the provider API key, model access, Base URL, tool-call support, or rate limits."
+              : "Claude process exited unexpectedly. This may be due to rate limiting or an API error.",
           );
         }
       }
@@ -327,11 +398,55 @@ export function useClaudeEvents() {
       pendingToolUsesRef.current.delete(tabId);
       hasTexChangesRef.current.delete(tabId);
       cancelledForAskRef.current.delete(tabId);
+      lastErrorRef.current.delete(tabId);
+      directProviderTabRef.current.delete(tabId);
 
+      const completedSessionId = tab.sessionId;
       chatStore._setStreaming(tabId, false);
+      void cleanupTemporaryFiles(chatStore.consumeTemporaryFilePaths(tabId));
+
+      const forceQueuedGuidance = tab.forceQueuedGuidanceOnComplete === true;
+      if (forceQueuedGuidance) {
+        const queuedGuidance = useClaudeChatStore
+          .getState()
+          .consumeQueuedGuidance(tabId, tab.forcedQueuedGuidanceId);
+        if (queuedGuidance) {
+          log.info(`[${tabId}] interrupting current run with queued guidance`);
+          void useClaudeChatStore
+            .getState()
+            .sendPrompt(queuedGuidance.prompt, queuedGuidance.contextOverride, {
+              tabId,
+              preserveTabProvider: true,
+            });
+          return;
+        }
+      }
 
       // Snapshot after Claude edit
       const projectPath = useDocumentStore.getState().projectRoot;
+      if (projectPath && completedSessionId) {
+        void (async () => {
+          try {
+            const title = await invoke<string | null>(
+              "generate_claude_session_title",
+              {
+                projectPath,
+                sessionId: completedSessionId,
+              },
+            );
+            if (title) {
+              useClaudeChatStore
+                .getState()
+                ._setSessionTitle(completedSessionId, title);
+            }
+          } catch (err) {
+            log.warn("failed to refresh completed session title", {
+              error: String(err),
+            });
+          }
+        })();
+      }
+
       if (projectPath) {
         try {
           await useHistoryStore
@@ -344,6 +459,20 @@ export function useClaudeEvents() {
 
       const docStore = useDocumentStore.getState();
       await docStore.refreshFiles();
+
+      const queuedGuidance = success
+        ? useClaudeChatStore.getState().consumeQueuedGuidance(tabId)
+        : null;
+      if (queuedGuidance) {
+        log.info(`[${tabId}] continuing with queued guidance`);
+        void useClaudeChatStore
+          .getState()
+          .sendPrompt(queuedGuidance.prompt, queuedGuidance.contextOverride, {
+            tabId,
+            preserveTabProvider: true,
+          });
+        return;
+      }
 
       // Auto-recompile after Claude finishes
       const {
@@ -425,6 +554,14 @@ export function useClaudeEvents() {
               payload.includes("timeout")
             ) {
               log.error(`[${tabId}] CRITICAL: ${payload}`);
+            }
+            const isDirectProvider = directProviderTabRef.current.get(tabId);
+            const providerMessage =
+              isDirectProvider || providerErrorMessage(payload)
+                ? providerErrorMessage(payload) || payload.trim()
+                : null;
+            if (providerMessage) {
+              setUserVisibleError(tabId, providerMessage);
             }
             // Surface critical stderr messages to the user UI (only if no error is already set)
             if (

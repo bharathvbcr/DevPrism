@@ -123,12 +123,18 @@ export function invalidateDoc(docId: number): void {
 
 /** Close all cached documents (e.g., on project close). */
 export async function clearDocCache(): Promise<void> {
-  const count = cache.size;
+  const entries = [...cache.values()];
+  const count = entries.length;
+  cache.clear();
+  if (count === 0) {
+    log.info("Cleared doc cache (0 documents closed)");
+    return;
+  }
+
   const client = getMupdfClient();
-  const closePromises = [...cache.values()].map((entry) =>
+  const closePromises = entries.map((entry) =>
     client.closeDocument(entry.docId).catch(() => {}),
   );
-  cache.clear();
   await Promise.all(closePromises);
   log.info(`Cleared doc cache (${count} documents closed)`);
 }

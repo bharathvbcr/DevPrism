@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::{Emitter, WebviewWindow};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -113,6 +113,28 @@ fn venv_python(venv_dir: &std::path::Path) -> PathBuf {
     }
 }
 
+fn venv_pip(venv_dir: &std::path::Path) -> PathBuf {
+    #[cfg(not(target_os = "windows"))]
+    {
+        venv_bin_dir(venv_dir).join("pip")
+    }
+    #[cfg(target_os = "windows")]
+    {
+        venv_bin_dir(venv_dir).join("pip.exe")
+    }
+}
+
+fn venv_pip_shim(venv_dir: &std::path::Path) -> PathBuf {
+    #[cfg(not(target_os = "windows"))]
+    {
+        venv_bin_dir(venv_dir).join("pip")
+    }
+    #[cfg(target_os = "windows")]
+    {
+        venv_bin_dir(venv_dir).join("pip.cmd")
+    }
+}
+
 fn path_with_venv(venv_dir: &std::path::Path) -> String {
     let bin = venv_bin_dir(venv_dir);
     let current = std::env::var("PATH").unwrap_or_default();
@@ -121,6 +143,73 @@ fn path_with_venv(venv_dir: &std::path::Path) -> String {
     #[cfg(not(target_os = "windows"))]
     let sep = ":";
     format!("{}{}{}", bin.to_string_lossy(), sep, current)
+}
+
+fn write_pip_shim(venv_dir: &Path) -> Result<(), String> {
+    let uv_bin = find_uv_binary().unwrap_or_else(|_| "uv".to_string());
+    let shim_path = venv_pip_shim(venv_dir);
+
+    #[cfg(target_os = "windows")]
+    {
+        let content = format!(
+            "@echo off\r\nset \"VIRTUAL_ENV={}\"\r\n\"{}\" pip %*\r\n",
+            venv_dir.to_string_lossy(),
+            uv_bin
+        );
+        std::fs::write(&shim_path, &content)
+            .map_err(|e| format!("Failed to create pip shim: {}", e))?;
+        let pip3_path = venv_bin_dir(venv_dir).join("pip3.cmd");
+        let _ = std::fs::write(pip3_path, content);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let content = format!(
+            "#!/bin/sh\nVIRTUAL_ENV=\"{}\" exec \"{}\" pip \"$@\"\n",
+            venv_dir.to_string_lossy(),
+            uv_bin
+        );
+        std::fs::write(&shim_path, content)
+            .map_err(|e| format!("Failed to create pip shim: {}", e))?;
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&shim_path)
+            .map_err(|e| format!("Failed to stat pip shim: {}", e))?
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&shim_path, perms)
+            .map_err(|e| format!("Failed to mark pip shim executable: {}", e))?;
+    }
+
+    Ok(())
+}
+
+async fn ensure_venv_pip(venv_dir: &Path) -> Result<(), String> {
+    if venv_pip(venv_dir).exists() || venv_pip_shim(venv_dir).exists() {
+        return Ok(());
+    }
+
+    let python = venv_python(venv_dir);
+    if !python.exists() {
+        return Err(format!(
+            "Project .venv is missing Python at {}",
+            python.display()
+        ));
+    }
+
+    let mut ensure_cmd = tokio::process::Command::new(&python);
+    ensure_cmd.args(["-m", "ensurepip", "--upgrade"]);
+    ensure_cmd.env("VIRTUAL_ENV", venv_dir);
+    ensure_cmd.env("PATH", path_with_venv(venv_dir));
+    ensure_cmd.env("PYTHONNOUSERSITE", "1");
+    #[cfg(target_os = "windows")]
+    {
+        ensure_cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    match ensure_cmd.output().await {
+        Ok(output) if output.status.success() && venv_pip(venv_dir).exists() => Ok(()),
+        _ => write_pip_shim(venv_dir),
+    }
 }
 
 // ─── Tauri Commands ───
@@ -143,7 +232,6 @@ pub async fn check_uv_status() -> Result<UvStatus, String> {
     version_cmd.arg("--version");
     #[cfg(target_os = "windows")]
     {
-
         version_cmd.creation_flags(CREATE_NO_WINDOW);
     }
     let version_output = version_cmd.output();
@@ -214,7 +302,6 @@ pub async fn install_uv(window: WebviewWindow) -> Result<(), String> {
     };
     #[cfg(target_os = "windows")]
     let mut cmd = {
-
         let mut c = tokio::process::Command::new("powershell");
         c.creation_flags(CREATE_NO_WINDOW);
         c.args([
@@ -236,6 +323,7 @@ pub async fn install_uv(window: WebviewWindow) -> Result<(), String> {
             cmd.env(&key, &value);
         }
     }
+    crate::claude::apply_proxy_env_to_command(&mut cmd, Some(&window));
 
     let mut child = cmd
         .spawn()
@@ -289,6 +377,7 @@ pub async fn setup_project_venv(project_path: String) -> Result<VenvInfo, String
 
     // If venv already exists, just return info
     if venv_dir.exists() {
+        ensure_venv_pip(&venv_dir).await?;
         let python = venv_python(&venv_dir);
         return Ok(VenvInfo {
             venv_path: venv_dir.to_string_lossy().to_string(),
@@ -301,11 +390,11 @@ pub async fn setup_project_venv(project_path: String) -> Result<VenvInfo, String
 
     // Create venv: uv venv <project_path>/.venv
     let mut venv_cmd = tokio::process::Command::new(&uv_bin);
-    venv_cmd.args(["venv", &venv_dir.to_string_lossy()]);
+    let venv_arg = venv_dir.to_string_lossy().to_string();
+    venv_cmd.args(["venv", "--seed", venv_arg.as_str()]);
     venv_cmd.current_dir(project);
     #[cfg(target_os = "windows")]
     {
-
         venv_cmd.creation_flags(CREATE_NO_WINDOW);
     }
     let output = venv_cmd
@@ -319,6 +408,7 @@ pub async fn setup_project_venv(project_path: String) -> Result<VenvInfo, String
     }
 
     let python = venv_python(&venv_dir);
+    ensure_venv_pip(&venv_dir).await?;
 
     Ok(VenvInfo {
         venv_path: venv_dir.to_string_lossy().to_string(),
@@ -346,10 +436,11 @@ pub async fn uv_add_packages(
     pip_cmd.args(&args);
     pip_cmd.current_dir(&project_path);
     pip_cmd.env("VIRTUAL_ENV", &venv_dir);
+    pip_cmd.env("UV_PROJECT_ENVIRONMENT", &venv_dir);
+    pip_cmd.env("PYTHONNOUSERSITE", "1");
     pip_cmd.env("PATH", path_with_venv(&venv_dir));
     #[cfg(target_os = "windows")]
     {
-
         pip_cmd.creation_flags(CREATE_NO_WINDOW);
     }
     let output = pip_cmd
@@ -390,10 +481,12 @@ pub async fn uv_run_command(
     run_cmd.args(args);
     run_cmd.current_dir(&project_path);
     run_cmd.env("VIRTUAL_ENV", &venv_dir);
+    run_cmd.env("UV_PROJECT_ENVIRONMENT", &venv_dir);
+    run_cmd.env("PYTHONNOUSERSITE", "1");
+    run_cmd.env("PIP_REQUIRE_VIRTUALENV", "true");
     run_cmd.env("PATH", path_with_venv(&venv_dir));
     #[cfg(target_os = "windows")]
     {
-
         run_cmd.creation_flags(CREATE_NO_WINDOW);
     }
     let output = run_cmd

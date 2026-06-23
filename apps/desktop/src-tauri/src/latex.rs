@@ -258,8 +258,7 @@ fn sync_source_files(src: &Path, dst: &Path) -> std::io::Result<()> {
         let dst_path = dst.join(&file_name);
         if src_path.is_dir() {
             let name = file_name.to_string_lossy();
-            if name.starts_with('.')
-                || matches!(name.as_ref(), "node_modules" | "target" | "dist")
+            if name.starts_with('.') || matches!(name.as_ref(), "node_modules" | "target" | "dist")
             {
                 continue;
             }
@@ -507,7 +506,11 @@ fn compile_with_texlive(
 
     let engine_path = find_texlive_binary(engine_name)?;
     let env_path = texlive_env_path(&engine_path);
-    eprintln!("[texlive] backend: {} ({})", engine_name, engine_path.display());
+    eprintln!(
+        "[texlive] backend: {} ({})",
+        engine_name,
+        engine_path.display()
+    );
     let bib_tool = detect_bib_tool(tex_content);
 
     // Use "." as output-directory since current_dir is already work_dir.
@@ -518,11 +521,7 @@ fn compile_with_texlive(
     // With -halt-on-error, recoverable warnings (e.g. missing font shapes) cause xetex to
     // exit non-zero, and the xelatex wrapper skips the xdvipdfmx step — producing .xdv but
     // no .pdf.  -interaction=nonstopmode alone is sufficient to avoid interactive prompts.
-    let common_args: Vec<&str> = vec![
-        "-synctex=1",
-        "-interaction=nonstopmode",
-        &output_dir_arg,
-    ];
+    let common_args: Vec<&str> = vec!["-synctex=1", "-interaction=nonstopmode", &output_dir_arg];
 
     let main_file_path = Path::new(main_file);
 
@@ -1108,7 +1107,8 @@ mod tests {
 
     #[test]
     fn test_detect_bib_tool_biber() {
-        let content = "\\documentclass{article}\n\\usepackage{biblatex}\n\\begin{document}\n\\end{document}";
+        let content =
+            "\\documentclass{article}\n\\usepackage{biblatex}\n\\begin{document}\n\\end{document}";
         assert_eq!(detect_bib_tool(content), BibTool::Biber);
     }
 

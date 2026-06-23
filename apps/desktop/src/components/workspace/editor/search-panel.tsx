@@ -7,8 +7,8 @@ interface SearchPanelProps {
   searchQuery: string;
   onSearchQueryChange: (query: string) => void;
   onClose: () => void;
-  onFindNext: () => void;
-  onFindPrevious: () => void;
+  onFindNext: (options?: { focusEditor?: boolean }) => void;
+  onFindPrevious: (options?: { focusEditor?: boolean }) => void;
   matchCount: number;
   currentMatch: number;
 }
@@ -29,14 +29,22 @@ export function SearchPanel({
     inputRef.current?.select();
   }, []);
 
+  const keepInputFocused = () => {
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    });
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") {
       e.preventDefault();
       if (e.shiftKey) {
-        onFindPrevious();
+        onFindPrevious({ focusEditor: false });
       } else {
-        onFindNext();
+        onFindNext({ focusEditor: false });
       }
+      keepInputFocused();
     } else if (e.key === "Escape") {
       e.preventDefault();
       onClose();
@@ -44,7 +52,7 @@ export function SearchPanel({
   };
 
   return (
-    <div className="flex h-9 items-center gap-2 border-border border-b bg-[#282c34] px-2">
+    <div className="flex h-9 items-center gap-2 border-border border-b bg-background px-2">
       <Input
         ref={inputRef}
         type="text"
@@ -52,14 +60,14 @@ export function SearchPanel({
         onChange={(e) => onSearchQueryChange(e.target.value)}
         onKeyDown={handleKeyDown}
         placeholder="Search..."
-        className="h-6 w-48 bg-[#1e2127] text-[#abb2bf] text-sm placeholder:text-[#636d83]"
+        className="h-6 w-48 border-border bg-muted/40 text-foreground text-sm placeholder:text-muted-foreground"
       />
       <div className="flex items-center gap-0.5">
         <Button
           variant="ghost"
           size="icon"
-          className="size-6 text-[#abb2bf] hover:bg-white/10 hover:text-[#abb2bf]"
-          onClick={onFindPrevious}
+          className="size-6 text-muted-foreground hover:bg-muted hover:text-foreground"
+          onClick={() => onFindPrevious()}
           disabled={!searchQuery || matchCount === 0}
         >
           <ChevronUpIcon className="size-4" />
@@ -67,15 +75,15 @@ export function SearchPanel({
         <Button
           variant="ghost"
           size="icon"
-          className="size-6 text-[#abb2bf] hover:bg-white/10 hover:text-[#abb2bf]"
-          onClick={onFindNext}
+          className="size-6 text-muted-foreground hover:bg-muted hover:text-foreground"
+          onClick={() => onFindNext()}
           disabled={!searchQuery || matchCount === 0}
         >
           <ChevronDownIcon className="size-4" />
         </Button>
       </div>
       {searchQuery && (
-        <span className="text-[#636d83] text-xs">
+        <span className="text-muted-foreground text-xs">
           {matchCount === 0 ? "No results" : `${currentMatch} of ${matchCount}`}
         </span>
       )}
@@ -83,7 +91,7 @@ export function SearchPanel({
       <Button
         variant="ghost"
         size="icon"
-        className="size-6 text-[#abb2bf] hover:bg-white/10 hover:text-[#abb2bf]"
+        className="size-6 text-muted-foreground hover:bg-muted hover:text-foreground"
         onClick={onClose}
       >
         <XIcon className="size-4" />

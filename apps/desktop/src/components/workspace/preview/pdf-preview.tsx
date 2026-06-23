@@ -20,6 +20,7 @@ import {
   useDocumentStore,
   getPdfBytes,
   getCurrentPdfBytes,
+  getCurrentPdfRootId,
   hasPdfData,
 } from "@/stores/document-store";
 import { useHistoryStore } from "@/stores/history-store";
@@ -64,7 +65,7 @@ const log = createLogger("pdf-preview");
 
 type FitMode = "fit-width" | "fit-height" | null;
 
-/** Per-root zoom state cache: rootFileId → { scale, fitMode } */
+/** Per-root zoom state cache: rootFileId -> { scale, fitMode } */
 const zoomCache = new Map<string, { scale: number; fitMode: FitMode }>();
 
 /** Max number of PdfViewer instances kept alive simultaneously. */
@@ -134,7 +135,10 @@ export function PdfPreview() {
   const pdfData = useMemo(() => getCurrentPdfBytes(), [pdfRevision]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Keep-alive: track which root files have PdfViewer instances alive (LRU order)
-  const currentRootFileId = resolveTexRoot(activeFile?.id ?? "", files);
+  const currentRootFileId =
+    activeFile?.type === "tex"
+      ? resolveTexRoot(activeFile.id, files)
+      : (getCurrentPdfRootId() ?? resolveTexRoot(activeFile?.id ?? "", files));
   const [aliveOrder, setAliveOrder] = useState<string[]>([]);
   const prevRootRef = useRef(currentRootFileId);
 
@@ -689,7 +693,7 @@ export function PdfPreview() {
             PDF Preview
           </h2>
           <p className="mb-4 text-center text-muted-foreground text-sm">
-            Press ⌘+Enter to compile your document
+            Press Cmd+Enter to compile your document
           </p>
           {isTexActive && (
             <Button
@@ -800,15 +804,18 @@ export function PdfPreview() {
       ref={previewContainerRef}
       className="@container/pv relative flex h-full flex-col bg-muted/50"
     >
-      <div className="flex h-[calc(40px+var(--titlebar-height))] shrink-0 items-center border-border border-b bg-background px-2 pt-[var(--titlebar-height)]">
-        <div className="flex items-center gap-1">
+      <div className="flex h-[calc(var(--workspace-topbar-height)+var(--titlebar-height))] shrink-0 flex-nowrap items-center border-border border-b bg-background px-2">
+        <div className="flex min-w-0 shrink-0 items-center gap-1">
           <Select
             value={compilerBackend}
             onValueChange={(v) =>
               setCompilerBackend(v as "tectonic" | "texlive")
             }
           >
-            <SelectTrigger size="sm" className="h-7! w-auto text-xs">
+            <SelectTrigger
+              size="sm"
+              className="h-7! @[44rem]/pv:w-[8.5rem] w-[6.75rem] text-xs"
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -819,7 +826,7 @@ export function PdfPreview() {
           {isSaving && (
             <div className="flex items-center gap-1.5 rounded-md bg-muted/50 px-2 py-1">
               <LoaderIcon className="size-3.5 animate-spin text-muted-foreground" />
-              <span className="font-medium text-muted-foreground text-xs">
+              <span className="@[38rem]/pv:inline hidden font-medium text-muted-foreground text-xs">
                 Saving...
               </span>
             </div>
@@ -827,7 +834,7 @@ export function PdfPreview() {
           {!isSaving && isCompiling && (
             <div className="flex items-center gap-1.5 rounded-md bg-muted/50 px-2 py-1">
               <LoaderIcon className="size-3.5 animate-spin text-muted-foreground" />
-              <span className="font-medium text-muted-foreground text-xs">
+              <span className="@[38rem]/pv:inline hidden font-medium text-muted-foreground text-xs">
                 Compiling...
               </span>
             </div>
@@ -836,11 +843,14 @@ export function PdfPreview() {
             <Button
               variant="ghost"
               size="sm"
-              className="h-7 gap-1.5 px-2.5 text-xs"
+              className="h-7 gap-1.5 @[42rem]/pv:px-2.5 px-2 text-xs"
               onClick={() => handleCompile(true)}
+              title={pdfData ? "Recompile" : "Compile"}
             >
               <RefreshCwIcon className="size-3.5" />
-              {pdfData ? "Recompile" : "Compile"}
+              <span className="@[42rem]/pv:inline hidden">
+                {pdfData ? "Recompile" : "Compile"}
+              </span>
             </Button>
           )}
           {!isSaving && !isCompiling && compileError && (
@@ -850,14 +860,15 @@ export function PdfPreview() {
               className="h-7 gap-1.5 px-2.5 text-destructive text-xs hover:text-destructive"
               onClick={() => handleCompile(true)}
               disabled={!isTexActive}
+              title="Retry compile"
             >
               <RefreshCwIcon className="size-3.5" />
-              Retry
+              <span className="@[42rem]/pv:inline hidden">Retry</span>
             </Button>
           )}
         </div>
-        <div data-tauri-drag-region className="flex-1 self-stretch" />
-        <div className="flex shrink-0 items-center gap-1">
+        <div data-tauri-drag-region className="min-w-2 flex-1 self-stretch" />
+        <div className="ml-auto flex min-w-0 shrink-0 flex-nowrap items-center justify-end gap-1">
           {pdfData && (
             <>
               <Button
@@ -874,7 +885,7 @@ export function PdfPreview() {
                 <input
                   type="text"
                   inputMode="numeric"
-                  className="h-6 w-8 shrink-0 rounded border border-border bg-background text-center text-foreground text-xs outline-none focus:ring-1 focus:ring-ring"
+                  className="h-6 w-7 shrink-0 rounded border border-border bg-background text-center text-foreground text-xs outline-none focus:ring-1 focus:ring-ring"
                   value={pageInputValue}
                   onChange={(e) => setPageInputValue(e.target.value)}
                   onBlur={handlePageInputCommit}
@@ -888,7 +899,7 @@ export function PdfPreview() {
                 />
               ) : (
                 <button
-                  className="flex h-6 min-w-[2rem] shrink-0 items-center justify-center rounded px-1 text-muted-foreground text-xs tabular-nums hover:bg-muted"
+                  className="flex h-6 w-7 shrink-0 items-center justify-center rounded text-muted-foreground text-xs tabular-nums hover:bg-muted"
                   onClick={() => {
                     setIsEditingPage(true);
                     setPageInputValue(String(currentPage));
@@ -898,20 +909,23 @@ export function PdfPreview() {
                   {currentPage}
                 </button>
               )}
-              <span className="shrink-0 whitespace-nowrap text-muted-foreground text-xs">
-                / {numPages}
+              <span className="shrink-0 text-muted-foreground/80 text-xs tabular-nums">
+                /
+              </span>
+              <span className="flex h-6 w-7 shrink-0 items-center justify-center text-muted-foreground text-xs tabular-nums">
+                {numPages}
               </span>
               <Button
                 variant="ghost"
                 size="icon"
-                className="size-7"
+                className="size-7 shrink-0"
                 onClick={() => goToPage(currentPage + 1)}
                 disabled={currentPage >= numPages}
                 title="Page Down"
               >
                 <ChevronDownIcon className="size-3.5" />
               </Button>
-              <div className="mx-1 h-4 w-px bg-border" />
+              <div className="mx-1 @[34rem]/pv:block hidden h-4 w-px bg-border" />
               <Button
                 variant="ghost"
                 size="icon"
@@ -941,7 +955,10 @@ export function PdfPreview() {
                   }
                 }}
               >
-                <SelectTrigger size="sm" className="h-7! w-auto text-xs">
+                <SelectTrigger
+                  size="sm"
+                  className="h-7! @[48rem]/pv:w-[7.5rem] w-[5rem] text-xs"
+                >
                   <SelectValue>
                     {fitMode === "fit-width"
                       ? "Fit width"
@@ -961,26 +978,26 @@ export function PdfPreview() {
                   ))}
                 </SelectContent>
               </Select>
-              <div className="mx-1 h-4 w-px bg-border" />
+              <div className="mx-1 @[34rem]/pv:block hidden h-4 w-px bg-border" />
               {/* Capture mode */}
               <Button
                 variant={captureMode ? "default" : "secondary"}
                 size="sm"
-                className={`h-7 gap-1.5 px-2 text-xs ${
+                className={`h-7 gap-1.5 @[56rem]/pv:px-2.5 px-2 text-xs ${
                   captureMode
                     ? "ring-2 ring-primary/30"
                     : "bg-foreground text-background hover:bg-foreground/90"
                 }`}
                 onClick={() => setCaptureMode(!captureMode)}
-                title={`Capture & Ask (${navigator.userAgent.includes("Mac") ? "⌘X" : "Ctrl+X"})`}
+                title={`Capture & Ask (${navigator.userAgent.includes("Mac") ? "Cmd+X" : "Ctrl+X"})`}
               >
                 <CrosshairIcon className="size-3.5 shrink-0" />
-                <span className="@[36rem]/pv:inline hidden">Capture & Ask</span>
-                <kbd className="pointer-events-none ml-0.5 @[36rem]/pv:inline hidden rounded border border-background/30 bg-background/20 px-1 py-0.5 font-medium text-[10px] text-background leading-none">
-                  {navigator.userAgent.includes("Mac") ? "⌘X" : "Ctrl+X"}
+                <span className="@[56rem]/pv:inline hidden">Capture & Ask</span>
+                <kbd className="pointer-events-none ml-0.5 @[64rem]/pv:inline hidden rounded border border-background/30 bg-background/20 px-1 py-0.5 font-medium text-[10px] text-background leading-none">
+                  {navigator.userAgent.includes("Mac") ? "Cmd+X" : "Ctrl+X"}
                 </kbd>
               </Button>
-              <div className="mx-1 h-4 w-px bg-border" />
+              <div className="mx-1 @[34rem]/pv:block hidden h-4 w-px bg-border" />
               <Button
                 variant="ghost"
                 size="icon"
@@ -1034,7 +1051,7 @@ export function PdfPreview() {
             </kbd>
             <span className="text-[10px] text-muted-foreground">or</span>
             <kbd className="rounded border border-border bg-muted px-1.5 py-0.5 font-medium text-[10px] text-muted-foreground">
-              {navigator.userAgent.includes("Mac") ? "⌘" : "Ctrl+"}X
+              {navigator.userAgent.includes("Mac") ? "Cmd+" : "Ctrl+"}X
             </kbd>
             <span className="text-[10px] text-muted-foreground">to cancel</span>
           </div>

@@ -1,4 +1,8 @@
+#![recursion_limit = "512"]
+
+mod anthropic_proxy;
 mod claude;
+mod claude_process;
 mod history;
 mod latex;
 mod skills;
@@ -7,8 +11,8 @@ mod uv;
 mod zotero;
 
 use std::path::Path;
-use tauri_plugin_fs::FsExt;
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri_plugin_fs::FsExt;
 
 /// Entry point for the `--tectonic-compile` subprocess mode.
 /// Runs tectonic compilation in an isolated process so that C-level global state
@@ -183,6 +187,7 @@ fn create_new_window(app: tauri::AppHandle) -> Result<(), String> {
         .title("ClaudePrism")
         .inner_size(1400.0, 900.0)
         .min_inner_size(800.0, 600.0)
+        .zoom_hotkeys_enabled(true)
         .visible(false);
 
     #[cfg(target_os = "macos")]
@@ -195,6 +200,124 @@ fn create_new_window(app: tauri::AppHandle) -> Result<(), String> {
     builder
         .build()
         .map_err(|e| format!("Failed to create window: {}", e))?;
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn apply_windows_titlebar_theme(window: &tauri::WebviewWindow, dark: bool) -> Result<(), String> {
+    use std::ffi::c_void;
+
+    #[link(name = "dwmapi")]
+    extern "system" {
+        #[link_name = "DwmSetWindowAttribute"]
+        fn dwm_set_window_attribute(
+            hwnd: isize,
+            dwattribute: u32,
+            pvattribute: *const c_void,
+            cbattribute: u32,
+        ) -> i32;
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        #[link_name = "SetWindowPos"]
+        fn set_window_pos(
+            hwnd: isize,
+            hwnd_insert_after: isize,
+            x: i32,
+            y: i32,
+            cx: i32,
+            cy: i32,
+            flags: u32,
+        ) -> i32;
+    }
+
+    const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
+    const SWP_NOSIZE: u32 = 0x0001;
+    const SWP_NOMOVE: u32 = 0x0002;
+    const SWP_NOZORDER: u32 = 0x0004;
+    const SWP_NOACTIVATE: u32 = 0x0010;
+    const SWP_FRAMECHANGED: u32 = 0x0020;
+
+    let hwnd = window
+        .hwnd()
+        .map_err(|e| format!("Failed to resolve native window handle: {}", e))?;
+    let hwnd = hwnd.0 as isize;
+    let dark_value: i32 = if dark { 1 } else { 0 };
+    let attr_size = std::mem::size_of_val(&dark_value) as u32;
+
+    let mut result = unsafe {
+        dwm_set_window_attribute(
+            hwnd,
+            DWMWA_USE_IMMERSIVE_DARK_MODE,
+            &dark_value as *const _ as *const _,
+            attr_size,
+        )
+    };
+    if result < 0 {
+        // Older Windows 10 builds used attribute 19 before Microsoft documented 20.
+        result = unsafe {
+            dwm_set_window_attribute(hwnd, 19, &dark_value as *const _ as *const _, attr_size)
+        };
+    }
+
+    // Windows 11 honors explicit caption/text colors more reliably than the
+    // immersive flag alone, especially after runtime theme switches.
+    const DWMWA_CAPTION_COLOR: u32 = 35;
+    const DWMWA_TEXT_COLOR: u32 = 36;
+    let caption_color: u32 = if dark { 0x0010_1010 } else { 0x00F9_F9F9 };
+    let text_color: u32 = if dark { 0x00FF_FFFF } else { 0x0000_0000 };
+    unsafe {
+        let _ = dwm_set_window_attribute(
+            hwnd,
+            DWMWA_CAPTION_COLOR,
+            &caption_color as *const _ as *const _,
+            std::mem::size_of_val(&caption_color) as u32,
+        );
+        let _ = dwm_set_window_attribute(
+            hwnd,
+            DWMWA_TEXT_COLOR,
+            &text_color as *const _ as *const _,
+            std::mem::size_of_val(&text_color) as u32,
+        );
+        let _ = set_window_pos(
+            hwnd,
+            0,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
+    }
+
+    if result < 0 {
+        return Err(format!(
+            "Failed to update Windows title bar theme: HRESULT 0x{:08X}",
+            result as u32
+        ));
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+fn set_native_window_theme(window: tauri::WebviewWindow, theme: String) -> Result<(), String> {
+    let theme = theme.trim().to_ascii_lowercase();
+    let dark = theme == "dark";
+    let tauri_theme = if dark {
+        tauri::Theme::Dark
+    } else {
+        tauri::Theme::Light
+    };
+
+    window
+        .set_theme(Some(tauri_theme))
+        .map_err(|e| format!("Failed to set window theme: {}", e))?;
+
+    #[cfg(target_os = "windows")]
+    apply_windows_titlebar_theme(&window, dark)?;
 
     Ok(())
 }
@@ -212,6 +335,108 @@ fn allow_project_directory(app: tauri::AppHandle, root_path: String) -> Result<(
         .map_err(|e| format!("Failed to allow project assets: {}", e))?;
 
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct ProjectCandidate {
+    path: String,
+    name: String,
+    last_modified: u64,
+    has_main_tex: bool,
+}
+
+fn modified_ms(path: &Path) -> u64 {
+    std::fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn has_tex_file(dir: &Path) -> bool {
+    if dir.join("main.tex").is_file() || dir.join("document.tex").is_file() {
+        return true;
+    }
+
+    std::fs::read_dir(dir)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.flatten())
+        .any(|entry| {
+            let path = entry.path();
+            if !path.is_file() {
+                return false;
+            }
+            matches!(
+                path.extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(|ext| ext.to_ascii_lowercase())
+                    .as_deref(),
+                Some("tex" | "ltx")
+            )
+        })
+}
+
+fn project_modified_ms(dir: &Path) -> u64 {
+    let mut latest = modified_ms(dir);
+    for relative in [
+        "main.tex",
+        "document.tex",
+        ".prism/build/main.pdf",
+        ".claudeprism/history.git/.git/refs/heads/master",
+    ] {
+        latest = latest.max(modified_ms(&dir.join(relative)));
+    }
+
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                latest = latest.max(modified_ms(&path));
+            }
+        }
+    }
+
+    latest
+}
+
+#[tauri::command]
+fn list_default_projects() -> Result<Vec<ProjectCandidate>, String> {
+    let Some(home) = dirs::home_dir() else {
+        return Ok(Vec::new());
+    };
+
+    let base = home.join("Documents").join("ClaudePrism");
+    if !base.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut projects = Vec::new();
+    let entries = std::fs::read_dir(&base)
+        .map_err(|e| format!("Failed to read default project directory: {}", e))?;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') || !has_tex_file(&path) {
+            continue;
+        }
+
+        projects.push(ProjectCandidate {
+            path: path.to_string_lossy().to_string(),
+            name,
+            last_modified: project_modified_ms(&path),
+            has_main_tex: path.join("main.tex").is_file() || path.join("document.tex").is_file(),
+        });
+    }
+
+    projects.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
+    Ok(projects)
 }
 
 // --- Debug logging from JS (survives white-screen crashes) ---
@@ -236,6 +461,7 @@ fn open_debug_window(app: tauri::AppHandle) -> Result<(), String> {
         .title("ClaudePrism — Debug")
         .inner_size(560.0, 700.0)
         .min_inner_size(400.0, 400.0)
+        .zoom_hotkeys_enabled(true)
         .visible(true)
         .build()
         .map_err(|e| format!("Failed to create debug window: {}", e))?;
@@ -353,9 +579,7 @@ pub fn run() {
                 tokio::time::sleep(std::time::Duration::from_secs(8)).await;
                 if let Some(window) = handle.get_webview_window("main") {
                     if !window.is_visible().unwrap_or(true) {
-                        eprintln!(
-                            "[safety] Main window still hidden after 8s, force-showing"
-                        );
+                        eprintln!("[safety] Main window still hidden after 8s, force-showing");
                         let _ = window.show();
                         let _ = window.set_focus();
                     }
@@ -365,7 +589,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             create_new_window,
+            set_native_window_theme,
             allow_project_directory,
+            list_default_projects,
             detect_editors,
             open_in_editor,
             js_log,
@@ -376,15 +602,27 @@ pub fn run() {
             claude::check_claude_status,
             claude::install_claude_cli,
             claude::login_claude,
+            claude::save_anthropic_api_key,
+            claude::verify_openai_compatible_api_key,
+            claude::list_openai_compatible_models,
+            claude::list_openai_compatible_credential_models,
+            claude::clear_anthropic_api_key,
+            claude::list_openai_compatible_credentials,
+            claude::delete_openai_compatible_credential,
+            claude::set_active_openai_compatible_credential,
             claude::execute_claude_code,
             claude::continue_claude_code,
             claude::resume_claude_code,
             claude::cancel_claude_execution,
+            claude::interrupt_claude_execution,
             claude::run_shell_command,
+            claude::migrate_project_sessions,
             claude::get_claude_fast_mode,
             claude::set_claude_fast_mode,
             claude::list_claude_sessions,
+            claude::generate_claude_session_title,
             claude::load_session_history,
+            claude::delete_claude_session,
             zotero::zotero_start_oauth,
             zotero::zotero_complete_oauth,
             zotero::zotero_cancel_oauth,
@@ -402,8 +640,10 @@ pub fn run() {
             slash_commands::slash_command_delete,
             skills::install_scientific_skills,
             skills::install_scientific_skills_global,
+            skills::import_skill_from_folder,
             skills::check_skills_installed,
             skills::list_installed_skills,
+            skills::delete_installed_skill,
             skills::uninstall_scientific_skills,
             skills::get_skill_categories,
             skills::get_skill_content,
@@ -457,7 +697,7 @@ pub fn run() {
                         let _ = window.eval(
                             "document.body.style.display='none';\
                              document.body.offsetHeight;\
-                             document.body.style.display='';"
+                             document.body.style.display='';",
                         );
                     }
                     let _ = window.emit("window-focus-restored", ());

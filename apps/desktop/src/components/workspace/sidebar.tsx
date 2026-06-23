@@ -17,6 +17,7 @@ import {
   ListIcon,
   HashIcon,
   GithubIcon,
+  PanelLeftIcon,
   ChevronRightIcon,
   ChevronDownIcon,
   FileCodeIcon,
@@ -25,6 +26,7 @@ import {
   AppWindowIcon,
   FlaskConicalIcon,
   TerminalIcon,
+  type LucideIcon,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -48,6 +50,7 @@ import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogFooter,
@@ -66,6 +69,11 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import {
+  HoverCard,
+  HoverCardContent,
+  HoverCardTrigger,
+} from "@/components/ui/hover-card";
 import { Input } from "@/components/ui/input";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -74,6 +82,8 @@ import { UvSetupDialog } from "@/components/uv-setup";
 import { createLogger } from "@/lib/debug/logger";
 
 const log = createLogger("sidebar");
+const FILES_AUTO_REFRESH_INTERVAL_MS = 12_000;
+const FILES_REFRESH_MIN_SPIN_MS = 400;
 
 // ─── Table of Contents ───
 
@@ -117,6 +127,60 @@ interface TreeNode {
   type: "folder" | "file";
   file?: ProjectFile;
   children: TreeNode[];
+}
+
+type FileTreeItemType = "file" | "folder";
+
+interface FileTreeSelectionItem {
+  type: FileTreeItemType;
+  path: string;
+}
+
+function fileTreeSelectionKey(item: FileTreeSelectionItem) {
+  return `${item.type}:${item.path}`;
+}
+
+function fileTreeSelectionItemFromKey(
+  key: string,
+): FileTreeSelectionItem | null {
+  const separator = key.indexOf(":");
+  if (separator === -1) return null;
+
+  const type = key.slice(0, separator);
+  const path = key.slice(separator + 1);
+  if ((type !== "file" && type !== "folder") || !path) return null;
+
+  return { type, path };
+}
+
+function isInsideFolder(path: string, folderPath: string) {
+  return path === folderPath || path.startsWith(`${folderPath}/`);
+}
+
+function parentFolderOfPath(path: string): string | undefined {
+  return path.includes("/")
+    ? path.substring(0, path.lastIndexOf("/"))
+    : undefined;
+}
+
+function normalizeSelectionItems(items: FileTreeSelectionItem[]) {
+  const folders = items
+    .filter((item) => item.type === "folder")
+    .sort((a, b) => a.path.length - b.path.length)
+    .filter(
+      (item, index, all) =>
+        !all
+          .slice(0, index)
+          .some((folder) => isInsideFolder(item.path, folder.path)),
+    );
+
+  const files = items.filter(
+    (item) =>
+      item.type === "file" &&
+      !folders.some((folder) => isInsideFolder(item.path, folder.path)),
+  );
+
+  return { files, folders };
 }
 
 function buildFileTree(files: ProjectFile[], folders: string[]): TreeNode[] {
@@ -206,7 +270,141 @@ function useAppVersion() {
 
 // ─── Sidebar ───
 
-export function Sidebar() {
+function LayoutPaneSwitcher({
+  controls,
+  collapsed = false,
+  onQuickToggleSidebar,
+  side = "bottom",
+  align = "end",
+  buttonClassName,
+}: {
+  controls?: LayoutControls;
+  collapsed?: boolean;
+  onQuickToggleSidebar?: () => void;
+  side?: "top" | "right" | "bottom" | "left";
+  align?: "start" | "center" | "end";
+  buttonClassName?: string;
+}) {
+  const trigger = (
+    <Button
+      variant="ghost"
+      size="icon"
+      className={cn(
+        "transition-transform duration-300 ease-in-out hover:scale-105",
+        buttonClassName,
+      )}
+      onClick={onQuickToggleSidebar}
+      title="Layout"
+      aria-label="Layout"
+    >
+      <PanelLeftIcon
+        className={cn(
+          "size-3.5 transition-transform duration-300 ease-in-out",
+          collapsed && "rotate-180",
+        )}
+      />
+    </Button>
+  );
+
+  if (!controls) return trigger;
+
+  return (
+    <HoverCard openDelay={80} closeDelay={140}>
+      <HoverCardTrigger asChild>{trigger}</HoverCardTrigger>
+      <HoverCardContent
+        side={side}
+        align={align}
+        sideOffset={8}
+        className="w-44 rounded-2xl border-border/70 bg-popover/95 p-1.5 shadow-2xl backdrop-blur"
+      >
+        <div className="space-y-1">
+          <LayoutToggleRow
+            icon={FileCodeIcon}
+            label="Code"
+            checked={controls.codeVisible}
+            onCheckedChange={controls.setCodeVisible}
+          />
+          <LayoutToggleRow
+            icon={FileTextIcon}
+            label="PDF"
+            checked={controls.pdfVisible}
+            onCheckedChange={controls.setPdfVisible}
+          />
+          <LayoutToggleRow
+            icon={PanelLeftIcon}
+            label="Sidebar"
+            checked={controls.sidebarVisible}
+            onCheckedChange={controls.setSidebarVisible}
+          />
+        </div>
+      </HoverCardContent>
+    </HoverCard>
+  );
+}
+
+function LayoutToggleRow({
+  icon: Icon,
+  label,
+  checked,
+  onCheckedChange,
+}: {
+  icon: LucideIcon;
+  label: string;
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      className={cn(
+        "flex h-10 w-full items-center gap-2.5 rounded-xl px-2.5 text-left transition-colors hover:bg-accent/70",
+        checked && "bg-accent/45 text-accent-foreground",
+      )}
+      onClick={() => onCheckedChange(!checked)}
+    >
+      <Icon className="size-3.5 shrink-0 text-muted-foreground" />
+      <span className="min-w-0 flex-1 truncate font-medium text-sm">
+        {label}
+      </span>
+      <span
+        className={cn(
+          "relative h-5 w-9 shrink-0 rounded-full transition-colors",
+          checked ? "bg-foreground" : "bg-muted-foreground/30",
+        )}
+      >
+        <span
+          className={cn(
+            "absolute top-0.5 size-4 rounded-full bg-background transition-transform",
+            checked ? "translate-x-[18px]" : "translate-x-0.5",
+          )}
+        />
+      </span>
+    </button>
+  );
+}
+
+interface SidebarProps {
+  collapsed?: boolean;
+  onToggleCollapsed?: () => void;
+  layoutControls?: LayoutControls;
+}
+
+interface LayoutControls {
+  codeVisible: boolean;
+  pdfVisible: boolean;
+  sidebarVisible: boolean;
+  setCodeVisible: (visible: boolean) => void;
+  setPdfVisible: (visible: boolean) => void;
+  setSidebarVisible: (visible: boolean) => void;
+}
+
+export function Sidebar({
+  collapsed = false,
+  onToggleCollapsed,
+  layoutControls,
+}: SidebarProps) {
   const appVersion = useAppVersion();
   const files = useDocumentStore((s) => s.files);
   const activeFileId = useDocumentStore((s) => s.activeFileId);
@@ -214,6 +412,7 @@ export function Sidebar() {
   const deleteFile = useDocumentStore((s) => s.deleteFile);
   const deleteFolder = useDocumentStore((s) => s.deleteFolder);
   const renameFile = useDocumentStore((s) => s.renameFile);
+  const renameProject = useDocumentStore((s) => s.renameProject);
   const createNewFile = useDocumentStore((s) => s.createNewFile);
   const createFolder = useDocumentStore((s) => s.createFolder);
   const importFiles = useDocumentStore((s) => s.importFiles);
@@ -231,7 +430,72 @@ export function Sidebar() {
   const refreshFiles = useDocumentStore((s) => s.refreshFiles);
   const projectRoot = useDocumentStore((s) => s.projectRoot);
   const folders = useDocumentStore((s) => s.folders);
+  const [isRefreshingFiles, setIsRefreshingFiles] = useState(false);
+  const refreshFilesInFlightRef = useRef<Promise<void> | null>(null);
   const { theme, setTheme } = useTheme();
+  const projectName = useMemo(() => {
+    const normalized = projectRoot?.replace(/[\\/]+$/, "");
+    return normalized?.split(/[/\\]/).pop() || "Desktop";
+  }, [projectRoot]);
+
+  const runRefreshFiles = useCallback(
+    async ({ showSpinner = true }: { showSpinner?: boolean } = {}) => {
+      if (!projectRoot) return;
+      if (refreshFilesInFlightRef.current) {
+        await refreshFilesInFlightRef.current;
+        return;
+      }
+
+      const startedAt = Date.now();
+      if (showSpinner) setIsRefreshingFiles(true);
+
+      const refreshTask = (async () => {
+        try {
+          await refreshFiles();
+        } catch (err) {
+          log.error("Refresh files failed", { error: String(err) });
+        } finally {
+          if (showSpinner) {
+            const elapsed = Date.now() - startedAt;
+            if (elapsed < FILES_REFRESH_MIN_SPIN_MS) {
+              await new Promise((resolve) =>
+                window.setTimeout(resolve, FILES_REFRESH_MIN_SPIN_MS - elapsed),
+              );
+            }
+            setIsRefreshingFiles(false);
+          }
+          refreshFilesInFlightRef.current = null;
+        }
+      })();
+
+      refreshFilesInFlightRef.current = refreshTask;
+      await refreshTask;
+    },
+    [projectRoot, refreshFiles],
+  );
+
+  useEffect(() => {
+    if (!projectRoot) return;
+
+    const refreshIfVisible = () => {
+      if (document.visibilityState === "visible") {
+        void runRefreshFiles({ showSpinner: false });
+      }
+    };
+
+    const intervalId = window.setInterval(
+      refreshIfVisible,
+      FILES_AUTO_REFRESH_INTERVAL_MS,
+    );
+    window.addEventListener("focus", refreshIfVisible);
+    document.addEventListener("visibilitychange", refreshIfVisible);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", refreshIfVisible);
+      document.removeEventListener("visibilitychange", refreshIfVisible);
+    };
+  }, [projectRoot, runRefreshFiles]);
 
   // ─── Native OS file drop (Tauri onDragDropEvent) ───
   const sidebarFilesRef = useRef<HTMLDivElement>(null);
@@ -366,6 +630,220 @@ export function Sidebar() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [importFiles, pasteTargetFolder]);
 
+  const [selectedItemKeys, setSelectedItemKeys] = useState<Set<string>>(
+    new Set(),
+  );
+
+  const existingItemKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const file of files) {
+      keys.add(fileTreeSelectionKey({ type: "file", path: file.relativePath }));
+    }
+    for (const folder of folders) {
+      keys.add(fileTreeSelectionKey({ type: "folder", path: folder }));
+    }
+    return keys;
+  }, [files, folders]);
+
+  useEffect(() => {
+    setSelectedItemKeys((prev) => {
+      const next = new Set(
+        [...prev].filter((key) => existingItemKeys.has(key)),
+      );
+      return next.size === prev.size ? prev : next;
+    });
+  }, [existingItemKeys]);
+
+  const selectedItemsFromKeys = useCallback(
+    (keys: Iterable<string>) =>
+      Array.from(keys)
+        .map(fileTreeSelectionItemFromKey)
+        .filter((item): item is FileTreeSelectionItem => {
+          if (!item) return false;
+          return existingItemKeys.has(fileTreeSelectionKey(item));
+        }),
+    [existingItemKeys],
+  );
+
+  const getEffectiveSelectionItems = useCallback(
+    (fallback: FileTreeSelectionItem) => {
+      const fallbackKey = fileTreeSelectionKey(fallback);
+      if (selectedItemKeys.has(fallbackKey)) {
+        return selectedItemsFromKeys(selectedItemKeys);
+      }
+      return [fallback];
+    },
+    [selectedItemKeys, selectedItemsFromKeys],
+  );
+
+  const getEffectiveSelectionCount = useCallback(
+    (fallback: FileTreeSelectionItem) =>
+      getEffectiveSelectionItems(fallback).length,
+    [getEffectiveSelectionItems],
+  );
+
+  const selectedAffectedFileCount = useCallback(
+    (items: FileTreeSelectionItem[]) => {
+      const { files: selectedFiles, folders: selectedFolders } =
+        normalizeSelectionItems(items);
+      const affected = new Set(selectedFiles.map((item) => item.path));
+
+      for (const folder of selectedFolders) {
+        for (const file of files) {
+          if (isInsideFolder(file.relativePath, folder.path)) {
+            affected.add(file.relativePath);
+          }
+        }
+      }
+
+      return affected.size;
+    },
+    [files],
+  );
+
+  const canDeleteSelection = useCallback(
+    (fallback: FileTreeSelectionItem) => {
+      const items = getEffectiveSelectionItems(fallback);
+      const affected = selectedAffectedFileCount(items);
+      return items.length > 0 && affected < files.length;
+    },
+    [files.length, getEffectiveSelectionItems, selectedAffectedFileCount],
+  );
+
+  const [pendingDeleteItems, setPendingDeleteItems] = useState<
+    FileTreeSelectionItem[] | null
+  >(null);
+  const [isDeletingSelection, setIsDeletingSelection] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
+
+  const canDeleteItems = useCallback(
+    (items: FileTreeSelectionItem[]) => {
+      const affected = selectedAffectedFileCount(items);
+      return items.length > 0 && affected < files.length;
+    },
+    [files.length, selectedAffectedFileCount],
+  );
+
+  const requestDeleteItems = useCallback(
+    (items: FileTreeSelectionItem[]) => {
+      if (!canDeleteItems(items)) return;
+      const { files: selectedFiles, folders: selectedFolders } =
+        normalizeSelectionItems(items);
+      setPendingDeleteItems([...selectedFolders, ...selectedFiles]);
+      setDeleteError("");
+    },
+    [canDeleteItems],
+  );
+
+  const handleTreeItemContextMenu = useCallback(
+    (item: FileTreeSelectionItem) => {
+      const key = fileTreeSelectionKey(item);
+      setPasteTargetFolder(
+        item.type === "folder" ? item.path : parentFolderOfPath(item.path),
+      );
+      setSelectedItemKeys((prev) => (prev.has(key) ? prev : new Set([key])));
+    },
+    [],
+  );
+
+  const handleTreeItemClick = useCallback(
+    (
+      item: FileTreeSelectionItem,
+      event: React.MouseEvent,
+      onPrimaryClick: () => void,
+    ) => {
+      setPasteTargetFolder(
+        item.type === "folder" ? item.path : parentFolderOfPath(item.path),
+      );
+
+      if (event.ctrlKey || event.metaKey) {
+        event.preventDefault();
+        event.stopPropagation();
+        const key = fileTreeSelectionKey(item);
+        setSelectedItemKeys((prev) => {
+          const next = new Set(prev);
+          if (next.has(key)) next.delete(key);
+          else next.add(key);
+          return next;
+        });
+        return;
+      }
+
+      setSelectedItemKeys(new Set());
+      onPrimaryClick();
+    },
+    [],
+  );
+
+  const requestDeleteSelection = useCallback(
+    (fallback: FileTreeSelectionItem) => {
+      requestDeleteItems(getEffectiveSelectionItems(fallback));
+    },
+    [getEffectiveSelectionItems, requestDeleteItems],
+  );
+
+  const confirmDeleteSelection = useCallback(async () => {
+    if (!pendingDeleteItems || isDeletingSelection) return;
+
+    setIsDeletingSelection(true);
+    setDeleteError("");
+    try {
+      const { files: selectedFiles, folders: selectedFolders } =
+        normalizeSelectionItems(pendingDeleteItems);
+
+      for (const file of selectedFiles) {
+        await Promise.resolve(deleteFile(file.path) as unknown);
+      }
+      for (const folder of selectedFolders) {
+        await deleteFolder(folder.path);
+      }
+
+      setPendingDeleteItems(null);
+      setSelectedItemKeys(new Set());
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsDeletingSelection(false);
+    }
+  }, [deleteFile, deleteFolder, isDeletingSelection, pendingDeleteItems]);
+
+  useEffect(() => {
+    const handleDeleteKey = (event: KeyboardEvent) => {
+      if (event.key !== "Delete" && event.key !== "Backspace") return;
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+
+      const active = document.activeElement;
+      if (
+        active &&
+        (active.tagName === "INPUT" ||
+          active.tagName === "TEXTAREA" ||
+          (active as HTMLElement).isContentEditable)
+      ) {
+        return;
+      }
+
+      const selectedItems = selectedItemsFromKeys(selectedItemKeys);
+      if (selectedItems.length > 0) {
+        event.preventDefault();
+        requestDeleteItems(selectedItems);
+        return;
+      }
+
+      if (activeFileId) {
+        event.preventDefault();
+        requestDeleteItems([{ type: "file", path: activeFileId }]);
+      }
+    };
+
+    window.addEventListener("keydown", handleDeleteKey);
+    return () => window.removeEventListener("keydown", handleDeleteKey);
+  }, [
+    activeFileId,
+    requestDeleteItems,
+    selectedItemKeys,
+    selectedItemsFromKeys,
+  ]);
+
   // dnd-kit drag-and-drop (uses PointerSensor — works in Tauri WKWebView)
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -374,15 +852,29 @@ export function Sidebar() {
     id: string;
     type: "file" | "folder";
     name: string;
+    count: number;
   } | null>(null);
 
-  const handleDragStart = useCallback((event: DragStartEvent) => {
-    const { type, name } = event.active.data.current as {
-      type: "file" | "folder";
-      name: string;
-    };
-    setActiveDrag({ id: event.active.id as string, type, name });
-  }, []);
+  const handleDragStart = useCallback(
+    (event: DragStartEvent) => {
+      const { type, name } = event.active.data.current as {
+        type: "file" | "folder";
+        name: string;
+      };
+      const item: FileTreeSelectionItem = {
+        type,
+        path: event.active.id as string,
+      };
+      const key = fileTreeSelectionKey(item);
+      setActiveDrag({
+        id: item.path,
+        type,
+        name,
+        count: selectedItemKeys.has(key) ? getEffectiveSelectionCount(item) : 1,
+      });
+    },
+    [getEffectiveSelectionCount, selectedItemKeys],
+  );
 
   const handleDragEnd = useCallback(
     async (event: DragEndEvent) => {
@@ -395,29 +887,45 @@ export function Sidebar() {
       const targetId = over.id as string;
       const targetFolder = targetId === "__root__" ? null : targetId;
 
-      // Don't move if same parent
-      const draggedParent = draggedPath.includes("/")
-        ? draggedPath.substring(0, draggedPath.lastIndexOf("/"))
-        : null;
-      if (targetFolder === draggedParent) return;
+      const draggedItem: FileTreeSelectionItem = {
+        type: draggedType === "folder" ? "folder" : "file",
+        path: draggedPath,
+      };
+      const draggedKey = fileTreeSelectionKey(draggedItem);
+      const movingItems = selectedItemKeys.has(draggedKey)
+        ? selectedItemsFromKeys(selectedItemKeys)
+        : [draggedItem];
+      const { files: movingFiles, folders: movingFolders } =
+        normalizeSelectionItems(movingItems);
 
-      // Don't move folder into itself or descendant
-      if (draggedType === "folder" && targetFolder) {
-        if (
-          targetFolder === draggedPath ||
-          targetFolder.startsWith(`${draggedPath}/`)
+      if (
+        targetFolder &&
+        movingFolders.some((folder) =>
+          isInsideFolder(targetFolder, folder.path),
         )
-          return;
+      ) {
+        return;
       }
 
       try {
-        if (draggedType === "file") await moveFile(draggedPath, targetFolder);
-        else await moveFolder(draggedPath, targetFolder);
+        for (const file of movingFiles) {
+          const parent = parentFolderOfPath(file.path) ?? null;
+          if (targetFolder === parent) continue;
+          await moveFile(file.path, targetFolder);
+        }
+
+        for (const folder of movingFolders) {
+          const parent = parentFolderOfPath(folder.path) ?? null;
+          if (targetFolder === parent) continue;
+          await moveFolder(folder.path, targetFolder);
+        }
+
+        setSelectedItemKeys(new Set());
       } catch (err) {
         log.error("DnD move failed", { error: String(err) });
       }
     },
-    [moveFile, moveFolder],
+    [moveFile, moveFolder, selectedItemKeys, selectedItemsFromKeys],
   );
 
   // Dialog state
@@ -430,6 +938,10 @@ export function Sidebar() {
   const [renameDialogOpen, setRenameDialogOpen] = useState(false);
   const [renameFileId, setRenameFileId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const [projectRenameDialogOpen, setProjectRenameDialogOpen] = useState(false);
+  const [projectRenameValue, setProjectRenameValue] = useState("");
+  const [projectRenameError, setProjectRenameError] = useState("");
+  const [isRenamingProject, setIsRenamingProject] = useState(false);
   const [newFileName, setNewFileName] = useState("");
   const [newFolderName, setNewFolderName] = useState("");
 
@@ -544,28 +1056,6 @@ export function Sidebar() {
   const handleImport = async (targetFolder?: string) => {
     const selected = await openDialog({
       multiple: true,
-      filters: [
-        {
-          name: "All Files",
-          extensions: [
-            "tex",
-            "bib",
-            "sty",
-            "cls",
-            "bst",
-            "png",
-            "jpg",
-            "jpeg",
-            "gif",
-            "svg",
-            "bmp",
-            "webp",
-            "pdf",
-            "txt",
-            "md",
-          ],
-        },
-      ],
     });
     if (selected && projectRoot) {
       const paths = Array.isArray(selected) ? selected : [selected];
@@ -578,6 +1068,28 @@ export function Sidebar() {
     setRenameValue(name);
     setNameError("");
     setRenameDialogOpen(true);
+  };
+
+  const openProjectRenameDialog = () => {
+    if (!projectRoot) return;
+    setProjectRenameValue(projectName);
+    setProjectRenameError("");
+    setProjectRenameDialogOpen(true);
+  };
+
+  const handleProjectRename = async () => {
+    const name = projectRenameValue.trim();
+    if (!name || isRenamingProject) return;
+    setIsRenamingProject(true);
+    setProjectRenameError("");
+    try {
+      await renameProject(name);
+      setProjectRenameDialogOpen(false);
+    } catch (err) {
+      setProjectRenameError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsRenamingProject(false);
+    }
   };
 
   const handleRename = () => {
@@ -618,351 +1130,603 @@ export function Sidebar() {
 
   // ─── Render ───
 
-  return (
-    <div className="flex h-full flex-col bg-sidebar text-sidebar-foreground">
-      {/* Header — padded top for macOS overlay titlebar */}
-      <div className="relative flex h-[calc(48px+var(--titlebar-height))] items-center justify-center border-sidebar-border border-b px-3 pt-[var(--titlebar-height)]">
-        <div className="flex flex-col items-center">
-          <span className="font-semibold text-sm">ClaudePrism</span>
-          <span className="text-muted-foreground text-xs">
-            {projectRoot?.split(/[/\\]/).pop() || "Desktop"}
-          </span>
-        </div>
-        <div className="absolute right-3 flex items-center gap-0.5">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-6"
-            onClick={closeProject}
-            title="Close Project"
-          >
-            <HomeIcon className="size-3.5" />
-          </Button>
-        </div>
-      </div>
+  const pendingDeleteCount = pendingDeleteItems?.length ?? 0;
+  const pendingDeletePreview = pendingDeleteItems?.slice(0, 4) ?? [];
 
-      {/* Resizable sections */}
-      <PanelGroup direction="vertical" className="min-h-0 flex-1">
-        {/* Files */}
-        <Panel defaultSize={50} minSize={15}>
-          <div
-            ref={sidebarFilesRef}
-            className="flex h-full flex-col"
-            data-sidebar-files
-          >
-            <div className="relative flex h-8 shrink-0 items-center justify-center border-sidebar-border border-b px-3">
-              <div className="flex items-center gap-2">
-                <FolderIcon className="size-3.5 text-muted-foreground" />
-                <span className="font-medium text-xs">Files</span>
-              </div>
-              <div className="absolute right-3 flex items-center gap-0.5">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-5"
-                  title="Refresh"
-                  onClick={() => refreshFiles()}
-                >
-                  <RefreshCwIcon className="size-3" />
-                </Button>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
+  const collapsedRail = (
+    <div className="flex h-full w-full min-w-0 flex-col items-center bg-sidebar text-sidebar-foreground">
+      <div className="flex h-[calc(var(--workspace-topbar-height)+var(--titlebar-height))] w-full items-center justify-center border-sidebar-border border-b">
+        <LayoutPaneSwitcher
+          controls={layoutControls}
+          collapsed={collapsed}
+          onQuickToggleSidebar={onToggleCollapsed}
+          side="right"
+          align="start"
+          buttonClassName="size-7"
+        />
+      </div>
+      <div className="flex min-h-0 flex-1 flex-col items-center gap-1.5 py-2">
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-7 transition-transform duration-300 ease-in-out hover:scale-105"
+          onClick={onToggleCollapsed}
+          title="Files"
+          aria-label="Expand Files"
+        >
+          <FolderIcon className="size-3.5" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-7 transition-transform duration-300 ease-in-out hover:scale-105"
+          onClick={onToggleCollapsed}
+          title="Outline"
+          aria-label="Expand Outline"
+        >
+          <ListIcon className="size-3.5" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-7 transition-transform duration-300 ease-in-out hover:scale-105"
+          onClick={onToggleCollapsed}
+          title="Zotero"
+          aria-label="Expand Zotero"
+        >
+          <FileTextIcon className="size-3.5" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-7 transition-transform duration-300 ease-in-out hover:scale-105"
+          onClick={onToggleCollapsed}
+          title="Environment"
+          aria-label="Expand Environment"
+        >
+          <AppWindowIcon className="size-3.5" />
+        </Button>
+      </div>
+      <div className="flex h-9 w-full items-center justify-center border-sidebar-border border-t">
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-7 transition-transform duration-300 ease-in-out hover:scale-105"
+          onClick={closeProject}
+          title="Close Project"
+          aria-label="Close Project"
+        >
+          <HomeIcon className="size-3.5" />
+        </Button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="relative h-full overflow-hidden bg-sidebar text-sidebar-foreground">
+      <div
+        className={cn(
+          "absolute inset-y-0 left-0 z-10 w-full transition-[opacity,transform] duration-300 ease-in-out",
+          collapsed
+            ? "translate-x-0 opacity-100"
+            : "pointer-events-none -translate-x-1 opacity-0",
+        )}
+        aria-hidden={!collapsed}
+      >
+        {collapsedRail}
+      </div>
+      <div
+        className={cn(
+          "h-full w-full min-w-0 transition-[opacity,transform] duration-300 ease-in-out",
+          collapsed
+            ? "pointer-events-none -translate-x-2 opacity-0"
+            : "translate-x-0 opacity-100",
+        )}
+        aria-hidden={collapsed}
+      >
+        <div className="flex h-full flex-col bg-sidebar text-sidebar-foreground">
+          {/* Header — padded top for macOS overlay titlebar */}
+          <div className="grid h-[calc(var(--workspace-topbar-height)+var(--titlebar-height))] grid-cols-[2rem_minmax(0,1fr)_2rem] items-center gap-2 border-sidebar-border border-b px-3">
+            <div className="flex items-center justify-start">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-6 transition-all duration-150 ease-out hover:scale-105"
+                onClick={closeProject}
+                title="Close Project"
+                aria-label="Close Project"
+              >
+                <HomeIcon className="size-3.5" />
+              </Button>
+            </div>
+            <button
+              type="button"
+              className={cn(
+                "w-full min-w-0 rounded-md px-2 py-1 font-semibold text-sm transition-colors",
+                projectRoot
+                  ? "hover:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  : "cursor-default",
+              )}
+              onClick={openProjectRenameDialog}
+              disabled={!projectRoot}
+              title={projectRoot ? "Rename project folder" : undefined}
+              aria-label="Rename project folder"
+            >
+              <span className="block truncate">{projectName}</span>
+            </button>
+            <div className="flex items-center justify-end">
+              <LayoutPaneSwitcher
+                controls={layoutControls}
+                collapsed={collapsed}
+                onQuickToggleSidebar={onToggleCollapsed}
+                side="bottom"
+                align="end"
+                buttonClassName="size-6"
+              />
+            </div>
+          </div>
+
+          {/* Resizable sections */}
+          <PanelGroup direction="vertical" className="min-h-0 flex-1">
+            {/* Files */}
+            <Panel defaultSize={50} minSize={15}>
+              <div
+                ref={sidebarFilesRef}
+                className="flex h-full flex-col"
+                data-sidebar-files
+              >
+                <div className="flex h-8 shrink-0 items-center justify-between gap-2 border-sidebar-border border-b px-3">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <FolderIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                    <span className="truncate font-medium text-xs">Files</span>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-0.5">
                     <Button
                       variant="ghost"
                       size="icon"
                       className="size-5"
-                      title="Add"
+                      title="Refresh"
+                      disabled={isRefreshingFiles}
+                      onClick={() => void runRefreshFiles()}
                     >
-                      <PlusIcon className="size-3" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem onClick={() => openNewFileDialog()}>
-                      <FileTextIcon className="mr-2 size-4" />
-                      New LaTeX File
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => openNewFolderDialog()}>
-                      <FolderPlusIcon className="mr-2 size-4" />
-                      New Folder
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem onClick={() => handleImport()}>
-                      <UploadIcon className="mr-2 size-4" />
-                      Import File
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-            </div>
-            <DndContext
-              sensors={sensors}
-              onDragStart={handleDragStart}
-              onDragEnd={handleDragEnd}
-            >
-              <ContextMenu>
-                <ContextMenuTrigger asChild>
-                  <DroppableRoot nativeDragOver={nativeDragOver === "__root__"}>
-                    {tree.map((node) => (
-                      <FileTreeNode
-                        key={node.relativePath}
-                        node={node}
-                        depth={0}
-                        activeFileId={activeFileId}
-                        expandedFolders={expandedFolders}
-                        onToggleFolder={toggleFolder}
-                        onSelectFile={(id: string) => {
-                          const parent = id.includes("/")
-                            ? id.substring(0, id.lastIndexOf("/"))
-                            : undefined;
-                          setPasteTargetFolder(parent);
-                          setActiveFile(id);
-                        }}
-                        onNewFile={openNewFileDialog}
-                        onNewFolder={openNewFolderDialog}
-                        onImport={handleImport}
-                        onRename={openRenameDialog}
-                        onDelete={deleteFile}
-                        onDeleteFolder={deleteFolder}
-                        fileCount={files.length}
-                        nativeDragOver={nativeDragOver}
+                      <RefreshCwIcon
+                        className={cn(
+                          "size-3",
+                          isRefreshingFiles && "animate-spin",
+                        )}
                       />
-                    ))}
-                  </DroppableRoot>
-                </ContextMenuTrigger>
-                <ContextMenuContent>
-                  <ContextMenuItem onClick={() => openNewFileDialog()}>
-                    <FileTextIcon className="mr-2 size-4" />
-                    New File
-                  </ContextMenuItem>
-                  <ContextMenuItem onClick={() => openNewFolderDialog()}>
-                    <FolderPlusIcon className="mr-2 size-4" />
-                    New Folder
-                  </ContextMenuItem>
-                  <ContextMenuSeparator />
-                  <ContextMenuItem onClick={() => handleImport()}>
-                    <UploadIcon className="mr-2 size-4" />
-                    Import File
-                  </ContextMenuItem>
-                </ContextMenuContent>
-              </ContextMenu>
-              <DragOverlay dropAnimation={null}>
-                {activeDrag && (
-                  <div className="flex items-center gap-2 rounded-md bg-sidebar px-2 py-1 text-sm shadow-lg ring-1 ring-ring">
-                    {activeDrag.type === "folder" ? (
-                      <FolderIcon className="size-4 shrink-0" />
-                    ) : (
-                      <FileTextIcon className="size-4 shrink-0" />
-                    )}
-                    <span className="truncate">{activeDrag.name}</span>
+                    </Button>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="size-5"
+                          title="Add"
+                        >
+                          <PlusIcon className="size-3" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem onClick={() => openNewFileDialog()}>
+                          <FileTextIcon className="mr-2 size-4" />
+                          New LaTeX File
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => openNewFolderDialog()}>
+                          <FolderPlusIcon className="mr-2 size-4" />
+                          New Folder
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem onClick={() => handleImport()}>
+                          <UploadIcon className="mr-2 size-4" />
+                          Import File
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </div>
+                </div>
+                <DndContext
+                  sensors={sensors}
+                  onDragStart={handleDragStart}
+                  onDragEnd={handleDragEnd}
+                >
+                  <ContextMenu>
+                    <ContextMenuTrigger asChild>
+                      <DroppableRoot
+                        nativeDragOver={nativeDragOver === "__root__"}
+                      >
+                        {tree.map((node) => (
+                          <FileTreeNode
+                            key={node.relativePath}
+                            node={node}
+                            depth={0}
+                            activeFileId={activeFileId}
+                            selectedItemKeys={selectedItemKeys}
+                            expandedFolders={expandedFolders}
+                            onToggleFolder={toggleFolder}
+                            onSelectFile={(id: string) => {
+                              const parent = parentFolderOfPath(id);
+                              setPasteTargetFolder(parent);
+                              setActiveFile(id);
+                            }}
+                            onItemClick={handleTreeItemClick}
+                            onItemContextMenu={handleTreeItemContextMenu}
+                            onNewFile={openNewFileDialog}
+                            onNewFolder={openNewFolderDialog}
+                            onImport={handleImport}
+                            onRename={openRenameDialog}
+                            onDeleteSelection={requestDeleteSelection}
+                            canDeleteSelection={canDeleteSelection}
+                            getEffectiveSelectionCount={
+                              getEffectiveSelectionCount
+                            }
+                            nativeDragOver={nativeDragOver}
+                          />
+                        ))}
+                      </DroppableRoot>
+                    </ContextMenuTrigger>
+                    <ContextMenuContent>
+                      <ContextMenuItem onClick={() => openNewFileDialog()}>
+                        <FileTextIcon className="mr-2 size-4" />
+                        New File
+                      </ContextMenuItem>
+                      <ContextMenuItem onClick={() => openNewFolderDialog()}>
+                        <FolderPlusIcon className="mr-2 size-4" />
+                        New Folder
+                      </ContextMenuItem>
+                      <ContextMenuSeparator />
+                      <ContextMenuItem onClick={() => handleImport()}>
+                        <UploadIcon className="mr-2 size-4" />
+                        Import File
+                      </ContextMenuItem>
+                    </ContextMenuContent>
+                  </ContextMenu>
+                  <DragOverlay dropAnimation={null}>
+                    {activeDrag && (
+                      <div className="flex items-center gap-2 rounded-md bg-sidebar px-2 py-1 text-sm shadow-lg ring-1 ring-ring">
+                        {activeDrag.type === "folder" ? (
+                          <FolderIcon className="size-4 shrink-0" />
+                        ) : (
+                          <FileTextIcon className="size-4 shrink-0" />
+                        )}
+                        <span className="truncate">
+                          {activeDrag.count > 1
+                            ? `${activeDrag.count} selected`
+                            : activeDrag.name}
+                        </span>
+                      </div>
+                    )}
+                  </DragOverlay>
+                </DndContext>
+              </div>
+            </Panel>
+
+            <PanelResizeHandle className="h-px bg-sidebar-border transition-colors hover:bg-ring data-resize-handle-active:bg-ring" />
+
+            {/* Outline */}
+            <Panel defaultSize={20} minSize={10}>
+              <div className="flex h-full flex-col">
+                <div className="flex h-8 shrink-0 items-center justify-center gap-2 px-3">
+                  <ListIcon className="size-3.5 text-muted-foreground" />
+                  <span className="font-medium text-xs">Outline</span>
+                </div>
+                <div className="min-h-0 flex-1 overflow-y-auto p-1">
+                  {toc.length > 0 ? (
+                    toc.map((item, index) => (
+                      <button
+                        key={index}
+                        className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-sm transition-colors hover:bg-sidebar-accent/50"
+                        style={{
+                          paddingLeft: `${(item.level - 1) * 12 + 8}px`,
+                        }}
+                        onClick={() => handleTocClick(item.line)}
+                      >
+                        <HashIcon className="size-3 shrink-0 text-muted-foreground" />
+                        <span className="truncate">{item.title}</span>
+                      </button>
+                    ))
+                  ) : (
+                    <div className="px-2 py-1 text-muted-foreground text-xs">
+                      No sections found
+                    </div>
+                  )}
+                </div>
+              </div>
+            </Panel>
+
+            <PanelResizeHandle className="h-px bg-sidebar-border transition-colors hover:bg-ring data-resize-handle-active:bg-ring" />
+
+            {/* Zotero */}
+            <Panel defaultSize={15} minSize={10}>
+              <div className="flex h-full flex-col">
+                <div className="flex h-8 shrink-0 items-center">
+                  <ZoteroHeader />
+                </div>
+                <div className="min-h-0 flex-1 overflow-hidden">
+                  <ZoteroPanel />
+                </div>
+              </div>
+            </Panel>
+          </PanelGroup>
+
+          {/* Environment section — Python + Skills */}
+          <EnvironmentSection projectPath={projectRoot} />
+
+          {/* Footer */}
+          <div className="flex h-9 items-center justify-between border-sidebar-border border-t px-3 text-muted-foreground text-xs">
+            <span className="truncate">ClaudePrism v{appVersion}</span>
+            <div className="flex shrink-0 items-center gap-1">
+              <Button variant="ghost" size="icon" className="size-6" asChild>
+                <a
+                  href="https://github.com/delibae/claude-prism"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title="GitHub"
+                >
+                  <GithubIcon className="size-3.5" />
+                </a>
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-6"
+                onClick={() => {
+                  if (theme === "system") setTheme("light");
+                  else if (theme === "light") setTheme("dark");
+                  else setTheme("system");
+                }}
+                title={
+                  theme === "system"
+                    ? "System theme"
+                    : theme === "light"
+                      ? "Light mode"
+                      : "Dark mode"
+                }
+              >
+                {theme === "system" ? (
+                  <MonitorIcon className="size-3.5" />
+                ) : theme === "light" ? (
+                  <SunIcon className="size-3.5" />
+                ) : (
+                  <MoonIcon className="size-3.5" />
                 )}
-              </DragOverlay>
-            </DndContext>
-          </div>
-        </Panel>
-
-        <PanelResizeHandle className="h-px bg-sidebar-border transition-colors hover:bg-ring data-resize-handle-active:bg-ring" />
-
-        {/* Outline */}
-        <Panel defaultSize={20} minSize={10}>
-          <div className="flex h-full flex-col">
-            <div className="flex h-8 shrink-0 items-center justify-center gap-2 px-3">
-              <ListIcon className="size-3.5 text-muted-foreground" />
-              <span className="font-medium text-xs">Outline</span>
+              </Button>
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto p-1">
-              {toc.length > 0 ? (
-                toc.map((item, index) => (
-                  <button
-                    key={index}
-                    className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-sm transition-colors hover:bg-sidebar-accent/50"
-                    style={{ paddingLeft: `${(item.level - 1) * 12 + 8}px` }}
-                    onClick={() => handleTocClick(item.line)}
-                  >
-                    <HashIcon className="size-3 shrink-0 text-muted-foreground" />
-                    <span className="truncate">{item.title}</span>
-                  </button>
-                ))
-              ) : (
-                <div className="px-2 py-1 text-muted-foreground text-xs">
-                  No sections found
+          </div>
+
+          {/* New File Dialog */}
+          <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>
+            <DialogContent className="overflow-hidden sm:max-w-md">
+              <DialogHeader>
+                <DialogTitle>
+                  New File{addDialogFolder ? ` in ${addDialogFolder}` : ""}
+                </DialogTitle>
+              </DialogHeader>
+              <div className="space-y-2 py-4">
+                <Input
+                  placeholder="filename.tex"
+                  value={newFileName}
+                  onChange={(e) => {
+                    setNewFileName(e.target.value);
+                    setNameError("");
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleAddFile();
+                  }}
+                  autoFocus
+                />
+                {nameError && (
+                  <p className="text-destructive text-xs">{nameError}</p>
+                )}
+              </div>
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => setAddDialogOpen(false)}
+                >
+                  Cancel
+                </Button>
+                <Button onClick={handleAddFile} disabled={!newFileName.trim()}>
+                  Create
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
+          {/* New Folder Dialog */}
+          <Dialog open={folderDialogOpen} onOpenChange={setFolderDialogOpen}>
+            <DialogContent className="sm:max-w-md">
+              <DialogHeader>
+                <DialogTitle>
+                  New Folder
+                  {folderDialogParent ? ` in ${folderDialogParent}` : ""}
+                </DialogTitle>
+              </DialogHeader>
+              <div className="space-y-2 py-4">
+                <Input
+                  placeholder="folder name"
+                  value={newFolderName}
+                  onChange={(e) => {
+                    setNewFolderName(e.target.value);
+                    setNameError("");
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleCreateFolder();
+                  }}
+                  autoFocus
+                />
+                {nameError && (
+                  <p className="text-destructive text-xs">{nameError}</p>
+                )}
+              </div>
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => setFolderDialogOpen(false)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleCreateFolder}
+                  disabled={!newFolderName.trim()}
+                >
+                  Create
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
+          {/* Rename Project Dialog */}
+          <Dialog
+            open={projectRenameDialogOpen}
+            onOpenChange={(open) => {
+              if (!isRenamingProject) setProjectRenameDialogOpen(open);
+            }}
+          >
+            <DialogContent className="sm:max-w-md">
+              <DialogHeader>
+                <DialogTitle>Rename Project</DialogTitle>
+              </DialogHeader>
+              <div className="space-y-2 py-4">
+                <Input
+                  value={projectRenameValue}
+                  onChange={(e) => {
+                    setProjectRenameValue(e.target.value);
+                    setProjectRenameError("");
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleProjectRename();
+                  }}
+                  autoFocus
+                />
+                {projectRenameError && (
+                  <p className="text-destructive text-xs">
+                    {projectRenameError}
+                  </p>
+                )}
+              </div>
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => setProjectRenameDialogOpen(false)}
+                  disabled={isRenamingProject}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleProjectRename}
+                  disabled={!projectRenameValue.trim() || isRenamingProject}
+                >
+                  {isRenamingProject ? "Renaming..." : "Rename"}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
+          {/* Rename Dialog */}
+          <Dialog open={renameDialogOpen} onOpenChange={setRenameDialogOpen}>
+            <DialogContent className="sm:max-w-md">
+              <DialogHeader>
+                <DialogTitle>Rename</DialogTitle>
+              </DialogHeader>
+              <div className="space-y-2 py-4">
+                <Input
+                  value={renameValue}
+                  onChange={(e) => {
+                    setRenameValue(e.target.value);
+                    setNameError("");
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleRename();
+                  }}
+                  autoFocus
+                />
+                {nameError && (
+                  <p className="text-destructive text-xs">{nameError}</p>
+                )}
+              </div>
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => setRenameDialogOpen(false)}
+                >
+                  Cancel
+                </Button>
+                <Button onClick={handleRename}>Rename</Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
+          {/* Delete confirmation */}
+          <Dialog
+            open={!!pendingDeleteItems}
+            onOpenChange={(open) => {
+              if (!open && !isDeletingSelection) {
+                setPendingDeleteItems(null);
+                setDeleteError("");
+              }
+            }}
+          >
+            <DialogContent className="sm:max-w-md">
+              <DialogHeader>
+                <DialogTitle>
+                  Delete {pendingDeleteCount === 1 ? "Item" : "Items"}
+                </DialogTitle>
+                <DialogDescription>
+                  {pendingDeleteCount === 1
+                    ? "This item will be removed from disk."
+                    : `${pendingDeleteCount} selected items will be removed from disk.`}
+                </DialogDescription>
+              </DialogHeader>
+              {pendingDeletePreview.length > 0 && (
+                <div className="min-w-0 max-w-full overflow-hidden rounded-md border border-border bg-muted/40 px-3 py-2">
+                  <div className="space-y-1">
+                    {pendingDeletePreview.map((item) => (
+                      <div
+                        key={fileTreeSelectionKey(item)}
+                        className="min-w-0 break-all font-mono text-muted-foreground text-xs"
+                      >
+                        {item.type === "folder" ? "Folder" : "File"}:{" "}
+                        {item.path}
+                      </div>
+                    ))}
+                    {pendingDeleteCount > pendingDeletePreview.length && (
+                      <div className="text-muted-foreground text-xs">
+                        +{pendingDeleteCount - pendingDeletePreview.length} more
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
-            </div>
-          </div>
-        </Panel>
-
-        <PanelResizeHandle className="h-px bg-sidebar-border transition-colors hover:bg-ring data-resize-handle-active:bg-ring" />
-
-        {/* Zotero */}
-        <Panel defaultSize={15} minSize={10}>
-          <div className="flex h-full flex-col">
-            <div className="flex h-8 shrink-0 items-center">
-              <ZoteroHeader />
-            </div>
-            <div className="min-h-0 flex-1 overflow-hidden">
-              <ZoteroPanel />
-            </div>
-          </div>
-        </Panel>
-      </PanelGroup>
-
-      {/* Environment section — Python + Skills */}
-      <EnvironmentSection projectPath={projectRoot} />
-
-      {/* Footer */}
-      <div className="flex items-center justify-between border-sidebar-border border-t px-3 py-2 text-muted-foreground text-xs">
-        <span className="truncate">ClaudePrism v{appVersion}</span>
-        <div className="flex shrink-0 items-center gap-1">
-          <Button variant="ghost" size="icon" className="size-6" asChild>
-            <a
-              href="https://github.com/delibae/claude-prism"
-              target="_blank"
-              rel="noopener noreferrer"
-              title="GitHub"
-            >
-              <GithubIcon className="size-3.5" />
-            </a>
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-6"
-            onClick={() => {
-              if (theme === "system") setTheme("light");
-              else if (theme === "light") setTheme("dark");
-              else setTheme("system");
-            }}
-            title={
-              theme === "system"
-                ? "System theme"
-                : theme === "light"
-                  ? "Light mode"
-                  : "Dark mode"
-            }
-          >
-            {theme === "system" ? (
-              <MonitorIcon className="size-3.5" />
-            ) : theme === "light" ? (
-              <SunIcon className="size-3.5" />
-            ) : (
-              <MoonIcon className="size-3.5" />
-            )}
-          </Button>
+              {deleteError && (
+                <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive text-xs">
+                  {deleteError}
+                </p>
+              )}
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    if (isDeletingSelection) return;
+                    setPendingDeleteItems(null);
+                    setDeleteError("");
+                  }}
+                  disabled={isDeletingSelection}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="destructive"
+                  onClick={() => void confirmDeleteSelection()}
+                  disabled={!pendingDeleteItems || isDeletingSelection}
+                >
+                  {isDeletingSelection ? "Deleting..." : "Delete"}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         </div>
       </div>
-
-      {/* New File Dialog */}
-      <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>
-              New File{addDialogFolder ? ` in ${addDialogFolder}` : ""}
-            </DialogTitle>
-          </DialogHeader>
-          <div className="space-y-2 py-4">
-            <Input
-              placeholder="filename.tex"
-              value={newFileName}
-              onChange={(e) => {
-                setNewFileName(e.target.value);
-                setNameError("");
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleAddFile();
-              }}
-              autoFocus
-            />
-            {nameError && (
-              <p className="text-destructive text-xs">{nameError}</p>
-            )}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setAddDialogOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={handleAddFile} disabled={!newFileName.trim()}>
-              Create
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* New Folder Dialog */}
-      <Dialog open={folderDialogOpen} onOpenChange={setFolderDialogOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>
-              New Folder{folderDialogParent ? ` in ${folderDialogParent}` : ""}
-            </DialogTitle>
-          </DialogHeader>
-          <div className="space-y-2 py-4">
-            <Input
-              placeholder="folder name"
-              value={newFolderName}
-              onChange={(e) => {
-                setNewFolderName(e.target.value);
-                setNameError("");
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleCreateFolder();
-              }}
-              autoFocus
-            />
-            {nameError && (
-              <p className="text-destructive text-xs">{nameError}</p>
-            )}
-          </div>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setFolderDialogOpen(false)}
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={handleCreateFolder}
-              disabled={!newFolderName.trim()}
-            >
-              Create
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Rename Dialog */}
-      <Dialog open={renameDialogOpen} onOpenChange={setRenameDialogOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Rename</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-2 py-4">
-            <Input
-              value={renameValue}
-              onChange={(e) => {
-                setRenameValue(e.target.value);
-                setNameError("");
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleRename();
-              }}
-              autoFocus
-            />
-            {nameError && (
-              <p className="text-destructive text-xs">{nameError}</p>
-            )}
-          </div>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setRenameDialogOpen(false)}
-            >
-              Cancel
-            </Button>
-            <Button onClick={handleRename}>Rename</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }
@@ -1020,16 +1784,23 @@ interface FileTreeNodeProps {
   node: TreeNode;
   depth: number;
   activeFileId: string;
+  selectedItemKeys: Set<string>;
   expandedFolders: Set<string>;
   onToggleFolder: (path: string) => void;
   onSelectFile: (id: string) => void;
+  onItemClick: (
+    item: FileTreeSelectionItem,
+    event: React.MouseEvent,
+    onPrimaryClick: () => void,
+  ) => void;
+  onItemContextMenu: (item: FileTreeSelectionItem) => void;
   onNewFile: (folder?: string) => void;
   onNewFolder: (parent?: string) => void;
   onImport: (folder?: string) => void;
   onRename: (id: string, name: string) => void;
-  onDelete: (id: string) => void;
-  onDeleteFolder: (folderPath: string) => void;
-  fileCount: number;
+  onDeleteSelection: (fallback: FileTreeSelectionItem) => void;
+  canDeleteSelection: (fallback: FileTreeSelectionItem) => boolean;
+  getEffectiveSelectionCount: (fallback: FileTreeSelectionItem) => number;
   nativeDragOver?: string | null;
 }
 
@@ -1037,21 +1808,32 @@ function FileTreeNode({
   node,
   depth,
   activeFileId,
+  selectedItemKeys,
   expandedFolders,
   onToggleFolder,
   onSelectFile,
+  onItemClick,
+  onItemContextMenu,
   onNewFile,
   onNewFolder,
   onImport,
   onRename,
-  onDelete,
-  onDeleteFolder,
-  fileCount,
+  onDeleteSelection,
+  canDeleteSelection,
+  getEffectiveSelectionCount,
   nativeDragOver,
 }: FileTreeNodeProps) {
   const isExpanded = expandedFolders.has(node.relativePath);
 
   if (node.type === "folder") {
+    const folderItem: FileTreeSelectionItem = {
+      type: "folder",
+      path: node.relativePath,
+    };
+    const isSelected = selectedItemKeys.has(fileTreeSelectionKey(folderItem));
+    const effectiveSelectionCount = getEffectiveSelectionCount(folderItem);
+    const batchOperation = effectiveSelectionCount > 1;
+
     return (
       <DroppableFolder
         id={node.relativePath}
@@ -1061,9 +1843,19 @@ function FileTreeNode({
           <ContextMenu>
             <ContextMenuTrigger asChild>
               <button
-                className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-sm transition-colors hover:bg-sidebar-accent/50"
+                aria-pressed={isSelected}
+                className={cn(
+                  "flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-sm transition-colors hover:bg-sidebar-accent/50",
+                  isSelected &&
+                    "bg-sidebar-accent text-sidebar-accent-foreground",
+                )}
                 style={{ paddingLeft: `${depth * 16 + 4}px` }}
-                onClick={() => onToggleFolder(node.relativePath)}
+                onClick={(event) =>
+                  onItemClick(folderItem, event, () =>
+                    onToggleFolder(node.relativePath),
+                  )
+                }
+                onContextMenu={() => onItemContextMenu(folderItem)}
               >
                 {isExpanded ? (
                   <ChevronDownIcon className="size-3.5 shrink-0 text-muted-foreground" />
@@ -1090,16 +1882,20 @@ function FileTreeNode({
               <ContextMenuSeparator />
               <ContextMenuItem
                 onClick={() => onRename(node.relativePath, node.name)}
+                disabled={batchOperation}
               >
                 <PencilIcon className="mr-2 size-4" />
                 Rename
               </ContextMenuItem>
               <ContextMenuItem
                 variant="destructive"
-                onClick={() => onDeleteFolder(node.relativePath)}
+                onClick={() => onDeleteSelection(folderItem)}
+                disabled={!canDeleteSelection(folderItem)}
               >
                 <Trash2Icon className="mr-2 size-4" />
-                Delete
+                {batchOperation
+                  ? `Delete ${effectiveSelectionCount} selected`
+                  : "Delete"}
               </ContextMenuItem>
             </ContextMenuContent>
           </ContextMenu>
@@ -1111,16 +1907,19 @@ function FileTreeNode({
               node={child}
               depth={depth + 1}
               activeFileId={activeFileId}
+              selectedItemKeys={selectedItemKeys}
               expandedFolders={expandedFolders}
               onToggleFolder={onToggleFolder}
               onSelectFile={onSelectFile}
+              onItemClick={onItemClick}
+              onItemContextMenu={onItemContextMenu}
               onNewFile={onNewFile}
               onNewFolder={onNewFolder}
               onImport={onImport}
               onRename={onRename}
-              onDelete={onDelete}
-              onDeleteFolder={onDeleteFolder}
-              fileCount={fileCount}
+              onDeleteSelection={onDeleteSelection}
+              canDeleteSelection={canDeleteSelection}
+              getEffectiveSelectionCount={getEffectiveSelectionCount}
               nativeDragOver={nativeDragOver}
             />
           ))}
@@ -1130,22 +1929,36 @@ function FileTreeNode({
 
   // File node
   const file = node.file!;
+  const fileItem: FileTreeSelectionItem = {
+    type: "file",
+    path: file.relativePath,
+  };
+  const isSelected = selectedItemKeys.has(fileTreeSelectionKey(fileItem));
+  const effectiveSelectionCount = getEffectiveSelectionCount(fileItem);
+  const batchOperation = effectiveSelectionCount > 1;
+
   return (
     <DraggableItem id={file.relativePath} type="file" name={node.name}>
       <ContextMenu>
         <ContextMenuTrigger asChild>
           <button
+            aria-pressed={isSelected}
             className={cn(
               "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
-              file.id === activeFileId
-                ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                : "hover:bg-sidebar-accent/50",
+              (file.id === activeFileId || isSelected) &&
+                "bg-sidebar-accent text-sidebar-accent-foreground",
+              file.id !== activeFileId &&
+                !isSelected &&
+                "hover:bg-sidebar-accent/50",
             )}
             style={{ paddingLeft: `${depth * 16 + 8}px` }}
-            onClick={() => {
-              useHistoryStore.getState().stopReview();
-              onSelectFile(file.id);
-            }}
+            onClick={(event) =>
+              onItemClick(fileItem, event, () => {
+                useHistoryStore.getState().stopReview();
+                onSelectFile(file.id);
+              })
+            }
+            onContextMenu={() => onItemContextMenu(fileItem)}
           >
             {getFileIcon(file)}
             <span className="min-w-0 flex-1 truncate">{node.name}</span>
@@ -1158,17 +1971,22 @@ function FileTreeNode({
           </button>
         </ContextMenuTrigger>
         <ContextMenuContent>
-          <ContextMenuItem onClick={() => onRename(file.id, file.name)}>
+          <ContextMenuItem
+            onClick={() => onRename(file.id, file.name)}
+            disabled={batchOperation}
+          >
             <PencilIcon className="mr-2 size-4" />
             Rename
           </ContextMenuItem>
           <ContextMenuItem
             variant="destructive"
-            onClick={() => onDelete(file.id)}
-            disabled={fileCount <= 1}
+            onClick={() => onDeleteSelection(fileItem)}
+            disabled={!canDeleteSelection(fileItem)}
           >
             <Trash2Icon className="mr-2 size-4" />
-            Delete
+            {batchOperation
+              ? `Delete ${effectiveSelectionCount} selected`
+              : "Delete"}
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
@@ -1184,7 +2002,11 @@ interface SkillsStatus {
   location: string;
 }
 
-function EnvironmentSection({ projectPath }: { projectPath: string | null }) {
+function EnvironmentSection({
+  projectPath: _projectPath,
+}: {
+  projectPath: string | null;
+}) {
   // ── Python / uv ──
   const venvReady = useUvSetupStore((s) => s.venvReady);
   const uvStatus = useUvSetupStore((s) => s.status);
@@ -1202,25 +2024,11 @@ function EnvironmentSection({ projectPath }: { projectPath: string | null }) {
           projectPath: null,
         },
       );
-      if (globalStatus.installed) {
-        setSkillsStatus(globalStatus);
-        return;
-      }
-      if (projectPath) {
-        const projectStatus = await invoke<SkillsStatus>(
-          "check_skills_installed",
-          {
-            projectPath,
-          },
-        );
-        setSkillsStatus(projectStatus);
-      } else {
-        setSkillsStatus(globalStatus);
-      }
+      setSkillsStatus(globalStatus);
     } catch {
       // Ignore errors silently
     }
-  }, [projectPath]);
+  }, []);
 
   useEffect(() => {
     checkSkillsStatus();

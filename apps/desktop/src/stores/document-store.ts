@@ -22,9 +22,11 @@ import { clearDocCache } from "@/lib/mupdf/pdf-doc-cache";
 import { clearScrollPositionCache } from "@/components/workspace/preview/pdf-viewer";
 import { clearZoomCache } from "@/components/workspace/preview/pdf-preview";
 import { clearEditorStateCache } from "@/components/workspace/editor/latex-editor";
+import { useProjectStore } from "@/stores/project-store";
 import { createLogger } from "@/lib/debug/logger";
 
 const log = createLogger("document");
+const PROJECT_RENAME_LOCK_RETRY_DELAYS_MS = [150, 300, 600, 1000];
 
 export interface ProjectFile {
   id: string; // relativePath is the id
@@ -55,6 +57,11 @@ export function getCurrentPdfBytes(): Uint8Array | null {
   return _currentPdfRootId
     ? (_pdfBytesCache.get(_currentPdfRootId) ?? null)
     : null;
+}
+
+/** Get the root file id for the currently displayed PDF, if any. */
+export function getCurrentPdfRootId(): string | null {
+  return _currentPdfRootId;
 }
 
 /** Check if any PDF data exists for the current root. */
@@ -92,6 +99,7 @@ interface DocumentState {
   lastCompiledGenerations: Map<string, number>;
 
   openProject: (rootPath: string) => Promise<void>;
+  renameProject: (newName: string) => Promise<void>;
   closeProject: () => void;
   setActiveFile: (id: string) => void;
   addFile: (file: Omit<ProjectFile, "id" | "isDirty">) => string;
@@ -226,6 +234,104 @@ function migrateCacheKey<V>(
   return copy;
 }
 
+function normalizeProjectRoot(rootPath: string): string {
+  return rootPath.replace(/[\\/]+$/, "");
+}
+
+function splitProjectRoot(rootPath: string): {
+  parentPath: string;
+  folderName: string;
+  separator: string;
+} {
+  const normalized = normalizeProjectRoot(rootPath);
+  const lastSep = Math.max(
+    normalized.lastIndexOf("/"),
+    normalized.lastIndexOf("\\"),
+  );
+  if (lastSep < 0) {
+    throw new Error("Project path has no parent folder");
+  }
+
+  const separator = normalized[lastSep];
+  return {
+    parentPath: lastSep === 0 ? separator : normalized.slice(0, lastSep),
+    folderName: normalized.slice(lastSep + 1),
+    separator,
+  };
+}
+
+function buildRenamedProjectRoot(rootPath: string, newName: string): string {
+  const name = newName.trim();
+  if (!name) throw new Error("Project name cannot be empty");
+  if (name === "." || name === "..") {
+    throw new Error("Project name cannot be . or ..");
+  }
+  if (/[\\/<>:"|?*]/.test(name) || /[\s.]$/.test(name)) {
+    throw new Error("Project name contains characters Windows cannot use");
+  }
+
+  const { parentPath, folderName, separator } = splitProjectRoot(rootPath);
+  if (name === folderName) return normalizeProjectRoot(rootPath);
+  return `${parentPath}${parentPath.endsWith(separator) ? "" : separator}${name}`;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isWindowsFolderLockError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes("os error 32") ||
+    message.includes("being used by another process") ||
+    message.includes("another program is using") ||
+    message.includes("进程无法访问") ||
+    message.includes("另一个程序正在使用")
+  );
+}
+
+function formatProjectRenameError(error: unknown): string {
+  if (isWindowsFolderLockError(error)) {
+    return [
+      "Project folder is still in use.",
+      "Close any external PDF viewer, terminal, Python process, or file explorer preview using this project, then try again.",
+    ].join(" ");
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function renameProjectRootWithRetry(
+  oldRoot: string,
+  newRoot: string,
+): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await renameFileOnDisk(oldRoot, newRoot);
+      return;
+    } catch (error) {
+      const delay = PROJECT_RENAME_LOCK_RETRY_DELAYS_MS[attempt];
+      if (!isWindowsFolderLockError(error) || delay == null) {
+        throw new Error(formatProjectRenameError(error));
+      }
+      await sleep(delay);
+    }
+  }
+}
+
+async function waitForCompileToFinish(
+  getState: () => DocumentState,
+): Promise<void> {
+  const started = Date.now();
+  while (getState().isCompiling) {
+    if (Date.now() - started > 10_000) {
+      throw new Error(
+        "Compilation is still running. Wait for it to finish before renaming the project.",
+      );
+    }
+    await sleep(200);
+  }
+}
+
 // Auto-save: debounced save 2 seconds after last content change
 let autoSaveTimer: ReturnType<typeof setTimeout> | null = null;
 // Store reference set after creation to avoid TDZ issues
@@ -349,13 +455,83 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
       });
   },
 
+  renameProject: async (newName: string) => {
+    const state = get();
+    if (!state.projectRoot) throw new Error("No project open");
+
+    const oldRoot = state.projectRoot;
+    const newRoot = buildRenamedProjectRoot(oldRoot, newName);
+    if (newRoot === normalizeProjectRoot(oldRoot)) return;
+
+    if (autoSaveTimer) {
+      clearTimeout(autoSaveTimer);
+      autoSaveTimer = null;
+    }
+    await waitForCompileToFinish(get);
+
+    const chatState = useClaudeChatStore.getState();
+    const streamingTabs =
+      "tabs" in chatState && Array.isArray(chatState.tabs)
+        ? chatState.tabs.filter((tab) => tab.isStreaming)
+        : [];
+    if (streamingTabs.length > 0) {
+      await Promise.all(
+        streamingTabs.map((tab) =>
+          invoke("cancel_claude_execution", { tabId: tab.id }).catch(() => {}),
+        ),
+      );
+      await sleep(250);
+    }
+
+    await state.saveAllFiles();
+    const dirtyFiles = get().files.filter(
+      (f) => f.isDirty && f.content != null,
+    );
+    if (dirtyFiles.length > 0) {
+      throw new Error("Save failed. Please save changes before renaming.");
+    }
+
+    clearPdfBytesCache();
+    clearScrollPositionCache();
+    clearZoomCache();
+    clearEditorStateCache();
+    useHistoryStore.getState().reset();
+    set((s) => ({
+      pdfRevision: s.pdfRevision + 1,
+      compileError: null,
+      compileErrorCache: new Map(),
+      lastCompiledGenerations: new Map(),
+    }));
+    await clearDocCache();
+    await sleep(150);
+
+    await renameProjectRootWithRetry(oldRoot, newRoot);
+    try {
+      await invoke("migrate_project_sessions", {
+        oldProjectPath: oldRoot,
+        newProjectPath: newRoot,
+      });
+    } catch (err) {
+      log.warn("Failed to migrate project sessions after rename", {
+        oldRoot,
+        newRoot,
+        error: String(err),
+      });
+    }
+    const projectStore = useProjectStore.getState();
+    projectStore.renameRecentProject(oldRoot, newRoot);
+    projectStore.setLastProjectFolder(splitProjectRoot(newRoot).parentPath);
+
+    await get().openProject(newRoot);
+  },
+
   closeProject: () => {
     log.info("Closing project");
     if (autoSaveTimer) {
       clearTimeout(autoSaveTimer);
       autoSaveTimer = null;
     }
-    clearDocCache();
+    void clearDocCache();
     clearScrollPositionCache();
     clearZoomCache();
     clearEditorStateCache();
@@ -377,6 +553,15 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
 
   setActiveFile: (id) => {
     const state = get();
+    const file = state.files.find((f) => f.id === id);
+    if (!file || file.type !== "tex") {
+      set({
+        activeFileId: id,
+        selectionRange: null,
+      });
+      return;
+    }
+
     const rootId = resolveTexRoot(id, state.files);
     const newPdfRootId = _pdfBytesCache.has(rootId) ? rootId : null;
     const pdfRootChanged = newPdfRootId !== _currentPdfRootId;

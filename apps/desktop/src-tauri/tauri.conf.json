@@ -2,10 +2,10 @@
   "$schema": "https://raw.githubusercontent.com/nicegui-unofficial/nicegui-tauri-template/main/src-tauri/tauri.conf-v2-schema.json",
   "identifier": "com.claude-prism.desktop",
   "productName": "ClaudePrism",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "build": {
-    "beforeDevCommand": "pnpm dev",
-    "beforeBuildCommand": "pnpm build",
+    "beforeDevCommand": "corepack pnpm dev",
+    "beforeBuildCommand": "corepack pnpm build",
     "devUrl": "http://localhost:1420",
     "frontendDist": "../dist"
   },
@@ -23,6 +23,7 @@
         "visible": false,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
+        "zoomHotkeysEnabled": true,
         "trafficLightPosition": {
           "x": 12,
           "y": 12

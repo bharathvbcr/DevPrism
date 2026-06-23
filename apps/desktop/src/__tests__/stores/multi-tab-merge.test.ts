@@ -36,6 +36,7 @@ function resetStores() {
     messages: [],
     sessionId: null,
     isStreaming: false,
+    streamingStartedAt: null,
     error: null,
     totalInputTokens: 0,
     totalOutputTokens: 0,
@@ -43,9 +44,13 @@ function resetStores() {
       {
         id: "tab-default",
         title: "New Chat",
+        projectPath: "/project",
         sessionId: null,
+        providerKey: null,
+        sessionProviderKey: null,
         messages: [],
         isStreaming: false,
+        streamingStartedAt: null,
         error: null,
         totalInputTokens: 0,
         totalOutputTokens: 0,
@@ -53,6 +58,7 @@ function resetStores() {
       },
     ],
     activeTabId: "tab-default",
+    activeProjectPath: "/project",
     _cancelledByUser: false,
   });
   useProposedChangesStore.setState({ changes: [] });
@@ -238,6 +244,32 @@ describe("Multi-tab merge triggers", () => {
       expect(tabBState.isStreaming).toBe(true);
     });
 
+    it("preserves streaming start time when switching tabs", () => {
+      const chat = useClaudeChatStore.getState();
+      const tabB = chat.createTab();
+      const startedAt = Date.now() - 12_000;
+
+      useClaudeChatStore.setState((s) => ({
+        tabs: s.tabs.map((t) =>
+          t.id === "tab-default"
+            ? { ...t, isStreaming: true, streamingStartedAt: startedAt }
+            : t,
+        ),
+        activeTabId: "tab-default",
+        isStreaming: true,
+        streamingStartedAt: startedAt,
+      }));
+
+      chat.setActiveTab(tabB);
+      chat.setActiveTab("tab-default");
+
+      const state = useClaudeChatStore.getState();
+      expect(state.streamingStartedAt).toBe(startedAt);
+      expect(
+        state.tabs.find((t) => t.id === "tab-default")!.streamingStartedAt,
+      ).toBe(startedAt);
+    });
+
     it("_appendMessage routes to the specified tab, not the active tab", () => {
       const chat = useClaudeChatStore.getState();
       const tabB = chat.createTab();
@@ -269,6 +301,89 @@ describe("Multi-tab merge triggers", () => {
 
       // Top-level projected messages should reflect the active tab (tab B) — empty
       expect(state.messages).toHaveLength(0);
+    });
+
+    it("_appendMessage merges direct provider streaming deltas", () => {
+      const chat = useClaudeChatStore.getState();
+
+      chat._appendMessage("tab-default", {
+        type: "assistant",
+        subtype: "streaming_delta",
+        message: { content: [{ type: "text", text: "Hello" }] },
+      });
+      chat._appendMessage("tab-default", {
+        type: "assistant",
+        subtype: "streaming_delta",
+        message: { content: [{ type: "text", text: " world" }] },
+      });
+
+      const messages = useClaudeChatStore.getState().messages;
+      expect(messages).toHaveLength(1);
+      expect(messages[0].message?.content?.[0].text).toBe("Hello world");
+    });
+
+    it("_appendMessage merges direct provider streaming thinking deltas", () => {
+      const chat = useClaudeChatStore.getState();
+
+      chat._appendMessage("tab-default", {
+        type: "assistant",
+        subtype: "streaming_delta",
+        message: {
+          content: [
+            { type: "thinking", thinking: "Reason A. " },
+            { type: "text", text: "Hello" },
+          ],
+        },
+      });
+      chat._appendMessage("tab-default", {
+        type: "assistant",
+        subtype: "streaming_delta",
+        message: {
+          content: [
+            { type: "thinking", thinking: "Reason B." },
+            { type: "text", text: " world" },
+          ],
+        },
+      });
+
+      const messages = useClaudeChatStore.getState().messages;
+      expect(messages).toHaveLength(1);
+      expect(messages[0].message?.content?.[0].type).toBe("thinking");
+      expect(messages[0].message?.content?.[0].thinking).toBe(
+        "Reason A. Reason B.",
+      );
+      expect(messages[0].message?.content?.[1].text).toBe("Hello world");
+    });
+
+    it("_appendMessage replaces streaming deltas with final direct provider message", () => {
+      const chat = useClaudeChatStore.getState();
+
+      chat._appendMessage("tab-default", {
+        type: "assistant",
+        subtype: "streaming_delta",
+        message: { content: [{ type: "text", text: "Draft" }] },
+      });
+      chat._appendMessage("tab-default", {
+        type: "assistant",
+        subtype: "streaming_final",
+        message: {
+          content: [
+            { type: "text", text: "Final" },
+            {
+              type: "tool_use",
+              id: "tool-1",
+              name: "Read",
+              input: { file_path: "main.tex" },
+            },
+          ],
+        },
+      });
+
+      const messages = useClaudeChatStore.getState().messages;
+      expect(messages).toHaveLength(1);
+      expect(messages[0].subtype).toBe("streaming_final");
+      expect(messages[0].message?.content?.[0].text).toBe("Final");
+      expect(messages[0].message?.content?.[1].type).toBe("tool_use");
     });
 
     it("_setSessionId routes to the specified tab", () => {

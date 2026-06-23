@@ -929,14 +929,21 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     try {
       if (useSettingsStore.getState().nativeAgentEnabled) {
         // DevPrism native runtime: talk directly to a local Ollama model, no
-        // Claude CLI. Single-turn per send (the agent reads project files for
-        // context); emits the same events as the CLI path so the UI is unchanged.
+        // Claude CLI. Keeps multi-turn memory per tab in the Rust runtime and
+        // emits the same events as the CLI path, so the UI is unchanged. Use the
+        // configured Ollama (OpenAI-compatible) credential's base URL + model
+        // when available; otherwise the runtime defaults to localhost:11434 and
+        // the first installed model.
+        const creds = useClaudeSetupStore.getState().openAiCredentials ?? [];
+        const cred =
+          creds.find((c) => c.id === providerCredentialId) ??
+          creds.find((c) => c.base_url?.includes("11434"));
         await invoke("run_native_agent", {
           projectPath,
           prompt,
           tabId: activeTabId,
-          model: providerModelOverride ?? null,
-          baseUrl: null,
+          model: cred?.model || providerModelOverride || null,
+          baseUrl: cred?.base_url || null,
         });
       } else if (resumeSessionId) {
         // Resume existing session
@@ -1178,6 +1185,10 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
 
   clearMessages: () => {
     const { activeTabId } = get();
+    // Also clear the native runtime's per-tab conversation memory.
+    void Promise.resolve(
+      invoke("clear_native_session", { tabId: activeTabId }),
+    ).catch(() => {});
     set((s) =>
       applyTabUpdate(s, activeTabId, {
         messages: [],
@@ -1464,6 +1475,10 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     if (tab?.isStreaming) return;
     // Prevent closing the last tab
     if (state.tabs.length <= 1) return;
+    // Free the native runtime's conversation memory for this tab.
+    void Promise.resolve(invoke("clear_native_session", { tabId })).catch(
+      () => {},
+    );
 
     const idx = state.tabs.findIndex((t) => t.id === tabId);
     if (idx === -1) return;

@@ -42,6 +42,48 @@ fn cancels() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
     C.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+// ─── Per-tab conversation memory (multi-turn) ───
+//
+// Stored history is everything EXCEPT the system message (which is rebuilt fresh
+// each turn so the project context stays current). Bounded by total bytes.
+
+const HISTORY_BYTE_CAP: usize = 24 * 1024;
+
+fn sessions() -> &'static Mutex<HashMap<String, Vec<Value>>> {
+    static S: OnceLock<Mutex<HashMap<String, Vec<Value>>>> = OnceLock::new();
+    S.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn load_history(tab_id: &str) -> Vec<Value> {
+    sessions()
+        .lock()
+        .ok()
+        .and_then(|g| g.get(tab_id).cloned())
+        .unwrap_or_default()
+}
+
+fn save_history(tab_id: &str, mut history: Vec<Value>) {
+    // Trim oldest messages until the serialized history fits the byte cap.
+    while history.len() > 2 {
+        let size: usize = history.iter().map(|m| m.to_string().len()).sum();
+        if size <= HISTORY_BYTE_CAP {
+            break;
+        }
+        history.remove(0);
+    }
+    if let Ok(mut g) = sessions().lock() {
+        g.insert(tab_id.to_string(), history);
+    }
+}
+
+/// Clear a tab's native conversation memory (e.g. on "new chat").
+#[tauri::command]
+pub fn clear_native_session(tab_id: String) {
+    if let Ok(mut g) = sessions().lock() {
+        g.remove(&tab_id);
+    }
+}
+
 #[derive(Serialize, Clone)]
 struct OutputEvent {
     tab_id: String,
@@ -116,10 +158,16 @@ pub async fn run_native_agent(
     let mut system = String::from(SYSTEM_RULES);
     system.push_str(&crate::project_context::build_project_context_prompt(project));
 
-    let mut messages = json!([
-        { "role": "system", "content": system },
-        { "role": "user", "content": prompt },
-    ]);
+    // Rebuild the message list each turn: a fresh system message (current project
+    // context) + the persisted conversation history + this turn's user prompt.
+    let history = load_history(&tab_id);
+    let mut messages = json!([{ "role": "system", "content": system }]);
+    if let Some(arr) = messages.as_array_mut() {
+        for m in &history {
+            arr.push(m.clone());
+        }
+        arr.push(json!({ "role": "user", "content": prompt }));
+    }
     let tools = tools::tool_schemas();
 
     // Tell the UI a stream started (session id == tab id).
@@ -232,6 +280,13 @@ pub async fn run_native_agent(
                 "Reached the step limit for this turn. Ask me to continue if more is needed.",
             );
         }
+    }
+
+    // Persist the conversation (everything except the rebuilt system message) so
+    // the next turn in this tab has memory of what happened.
+    if let Some(arr) = messages.as_array() {
+        let new_history: Vec<Value> = arr.iter().skip(1).cloned().collect();
+        save_history(&tab_id, new_history);
     }
 
     if let Ok(mut guard) = cancels().lock() {

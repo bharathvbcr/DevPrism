@@ -53,6 +53,8 @@ pub struct OllamaClient {
     base: String,
     model: String,
     client: reqwest::Client,
+    num_ctx: u32,
+    temperature: f32,
 }
 
 /// Normalize a user-entered base URL (which may be the OpenAI-compatible
@@ -93,11 +95,20 @@ pub async fn first_installed_model(base_url: &str) -> Option<String> {
 }
 
 impl OllamaClient {
-    pub fn new(base_url: &str, model: &str) -> Self {
+    pub fn new(
+        base_url: &str,
+        model: &str,
+        num_ctx: Option<u32>,
+        temperature: Option<f32>,
+    ) -> Self {
         Self {
             base: native_base(base_url),
             model: model.to_string(),
             client: build_client(),
+            num_ctx: num_ctx
+                .filter(|&n| (512..=131072).contains(&n))
+                .unwrap_or(CONTEXT_WINDOW),
+            temperature: temperature.filter(|&t| (0.0..=2.0).contains(&t)).unwrap_or(0.4),
         }
     }
 
@@ -114,8 +125,8 @@ impl OllamaClient {
             // history + tool schemas. Request a larger window and a low
             // temperature for more deterministic tool use / editing.
             "options": {
-                "num_ctx": CONTEXT_WINDOW,
-                "temperature": 0.4,
+                "num_ctx": self.num_ctx,
+                "temperature": self.temperature,
             },
             // Keep the model resident between rounds so it isn't reloaded each turn.
             "keep_alive": "10m",

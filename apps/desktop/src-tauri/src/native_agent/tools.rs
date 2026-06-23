@@ -42,10 +42,12 @@ pub fn tool_schemas() -> Value {
         schema("LS", "List the entries of a directory in the project.",
             json!({"path": {"type": "string", "description": "Directory path relative to the project root (default: root)"}}),
             &[]),
-        schema("Grep", "Search project files for a case-insensitive substring and return matching lines.",
+        schema("Grep", "Search project files for a substring (case-insensitive by default) and return matching lines.",
             json!({
                 "pattern": {"type": "string", "description": "Substring to search for"},
-                "path": {"type": "string", "description": "Optional sub-directory to limit the search"}
+                "path": {"type": "string", "description": "Optional sub-directory to limit the search"},
+                "glob": {"type": "string", "description": "Optional filename filter, e.g. *.tex (only search matching files)"},
+                "case_sensitive": {"type": "boolean", "description": "Match case exactly (default false)"}
             }),
             &["pattern"]),
         schema("Bash", "Run a shell command in the project directory (e.g. `uv run python script.py`). Returns combined stdout+stderr.",
@@ -307,8 +309,16 @@ pub async fn execute(project_dir: &Path, name: &str, args: &Value) -> (String, b
         "Grep" => match arg(args, "pattern") {
             Some(pattern) => {
                 let sub = arg(args, "path").unwrap_or("");
+                let glob = arg(args, "glob");
+                let case_sensitive = args
+                    .get("case_sensitive")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
                 match resolve(project_dir, sub) {
-                    Ok(root) => (grep(&root, project_dir, pattern), false),
+                    Ok(root) => (
+                        grep(&root, project_dir, pattern, glob, case_sensitive),
+                        false,
+                    ),
                     Err(e) => (e, true),
                 }
             }
@@ -332,11 +342,29 @@ pub async fn execute(project_dir: &Path, name: &str, args: &Value) -> (String, b
     }
 }
 
-fn grep(root: &Path, project_dir: &Path, pattern: &str) -> String {
-    let needle = pattern.to_lowercase();
+fn grep(
+    root: &Path,
+    project_dir: &Path,
+    pattern: &str,
+    glob: Option<&str>,
+    case_sensitive: bool,
+) -> String {
+    let needle = if case_sensitive {
+        pattern.to_string()
+    } else {
+        pattern.to_lowercase()
+    };
     let mut hits: Vec<String> = Vec::new();
     let mut files_scanned = 0usize;
-    grep_walk(root, project_dir, &needle, &mut hits, &mut files_scanned);
+    grep_walk(
+        root,
+        project_dir,
+        &needle,
+        glob,
+        case_sensitive,
+        &mut hits,
+        &mut files_scanned,
+    );
     if hits.is_empty() {
         format!("No matches for \"{}\".", pattern)
     } else {
@@ -344,10 +372,13 @@ fn grep(root: &Path, project_dir: &Path, pattern: &str) -> String {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn grep_walk(
     dir: &Path,
     project_dir: &Path,
     needle: &str,
+    glob: Option<&str>,
+    case_sensitive: bool,
     hits: &mut Vec<String>,
     files_scanned: &mut usize,
 ) {
@@ -375,8 +406,22 @@ fn grep_walk(
             if EXCLUDE_DIRS.contains(&name.to_lowercase().as_str()) {
                 continue;
             }
-            grep_walk(&path, project_dir, needle, hits, files_scanned);
+            grep_walk(
+                &path,
+                project_dir,
+                needle,
+                glob,
+                case_sensitive,
+                hits,
+                files_scanned,
+            );
         } else if ft.is_file() {
+            // Optionally restrict to files whose name matches a glob (e.g. *.tex).
+            if let Some(g) = glob {
+                if !wildcard_match(&name, g) {
+                    continue;
+                }
+            }
             // Only search reasonably-sized text files.
             if entry.metadata().map(|m| m.len()).unwrap_or(0) > 512 * 1024 {
                 continue;
@@ -389,7 +434,12 @@ fn grep_walk(
                     .to_string_lossy()
                     .replace('\\', "/");
                 for (i, line) in content.lines().enumerate() {
-                    if line.to_lowercase().contains(needle) {
+                    let matched = if case_sensitive {
+                        line.contains(needle)
+                    } else {
+                        line.to_lowercase().contains(needle)
+                    };
+                    if matched {
                         let trimmed: String = line.trim().chars().take(160).collect();
                         hits.push(format!("{}:{}: {}", rel, i + 1, trimmed));
                         if hits.len() >= GREP_MAX_HITS {

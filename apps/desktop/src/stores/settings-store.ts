@@ -14,6 +14,12 @@ interface SettingsState {
    */
   nativeAgentEnabled: boolean;
   setNativeAgentEnabled: (enabled: boolean) => void;
+  /** Ollama context window (num_ctx) for the native agent. */
+  nativeNumCtx: number;
+  setNativeNumCtx: (n: number) => void;
+  /** Ollama sampling temperature for the native agent. */
+  nativeTemperature: number;
+  setNativeTemperature: (t: number) => void;
 }
 
 export const useSettingsStore = create<SettingsState>()(
@@ -25,6 +31,14 @@ export const useSettingsStore = create<SettingsState>()(
       setVimMode: (enabled) => set({ vimMode: enabled }),
       nativeAgentEnabled: false,
       setNativeAgentEnabled: (enabled) => set({ nativeAgentEnabled: enabled }),
+      nativeNumCtx: 8192,
+      setNativeNumCtx: (n) =>
+        set({
+          nativeNumCtx: Math.min(131072, Math.max(512, Math.round(n) || 8192)),
+        }),
+      nativeTemperature: 0.4,
+      setNativeTemperature: (t) =>
+        set({ nativeTemperature: Math.min(2, Math.max(0, t)) }),
     }),
     {
       name: "claude-prism-settings",

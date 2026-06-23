@@ -944,6 +944,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         const cred =
           creds.find((c) => c.id === providerCredentialId) ??
           creds.find((c) => c.base_url?.includes("11434"));
+        const ns = useSettingsStore.getState();
         await invoke("run_native_agent", {
           projectPath,
           prompt,
@@ -951,6 +952,8 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
           model: cred?.model || providerModelOverride || null,
           baseUrl: cred?.base_url || null,
           images: nativeImages.length ? nativeImages : null,
+          numCtx: ns.nativeNumCtx ?? null,
+          temperature: ns.nativeTemperature ?? null,
         });
       } else if (resumeSessionId) {
         // Resume existing session

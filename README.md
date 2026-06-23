@@ -111,6 +111,8 @@ Pick a template (paper, thesis, presentation, poster, letter, etc.), give it a n
 ### Local-First AI Assistant
 Chat with a model running locally on your machine via **Ollama** — DevPrism auto-detects your installed models, so there's no hardcoded default and no API key required. Prefer a cloud model? Pick Anthropic, OpenAI, or any OpenAI-compatible endpoint in Settings. Persistent sessions, tool use (file edit, bash, search), adjustable reasoning effort, and extensible slash commands.
 
+Turn on the **native local agent** (Settings → Provider) to run the whole agentic loop in-process against Ollama with **no Claude CLI and no proxy** — fully offline and self-contained, with its own Rust tools (Read/Write/Edit/LS/Grep/Glob/Bash), conversation memory, vision support, and tunable `num_ctx`/temperature. See [docs/NATIVE_AGENT.md](docs/NATIVE_AGENT.md).
+
 ### Project Spaces
 Group related projects into named **spaces** (e.g. *PhD Papers*, *Job Applications*) — each with its own color, default model, and attached skills. Filter the project picker by space, move projects between spaces, and one-click install a space's skills into all its projects.
 

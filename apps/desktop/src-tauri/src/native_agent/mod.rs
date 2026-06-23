@@ -179,6 +179,7 @@ pub async fn run_native_agent(
 
     let mut success = true;
     let mut final_text = String::new();
+    let mut last_prompt_tokens = 0u64;
 
     'outer: for iter in 0..MAX_ITERATIONS {
         if cancel.load(Ordering::Relaxed) {
@@ -212,11 +213,18 @@ pub async fn run_native_agent(
                 "input": tc.args,
             }));
         }
+        last_prompt_tokens = turn.prompt_tokens;
         if !content_blocks.is_empty() {
             emit_msg(
                 &window,
                 &tab_id,
-                &json!({ "type": "assistant", "message": { "content": content_blocks } }),
+                &json!({
+                    "type": "assistant",
+                    "message": {
+                        "content": content_blocks,
+                        "usage": { "input_tokens": 0, "output_tokens": turn.eval_tokens },
+                    }
+                }),
             );
         }
 
@@ -236,7 +244,17 @@ pub async fn run_native_agent(
 
         // No tool calls -> the model is done.
         if turn.tool_calls.is_empty() {
-            emit_result(&window, &tab_id, true, &final_text);
+            emit_msg(
+                &window,
+                &tab_id,
+                &json!({
+                    "type": "result",
+                    "subtype": "success",
+                    "is_error": false,
+                    "result": final_text,
+                    "usage": { "input_tokens": last_prompt_tokens, "output_tokens": 0 },
+                }),
+            );
             break;
         }
 

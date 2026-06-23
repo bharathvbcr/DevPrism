@@ -12,6 +12,10 @@ pub struct ToolCall {
 pub struct ChatTurn {
     pub content: String,
     pub tool_calls: Vec<ToolCall>,
+    /// Prompt (input) tokens for this request, per Ollama's `prompt_eval_count`.
+    pub prompt_tokens: u64,
+    /// Generated (output) tokens for this request, per Ollama's `eval_count`.
+    pub eval_tokens: u64,
 }
 
 pub struct OllamaClient {
@@ -128,9 +132,14 @@ impl OllamaClient {
             }
         }
 
+        let prompt_tokens = v.get("prompt_eval_count").and_then(|n| n.as_u64()).unwrap_or(0);
+        let eval_tokens = v.get("eval_count").and_then(|n| n.as_u64()).unwrap_or(0);
+
         Ok(ChatTurn {
             content,
             tool_calls,
+            prompt_tokens,
+            eval_tokens,
         })
     }
 }

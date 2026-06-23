@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import { Compartment, EditorState, Prec, Transaction } from "@codemirror/state";
+import { latexStyling } from "./latex-styling-extension";
 import {
   EditorView,
   drawSelection,
@@ -675,6 +676,7 @@ export function LatexEditor() {
         highlightSelectionMatches(),
         mergeCompartmentRef.current.of([]),
         vimCompartmentRef.current.of([]),
+        latexStyling(),
         updateListener,
         EditorView.lineWrapping,
         scrollPastEnd(),

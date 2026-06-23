@@ -120,7 +120,9 @@ export function ProjectPicker() {
     name: string;
   } | null>(null);
   const [installingSkills, setInstallingSkills] = useState(false);
-  const [deleteSpaceTarget, setDeleteSpaceTarget] = useState<Space | null>(null);
+  const [deleteSpaceTarget, setDeleteSpaceTarget] = useState<Space | null>(
+    null,
+  );
   const defaultProjectsDiscoveredRef = useRef(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const { theme = "system", setTheme } = useTheme();
@@ -781,8 +783,7 @@ export function ProjectPicker() {
                     return n > 0
                       ? ` and unassigns its ${n} project${n === 1 ? "" : "s"}`
                       : "";
-                  })()}
-                  . Your projects and files are not deleted.
+                  })()}. Your projects and files are not deleted.
                 </>
               )}
             </DialogDescription>

@@ -3,6 +3,7 @@
 mod anthropic_proxy;
 mod claude;
 mod claude_process;
+mod comments;
 mod history;
 mod latex;
 mod skills;
@@ -568,6 +569,7 @@ pub fn run() {
         .manage(claude::ClaudeProcessState::default())
         .manage(latex::LatexCompilerState::default())
         .manage(zotero::ZoteroOAuthState::default())
+        .manage(comments::CommentsWatcherState::default())
         .setup(|app| {
             // Safety net: force-show the main window after a timeout if the
             // frontend JS never calls `getCurrentWindow().show()`.
@@ -652,6 +654,12 @@ pub fn run() {
             uv::setup_project_venv,
             uv::uv_add_packages,
             uv::uv_run_command,
+            comments::comments_list,
+            comments::comments_add,
+            comments::comments_update,
+            comments::comments_reply,
+            comments::comments_start_watcher,
+            comments::comments_stop_watcher,
             get_system_info,
             open_debug_window,
         ])

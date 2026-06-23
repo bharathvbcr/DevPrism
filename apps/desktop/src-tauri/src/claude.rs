@@ -2519,31 +2519,43 @@ pub async fn login_claude(window: WebviewWindow) -> Result<(), String> {
 }
 
 /// Common CLI flags shared across all Claude invocations.
-fn common_claude_args() -> Vec<String> {
+///
+/// `cwd` is the project directory; we append a compact, byte-bounded
+/// PROJECT CONTEXT block (instruction/master files + project map + installed
+/// skills) so the agent acts autonomously. `--append-system-prompt` is
+/// single-valued, so the static rules and dynamic block are ONE string.
+fn common_claude_args(cwd: &str) -> Vec<String> {
+    let mut system_prompt = String::from(concat!(
+        "You are an AI assistant integrated into a LaTeX document editor (Prism). ",
+        "Follow these rules strictly:\n",
+        "1. PLANNING FIRST: Before making changes, use TodoWrite to create a step-by-step plan. ",
+        "Break large tasks into small, incremental steps (one section or one logical unit per step).\n",
+        "2. INCREMENTAL EDITS: Use the Edit tool to make small, targeted changes, one step at a time. ",
+        "NEVER write or rewrite an entire file at once. Always prefer editing existing content over replacing it wholesale.\n",
+        "3. STEP BY STEP: After each edit, mark the todo item as completed, then proceed to the next step. ",
+        "This lets the user review changes incrementally.\n",
+        "4. PRESERVE EXISTING CONTENT: Always read the file first. Keep the existing preamble, packages, ",
+        "and structure intact. Only add or modify what is needed for the current step.\n",
+        "5. LaTeX BEST PRACTICES: Use proper sectioning (\\chapter, \\section, \\subsection), ",
+        "citations (\\cite), cross-references (\\label, \\ref), and BibTeX for bibliographies.\n",
+        "6. PROJECT CONTEXT & AUTONOMY: If a \"PROJECT CONTEXT\" section appears below, FIRST read the ",
+        "listed instruction / master / profile files (open them with Read) and consult the project map ",
+        "before writing; do not ask the user for details that are already in those files. If an installed ",
+        "skill in .claude/skills/ matches the task, follow it. Then act independently: plan, make small ",
+        "incremental Edits, and keep going until the task is complete.\n",
+        "7. PYTHON: If a .venv/ exists in the project, it is already activated. ",
+        "Use `uv pip install` to add packages and `python` to run scripts."
+    ));
+    system_prompt.push_str(&crate::project_context::build_project_context_prompt(
+        std::path::Path::new(cwd),
+    ));
     vec![
         "--output-format".to_string(),
         "stream-json".to_string(),
         "--verbose".to_string(),
         "--dangerously-skip-permissions".to_string(),
         "--append-system-prompt".to_string(),
-        concat!(
-            "You are an AI assistant integrated into a LaTeX document editor (Prism). ",
-            "Follow these rules strictly:\n",
-            "1. PLANNING FIRST: Before making changes, use TodoWrite to create a step-by-step plan. ",
-            "Break large tasks into small, incremental steps (one section or one logical unit per step).\n",
-            "2. INCREMENTAL EDITS: Use the Edit tool to make small, targeted changes 鈥?one step at a time. ",
-            "NEVER write or rewrite an entire file at once. Always prefer editing existing content over replacing it wholesale.\n",
-            "3. STEP BY STEP: After each edit, mark the todo item as completed, then proceed to the next step. ",
-            "This lets the user review changes incrementally.\n",
-            "4. PRESERVE EXISTING CONTENT: Always read the file first. Keep the existing preamble, packages, ",
-            "and structure intact. Only add or modify what is needed for the current step.\n",
-            "5. LaTeX BEST PRACTICES: Use proper sectioning (\\chapter, \\section, \\subsection), ",
-            "citations (\\cite), cross-references (\\label, \\ref), and BibTeX for bibliographies.\n",
-            "6. SKILLS: If scientific skills are installed in .claude/skills/, follow their guidelines ",
-            "for domain-specific tasks. Use skill-provided LaTeX packages (.sty) and code patterns.\n",
-            "7. PYTHON: If a .venv/ exists in the project, it is already activated. ",
-            "Use `uv pip install` to add packages and `python` to run scripts."
-        ).to_string(),
+        system_prompt,
     ]
 }
 
@@ -2962,7 +2974,7 @@ async fn execute_openai_compatible_via_claude_proxy(
     let (mut args, stdin_payload) = with_prompt_transport(args_prefix, prompt);
     args.push("--model".to_string());
     args.push("sonnet".to_string());
-    args.extend(common_claude_args());
+    args.extend(common_claude_args(&project_path));
 
     let mut cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref());
     clear_anthropic_provider_env(&mut cmd);
@@ -3034,7 +3046,7 @@ async fn execute_openai_compatible_via_native_anthropic(
     let claude_path = find_claude_binary()?;
 
     let (mut args, stdin_payload) = with_prompt_transport(args_prefix, prompt);
-    args.extend(common_claude_args());
+    args.extend(common_claude_args(&project_path));
 
     let mut cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref());
     apply_native_anthropic_provider_env(&mut cmd, &credential, &anthropic_base_url);
@@ -3219,7 +3231,7 @@ pub async fn execute_claude_code(
         args.push("--model".to_string());
         args.push(m);
     }
-    args.extend(common_claude_args());
+    args.extend(common_claude_args(&project_path));
 
     let cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref());
     spawn_claude_process(window, cmd, tab_id, stdin_payload, None).await
@@ -3262,7 +3274,7 @@ pub async fn continue_claude_code(
         args.push("--model".to_string());
         args.push(m);
     }
-    args.extend(common_claude_args());
+    args.extend(common_claude_args(&project_path));
 
     let cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref());
     spawn_claude_process(window, cmd, tab_id, stdin_payload, None).await
@@ -3307,7 +3319,7 @@ pub async fn resume_claude_code(
         args.push("--model".to_string());
         args.push(m);
     }
-    args.extend(common_claude_args());
+    args.extend(common_claude_args(&project_path));
 
     let cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref());
     spawn_claude_process(window, cmd, tab_id, stdin_payload, None).await
@@ -4464,7 +4476,9 @@ mod tests {
 
     #[test]
     fn test_common_claude_args_has_required_flags() {
-        let args = common_claude_args();
+        // Use a non-existent dir so the dynamic project-context block is empty.
+        let dir = std::env::temp_dir().join("devprism_args_test_ne_1");
+        let args = common_claude_args(dir.to_str().unwrap());
         assert!(args.contains(&"--output-format".to_string()));
         assert!(args.contains(&"stream-json".to_string()));
         assert!(args.contains(&"--verbose".to_string()));
@@ -4474,7 +4488,8 @@ mod tests {
 
     #[test]
     fn test_common_claude_args_system_prompt_mentions_latex() {
-        let args = common_claude_args();
+        let dir = std::env::temp_dir().join("devprism_args_test_ne_2");
+        let args = common_claude_args(dir.to_str().unwrap());
         let prompt_idx = args
             .iter()
             .position(|a| a == "--append-system-prompt")

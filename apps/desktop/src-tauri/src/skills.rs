@@ -360,7 +360,7 @@ fn skill_categories() -> Vec<SkillCategory> {
 // ─── Helpers ───
 
 /// Resolve the target skills directory.
-fn skills_dir(project_path: Option<&str>) -> PathBuf {
+pub(crate) fn skills_dir(project_path: Option<&str>) -> PathBuf {
     match project_path {
         Some(p) => PathBuf::from(p).join(".claude").join("skills"),
         None => dirs::home_dir()
@@ -408,7 +408,7 @@ fn find_skill_md(skill_dir: &Path) -> Option<PathBuf> {
     None
 }
 
-fn collect_skill_dirs(root: &Path, output: &mut Vec<PathBuf>) {
+pub(crate) fn collect_skill_dirs(root: &Path, output: &mut Vec<PathBuf>) {
     if find_skill_md(root).is_some() {
         output.push(root.to_path_buf());
         return;
@@ -1138,7 +1138,7 @@ fn parse_skill_frontmatter(content: &str) -> (Option<String>, Option<String>) {
     (name, description)
 }
 
-fn parse_skill_md(skill_dir: &Path) -> Option<SkillInfo> {
+pub(crate) fn parse_skill_md(skill_dir: &Path) -> Option<SkillInfo> {
     let skill_md = find_skill_md(skill_dir)?;
 
     let content = std::fs::read_to_string(&skill_md).ok()?;

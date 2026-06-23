@@ -2081,6 +2081,18 @@ function EnvironmentSection({ projectPath }: { projectPath: string | null }) {
   const [showOnboarding, setShowOnboarding] = useState(false);
   // ── DevPrism custom skills ──
   const [showDevprismSkills, setShowDevprismSkills] = useState(false);
+  // ── Auto-discovered project context (master/instruction/data files) ──
+  const [contextCount, setContextCount] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!projectPath) {
+      setContextCount(null);
+      return;
+    }
+    invoke<number>("count_project_context", { projectPath })
+      .then(setContextCount)
+      .catch(() => setContextCount(null));
+  }, [projectPath]);
 
   const checkSkillsStatus = useCallback(async () => {
     try {
@@ -2192,6 +2204,21 @@ function EnvironmentSection({ projectPath }: { projectPath: string | null }) {
             </span>
             <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground" />
           </button>
+          {/* Auto-discovered project context */}
+          {contextCount !== null && (
+            <div
+              className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left text-sm"
+              title="Master/instruction/data files the agent reads automatically at the start of each task (see docs/CONTEXT_FILES.md)"
+            >
+              <FileTextIcon className="size-3.5 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate text-xs">Context</span>
+              <span className="shrink-0 text-muted-foreground text-xs">
+                {contextCount === 0
+                  ? "none"
+                  : `${contextCount} file${contextCount === 1 ? "" : "s"}`}
+              </span>
+            </div>
+          )}
         </div>
       </div>
 

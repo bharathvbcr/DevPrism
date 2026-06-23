@@ -6,6 +6,7 @@ mod claude_process;
 mod comments;
 mod history;
 mod latex;
+mod project_context;
 mod skills;
 mod slash_commands;
 mod uv;
@@ -645,6 +646,7 @@ pub fn run() {
             skills::import_skill_from_folder,
             skills::install_bundled_skills,
             skills::create_custom_skill,
+            project_context::count_project_context,
             skills::check_skills_installed,
             skills::list_installed_skills,
             skills::delete_installed_skill,

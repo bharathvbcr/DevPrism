@@ -5,8 +5,8 @@
 <h1 align="center">DevPrism</h1>
 
 <p align="center">
-  An offline-first scientific writing workspace powered by Claude.<br/>
-  LaTeX + Python + 100+ scientific skills — runs on your desktop.
+  An offline-first scientific writing workspace powered by your local LLM (Ollama).<br/>
+  LaTeX + Python + scientific & custom skills + project spaces — runs entirely on your desktop.
 </p>
 
 <p align="center">
@@ -49,29 +49,31 @@
 
 [OpenAI Prism](https://openai.com/prism/) is a cloud-based LaTeX workspace — all your files and data must be uploaded to OpenAI's servers to use it.
 
-DevPrism is a **local-first** alternative — your files are stored on your disk, compiled offline, and edited locally. AI features require sending content to Anthropic's API for inference (see [data usage](https://code.claude.com/docs/en/data-usage)).
+DevPrism is a **fully local** alternative — your files are stored on your disk, compiled offline, and the AI runs on your own machine via [Ollama](https://ollama.com). By default nothing leaves your computer. Cloud providers (Anthropic, OpenAI, and OpenAI-compatible endpoints) remain available as opt-in choices in Settings.
 
 | | OpenAI Prism | DevPrism |
 |---|:---:|:---:|
-| AI Model | GPT-5.2 | **Claude Opus / Sonnet / Haiku** |
+| AI Model | GPT-5.2 (cloud) | **Local via Ollama (llama3, qwen, mistral, …) — cloud optional** |
+| Privacy | Files uploaded to cloud | **Runs offline; no data leaves your machine by default** |
 | Runtime | Browser (cloud) | **Native desktop (Tauri 2 + Rust)** |
 | LaTeX | Cloud compilation | **Tectonic (embedded, offline)** |
 | Python Environment | — | **Built-in uv + venv — one-click scientific Python setup** |
-| Scientific Skills | — | **100+ domain skills (bioinformatics, cheminformatics, ML, ...)** |
+| Skills | — | **Scientific skills + bundled offline DevPrism skills + custom skills on the go** |
+| Project Spaces | — | **Group projects with a shared default model & skills** |
 | Getting Started | Account setup required | **Install and go — template gallery + project wizard** |
 | Version Control | — | **Git-based history with labels & diff** |
 | Source Code | Proprietary | **Open source (MIT)** |
 
 ### Data & Privacy
 
-DevPrism stores and compiles your documents locally — nothing is uploaded to a remote server for storage. However, when you use AI features, **prompts and file contents that Claude reads are sent to Anthropic's API for inference**, just like any cloud-based LLM tool. See [Claude Code data usage](https://code.claude.com/docs/en/data-usage) for retention policies and opt-out options.
+DevPrism stores and compiles your documents locally, and by default runs inference on a **local Ollama model** — so prompts and file contents never leave your machine. If you opt into a cloud provider (Anthropic, OpenAI, or any OpenAI-compatible endpoint) in Settings, prompts and the files the model reads are sent to that provider for inference, like any cloud LLM tool. Choose the provider that matches your privacy needs.
 
 ---
 
 ## Features
 
 ### Python Environment (uv)
-DevPrism integrates [uv](https://docs.astral.sh/uv/) — the fast Python package manager — directly into the app. One click to install uv, one click to create a project-level virtual environment. Claude Code automatically uses the `.venv` when running Python code, so you can generate plots, run analysis scripts, and process data without leaving the editor.
+DevPrism integrates [uv](https://docs.astral.sh/uv/) — the fast Python package manager — directly into the app. One click to install uv, one click to create a project-level virtual environment. The local agent automatically uses the `.venv` when running Python code, so you can generate plots, run analysis scripts, and process data without leaving the editor.
 
 <p align="center">
   <img src="./assets/demo/python.webp" alt="Python Environment" width="600" />
@@ -91,7 +93,9 @@ Browse and install domain-specific skills from [K-Dense Scientific Skills](https
 | **Multi-omics & Systems Biology** | scvi-tools, COBRApy, Reactome, Bioservices, ... |
 | **And more** | Materials Science, Lab Automation, Proteomics, Physics, ... |
 
-Skills are installed globally (`~/.claude/skills/`) or per-project, and Claude automatically loads them when relevant.
+Skills are installed globally (`~/.claude/skills/`) or per-project, and the agent automatically loads them when relevant.
+
+DevPrism also ships its own **bundled, fully-offline skill packages** — `resume-cv`, `manuscript-paper`, `latex-toolkit`, `thesis`, `beamer-slides`, and `project-space` — each with ready-to-compile LaTeX templates. Install them from the project's **Environment → DevPrism skills** panel, or **create your own custom skill on the go** (name, description, steps) without leaving the app.
 
 <p align="center">
   <img src="./assets/demo/scientific.webp" alt="Scientific Skills" width="700" />
@@ -104,8 +108,11 @@ Pick a template (paper, thesis, presentation, poster, letter, etc.), give it a n
   <img src="./assets/demo/starter.webp" alt="Template Gallery & Project Wizard" width="700" />
 </p>
 
-### Claude AI Assistant
-Chat with Claude directly in the editor. Select between Sonnet, Opus, Haiku models with adjustable reasoning effort levels. Persistent sessions, tool use (file edit, bash, search), and extensible slash commands.
+### Local-First AI Assistant
+Chat with a model running locally on your machine via **Ollama** — DevPrism auto-detects your installed models, so there's no hardcoded default and no API key required. Prefer a cloud model? Pick Anthropic, OpenAI, or any OpenAI-compatible endpoint in Settings. Persistent sessions, tool use (file edit, bash, search), adjustable reasoning effort, and extensible slash commands.
+
+### Project Spaces
+Group related projects into named **spaces** (e.g. *PhD Papers*, *Job Applications*) — each with its own color, default model, and attached skills. Filter the project picker by space, move projects between spaces, and one-click install a space's skills into all its projects.
 
 <p align="center">
   <img src="./assets/demo/claudecommand.webp" alt="Claude AI Assistant & Slash Commands" width="600" />

@@ -81,6 +81,7 @@ import {
 } from "@/components/ui/hover-card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Card } from "@/components/ui/card";
 import { toast } from "sonner";
 import {
   SparklesIcon,
@@ -1299,6 +1300,8 @@ export function Sidebar({
                       size="icon"
                       className="size-5"
                       title="Refresh"
+                      aria-label="Refresh files"
+                      aria-busy={isRefreshingFiles}
                       disabled={isRefreshingFiles}
                       onClick={() => void runRefreshFiles()}
                     >
@@ -1316,6 +1319,7 @@ export function Sidebar({
                           size="icon"
                           className="size-5"
                           title="Add"
+                          aria-label="Add file or folder"
                         >
                           <PlusIcon className="size-3" />
                         </Button>
@@ -1419,7 +1423,7 @@ export function Sidebar({
             {/* Outline */}
             <Panel defaultSize={20} minSize={10}>
               <div className="flex h-full flex-col">
-                <div className="flex h-8 shrink-0 items-center justify-center gap-2 px-3">
+                <div className="flex h-8 shrink-0 items-center justify-start gap-2 px-3">
                   <ListIcon className="size-3.5 text-muted-foreground" />
                   <span className="font-medium text-xs">Outline</span>
                 </div>
@@ -1992,7 +1996,7 @@ function FileTreeNode({
             <FileCommentBadge filePath={file.relativePath} />
             {file.isDirty && (
               <span
-                className="size-2 shrink-0 rounded-full bg-blue-500"
+                className="size-2 shrink-0 rounded-full bg-primary"
                 title="Modified"
               />
             )}
@@ -2047,7 +2051,9 @@ function FileCommentBadge({ filePath }: { filePath: string }) {
     <span
       className={cn(
         "flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 font-bold text-[9px] text-white leading-none",
-        hasClaude ? "bg-violet-600" : "bg-amber-600",
+        hasClaude
+          ? "bg-violet-600 dark:bg-violet-500"
+          : "bg-amber-600 dark:bg-amber-500",
       )}
       title={`${count} open comment${count === 1 ? "" : "s"}`}
     >
@@ -2124,14 +2130,14 @@ function EnvironmentSection({ projectPath }: { projectPath: string | null }) {
   return (
     <>
       <div className="border-sidebar-border border-t">
-        <div className="flex h-8 shrink-0 items-center justify-center gap-2 px-3">
+        <div className="flex h-8 shrink-0 items-center justify-start gap-2 px-3">
           <AppWindowIcon className="size-3.5 text-muted-foreground" />
           <span className="font-medium text-xs">Environment</span>
         </div>
         <div className="space-y-0.5 px-1 pb-1.5">
           {/* Python / uv row */}
           <button
-            className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left text-sm transition-colors hover:bg-sidebar-accent/50"
+            className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left text-sm outline-none transition-colors hover:bg-sidebar-accent/50 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
             onClick={() => setShowUvDialog(true)}
           >
             <TerminalIcon
@@ -2152,7 +2158,7 @@ function EnvironmentSection({ projectPath }: { projectPath: string | null }) {
           </button>
           {/* Scientific Skills row */}
           <button
-            className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left text-sm transition-colors hover:bg-sidebar-accent/50"
+            className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left text-sm outline-none transition-colors hover:bg-sidebar-accent/50 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
             onClick={() => setShowOnboarding(true)}
           >
             <FlaskConicalIcon
@@ -2177,16 +2183,14 @@ function EnvironmentSection({ projectPath }: { projectPath: string | null }) {
           </button>
           {/* DevPrism custom skills row */}
           <button
-            className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left text-sm transition-colors hover:bg-sidebar-accent/50"
+            className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left text-sm outline-none transition-colors hover:bg-sidebar-accent/50 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
             onClick={() => setShowDevprismSkills(true)}
           >
             <WandSparklesIcon className="size-3.5 shrink-0 text-muted-foreground" />
             <span className="min-w-0 flex-1 truncate text-xs">
               DevPrism skills
             </span>
-            <span className="shrink-0 text-muted-foreground text-xs">
-              Manage
-            </span>
+            <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground" />
           </button>
         </div>
       </div>
@@ -2313,16 +2317,16 @@ function DevPrismSkillsDialog({
         </DialogHeader>
 
         {!projectPath && (
-          <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-amber-600 text-xs">
+          <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-amber-600 text-xs dark:text-amber-400">
             Open a project to manage its skills.
           </p>
         )}
 
-        <div className="flex items-center justify-between gap-3 rounded-lg border border-border/70 p-3">
+        <Card className="flex items-center justify-between gap-3 p-3">
           <div className="min-w-0">
             <div className="font-medium text-sm">Bundled skills</div>
             <p className="text-muted-foreground text-xs">
-              resume, manuscript, latex toolkit, thesis, beamer, project space.
+              Resume, Manuscript, LaTeX Toolkit, Thesis, Beamer, Project Space.
               Re-installing overwrites same-named skills in this project.
             </p>
           </div>
@@ -2340,9 +2344,9 @@ function DevPrismSkillsDialog({
             )}
             Install
           </Button>
-        </div>
+        </Card>
 
-        <div className="space-y-2.5 rounded-lg border border-border/70 p-3">
+        <Card className="space-y-2.5 p-3">
           <div className="flex items-center gap-1.5 font-medium text-sm">
             <SparklesIcon className="size-3.5" />
             Create a custom skill
@@ -2351,6 +2355,7 @@ function DevPrismSkillsDialog({
             value={name}
             onChange={(event) => setName(event.target.value)}
             placeholder="Skill name (e.g. Grant Proposal)"
+            aria-label="Skill name"
           />
           {name.trim() &&
             (skillSlug ? (
@@ -2359,7 +2364,7 @@ function DevPrismSkillsDialog({
                 <code className="rounded bg-muted px-1">{skillSlug}</code>
               </p>
             ) : (
-              <p className="text-[11px] text-amber-600">
+              <p className="text-[11px] text-amber-600 dark:text-amber-400">
                 Name must contain letters or numbers.
               </p>
             ))}
@@ -2367,11 +2372,14 @@ function DevPrismSkillsDialog({
             value={description}
             onChange={(event) => setDescription(event.target.value)}
             placeholder="When should the agent use this skill?"
+            aria-label="When the agent should use this skill"
+            aria-required
           />
           <Textarea
             value={instructions}
             onChange={(event) => setInstructions(event.target.value)}
             placeholder="Steps the agent should follow (optional)"
+            aria-label="Skill instructions"
             rows={4}
           />
           <div className="flex justify-end">
@@ -2391,7 +2399,7 @@ function DevPrismSkillsDialog({
               Create skill
             </Button>
           </div>
-        </div>
+        </Card>
 
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>

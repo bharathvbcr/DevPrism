@@ -8,6 +8,7 @@ import {
   CheckIcon,
   AlertCircleIcon,
   RefreshCwIcon,
+  PlusIcon,
   TerminalIcon,
   CircleIcon,
   ChevronRightIcon,
@@ -407,7 +408,7 @@ function StepRow({ step }: { step: StepInfo }) {
   return (
     <div className="flex items-center gap-2.5 py-1">
       {step.status === "complete" && (
-        <CheckIcon className="size-3.5 text-green-600" />
+        <CheckIcon className="size-3.5 text-green-600 dark:text-green-400" />
       )}
       {step.status === "active" && (
         <LoaderIcon className="size-3.5 animate-spin text-foreground" />
@@ -421,7 +422,7 @@ function StepRow({ step }: { step: StepInfo }) {
       <span
         className={cn(
           "text-sm",
-          step.status === "complete" && "text-green-600",
+          step.status === "complete" && "text-green-600 dark:text-green-400",
           step.status === "active" && "font-medium text-foreground",
           step.status === "pending" && "text-muted-foreground/60",
           step.status === "error" && "text-destructive",
@@ -732,7 +733,7 @@ export function ClaudeSetup({
                     onClick={() => selectProviderCard(card)}
                     disabled={isSavingApiKey}
                     className={cn(
-                      "flex items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition-colors",
+                      "flex items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm outline-none transition-colors focus-visible:ring-[3px] focus-visible:ring-ring/50",
                       active
                         ? "bg-accent text-accent-foreground"
                         : "hover:bg-muted",
@@ -796,7 +797,7 @@ export function ClaudeSetup({
               disabled={isSavingApiKey}
               autoComplete="off"
             />
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-muted-foreground text-xs">
               {selectedProvider === "openai-compatible"
                 ? apiKeyOptional
                   ? "Ollama runs locally and normally does not require an API key."
@@ -858,7 +859,7 @@ export function ClaudeSetup({
               disabled={isSavingApiKey}
               autoComplete="off"
             />
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-muted-foreground text-xs">
               {selectedProvider === "openai-compatible"
                 ? activeCardId === "deepseek"
                   ? "DeepSeek runs through its native Anthropic-compatible Claude Code route."
@@ -943,7 +944,7 @@ export function ClaudeSetup({
               )}
               {modelFetchError && (
                 <div className="flex flex-wrap items-center gap-2">
-                  <p className="max-w-full whitespace-pre-wrap break-all text-[11px] text-amber-600">
+                  <p className="max-w-full whitespace-pre-wrap break-all text-[11px] text-destructive">
                     {activeCardId === "ollama" &&
                     !modelFetchError.includes("ollama")
                       ? `Couldn't reach Ollama. Is it running? Start it, then retry. (${modelFetchError})`
@@ -967,18 +968,18 @@ export function ClaudeSetup({
                 !isFetchingModels &&
                 !modelFetchError &&
                 modelOptions.length === 0 && (
-                  <p className="text-[11px] text-amber-600">
+                  <p className="text-[11px] text-amber-600 dark:text-amber-400">
                     Connected to Ollama, but no models are installed yet. Run{" "}
-                    <code className="rounded bg-muted px-1">
+                    <code className="rounded bg-muted px-1 text-[11px] text-foreground">
                       ollama pull llama3
                     </code>{" "}
                     (or qwen2.5, mistral) in a terminal, then click Fetch
                     Models.
                   </p>
                 )}
-              <p className="text-[11px] text-muted-foreground">
+              <p className="text-muted-foreground text-xs">
                 {activeCardId === "ollama"
-                  ? "Lists the models you've installed locally. No models yet? Run `ollama pull llama3` (or qwen2.5, mistral) in a terminal, then Fetch Models. Runs fully offline — no API key needed."
+                  ? "Lists models installed in your local Ollama. Runs fully offline — no API key needed."
                   : activeCardId === "deepseek"
                     ? "Fetches DeepSeek models from the matching provider model endpoint."
                     : activeCardId === "qwen"
@@ -998,7 +999,7 @@ export function ClaudeSetup({
           {selectedProvider === "openai-compatible" &&
             !!baseUrl.trim() &&
             !model.trim() && (
-              <p className="text-[11px] text-muted-foreground">
+              <p className="text-muted-foreground text-xs">
                 Select or enter a model to continue.
               </p>
             )}
@@ -1076,7 +1077,7 @@ export function ClaudeSetup({
     return (
       <div className={setupSurfaceClass("warning")}>
         <div className="flex items-center gap-2">
-          <GitBranchIcon className="size-5 shrink-0 text-amber-600" />
+          <GitBranchIcon className="size-5 shrink-0 text-amber-600 dark:text-amber-400" />
           <div>
             <p className="font-medium text-sm">Install Git first</p>
             <p className="text-muted-foreground text-xs">
@@ -1173,7 +1174,7 @@ export function ClaudeSetup({
       return (
         <div className={setupSurfaceClass()}>
           <div className="flex items-center gap-3">
-            <CheckCircle2Icon className="size-5 shrink-0 text-green-600" />
+            <CheckCircle2Icon className="size-5 shrink-0 text-green-600 dark:text-green-400" />
             <div className="min-w-0 flex-1">
               <p className="font-medium text-sm">
                 {isDirectProvider ? "Update AI Provider" : "Update Claude Code"}
@@ -1226,7 +1227,7 @@ export function ClaudeSetup({
         )}
       >
         <div className="flex min-w-0 items-center gap-3 px-4 py-3.5">
-          <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-green-500/20 bg-green-500/10 text-green-600">
+          <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-green-500/20 bg-green-500/10 text-green-600 dark:text-green-400">
             <CheckCircle2Icon className="size-4" />
           </div>
           <div className="min-w-0 flex-1">
@@ -1249,7 +1250,7 @@ export function ClaudeSetup({
             className="h-8 shrink-0 gap-1.5 rounded-md px-2.5 text-xs"
             onClick={() => beginProviderEdit(isDirectProvider)}
           >
-            <RefreshCwIcon className="size-3" />
+            <PlusIcon className="size-3" />
             Add
           </Button>
           <Button
@@ -1448,7 +1449,7 @@ export function ClaudeSetup({
     return (
       <div className={setupSurfaceClass("warning")}>
         <div className="flex items-center gap-2">
-          <GitBranchIcon className="size-5 shrink-0 text-amber-600" />
+          <GitBranchIcon className="size-5 shrink-0 text-amber-600 dark:text-amber-400" />
           <div>
             <p className="font-medium text-sm">Install Git first</p>
             <p className="text-muted-foreground text-xs">

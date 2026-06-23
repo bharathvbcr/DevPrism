@@ -1,5 +1,7 @@
 # Native local agent (no Claude CLI)
 
+English · [한국어](NATIVE_AGENT.ko.md) · [日本語](NATIVE_AGENT.ja.md) · [简体中文](NATIVE_AGENT.zh-CN.md)
+
 DevPrism includes a built-in agent runtime that talks **directly to a local
 [Ollama](https://ollama.com) model** — no Claude Code CLI and no translation
 proxy. It's fully offline and self-contained.

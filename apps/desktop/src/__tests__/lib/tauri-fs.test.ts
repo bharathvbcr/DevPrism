@@ -28,13 +28,20 @@ describe("tauri fs helpers", () => {
       expect(getProjectFileType("main.synctex.gz")).toBeNull();
     });
 
-    it("keeps imported files with arbitrary extensions visible", () => {
+    it("keeps imported document/reference files visible", () => {
       expect(getProjectFileType("archive.zip")).toBe("other");
       expect(getProjectFileType("paper.docx")).toBe("other");
       expect(getProjectFileType("data.xlsx")).toBe("other");
       expect(getProjectFileType("movie.mp4")).toBe("other");
-      expect(getProjectFileType("module.pyc")).toBe("other");
-      expect(getProjectFileType("native.pyd")).toBe("other");
+    });
+
+    it("ignores compiled/build artifacts and native binaries", () => {
+      expect(getProjectFileType("module.pyc")).toBeNull();
+      expect(getProjectFileType("module.pyo")).toBeNull();
+      expect(getProjectFileType("native.pyd")).toBeNull();
+      expect(getProjectFileType("lib.so")).toBeNull();
+      expect(getProjectFileType("app.exe")).toBeNull();
+      expect(getProjectFileType("obj.o")).toBeNull();
     });
   });
 
@@ -88,9 +95,10 @@ describe("tauri fs helpers", () => {
       ]);
     });
 
-    it("keeps arbitrary file formats visible as other files", async () => {
+    it("keeps document/reference formats visible but drops compiled artifacts", async () => {
       vi.mocked(readDir).mockResolvedValue([
         { name: "module.pyc", isDirectory: false },
+        { name: "report.docx", isDirectory: false },
         { name: "worker.py", isDirectory: false },
         { name: "notes.txt", isDirectory: false },
       ] as any);
@@ -98,8 +106,9 @@ describe("tauri fs helpers", () => {
 
       const result = await scanProjectFolder("/project");
 
+      // module.pyc is a compiled artifact and is filtered out; the rest remain.
       expect(result.files.map((file) => file.relativePath)).toEqual([
-        "module.pyc",
+        "report.docx",
         "worker.py",
         "notes.txt",
       ]);

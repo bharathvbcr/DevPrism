@@ -95,7 +95,7 @@ Browse and install domain-specific skills from [K-Dense Scientific Skills](https
 
 Skills are installed globally (`~/.claude/skills/`) or per-project, and the agent automatically loads them when relevant.
 
-DevPrism also ships its own **bundled, fully-offline skill packages** — `resume-cv`, `manuscript-paper`, `latex-toolkit`, `thesis`, `beamer-slides`, and `project-space` — each with ready-to-compile LaTeX templates. Install them from the project's **Environment → DevPrism skills** panel, or **create your own custom skill on the go** (name, description, steps) without leaving the app.
+DevPrism also ships its own **bundled, fully-offline skill packages** — `resume-cv`, `manuscript-paper`, `statement-authoring`, `latex-toolkit`, `thesis`, `beamer-slides`, and `project-space` — each with ready-to-compile LaTeX templates. Install them from the project's **Environment → DevPrism skills** panel, or **create your own custom skill on the go** (name, description, steps) without leaving the app.
 
 <p align="center">
   <img src="./assets/demo/scientific.webp" alt="Scientific Skills" width="700" />
@@ -166,8 +166,33 @@ Contributions are welcome! See [CONTRIBUTING.md](./CONTRIBUTING.md) for developm
 
 ## Acknowledgments
 
-This project started from [Open Prism](https://github.com/assistant-ui/open-prism) by [assistant-ui](https://github.com/assistant-ui).
+DevPrism is forked from [claude-prism](https://github.com/delibae/claude-prism) by [delibae](https://github.com/delibae), which itself began as a fork of [Open Prism](https://github.com/assistant-ui/open-prism) by [assistant-ui](https://github.com/assistant-ui). It stands on the shoulders of many excellent open-source projects. Huge thanks to the maintainers and communities behind:
+
+**Foundation**
+- [claude-prism](https://github.com/delibae/claude-prism) by [delibae](https://github.com/delibae) — the direct upstream DevPrism is forked from.
+- [Open Prism](https://github.com/assistant-ui/open-prism) by [assistant-ui](https://github.com/assistant-ui) — the original project claude-prism is based on.
+
+**Desktop & UI**
+- [Tauri](https://tauri.app) — the Rust-based desktop application framework.
+- [React](https://react.dev) + [Vite](https://vitejs.dev) — frontend runtime and build tooling.
+- [CodeMirror 6](https://codemirror.net) — the LaTeX/BibTeX source editor.
+- [Radix UI](https://www.radix-ui.com) & [Tailwind CSS](https://tailwindcss.com) — component primitives and styling.
+
+**Scientific & Document Engine**
+- [Tectonic](https://tectonic-typesetting.github.io) — the embedded, offline LaTeX engine.
+- [MuPDF](https://mupdf.com) — native PDF rendering with SyncTeX support.
+- [uv](https://docs.astral.sh/uv/) by [Astral](https://astral.sh) — the fast Python package manager powering the built-in Python environment.
+
+**AI & Skills**
+- [Ollama](https://ollama.com) — local LLM runtime that powers offline, on-device inference.
+- [Anthropic Claude](https://www.anthropic.com/claude) — the assistant behind the optional cloud agent and slash commands.
+- [K-Dense Scientific Skills](https://github.com/K-Dense-AI/claude-scientific-skills) by [K-Dense AI](https://github.com/K-Dense-AI) — the 100+ domain-specific scientific skills.
+
+**Integrations**
+- [Zotero](https://www.zotero.org) — bibliography management and citation insertion.
+
+And the broader open-source ecosystem of libraries this project depends on — thank you. 🙏
 
 ## License
 
-[MIT](./LICENSE)
+[MIT](./LICENSE) © 2026 delibae. Portions © 2025 [assistant-ui](https://github.com/assistant-ui) (Open Prism).

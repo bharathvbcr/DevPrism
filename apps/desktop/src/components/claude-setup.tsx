@@ -46,6 +46,7 @@ type OpenAICompatiblePreset = {
   model: string;
   note: string;
   apiKeyOptional?: boolean;
+  badge?: string;
 };
 
 type ClaudeCompatiblePreset = {
@@ -92,6 +93,14 @@ const OPENAI_COMPATIBLE_PRESETS: OpenAICompatiblePreset[] = [
     note: "OpenAI chat completions endpoint.",
   },
   {
+    id: "openrouter",
+    label: "OpenRouter",
+    baseUrl: "https://openrouter.ai/api/v1",
+    model: "",
+    note: "OpenRouter OpenAI-compatible endpoint. Use a model id like openai/gpt-4o or anthropic/claude-3.5-sonnet.",
+    badge: "OR",
+  },
+  {
     id: "qwen",
     label: "Qwen",
     baseUrl: "https://dashscope.aliyuncs.com/apps/anthropic",
@@ -132,12 +141,14 @@ const OPENAI_PROVIDER_CARDS: ModelProviderCard[] = [
   ...OPENAI_COMPATIBLE_PRESETS.map((preset) => ({
     ...preset,
     provider: "openai-compatible" as const,
-    badge: preset.label
-      .split(/\s+/)
-      .slice(0, 2)
-      .map((part) => part[0])
-      .join("")
-      .toUpperCase(),
+    badge:
+      preset.badge ??
+      preset.label
+        .split(/\s+/)
+        .slice(0, 2)
+        .map((part) => part[0])
+        .join("")
+        .toUpperCase(),
   })),
 ];
 
@@ -932,7 +943,9 @@ export function ClaudeSetup({
                   placeholder={
                     activeCardId === "ollama"
                       ? "Fetch models, or enter llama3, qwen2.5, mistral, ..."
-                      : "Fetch models, or enter qwen3-coder-plus, deepseek-v4-pro, glm-5.1, ..."
+                      : activeCardId === "openrouter"
+                        ? "Fetch models, or enter openai/gpt-4o, anthropic/claude-3.5-sonnet, ..."
+                        : "Fetch models, or enter qwen3-coder-plus, deepseek-v4-pro, glm-5.1, ..."
                   }
                   value={model}
                   onChange={(event) => {
@@ -986,7 +999,9 @@ export function ClaudeSetup({
                       ? "Fetches Qwen models from the matching DashScope model endpoint."
                       : activeCardId === "moonshot"
                         ? "Fetches Kimi models from the matching Moonshot model endpoint."
-                        : "Fetches the provider's real /models list when available."}
+                        : activeCardId === "openrouter"
+                          ? "Fetches OpenRouter's full catalog from its /models endpoint. Model ids use a vendor/model format."
+                          : "Fetches the provider's real /models list when available."}
               </p>
             </div>
           )}

@@ -1,22 +1,28 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   SettingsIcon,
   DownloadIcon,
   LoaderIcon,
+  Loader2Icon,
   LogOutIcon,
   RefreshCwIcon,
   ExternalLinkIcon,
   LinkIcon,
+  SparklesIcon,
   UserIcon,
   FolderIcon,
   LibraryIcon,
   CheckIcon,
   XIcon,
 } from "lucide-react";
+import { toast } from "sonner";
 import { useZoteroStore, type CollectionSyncInfo } from "@/stores/zotero-store";
 import { useDocumentStore } from "@/stores/document-store";
+import { useSettingsStore } from "@/stores/settings-store";
+import { canUseAiAssist, aiComplete } from "@/lib/ai-assist";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Dialog,
   DialogContent,
@@ -24,7 +30,6 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -137,6 +142,10 @@ export function ZoteroPanel() {
                 />
               ))
             )}
+
+            <SuggestCollection
+              collectionNames={topCollections.map((c) => c.name)}
+            />
           </div>
         )}
       </div>
@@ -158,16 +167,14 @@ export function ZoteroHeader() {
   const loadCollections = useZoteroStore((s) => s.loadCollections);
 
   return (
-    <div className="relative flex w-full items-center justify-center px-3">
-      <div className="flex items-center gap-2">
-        <span
-          className={cn(
-            "size-1.5 rounded-full",
-            isAuthenticated ? "bg-foreground" : "bg-muted-foreground/30",
-          )}
-        />
-        <span className="font-medium text-xs">Zotero</span>
-      </div>
+    <div className="relative flex w-full items-center gap-1.5 px-3 text-muted-foreground text-xs uppercase tracking-wider">
+      <span
+        className={cn(
+          "size-1.5 shrink-0 rounded-full",
+          isAuthenticated ? "bg-foreground" : "bg-muted-foreground/30",
+        )}
+      />
+      <span className="font-medium">Zotero</span>
       {isAuthenticated && (
         <div className="absolute right-3 flex items-center gap-1">
           <button
@@ -347,6 +354,129 @@ function CollectionRow({
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+// ─── Suggest Collection (AI) ───
+
+/**
+ * Minimal, gated AI affordance: given a short topic the user types, ask the
+ * local model which of the existing Zotero collections (by name) best fits.
+ * Uses only on-screen metadata (collection names). Renders nothing when AI
+ * assist is unavailable or there are no collections to choose from.
+ */
+function SuggestCollection({ collectionNames }: { collectionNames: string[] }) {
+  const [open, setOpen] = useState(false);
+  const [topic, setTopic] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [suggestion, setSuggestion] = useState<{
+    collection: string;
+    reason: string;
+  } | null>(null);
+  const requestIdRef = useRef(0);
+  const aiBibAssist = useSettingsStore((s) => s.aiBibAssist);
+
+  // Silent if there's no usable metadata or AI assist is off.
+  if (collectionNames.length === 0 || !aiBibAssist || !canUseAiAssist())
+    return null;
+
+  const run = async () => {
+    const text = topic.trim();
+    if (!text) return;
+    const id = ++requestIdRef.current;
+    setLoading(true);
+    setSuggestion(null);
+    try {
+      const raw = await aiComplete({
+        system:
+          "You pick the single best-matching reference collection for a topic. " +
+          "Given the topic and a JSON list of collection names, return JSON: " +
+          '{"collection": string, "reason": string}. "collection" MUST be one of the ' +
+          "provided names exactly. Keep the reason to one short sentence. JSON only — no markdown fences.",
+        prompt: `Topic: ${text}\n\nCollections:\n${JSON.stringify(collectionNames)}`,
+        temperature: 0.2,
+        format: "json",
+      });
+      if (id !== requestIdRef.current) return;
+      let parsed: { collection?: string; reason?: string } = {};
+      try {
+        parsed = JSON.parse(raw.trim());
+      } catch {
+        const m = raw.match(/\{[\s\S]*\}/);
+        if (m) {
+          try {
+            parsed = JSON.parse(m[0]);
+          } catch {
+            parsed = {};
+          }
+        }
+      }
+      const collection = collectionNames.find((n) => n === parsed.collection);
+      if (!collection) {
+        toast.error("No matching collection suggested.");
+        return;
+      }
+      setSuggestion({ collection, reason: parsed.reason?.trim() ?? "" });
+    } catch (err) {
+      if (id !== requestIdRef.current) return;
+      toast.error(`Couldn't suggest a collection: ${String(err)}`);
+    } finally {
+      if (id === requestIdRef.current) setLoading(false);
+    }
+  };
+
+  return (
+    <div className="mx-2 mt-1 border-sidebar-border border-t pt-1">
+      {!open ? (
+        <button
+          className="flex w-full items-center gap-1.5 rounded px-1 py-0.5 text-muted-foreground text-xs transition-colors hover:bg-sidebar-accent hover:text-foreground"
+          onClick={() => setOpen(true)}
+        >
+          <SparklesIcon className="size-3" />
+          Suggest collection
+        </button>
+      ) : (
+        <div className="flex flex-col gap-1 py-0.5">
+          <div className="flex items-center gap-1">
+            <Input
+              className="h-6 text-xs"
+              placeholder="Topic or paper title…"
+              value={topic}
+              onChange={(e) => setTopic(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void run();
+              }}
+              autoFocus
+            />
+            <Button
+              size="sm"
+              className="h-6 gap-1 px-2 text-[11px]"
+              onClick={() => void run()}
+              disabled={!topic.trim() || loading}
+            >
+              {loading ? (
+                <Loader2Icon className="size-3 animate-spin" />
+              ) : (
+                <SparklesIcon className="size-3" />
+              )}
+              Suggest
+            </Button>
+          </div>
+          {suggestion && (
+            <div className="rounded bg-sidebar-accent/60 px-2 py-1 text-xs">
+              <span className="font-medium text-foreground">
+                {suggestion.collection}
+              </span>
+              {suggestion.reason && (
+                <p className="text-muted-foreground leading-snug">
+                  {suggestion.reason}
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

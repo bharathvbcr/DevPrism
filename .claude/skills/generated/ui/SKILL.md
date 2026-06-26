@@ -1,16 +1,16 @@
 ---
 name: ui
-description: "Skill for the Ui area of devprism-main. 53 symbols across 25 files."
+description: "Skill for the Ui area of DevPrism. 83 symbols across 38 files."
 ---
 
 # Ui
 
-53 symbols | 25 files | Cohesion: 94%
+83 symbols | 38 files | Cohesion: 80%
 
 ## When to Use
 
 - Working with code in `apps/`
-- Understanding how cn, UvSetupDialog, DevPrismLogo work
+- Understanding how cn, UvSetupDialog, OllamaModelBadges work
 - Modifying ui-related functionality
 
 ## Key Files
@@ -18,15 +18,15 @@ description: "Skill for the Ui area of devprism-main. 53 symbols across 25 files
 | File | Symbols |
 |------|---------|
 | `apps/desktop/src/components/ui/dropdown-menu.tsx` | DropdownMenuContent, DropdownMenuItem, DropdownMenuCheckboxItem, DropdownMenuRadioItem, DropdownMenuLabel (+4) |
+| `apps/desktop/src/components/project-picker.tsx` | isProjectDrag, SpaceGlyph, SpaceNavButton, ProjectNavButton, SettingsDetailButton (+2) |
 | `apps/desktop/src/components/ui/select.tsx` | SelectTrigger, SelectContent, SelectLabel, SelectItem, SelectSeparator (+2) |
-| `apps/desktop/src/components/workspace/sidebar.tsx` | getFileIcon, DroppableRoot, DroppableFolder, FileTreeNode, EnvironmentSection (+1) |
+| `apps/desktop/src/components/workspace/sidebar.tsx` | LayoutPaneSwitcher, LayoutToggleRow, DroppableRoot, DroppableFolder, FileCommentBadge (+1) |
+| `apps/desktop/src/components/ui/sheet.tsx` | SheetOverlay, SheetContent, SheetHeader, SheetFooter, SheetTitle (+1) |
 | `apps/desktop/src/components/ui/dialog.tsx` | DialogOverlay, DialogContent, DialogHeader, DialogFooter, DialogTitle (+1) |
-| `apps/desktop/src/components/ui/context-menu.tsx` | ContextMenuContent, ContextMenuItem, ContextMenuSeparator |
-| `apps/desktop/src/components/dev-engine-setup.tsx` | StepRow, InstallLogOutput |
-| `apps/desktop/src/components/ui/scroll-area.tsx` | ScrollArea, ScrollBar |
-| `apps/desktop/src/lib/utils.ts` | cn |
-| `apps/desktop/src/components/uv-setup.tsx` | UvSetupDialog |
-| `apps/desktop/src/components/settings-dialog.tsx` | Toggle |
+| `apps/desktop/src/components/ui/context-menu.tsx` | ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuSubTrigger, ContextMenuSubContent |
+| `apps/desktop/src/components/ui/tabs.tsx` | Tabs, TabsList, TabsTrigger, TabsContent |
+| `apps/desktop/src/components/claude-setup.tsx` | StepRow, InstallLogOutput |
+| `apps/desktop/src/components/workspace/comments-panel.tsx` | CommentsPanel, AuthorChip |
 
 ## Entry Points
 
@@ -34,9 +34,9 @@ Start here when exploring this area:
 
 - **`cn`** (Function) — `apps/desktop/src/lib/utils.ts:3`
 - **`UvSetupDialog`** (Function) — `apps/desktop/src/components/uv-setup.tsx:27`
-- **`DevPrismLogo`** (Function) — `apps/desktop/src/components/devprism-logo.tsx:9`
+- **`OllamaModelBadges`** (Function) — `apps/desktop/src/components/ollama-model-badges.tsx:9`
+- **`DevPrismLogo`** (Function) — `apps/desktop/src/components/devprism-logo.tsx:11`
 - **`ZoteroHeader`** (Function) — `apps/desktop/src/components/workspace/zotero-panel.tsx:152`
-- **`HistoryPanel`** (Function) — `apps/desktop/src/components/workspace/history-panel.tsx:80`
 
 ## Key Symbols
 
@@ -44,30 +44,37 @@ Start here when exploring this area:
 |--------|------|------|------|
 | `cn` | Function | `apps/desktop/src/lib/utils.ts` | 3 |
 | `UvSetupDialog` | Function | `apps/desktop/src/components/uv-setup.tsx` | 27 |
-| `DevPrismLogo` | Function | `apps/desktop/src/components/devprism-logo.tsx` | 9 |
+| `OllamaModelBadges` | Function | `apps/desktop/src/components/ollama-model-badges.tsx` | 9 |
+| `DevPrismLogo` | Function | `apps/desktop/src/components/devprism-logo.tsx` | 11 |
 | `ZoteroHeader` | Function | `apps/desktop/src/components/workspace/zotero-panel.tsx` | 152 |
-| `HistoryPanel` | Function | `apps/desktop/src/components/workspace/history-panel.tsx` | 80 |
-| `ScientificSkillsOnboarding` | Function | `apps/desktop/src/components/scientific-skills/scientific-skills-onboarding.tsx` | 51 |
-| `Toggle` | Function | `apps/desktop/src/components/settings-dialog.tsx` | 87 |
-| `StatusRow` | Function | `apps/desktop/src/components/project-picker.tsx` | 353 |
-| `StepRow` | Function | `apps/desktop/src/components/dev-engine-setup.tsx` | 153 |
-| `InstallLogOutput` | Function | `apps/desktop/src/components/dev-engine-setup.tsx` | 183 |
-| `getFileIcon` | Function | `apps/desktop/src/components/workspace/sidebar.tsx` | 186 |
-| `DroppableRoot` | Function | `apps/desktop/src/components/workspace/sidebar.tsx` | 986 |
-| `DroppableFolder` | Function | `apps/desktop/src/components/workspace/sidebar.tsx` | 1008 |
-| `FileTreeNode` | Function | `apps/desktop/src/components/workspace/sidebar.tsx` | 1048 |
-| `EnvironmentSection` | Function | `apps/desktop/src/components/workspace/sidebar.tsx` | 1201 |
-| `openSettings` | Function | `apps/desktop/src/components/workspace/sidebar.tsx` | 1273 |
-| `TooltipContent` | Function | `apps/desktop/src/components/ui/tooltip.tsx` | 34 |
-| `Textarea` | Function | `apps/desktop/src/components/ui/textarea.tsx` | 4 |
-| `Separator` | Function | `apps/desktop/src/components/ui/separator.tsx` | 5 |
-| `SelectTrigger` | Function | `apps/desktop/src/components/ui/select.tsx` | 24 |
+| `HistoryPanel` | Function | `apps/desktop/src/components/workspace/history-panel.tsx` | 68 |
+| `CommentsPanel` | Function | `apps/desktop/src/components/workspace/comments-panel.tsx` | 88 |
+| `ToolbarGroup` | Function | `apps/desktop/src/components/ui/toolbar-group.tsx` | 10 |
+| `MarkdownRenderer` | Function | `apps/desktop/src/components/claude-chat/markdown-renderer.tsx` | 78 |
+| `SelectionToolbar` | Function | `apps/desktop/src/components/workspace/editor/selection-toolbar.tsx` | 31 |
+| `isProjectDrag` | Function | `apps/desktop/src/components/project-picker.tsx` | 168 |
+| `SpaceGlyph` | Function | `apps/desktop/src/components/project-picker.tsx` | 176 |
+| `SpaceNavButton` | Function | `apps/desktop/src/components/project-picker.tsx` | 2902 |
+| `ProjectNavButton` | Function | `apps/desktop/src/components/project-picker.tsx` | 2995 |
+| `SettingsDetailButton` | Function | `apps/desktop/src/components/project-picker.tsx` | 3060 |
+| `SettingsPanel` | Function | `apps/desktop/src/components/project-picker.tsx` | 3102 |
+| `StatusRow` | Function | `apps/desktop/src/components/project-picker.tsx` | 3247 |
+| `SetupItem` | Function | `apps/desktop/src/components/environment-onboarding.tsx` | 433 |
+| `StepRow` | Function | `apps/desktop/src/components/claude-setup.tsx` | 417 |
+| `InstallLogOutput` | Function | `apps/desktop/src/components/claude-setup.tsx` | 447 |
 
 ## Execution Flows
 
 | Flow | Type | Steps |
 |------|------|-------|
 | `SlashCommandPicker → Cn` | cross_community | 4 |
+
+## Connected Areas
+
+| Area | Connections |
+|------|-------------|
+| Cluster_156 | 1 calls |
+| Components | 1 calls |
 
 ## How to Explore
 

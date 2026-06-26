@@ -4,6 +4,7 @@ import geminiIcon from "@/assets/providers/gemini-color.svg";
 import moonshotIcon from "@/assets/providers/moonshot.svg";
 import ollamaIcon from "@/assets/providers/ollama.svg";
 import openaiIcon from "@/assets/providers/openai.svg";
+import openrouterIcon from "@/assets/providers/openrouter.svg";
 import qwenIcon from "@/assets/providers/qwen.svg";
 import zhipuIcon from "@/assets/providers/zhipu-color.svg";
 
@@ -86,6 +87,10 @@ export function getProviderDisplayName(input: ProviderIconInput): string {
     return "Anthropic";
   }
 
+  if (haystack.includes("openrouter")) {
+    return "OpenRouter";
+  }
+
   if (haystack.includes("openai") || haystack.includes("api.openai.com")) {
     return "OpenAI";
   }
@@ -151,6 +156,10 @@ export function getProviderIconSrc(input: ProviderIconInput): string | null {
     haystack.includes("sk-ant")
   ) {
     return anthropicIcon;
+  }
+
+  if (haystack.includes("openrouter")) {
+    return openrouterIcon;
   }
 
   if (haystack.includes("openai") || haystack.includes("api.openai.com")) {

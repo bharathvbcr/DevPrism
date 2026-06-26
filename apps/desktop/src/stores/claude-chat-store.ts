@@ -4,7 +4,14 @@ import { useDocumentStore } from "./document-store";
 import { useHistoryStore } from "./history-store";
 import { useClaudeSetupStore } from "./claude-setup-store";
 import { useSettingsStore } from "./settings-store";
+import { aiComplete, canUseAiAssist } from "@/lib/ai-assist";
+import { getChatLabels } from "@/lib/chat-labels";
 import { createLogger } from "@/lib/debug/logger";
+import { recordPersonalizationEvent } from "@/lib/personalization";
+import {
+  usePersonalizationStore,
+  buildPersonalizationContext,
+} from "./personalization-store";
 
 const log = createLogger("claude");
 export const CLAUDE_CODE_PROVIDER_ID = "__claude-code__";
@@ -265,7 +272,7 @@ function stringifyBlockContent(value: unknown): string {
   }
 }
 
-function messageContentText(message: ClaudeStreamMessage): string {
+export function messageContentText(message: ClaudeStreamMessage): string {
   const rawContent = (message.message as any)?.content;
   if (typeof rawContent === "string") return rawContent.trim();
 
@@ -380,6 +387,13 @@ function nextTabId(): string {
   return `tab-${++tabCounter}`;
 }
 
+// Tabs whose native (Ollama) runtime already holds conversation memory. Used to
+// seed the FIRST native turn of a tab with the visible chat history (so resuming
+// a CLI session or switching into native mode doesn't lose prior context — the
+// native runtime keeps its own per-tab memory, empty until the first native turn).
+// Reset wherever that memory is cleared (clear_native_session / resume).
+const nativeSeededTabs = new Set<string>();
+
 function nextGuidanceId(): string {
   return `guidance-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -484,6 +498,104 @@ function titleForMessages(messages: ClaudeStreamMessage[]): string | undefined {
   return summarizeChatTitle(messageContentText(firstUser));
 }
 
+// Tabs whose AI title refinement has already been attempted, so the best-effort
+// refinement fires at most once per session and can never enter a render loop.
+const aiTitleRefinedTabs = new Set<string>();
+
+/** Strip wrapping quotes / trailing punctuation and clamp to <= 5 words. */
+function sanitizeAiChatTitle(raw: string): string | undefined {
+  let title = normalizeChatTitleWhitespace(raw);
+  // The model may answer on several lines or prefix with "Title:"; take the
+  // first meaningful line and drop a leading label.
+  title = title.split("\n")[0]?.trim() ?? title;
+  title = title.replace(/^title\s*[:\-–]\s*/i, "").trim();
+  title = title.replace(/^["'“”‘’`]+|["'“”‘’`.]+$/g, "").trim();
+  if (!title) return undefined;
+  const words = title.split(/\s+/);
+  if (words.length > 5) title = words.slice(0, 5).join(" ");
+  return title ? truncateChatTitle(title, 56) : undefined;
+}
+
+/**
+ * Best-effort AI refinement of a chat tab's title. Fires once per tab, only
+ * when the tab still carries the synchronous heuristic title derived from the
+ * opening message (so a user-edited title is never overwritten), and degrades
+ * silently on any failure. Passive/background — must never throw into callers.
+ */
+async function maybeRefineChatTitleWithAi(tabId: string): Promise<void> {
+  if (aiTitleRefinedTabs.has(tabId)) return;
+  if (!useSettingsStore.getState().aiAutoTitles || !canUseAiAssist()) return;
+
+  const tab = useClaudeChatStore.getState().tabs.find((t) => t.id === tabId);
+  if (!tab) return;
+
+  const firstUser = tab.messages.find((m) => m.type === "user");
+  if (!firstUser) return;
+  // Only refine once there is an assistant reply to learn the topic from.
+  const firstAssistant = tab.messages.find((m) => m.type === "assistant");
+  if (!firstAssistant) return;
+
+  const userText = messageContentText(firstUser).trim();
+  if (!userText) return;
+
+  // The exact synchronous heuristic this tab would have been titled with. We
+  // only replace that — never a title the user manually edited, and never a
+  // title that already diverged (e.g. resumed/renamed sessions).
+  const heuristicTitle = summarizeChatTitle(userText);
+  const currentTitle = tab.title.trim();
+  const replaceableDefault = currentTitle === "New Chat" || currentTitle === "";
+  if (!replaceableDefault && currentTitle !== (heuristicTitle ?? "").trim()) {
+    return;
+  }
+
+  // Mark as attempted up front so concurrent appends can't double-fire.
+  aiTitleRefinedTabs.add(tabId);
+
+  try {
+    const assistantText = messageContentText(firstAssistant).trim();
+    const promptParts = [`User's first message:\n${userText.slice(0, 1500)}`];
+    if (assistantText) {
+      promptParts.push(`Assistant's reply:\n${assistantText.slice(0, 1500)}`);
+    }
+    const aiTitle = await aiComplete({
+      system:
+        "Give a 3-5 word title for this chat. Title only, no quotes, no punctuation.",
+      prompt: promptParts.join("\n\n"),
+      temperature: 0.3,
+    });
+    const refined = sanitizeAiChatTitle(aiTitle);
+    if (!refined) return;
+
+    // Re-check at write time: the user may have renamed in the meantime, or a
+    // new message may have changed the heuristic. Only overwrite a still-default
+    // / still-heuristic title for this exact tab.
+    set_TitleIfStillHeuristic(tabId, heuristicTitle, refined);
+  } catch {
+    // Passive background refinement — fail silently, keep the heuristic title.
+  }
+}
+
+/**
+ * Commit the AI title only if the tab still holds the default or the original
+ * heuristic title (guards against a race with a manual rename).
+ */
+function set_TitleIfStillHeuristic(
+  tabId: string,
+  heuristicTitle: string | undefined,
+  refined: string,
+): void {
+  useClaudeChatStore.setState((state) => {
+    const tab = state.tabs.find((t) => t.id === tabId);
+    if (!tab) return {};
+    const current = tab.title.trim();
+    const stillDefault = current === "New Chat" || current === "";
+    const stillHeuristic = current === (heuristicTitle ?? "").trim();
+    if (!stillDefault && !stillHeuristic) return {};
+    if (current === refined) return {};
+    return applyTabUpdate(state, tabId, { title: refined });
+  });
+}
+
 /**
  * Update a specific tab in `tabs[]` and, if that tab is the active tab,
  * also project the changed fields to top-level state for consumer compatibility.
@@ -585,6 +697,18 @@ interface ClaudeChatState {
     selectedText: string;
     imageDataUrl?: string;
   }[];
+
+  /**
+   * Text to seed into the composer from an external trigger (e.g. the
+   * "Tailor with AI" action). Setting it opens the chat drawer and pre-fills
+   * the prompt for the user to review and send.
+   */
+  pendingComposerInput: string | null;
+  seedComposerInput: (text: string) => void;
+  consumePendingComposerInput: () => string | null;
+  /** Bumped to ask the composer to open the model picker (native Ollama UX). */
+  modelPickerRequestId: number;
+  requestModelPicker: () => void;
   pendingPinnedContextRemovalLabels: string[];
   requestPinnedContextRemoval: (labels: string[]) => void;
   consumePendingPinnedContextRemovals: () => string[];
@@ -625,6 +749,12 @@ interface ClaudeChatState {
   consumeTemporaryFilePaths: (tabId: string) => string[];
   forceQueuedGuidanceNow: (tabId: string, guidanceId?: string) => Promise<void>;
   cancelExecution: (tabId?: string) => Promise<void>;
+  /**
+   * Re-run the conversation from a prior user message: truncate the active tab
+   * to just before `messageIndex`, then resend that message's text (optionally
+   * replaced by `newText` for edit-and-resend / regenerate).
+   */
+  resendFromMessage: (messageIndex: number, newText?: string) => Promise<void>;
   clearMessages: () => void;
   newSession: () => void;
   resetForProject: (projectPath: string | null) => void;
@@ -717,6 +847,19 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     }
     return pendingAttachments;
   },
+
+  pendingComposerInput: null,
+  seedComposerInput: (text) => set({ pendingComposerInput: text }),
+  consumePendingComposerInput: () => {
+    const { pendingComposerInput } = get();
+    if (pendingComposerInput != null) set({ pendingComposerInput: null });
+    return pendingComposerInput;
+  },
+  modelPickerRequestId: 0,
+  requestModelPicker: () =>
+    set((state) => ({
+      modelPickerRequestId: state.modelPickerRequestId + 1,
+    })),
   pendingPinnedContextRemovalLabels: [],
   requestPinnedContextRemoval: (labels) => {
     if (labels.length === 0) return;
@@ -816,21 +959,33 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       tab: activeTabId,
     });
 
-    // Compute context label for display in chat history
+    recordPersonalizationEvent("chat_sent", { text: userPrompt.trim() });
+
+    // Compute context label for display in chat history — a chip showing which
+    // editor context was attached to this message.
     const activeFile = docState.files.find(
       (f) => f.id === docState.activeFileId,
     );
+    const nativeMode = useSettingsStore.getState().nativeAgentEnabled;
     let contextLabel: string | null = null;
 
     if (contextOverride) {
       contextLabel = contextOverride.label;
     } else if (activeFile) {
       const selRange = docState.selectionRange;
-      if (selRange && activeFile.content) {
+      if (selRange && activeFile.content && selRange.end > selRange.start) {
         const content = activeFile.content;
-        const startLC = offsetToLineCol(content, selRange.start);
-        const endLC = offsetToLineCol(content, selRange.end);
-        contextLabel = `@${activeFile.relativePath}:${startLC.line}:${startLC.col}-${endLC.line}:${endLC.col}`;
+        const startLine = offsetToLineCol(content, selRange.start).line;
+        const endLine = offsetToLineCol(content, selRange.end).line;
+        contextLabel =
+          startLine === endLine
+            ? `@${activeFile.relativePath}:${startLine}`
+            : `@${activeFile.relativePath}:${startLine}-${endLine}`;
+      } else if (nativeMode) {
+        // The native runtime attaches the open file's context every turn (and
+        // inlines small files), so show which file is in play even with no
+        // selection — otherwise that attached context is invisible to the user.
+        contextLabel = `@${activeFile.relativePath}`;
       }
     }
 
@@ -885,16 +1040,31 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       log.debug("saveAllFiles done");
     }
 
-    // Snapshot before Claude edit
+    // Trigger automatic personalization extraction in the background
+    const activeDoc = docState.files.find((f) => f.id === docState.activeFileId);
+    if (activeDoc && activeDoc.content) {
+      usePersonalizationStore
+        .getState()
+        .analyzeLaTeXContent(activeDoc.relativePath, activeDoc.content);
+    }
+    const updatedMessages = [...(activeTab?.messages ?? []), userMessage];
+    void usePersonalizationStore
+      .getState()
+      .analyzeChatConversation(updatedMessages);
+
+    // Snapshot before agent edit
     if (projectPath) {
       try {
         log.debug("creating snapshot...");
+        const snapshotLabel = getChatLabels(
+          useSettingsStore.getState().nativeAgentEnabled,
+        ).snapshotBeforeEdit;
         await useHistoryStore
           .getState()
-          .createSnapshot(projectPath, "[claude] Before Claude edit");
+          .createSnapshot(projectPath, snapshotLabel);
         log.debug("snapshot done");
       } catch {
-        /* snapshot failure should not block Claude */
+        /* snapshot failure should not block the agent */
       }
     }
 
@@ -919,6 +1089,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       }
       prompt = `${ctx}\n\n${userPrompt}`;
     }
+
     if (switchingDirectProviderToClaudeCode) {
       const priorContext = buildProviderSwitchContext(
         activeTab?.messages ?? [],
@@ -941,19 +1112,89 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         // when available; otherwise the runtime defaults to localhost:11434 and
         // the first installed model.
         const creds = useClaudeSetupStore.getState().openAiCredentials ?? [];
+        const isOllama = (c?: { base_url?: string | null }) =>
+          /:11434|localhost|127\.0\.0\.1/.test(c?.base_url ?? "");
+        const selected = creds.find((c) => c.id === providerCredentialId);
         const cred =
-          creds.find((c) => c.id === providerCredentialId) ??
-          creds.find((c) => c.base_url?.includes("11434"));
+          (selected && isOllama(selected) ? selected : undefined) ??
+          creds.find(isOllama);
         const ns = useSettingsStore.getState();
+        const nativeModel =
+          ns.nativeOllamaModel?.trim() ||
+          (cred
+            ? selectedProviderModels[cred.id]?.trim() || cred.model?.trim()
+            : null) ||
+          null;
+        // Native conveys the open file + selection via the structured channel
+        // below (-> the runtime's system prompt, rebuilt fresh each turn), so use
+        // the RAW user prompt here instead of the CLI path's `[Currently open
+        // file]` ctx block. That keeps a single selection-context path and avoids
+        // a stale selection getting persisted into the runtime's history.
+        // First native turn for this tab is still seeded with the visible
+        // conversation so the local model isn't blind to context the user can see.
+        let nativePrompt = userPrompt;
+        if (!nativeSeededTabs.has(activeTabId)) {
+          const priorContext = buildProviderSwitchContext(
+            activeTab?.messages ?? [],
+          );
+          if (priorContext) nativePrompt = `${priorContext}\n\n${userPrompt}`;
+        }
+        nativeSeededTabs.add(activeTabId);
+        // The file the user currently has open and any selected text, so deictic
+        // prompts ("fix this paragraph", "edit this file", "the selection")
+        // resolve to the precise span without them naming a path. Prefer the
+        // toolbar's explicit context (it survives even when the toolbar clears the
+        // live selection on dismiss); else the current editor selection. Bounded
+        // here; the Rust side truncates further and flags it.
+        const docState = useDocumentStore.getState();
+        const activeDoc = docState.files.find(
+          (f) => f.id === docState.activeFileId,
+        );
+        const activeFile = activeDoc?.relativePath ?? null;
+        const sel = docState.selectionRange;
+        const liveSelText =
+          activeDoc?.content && sel && sel.end > sel.start
+            ? activeDoc.content.slice(sel.start, sel.end)
+            : null;
+        const rawSelection = contextOverride?.selectedText ?? liveSelText;
+        const selection = rawSelection ? rawSelection.slice(0, 4000) : null;
+        // 1-based line range of the selection, so the model can Read the
+        // surrounding region and edit in context. Keep the line source consistent
+        // with the *text* source: for an explicit toolbar selection locate its
+        // (unique) occurrence; otherwise use the live editor offsets.
+        let selectionStartLine: number | null = null;
+        let selectionEndLine: number | null = null;
+        const selContent = activeDoc?.content;
+        if (selContent && contextOverride?.selectedText) {
+          const at = selContent.indexOf(contextOverride.selectedText);
+          if (
+            at >= 0 &&
+            selContent.indexOf(contextOverride.selectedText, at + 1) === -1
+          ) {
+            selectionStartLine = offsetToLineCol(selContent, at).line;
+            selectionEndLine = offsetToLineCol(
+              selContent,
+              at + contextOverride.selectedText.length,
+            ).line;
+          }
+        } else if (selContent && sel && sel.end > sel.start) {
+          selectionStartLine = offsetToLineCol(selContent, sel.start).line;
+          selectionEndLine = offsetToLineCol(selContent, sel.end).line;
+        }
         await invoke("run_native_agent", {
           projectPath,
-          prompt,
+          prompt: nativePrompt,
           tabId: activeTabId,
-          model: cred?.model || providerModelOverride || null,
+          model: nativeModel || null,
           baseUrl: cred?.base_url || null,
           images: nativeImages.length ? nativeImages : null,
           numCtx: ns.nativeNumCtx ?? null,
           temperature: ns.nativeTemperature ?? null,
+          activeFile,
+          selection,
+          selectionStartLine,
+          selectionEndLine,
+          personalizationPrompt: null,
         });
       } else if (resumeSessionId) {
         // Resume existing session
@@ -1177,6 +1418,16 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     const tab = get().tabs.find((t) => t.id === activeTabId);
     if (!tab?.isStreaming) return;
     set({ _cancelledByUser: true });
+    // Surface a "Stopped." marker while the tab is still streaming, so it isn't
+    // dropped by the handleStreamMessage isStreaming guard. subtype "cancelled"
+    // is treated as non-error (use-claude-events) and renders as a plain result,
+    // so the user gets acknowledgment their Stop took effect instead of dead-air.
+    get()._appendMessage(activeTabId, {
+      type: "result",
+      subtype: "cancelled",
+      is_error: false,
+      result: "Stopped.",
+    } as ClaudeStreamMessage);
     set((s) =>
       applyTabUpdate(s, activeTabId, {
         isStreaming: false,
@@ -1197,9 +1448,53 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     }
   },
 
+  resendFromMessage: async (messageIndex, newText) => {
+    const state = get();
+    const tabId = state.activeTabId;
+    const tab = state.tabs.find((t) => t.id === tabId);
+    if (!tab || tab.isStreaming) return;
+    const target = tab.messages[messageIndex];
+    if (!target || target.type !== "user") return;
+
+    // Recover the prompt text, dropping a leading context-label line if present.
+    const recoverPrompt = (): string => {
+      const raw = target.message?.content;
+      const text = Array.isArray(raw)
+        ? raw
+            .filter((b) => b.type === "text")
+            .map((b) => b.text ?? "")
+            .join("\n")
+        : typeof raw === "string"
+          ? raw
+          : "";
+      const firstBreak = text.indexOf("\n");
+      if (firstBreak > 0) {
+        const firstLine = text.slice(0, firstBreak).trim();
+        if (firstLine.startsWith("@") || firstLine.startsWith("~@")) {
+          return text.slice(firstBreak + 1);
+        }
+      }
+      return text;
+    };
+
+    const text = (newText ?? recoverPrompt()).trim();
+    if (!text) return;
+
+    // Drop the target user message and everything after it, then resend.
+    const truncated = tab.messages.slice(0, messageIndex);
+    set((s) => applyTabUpdate(s, tabId, { messages: truncated, error: null }));
+    await get().sendPrompt(text, undefined, {
+      tabId,
+      preserveTabProvider: true,
+    });
+  },
+
   clearMessages: () => {
     const { activeTabId } = get();
     // Also clear the native runtime's per-tab conversation memory.
+    nativeSeededTabs.delete(activeTabId);
+    // Allow a fresh AI title for the next conversation in this reused tab.
+    aiTitleRefinedTabs.delete(activeTabId);
     void Promise.resolve(
       invoke("clear_native_session", { tabId: activeTabId }),
     ).catch(() => {});
@@ -1213,6 +1508,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         queuedGuidance: [],
         forceQueuedGuidanceOnComplete: false,
         forcedQueuedGuidanceId: null,
+        draft: { input: "", pinnedContexts: [] },
       }),
     );
   },
@@ -1243,6 +1539,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       totalInputTokens: tab.totalInputTokens,
       totalOutputTokens: tab.totalOutputTokens,
       pendingAttachments: [],
+      pendingComposerInput: null,
       pendingPinnedContextRemovalLabels: [],
       selectedProviderCredentialId: nextSelectedProviderCredentialId,
       _cancelledByUser: false,
@@ -1282,6 +1579,15 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       });
       return;
     }
+
+    // "New Chat" reuses the same tab id, so also wipe the native runtime's
+    // per-tab memory — otherwise the local model carries prior context into the
+    // new conversation (mirrors clearMessages / closeTab).
+    nativeSeededTabs.delete(activeTabId);
+    aiTitleRefinedTabs.delete(activeTabId);
+    void Promise.resolve(
+      invoke("clear_native_session", { tabId: activeTabId }),
+    ).catch(() => {});
 
     set((s) => ({
       ...applyTabUpdate(s, activeTabId, {
@@ -1444,6 +1750,18 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         log.error("Failed to load session history", { error: String(err) });
       }
     }
+
+    // The resumed conversation lives only in the UI; the native runtime has no
+    // memory of it. Drop the seeded flag and any stale native memory so the next
+    // native turn re-seeds from the loaded history (native mode resumes too).
+    // Done last so it can't preempt the load_session_history call above.
+    nativeSeededTabs.delete(activeTabId);
+    // Resumed sessions already carry a persisted/derived title; don't AI-rename
+    // them on the next assistant reply.
+    aiTitleRefinedTabs.add(activeTabId);
+    void Promise.resolve(
+      invoke("clear_native_session", { tabId: activeTabId }),
+    ).catch(() => {});
   },
 
   // ─── Tab Actions ───
@@ -1490,6 +1808,8 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     // Prevent closing the last tab
     if (state.tabs.length <= 1) return;
     // Free the native runtime's conversation memory for this tab.
+    nativeSeededTabs.delete(tabId);
+    aiTitleRefinedTabs.delete(tabId);
     void Promise.resolve(invoke("clear_native_session", { tabId })).catch(
       () => {},
     );
@@ -1606,6 +1926,14 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         totalOutputTokens: tab.totalOutputTokens + outputDelta,
       });
     });
+
+    // Best-effort AI title refinement: once an assistant reply has landed for a
+    // tab, try to upgrade its heuristic title. Fires at most once per tab
+    // (guarded inside the helper) and degrades silently — never blocks or
+    // throws into the append path.
+    if (msg.type === "assistant" && !aiTitleRefinedTabs.has(tabId)) {
+      void maybeRefineChatTitleWithAi(tabId);
+    }
   },
 
   _setSessionId: (tabId: string, id: string) => {

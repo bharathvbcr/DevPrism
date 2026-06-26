@@ -6,6 +6,11 @@ import {
   type ReactNode,
 } from "react";
 import { ArrowUpIcon } from "lucide-react";
+import {
+  ResumeBulletControls,
+  type ResumeBulletControlsProps,
+} from "./resume-bullet-controls";
+import { cn } from "@/lib/utils";
 
 export interface ToolbarAction {
   id: string;
@@ -21,6 +26,7 @@ interface SelectionToolbarProps {
   onSendPrompt: (prompt: string) => void;
   onAction: (actionId: string) => void;
   onDismiss: () => void;
+  resumeBulletAdjust?: ResumeBulletControlsProps;
 }
 
 export function SelectionToolbar({
@@ -30,6 +36,7 @@ export function SelectionToolbar({
   onSendPrompt,
   onAction,
   onDismiss,
+  resumeBulletAdjust,
 }: SelectionToolbarProps) {
   const [input, setInput] = useState("");
   const toolbarRef = useRef<HTMLDivElement>(null);
@@ -89,7 +96,10 @@ export function SelectionToolbar({
   return (
     <div
       ref={toolbarRef}
-      className="absolute z-30 max-h-[min(20rem,60vh)] w-64 overflow-y-auto rounded-lg border border-border bg-background shadow-xl"
+      className={cn(
+        "absolute z-30 max-h-[min(24rem,60vh)] overflow-y-auto rounded-lg border border-border bg-background shadow-xl",
+        resumeBulletAdjust ? "w-96" : "w-72",
+      )}
       style={{
         top: position.top,
         left: position.left,
@@ -103,7 +113,11 @@ export function SelectionToolbar({
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Enter prompt..."
+          placeholder={
+            resumeBulletAdjust
+              ? "Or describe how to reshape these bullets…"
+              : "Edit selection with AI…"
+          }
           className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
         />
         <button
@@ -117,6 +131,8 @@ export function SelectionToolbar({
       </div>
 
       {/* Action buttons */}
+      {resumeBulletAdjust && <ResumeBulletControls {...resumeBulletAdjust} />}
+
       {actions.length > 0 && (
         <div className="flex flex-col py-1">
           {actions.map((action) => (

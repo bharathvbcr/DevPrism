@@ -156,10 +156,10 @@ fn detect_bib_tool(content: &str) -> BibTool {
     BibTool::None
 }
 
-/// Resolve a TeXLive engine binary to its full path.
+/// Resolve a TeXLive binary (engine or tool, e.g. latexdiff) to its full path.
 /// GUI apps on macOS lack the user's shell PATH, so we check standard
 /// TeXLive installation locations and fall back to a login-shell query.
-fn find_texlive_binary(name: &str) -> Result<PathBuf, String> {
+pub(crate) fn find_texlive_binary(name: &str) -> Result<PathBuf, String> {
     // 1. Try PATH (works when launched from terminal)
     if let Ok(path) = which::which(name) {
         return Ok(path);
@@ -357,10 +357,53 @@ fn lower_thread_priority() {
 
 // --- Tectonic Compilation ---
 
+/// Shadow the bundle's `glyphtounicode.tex` with a harmless stub so that
+/// pdfLaTeX-oriented templates compile under the XeTeX-based Tectonic engine.
+///
+/// XeTeX has no `\pdfglyphtounicode` primitive (it is pdfTeX-only). Many
+/// conference/journal templates do an *unguarded* `\input{glyphtounicode}`,
+/// whose body is thousands of `\pdfglyphtounicode{...}{...}` lines — under
+/// Tectonic the first one aborts with "Undefined control sequence" and no PDF
+/// is produced. Tectonic searches the filesystem root before the bundle (see
+/// `bridgestate_ioprovider_cascade!` in tectonic's driver), so dropping our own
+/// `glyphtounicode.tex` into the build dir makes `\input glyphtounicode` load
+/// this stub instead. xdvipdfmx already derives ToUnicode CMaps from each
+/// font's cmap, so glyph-to-unicode mapping here is a genuine no-op and the
+/// output PDF's copy/paste fidelity is unaffected.
+///
+/// We never overwrite a `glyphtounicode.tex` that the user's own project
+/// provides, and we deliberately do *not* define `\pdfglyphtounicode` globally:
+/// doing so would flip `\ifdefined\pdfglyphtounicode` engine-detection guards to
+/// true under XeTeX and could trip *other* pdfTeX-only branches. The stub only
+/// defines a no-op when it is actually `\input`-ed (i.e. the template asked for
+/// it), so guarded templates that skip the input on XeTeX are unaffected.
+fn install_glyphtounicode_stub(work_dir: &Path) {
+    let stub_path = work_dir.join("glyphtounicode.tex");
+    if stub_path.exists() {
+        // Respect a copy the user's project ships with.
+        return;
+    }
+    let stub = "\
+% glyphtounicode.tex — injected by DevPrism for the XeTeX/Tectonic engine.
+% XeTeX lacks the pdfTeX primitive \\pdfglyphtounicode, so pdfLaTeX templates
+% that \\input this file abort. This stub shadows the bundle copy (the build
+% dir is searched before the bundle). xdvipdfmx builds ToUnicode CMaps from the
+% font, so this is a functional no-op.
+\\ifx\\pdfglyphtounicode\\undefined
+  \\long\\def\\pdfglyphtounicode#1#2{}%
+\\fi
+\\endinput
+";
+    // Best-effort: if this write fails the compile simply behaves as before.
+    let _ = std::fs::write(&stub_path, stub);
+}
+
 pub(crate) fn compile_with_tectonic(work_dir: &Path, main_file: &str) -> Result<(), String> {
     use tectonic::config::PersistentConfig;
     use tectonic::driver::{OutputFormat, PassSetting, ProcessingSessionBuilder};
     use tectonic::status::NoopStatusBackend;
+
+    install_glyphtounicode_stub(work_dir);
 
     let mut status = NoopStatusBackend {};
 
@@ -628,6 +671,134 @@ struct SynctexNode {
     line: u32,
     h: f64, // PDF points
     v: f64, // PDF points
+    width: f64,
+    height: f64,
+}
+
+#[derive(serde::Serialize)]
+pub struct SynctexForwardResult {
+    pub page: u32,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+fn normalize_synctex_path(path: &str) -> String {
+    path.replace('\\', "/")
+        .trim_start_matches("./")
+        .trim_start_matches(".\\")
+        .to_string()
+}
+
+fn synctex_paths_match(stored: &str, target: &str) -> bool {
+    let a = normalize_synctex_path(stored);
+    let b = normalize_synctex_path(target);
+    if a == b {
+        return true;
+    }
+    if a.ends_with(&format!("/{b}")) || b.ends_with(&format!("/{a}")) {
+        return true;
+    }
+    let a_name = Path::new(&a).file_name().and_then(|s| s.to_str()).unwrap_or("");
+    let b_name = Path::new(&b).file_name().and_then(|s| s.to_str()).unwrap_or("");
+    !a_name.is_empty() && a_name == b_name
+}
+
+/// Forward SyncTeX: source (file, line) → PDF page + rectangle in points.
+fn parse_synctex_forward(
+    data: &str,
+    target_file: &str,
+    target_line: u32,
+) -> Option<SynctexForwardResult> {
+    let mut inputs: HashMap<u32, String> = HashMap::new();
+    let mut magnification: f64 = 1000.0;
+    let mut unit: f64 = 1.0;
+    let mut x_offset: f64 = 0.0;
+    let mut y_offset: f64 = 0.0;
+
+    let mut in_content = false;
+    let mut current_page: u32 = 0;
+    let mut best: Option<(u32, SynctexNode, u32)> = None; // page, node, line distance
+
+    for raw_line in data.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        if !in_content {
+            if let Some(rest) = line.strip_prefix("Input:") {
+                if let Some(colon_pos) = rest.find(':') {
+                    if let Ok(tag) = rest[..colon_pos].parse::<u32>() {
+                        inputs.insert(tag, rest[colon_pos + 1..].to_string());
+                    }
+                }
+            } else if let Some(rest) = line.strip_prefix("Magnification:") {
+                magnification = rest.trim().parse().unwrap_or(1000.0);
+            } else if let Some(rest) = line.strip_prefix("Unit:") {
+                unit = rest.trim().parse().unwrap_or(1.0);
+            } else if let Some(rest) = line.strip_prefix("X Offset:") {
+                x_offset = rest.trim().parse().unwrap_or(0.0);
+            } else if let Some(rest) = line.strip_prefix("Y Offset:") {
+                y_offset = rest.trim().parse().unwrap_or(0.0);
+            } else if line == "Content:" {
+                in_content = true;
+            }
+            continue;
+        }
+
+        if line.starts_with("Postamble:") {
+            break;
+        }
+
+        let first_byte = match line.as_bytes().first() {
+            Some(b) => *b,
+            None => continue,
+        };
+
+        match first_byte {
+            b'{' => {
+                current_page = line.get(1..).and_then(|s| s.parse().ok()).unwrap_or(0);
+            }
+            b'}' => {
+                current_page = 0;
+            }
+            b'[' | b'(' | b'h' | b'v' | b'k' | b'x' | b'g' | b'$' if current_page > 0 => {
+                let factor = unit * magnification / (1000.0 * 65536.0) * 72.0 / 72.27;
+                if let Some(node) = line
+                    .get(1..)
+                    .and_then(|s| parse_synctex_node(s, factor, x_offset, y_offset))
+                {
+                    let file = inputs.get(&node.tag)?;
+                    if !synctex_paths_match(file, target_file) {
+                        continue;
+                    }
+                    let line_dist = node.line.abs_diff(target_line);
+                    let replace = match best {
+                        None => true,
+                        Some((_, _, prev_dist)) => {
+                            line_dist < prev_dist
+                                || (line_dist == prev_dist && node.line >= target_line)
+                        }
+                    };
+                    if replace {
+                        best = Some((current_page, node, line_dist));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let (page, node, _) = best?;
+    Some(SynctexForwardResult {
+        page,
+        x: node.h,
+        y: node.v,
+        width: node.width.max(24.0),
+        height: node.height.max(12.0),
+    })
 }
 
 /// Parse synctex data and find the source location closest to (target_x, target_y) on target_page.
@@ -758,7 +929,31 @@ fn parse_synctex_node(s: &str, factor: f64, x_offset: f64, y_offset: f64) -> Opt
     let h = h_raw as f64 * factor + x_offset;
     let v = v_raw as f64 * factor + y_offset;
 
-    Some(SynctexNode { tag, line, h, v })
+    let (width, height) = if colon_parts.len() >= 3 {
+        let whd: Vec<&str> = colon_parts[2].splitn(3, ',').collect();
+        let w = whd
+            .first()
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.0)
+            * factor;
+        let ht = whd
+            .get(1)
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.0)
+            * factor;
+        (w, ht)
+    } else {
+        (0.0, 0.0)
+    };
+
+    Some(SynctexNode {
+        tag,
+        line,
+        h,
+        v,
+        width,
+        height,
+    })
 }
 
 // --- Tauri Commands ---
@@ -824,6 +1019,11 @@ pub async fn compile_latex(
             .clone()
     };
     let _project_guard = project_lock.lock().await;
+
+    // Suppress macOS App Nap while Tectonic runs so a backgrounded window does
+    // not throttle the compile. Released on every return path (drop at fn end).
+    #[cfg(target_os = "macos")]
+    let _nap = crate::app_nap::NapActivity::begin("LaTeX compile");
 
     let t0 = std::time::Instant::now();
     let use_texlive = use_texlive.unwrap_or(false);
@@ -988,8 +1188,12 @@ pub async fn compile_latex(
         }
     }
 
-    // Store build info
-    {
+    // Store build info — but NOT for DevPrism's throwaway temp compiles (e.g.
+    // the track-changes diff preview `.devprism-...tex`). Those share the
+    // per-project build dir, so recording them here would overwrite the real
+    // document's BuildInfo and make SyncTeX (click-to-source / forward sync)
+    // resolve against the temp document until the next real compile.
+    if !main_file_name.starts_with(".devprism-") {
         let mut builds = state.last_builds.lock().await;
         builds.insert(
             project_dir.clone(),
@@ -1013,6 +1217,26 @@ pub async fn compile_latex(
             backend_label,
             pdf_bytes.len() / 1024
         );
+        // Sweep DevPrism's throwaway preview artifacts from the persistent build
+        // dir so they don't accumulate (each preview uses a unique temp name).
+        // Self-healing: removes leftovers from earlier previews too.
+        if main_file_name.starts_with(".devprism-") {
+            let sweep_dir = work_dir.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                if let Ok(entries) = std::fs::read_dir(&sweep_dir) {
+                    for entry in entries.flatten() {
+                        if entry
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with(".devprism-")
+                        {
+                            let _ = std::fs::remove_file(entry.path());
+                        }
+                    }
+                }
+            })
+            .await;
+        }
         Ok(tauri::ipc::Response::new(pdf_bytes))
     } else {
         let log_content = std::fs::read_to_string(&log_path).unwrap_or_default();
@@ -1092,6 +1316,53 @@ pub async fn synctex_edit(
     Ok(SynctexResult { file, line, column })
 }
 
+#[tauri::command]
+pub async fn synctex_forward(
+    state: tauri::State<'_, LatexCompilerState>,
+    project_dir: String,
+    file: String,
+    line: u32,
+    column: u32,
+) -> Result<SynctexForwardResult, String> {
+    let _ = column;
+    let builds = state.last_builds.lock().await;
+    let build = builds
+        .get(&project_dir)
+        .ok_or("No build found for this project. Compile first.")?;
+
+    let synctex_gz = build
+        .work_dir
+        .join(format!("{}.synctex.gz", build.main_file_name));
+    let synctex_plain = build
+        .work_dir
+        .join(format!("{}.synctex", build.main_file_name));
+
+    drop(builds);
+
+    tokio::task::spawn_blocking(move || {
+        let synctex_data = if synctex_gz.exists() {
+            let compressed = std::fs::read(&synctex_gz)
+                .map_err(|e| format!("Failed to read synctex.gz: {}", e))?;
+            let mut decoder = flate2::read::GzDecoder::new(&compressed[..]);
+            let mut data = String::new();
+            decoder
+                .read_to_string(&mut data)
+                .map_err(|e| format!("Failed to decompress synctex: {}", e))?;
+            Ok::<_, String>(data)
+        } else if synctex_plain.exists() {
+            std::fs::read_to_string(&synctex_plain)
+                .map_err(|e| format!("Failed to read synctex: {}", e))
+        } else {
+            Err("No synctex data found. Recompile with synctex enabled.".to_string())
+        }?;
+
+        parse_synctex_forward(&synctex_data, &file, line)
+            .ok_or_else(|| format!("Could not locate line {line} in the PDF"))
+    })
+    .await
+    .map_err(|e| format!("Synctex forward task panicked: {}", e))?
+}
+
 /// Clear in-memory build state on app exit.
 /// Persistent build directories are intentionally kept for fast restart.
 pub async fn cleanup_all_builds(state: &LatexCompilerState) {
@@ -1140,6 +1411,39 @@ mod tests {
     fn test_detect_bib_tool_commented_out() {
         let content = "\\documentclass{article}\n% \\bibliography{refs}\n% \\usepackage{biblatex}\n\\end{document}";
         assert_eq!(detect_bib_tool(content), BibTool::None);
+    }
+
+    // --- install_glyphtounicode_stub ---
+
+    #[test]
+    fn test_install_glyphtounicode_stub_writes_stub() {
+        let work_dir = tempfile::tempdir().unwrap();
+        let stub_path = work_dir.path().join("glyphtounicode.tex");
+        assert!(!stub_path.exists());
+
+        install_glyphtounicode_stub(work_dir.path());
+
+        assert!(stub_path.exists(), "stub should be created");
+        let contents = std::fs::read_to_string(&stub_path).unwrap();
+        // It must neutralize the pdfTeX primitive without containing any
+        // `\pdfglyphtounicode{..}{..}` invocations that XeTeX would choke on.
+        assert!(contents.contains("\\pdfglyphtounicode"));
+        assert!(contents.contains("\\endinput"));
+    }
+
+    #[test]
+    fn test_install_glyphtounicode_stub_does_not_clobber_project_copy() {
+        let work_dir = tempfile::tempdir().unwrap();
+        let stub_path = work_dir.path().join("glyphtounicode.tex");
+        std::fs::write(&stub_path, "USER PROVIDED").unwrap();
+
+        install_glyphtounicode_stub(work_dir.path());
+
+        assert_eq!(
+            std::fs::read_to_string(&stub_path).unwrap(),
+            "USER PROVIDED",
+            "a project-provided glyphtounicode.tex must be left untouched"
+        );
     }
 
     // --- extract_error_lines ---
@@ -1245,6 +1549,49 @@ mod tests {
     }
 
     // --- parse_synctex_data ---
+
+    #[test]
+    fn test_parse_synctex_forward_basic() {
+        let data = "\
+Input:1:./main.tex
+Magnification:1000
+Unit:1
+X Offset:0
+Y Offset:0
+Content:
+{1
+h1,5,0:1000,2000:500,100,0
+}1
+Postamble:
+";
+        let result = parse_synctex_forward(data, "main.tex", 5);
+        assert!(result.is_some());
+        let hit = result.unwrap();
+        assert_eq!(hit.page, 1);
+        assert!(hit.x > 0.0);
+        assert!(hit.y > 0.0);
+        assert!(hit.width >= 24.0);
+    }
+
+    #[test]
+    fn test_parse_synctex_forward_closest_line() {
+        let data = "\
+Input:1:./main.tex
+Magnification:1000
+Unit:1
+X Offset:0
+Y Offset:0
+Content:
+{1
+h1,8,0:0,0
+h1,12,0:100000000,100000000
+}1
+Postamble:
+";
+        let near12 = parse_synctex_forward(data, "./main.tex", 11).unwrap();
+        let near8 = parse_synctex_forward(data, "./main.tex", 8).unwrap();
+        assert!(near12.y > near8.y);
+    }
 
     #[test]
     fn test_parse_synctex_data_basic() {

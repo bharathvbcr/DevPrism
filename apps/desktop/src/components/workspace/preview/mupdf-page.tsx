@@ -1,11 +1,110 @@
 import { useEffect, useRef, useState, useCallback, memo } from "react";
+import { XIcon, MessageSquareIcon } from "lucide-react";
 import { getMupdfClient } from "@/lib/mupdf/mupdf-client";
 import { createLogger } from "@/lib/debug/logger";
 import { APP_VISIBILITY_RESTORED } from "@/lib/debug/log-store";
-import type { StructuredTextData, LinkData } from "@/lib/mupdf/types";
+import type { StructuredTextData, LinkData, Rect } from "@/lib/mupdf/types";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { Textarea } from "@/components/ui/textarea";
+import { cn } from "@/lib/utils";
+
+/** Note editor popover for a single highlight. Commits on close/blur so we
+ *  don't churn the store (and disk) on every keystroke. */
+function HighlightNoteButton({
+  note,
+  onSave,
+}: {
+  note: string;
+  onSave: (note: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState(note);
+
+  const commit = useCallback(() => {
+    if (draft.trim() !== (note ?? "").trim()) onSave(draft);
+  }, [draft, note, onSave]);
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) commit();
+        else setDraft(note);
+        setOpen(next);
+      }}
+    >
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            "pointer-events-auto flex size-4 items-center justify-center rounded-full border border-border bg-background shadow-sm transition-all hover:scale-110 hover:bg-accent",
+            note ? "text-primary" : "text-muted-foreground opacity-60",
+          )}
+          title={note ? "Edit note" : "Add a note"}
+          aria-label={note ? "Edit note" : "Add a note"}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <MessageSquareIcon className="size-2.5" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        className="w-64 p-2"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <Textarea
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+              e.preventDefault();
+              commit();
+              setOpen(false);
+            }
+          }}
+          placeholder="Add a note for this highlight…"
+          className="min-h-20 text-sm"
+        />
+        <p className="mt-1 px-0.5 text-[11px] text-muted-foreground">
+          Saved into the exported PDF. ⌘/Ctrl+Enter to save.
+        </p>
+      </PopoverContent>
+    </Popover>
+  );
+}
 
 const log = createLogger("mupdf-page");
 const RENDER_SCALE_DEBOUNCE_MS = 260;
+
+/** Supersample the raster relative to the display so text stays crisp. On
+ *  standard-DPI monitors (devicePixelRatio = 1) a fit-zoom page would otherwise
+ *  be rasterized at only ~72 DPI and look soft; rendering at >=2x device pixels
+ *  matches how a retina display already supersamples. Capped so deep zoom on a
+ *  high-DPI display can't blow up the pixmap. */
+const MIN_RENDER_DPR = 2;
+const MAX_RENDER_DPR = 3;
+
+/** Invert the rendered page for dark mode: white paper -> dark, black ink ->
+ *  light, while hue-rotate keeps colored content roughly recognizable. The
+ *  trailing brightness(<1) dims the inverted page so it doesn't glare against
+ *  the dark UI. Applied as a CSS filter so the underlying canvas pixels (used
+ *  by capture and text selection) stay untouched. */
+const DARK_MODE_FILTER = "invert(0.905) hue-rotate(180deg) brightness(0.85)";
+
+/** A persistent user highlight on this page. `rects` are the per-line boxes in
+ *  PDF point coords; `css` is the solid fill color. */
+export interface PageAnnotation {
+  id: string;
+  rects: Rect[];
+  css: string;
+  /** Optional reviewer note attached to this highlight. */
+  note?: string;
+}
 
 interface MupdfPageProps {
   docId: number;
@@ -14,6 +113,15 @@ interface MupdfPageProps {
   pageWidth: number;
   pageHeight: number;
   isVisible: boolean;
+  darkMode?: boolean;
+  /** Search-match rectangles (PDF point coords) to highlight on this page. */
+  highlights?: { rect: Rect; active: boolean; pulse?: boolean }[];
+  /** Persistent user highlights to render on this page. */
+  annotations?: PageAnnotation[];
+  /** Remove a user highlight by id (delete affordance). */
+  onRemoveAnnotation?: (id: string) => void;
+  /** Update the note text for a highlight. */
+  onUpdateNote?: (id: string, note: string) => void;
 }
 
 /** Check if a canvas appears blank (GPU context was silently invalidated).
@@ -40,6 +148,11 @@ export const MupdfPage = memo(function MupdfPage({
   pageWidth,
   pageHeight,
   isVisible,
+  darkMode = false,
+  highlights,
+  annotations,
+  onRemoveAnnotation,
+  onUpdateNote,
 }: MupdfPageProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [textData, setTextData] = useState<StructuredTextData | null>(null);
@@ -69,7 +182,10 @@ export const MupdfPage = memo(function MupdfPage({
 
     const gen = ++renderGenRef.current;
     const client = getMupdfClient();
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = Math.min(
+      MAX_RENDER_DPR,
+      Math.max(MIN_RENDER_DPR, window.devicePixelRatio || 1),
+    );
     const dpi = renderScale * 72 * dpr;
 
     client
@@ -158,7 +274,12 @@ export const MupdfPage = memo(function MupdfPage({
     >
       <canvas
         ref={canvasRef}
-        style={{ width: cssW, height: cssH, display: "block" }}
+        style={{
+          width: cssW,
+          height: cssH,
+          display: "block",
+          filter: darkMode ? DARK_MODE_FILTER : undefined,
+        }}
       />
 
       {/* Text layer for selection */}
@@ -187,6 +308,110 @@ export const MupdfPage = memo(function MupdfPage({
               )),
           )}
         </svg>
+      )}
+
+      {/* Persistent user highlight layer (above the text layer so the delete
+          button is clickable; fills are non-interactive so text stays
+          selectable through them). */}
+      {annotations && annotations.length > 0 && (
+        <div
+          className="pointer-events-none absolute inset-0"
+          style={{ zIndex: 3 }}
+        >
+          {annotations.map((annot) => {
+            // Union bbox of the highlight, for placing the delete button.
+            let minX = Infinity;
+            let minY = Infinity;
+            let maxX = -Infinity;
+            for (const r of annot.rects) {
+              minX = Math.min(minX, r.x);
+              minY = Math.min(minY, r.y);
+              maxX = Math.max(maxX, r.x + r.w);
+            }
+            return (
+              <div key={annot.id}>
+                {annot.rects.map((r, i) => (
+                  <div
+                    key={i}
+                    className="pointer-events-none absolute rounded-[1px]"
+                    style={{
+                      left: `${(r.x / pageWidth) * 100}%`,
+                      top: `${(r.y / pageHeight) * 100}%`,
+                      width: `${(r.w / pageWidth) * 100}%`,
+                      height: `${(r.h / pageHeight) * 100}%`,
+                      backgroundColor: annot.css,
+                      opacity: 0.4,
+                      mixBlendMode: "multiply",
+                    }}
+                  />
+                ))}
+                {Number.isFinite(minX) &&
+                  (onUpdateNote || onRemoveAnnotation) && (
+                    <div
+                      className="absolute flex translate-x-1/2 -translate-y-1/2 items-center gap-1"
+                      style={{
+                        left: `${(maxX / pageWidth) * 100}%`,
+                        top: `${(minY / pageHeight) * 100}%`,
+                      }}
+                    >
+                      {onUpdateNote && (
+                        <HighlightNoteButton
+                          note={annot.note ?? ""}
+                          onSave={(note) => onUpdateNote(annot.id, note)}
+                        />
+                      )}
+                      {onRemoveAnnotation && (
+                        <button
+                          type="button"
+                          className="pointer-events-auto flex size-4 items-center justify-center rounded-full border border-border bg-background text-muted-foreground opacity-60 shadow-sm transition-all hover:scale-110 hover:bg-destructive hover:text-white hover:opacity-100"
+                          title="Remove highlight"
+                          aria-label="Remove highlight"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onRemoveAnnotation(annot.id);
+                          }}
+                        >
+                          <XIcon className="size-2.5" />
+                        </button>
+                      )}
+                    </div>
+                  )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Search highlight layer */}
+      {highlights && highlights.length > 0 && (
+        <div className="pointer-events-none absolute inset-0">
+          {highlights.map((h, i) => (
+            <div
+              key={i}
+              className={cn(
+                "absolute rounded-[1px]",
+                h.pulse && "animate-synctex-pulse",
+              )}
+              style={{
+                left: `${(h.rect.x / pageWidth) * 100}%`,
+                top: `${(h.rect.y / pageHeight) * 100}%`,
+                width: `${(h.rect.w / pageWidth) * 100}%`,
+                height: `${(h.rect.h / pageHeight) * 100}%`,
+                backgroundColor: h.pulse
+                  ? "rgba(14, 165, 233, 0.35)"
+                  : h.active
+                    ? "rgba(249, 115, 22, 0.45)"
+                    : "rgba(250, 204, 21, 0.4)",
+                outline: h.pulse
+                  ? "2px solid #0ea5e9"
+                  : h.active
+                    ? "1.5px solid #ea580c"
+                    : undefined,
+                mixBlendMode: "multiply",
+              }}
+            />
+          ))}
+        </div>
       )}
 
       {/* Link layer */}

@@ -1,6 +1,6 @@
 import { cn } from "@/lib/utils";
 
-export const DEVPRISM_LOGO_SRC = "/devprism-logo.svg";
+export const DEVPRISM_LOGO_SRC = "/devprism-logo.png";
 
 type DevPrismLogoProps = {
   className?: string;

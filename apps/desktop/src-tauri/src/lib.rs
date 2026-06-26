@@ -1,16 +1,23 @@
 #![recursion_limit = "512"]
 
 mod anthropic_proxy;
+#[cfg(target_os = "macos")]
+pub mod app_nap;
 mod claude;
 mod claude_process;
 mod comments;
+mod export;
 mod history;
 mod latex;
+mod latexdiff;
 mod native_agent;
+mod personalization;
 mod project_context;
+mod project_import;
 mod skills;
 mod slash_commands;
 mod uv;
+mod variants;
 mod zotero;
 
 use std::path::Path;
@@ -175,6 +182,30 @@ fn set_macos_app_icon() {
     }
 }
 
+/// Remove the 1px hairline macOS draws under the titlebar so the overlay
+/// titlebar blends seamlessly into the app's top bar.
+///
+/// `NSWindow` is `MainThreadOnly`; only call this on the main thread (setup,
+/// RunEvent::Ready, or a command handler — never a spawned async task).
+/// `titlebarSeparatorStyle` is macOS 11.0+, at/above our deployment floor, so
+/// no runtime version gate is needed.
+#[cfg(target_os = "macos")]
+fn hide_titlebar_separator(window: &tauri::WebviewWindow) {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSTitlebarSeparatorStyle, NSWindow};
+
+    if MainThreadMarker::new().is_none() {
+        return;
+    }
+    if let Ok(ptr) = window.ns_window() {
+        if ptr.is_null() {
+            return;
+        }
+        let ns: &NSWindow = unsafe { &*(ptr as *const NSWindow) };
+        unsafe { ns.setTitlebarSeparatorStyle(NSTitlebarSeparatorStyle::None) };
+    }
+}
+
 #[tauri::command]
 fn create_new_window(app: tauri::AppHandle) -> Result<(), String> {
     let label = format!(
@@ -200,9 +231,13 @@ fn create_new_window(app: tauri::AppHandle) -> Result<(), String> {
             .traffic_light_position(tauri::LogicalPosition::new(12.0, 12.0));
     }
 
-    builder
+    #[allow(unused_variables)]
+    let win = builder
         .build()
         .map_err(|e| format!("Failed to create window: {}", e))?;
+
+    #[cfg(target_os = "macos")]
+    hide_titlebar_separator(&win);
 
     Ok(())
 }
@@ -596,13 +631,24 @@ pub fn run() {
             set_native_window_theme,
             allow_project_directory,
             list_default_projects,
+            project_import::import_zip_project,
+            project_import::import_loose_files,
+            variants::list_variants,
+            variants::create_variant,
+            variants::update_variant,
+            variants::delete_variant,
+            variants::diff_variant,
             detect_editors,
             open_in_editor,
             js_log,
             read_clipboard_file_paths,
             latex::compile_latex,
             latex::synctex_edit,
+            latex::synctex_forward,
             latex::detect_texlive,
+            latexdiff::detect_latexdiff,
+            latexdiff::latexdiff_generate,
+            export::export_document,
             claude::check_claude_status,
             claude::install_claude_cli,
             claude::login_claude,
@@ -647,10 +693,25 @@ pub fn run() {
             skills::import_skill_from_folder,
             skills::install_bundled_skills,
             skills::create_custom_skill,
+            skills::create_skill_from_markdown,
             project_context::count_project_context,
+            personalization::record_personalization_event,
+            personalization::sync_identity_profile,
+            personalization::get_personalization_profile,
+            personalization::set_personalization_enabled,
+            personalization::clear_personalization_profile,
             native_agent::run_native_agent,
+            native_agent::inline_transform_text,
+            native_agent::ai_complete,
+            native_agent::ai_embed,
+            native_agent::ai_complete_stream,
+            native_agent::ai_caption,
             native_agent::stop_native_agent,
             native_agent::clear_native_session,
+            native_agent::list_ollama_models,
+            native_agent::ollama_status,
+            native_agent::ollama_model_capabilities,
+            native_agent::pull_ollama_model,
             skills::check_skills_installed,
             skills::list_installed_skills,
             skills::delete_installed_skill,
@@ -682,6 +743,11 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Ready => {
                 set_macos_app_icon();
+                // Main window is declared in tauri.conf.json (not built in Rust),
+                // so Ready is the correct main-thread hook to polish its titlebar.
+                if let Some(win) = app_handle.get_webview_window("main") {
+                    hide_titlebar_separator(&win);
+                }
             }
             // Workaround: WKWebView sometimes fails to repaint after the app
             // returns from background, leaving a black screen.  We apply two

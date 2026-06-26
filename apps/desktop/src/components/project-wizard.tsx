@@ -24,17 +24,24 @@ import { useDocumentStore } from "@/stores/document-store";
 import { useClaudeChatStore } from "@/stores/claude-chat-store";
 import { exists, join } from "@/lib/tauri/fs";
 import {
+  setupNewProjectInSpace,
+  formatNewProjectSetupToast,
+} from "@/lib/space-project";
+import {
   getTemplateById,
   getTemplateSkeleton,
   BIB_TEMPLATE,
 } from "@/lib/template-registry";
 import { TemplateGallery } from "@/components/template-gallery";
 import { DEFAULT_CLAUDE_MD } from "@/lib/default-claude-md";
+import { DEFAULT_AGENT_MD } from "@/lib/default-agent-md";
 import {
   buildReferenceFilesSection,
   importReferenceFiles,
 } from "@/lib/project-attachments";
 import { getProjectNameError, normalizeProjectName } from "@/lib/project-name";
+import { useSettingsStore } from "@/stores/settings-store";
+import { canUseAiAssist, suggestProjectName } from "@/lib/ai-assist";
 
 // ─── Helpers ───
 
@@ -91,6 +98,15 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
   const projectNameRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  // ── AI-suggested project name (from purpose) ──
+  const aiNaming = useSettingsStore((s) => s.aiNaming);
+  const [nameSuggesting, setNameSuggesting] = useState(false);
+  const nameTouchedRef = useRef(false);
+  const nameSuggestDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const nameSuggestRequestRef = useRef(0);
+
   const addRecentProject = useProjectStore((s) => s.addRecentProject);
   const lastProjectFolder = useProjectStore((s) => s.lastProjectFolder);
   const setLastProjectFolder = useProjectStore((s) => s.setLastProjectFolder);
@@ -119,6 +135,47 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
         );
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Debounced AI name suggestion from the purpose text ──
+  // Only prefills while the user has not manually edited the name field.
+  useEffect(() => {
+    if (nameSuggestDebounceRef.current) {
+      clearTimeout(nameSuggestDebounceRef.current);
+    }
+
+    if (!aiNaming || !canUseAiAssist()) return;
+    if (nameTouchedRef.current) return;
+
+    const goal = purpose.trim();
+    if (goal.length < 12) return;
+
+    nameSuggestDebounceRef.current = setTimeout(() => {
+      const id = ++nameSuggestRequestRef.current;
+      setNameSuggesting(true);
+      void suggestProjectName(goal)
+        .then((suggested) => {
+          if (id !== nameSuggestRequestRef.current) return;
+          if (nameTouchedRef.current) return;
+          const normalized = normalizeProjectName(suggested);
+          if (normalized) {
+            setProjectName(normalized);
+            setProjectNameError("");
+          }
+        })
+        .catch(() => {
+          // Passive/background AI: fail silently.
+        })
+        .finally(() => {
+          if (id === nameSuggestRequestRef.current) setNameSuggesting(false);
+        });
+    }, 800);
+
+    return () => {
+      if (nameSuggestDebounceRef.current) {
+        clearTimeout(nameSuggestDebounceRef.current);
+      }
+    };
+  }, [purpose, aiNaming]);
 
   const handleChooseFolder = useCallback(async () => {
     const selected = await open({
@@ -211,6 +268,14 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
         await writeTextFile(claudeMdPath, DEFAULT_CLAUDE_MD);
       }
 
+      // Create AGENTS.md so agent backends that read the AGENTS.md convention
+      // (and DevPrism's native local agent) get the same project context.
+      const agentMdPath = await join(projectPath, "AGENTS.md");
+      const agentMdExists = await exists(agentMdPath);
+      if (!agentMdExists) {
+        await writeTextFile(agentMdPath, DEFAULT_AGENT_MD);
+      }
+
       const mainTexPath = await join(projectPath, template.mainFileName);
       const mainExists = await exists(mainTexPath);
       if (!mainExists) {
@@ -255,8 +320,13 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
       }
 
       setLastProjectFolder(projectFolder);
+      const setup = await setupNewProjectInSpace(projectPath, {
+        mainTexPath,
+      });
       addRecentProject(projectPath);
       await openProject(projectPath);
+      const toastMsg = formatNewProjectSetupToast(setup, "Project created");
+      toast.success(toastMsg);
     } catch (err) {
       console.error("Failed to create project:", err);
       toast.error("Failed to create project", {
@@ -292,7 +362,12 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
           {/* Project name */}
           <div className="space-y-2.5">
             <div>
-              <span className="font-semibold text-sm">Project name</span>
+              <span className="flex items-center gap-1.5 font-semibold text-sm">
+                Project name
+                {nameSuggesting && (
+                  <Loader2Icon className="size-3 animate-spin text-muted-foreground" />
+                )}
+              </span>
               <p className="mt-0.5 text-muted-foreground text-xs leading-relaxed">
                 This becomes the folder name on disk.
               </p>
@@ -302,6 +377,7 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
               placeholder="e.g., flashvid-paper"
               value={projectName}
               onChange={(e) => {
+                nameTouchedRef.current = true;
                 setProjectName(e.target.value);
                 setProjectNameError("");
               }}

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 
 const { mockDocumentState, getDocumentState, createSnapshotMock } = vi.hoisted(
@@ -27,6 +27,7 @@ import {
   CLAUDE_CODE_PROVIDER_ID,
   useClaudeChatStore,
 } from "@/stores/claude-chat-store";
+import { useSettingsStore } from "@/stores/settings-store";
 
 function resetClaudeChatStore() {
   useClaudeChatStore.setState({
@@ -67,6 +68,13 @@ function resetClaudeChatStore() {
   });
 }
 
+function invokeArgs(command: string): any {
+  const calls = vi
+    .mocked(invoke)
+    .mock.calls.filter((call) => call[0] === command);
+  return calls[calls.length - 1]?.[1];
+}
+
 function setMockDocumentState(overrides: Partial<any> = {}) {
   const content = ["Line 1", "Line 2", "Line 3", "Line 4"].join("\n");
 
@@ -102,8 +110,10 @@ function setMockDocumentState(overrides: Partial<any> = {}) {
 describe("useClaudeChatStore.sendPrompt context assembly", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(invoke).mockImplementation(() => Promise.resolve(null));
     resetClaudeChatStore();
     setMockDocumentState();
+    useSettingsStore.getState().setNativeAgentEnabled(false);
   });
 
   it("uses a plain file label and full file content for whole-file mentions", async () => {
@@ -125,8 +135,7 @@ describe("useClaudeChatStore.sendPrompt context assembly", () => {
       }),
     );
 
-    const prompt = (vi.mocked(invoke).mock.calls[0]?.[1] as any)
-      ?.prompt as string;
+    const prompt = invokeArgs("execute_claude_code")?.prompt as string;
     expect(prompt).toContain("[Currently open file: main.tex]");
     expect(prompt).toContain("[Selection: @main.tex]");
     expect(prompt).toContain(wholeFileText);
@@ -163,8 +172,7 @@ describe("useClaudeChatStore.sendPrompt context assembly", () => {
       }),
     );
 
-    const prompt = (vi.mocked(invoke).mock.calls[0]?.[1] as any)
-      ?.prompt as string;
+    const prompt = invokeArgs("execute_claude_code")?.prompt as string;
     expect(prompt).toContain("[Currently open file: main.tex]");
     expect(prompt).toContain("[Selection: @main.tex:2:1-3:6]");
     expect(prompt).toContain("[Selected text:\nbeta\ngamma\n]");
@@ -173,7 +181,9 @@ describe("useClaudeChatStore.sendPrompt context assembly", () => {
 
     const userText =
       useClaudeChatStore.getState().messages[0].message?.content?.[0].text;
-    expect(userText).toBe("@main.tex:2:1-3:6\nPlease revise this");
+    // Display chip uses a readable line range (the prompt's `[Selection: …]`
+    // block above still carries the precise line:col form for the model).
+    expect(userText).toBe("@main.tex:2-3\nPlease revise this");
     expect(state.saveAllFiles).not.toHaveBeenCalled();
     expect(createSnapshotMock).toHaveBeenCalledWith(
       "/project",
@@ -237,7 +247,7 @@ describe("useClaudeChatStore.sendPrompt context assembly", () => {
         prompt: expect.stringContaining("[Provider switch context]"),
       }),
     );
-    const prompt = (vi.mocked(invoke).mock.calls[0]?.[1] as any).prompt;
+    const prompt = invokeArgs("execute_claude_code").prompt;
     expect(prompt).toContain("Old DS question");
     expect(prompt).toContain("Old DS answer");
     expect(prompt).toContain("Use Claude now");
@@ -298,8 +308,10 @@ describe("useClaudeChatStore.sendPrompt context assembly", () => {
 describe("useClaudeChatStore.resumeSession", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(invoke).mockImplementation(() => Promise.resolve(null));
     resetClaudeChatStore();
     setMockDocumentState();
+    useSettingsStore.getState().setNativeAgentEnabled(false);
   });
 
   it("restores token totals from loaded session history", async () => {
@@ -440,5 +452,218 @@ describe("useClaudeChatStore.resumeSession", () => {
     expect(userContent).not.toContain("[Currently open file:");
     expect(userContent).not.toContain("[Temporary pasted image:");
     expect(activeTab?.title).toBe("Please inspect this image");
+  });
+});
+
+describe("useClaudeChatStore native agent", () => {
+  beforeEach(() => {
+    resetClaudeChatStore();
+    setMockDocumentState();
+    vi.mocked(invoke).mockReset();
+    vi.mocked(invoke).mockImplementation(() => Promise.resolve(null));
+    createSnapshotMock.mockClear();
+    useSettingsStore.getState().setNativeAgentEnabled(true);
+  });
+
+  afterEach(() => {
+    useSettingsStore.getState().setNativeAgentEnabled(false);
+  });
+
+  function lastNativeArgs(): any {
+    const calls = vi
+      .mocked(invoke)
+      .mock.calls.filter((c) => c[0] === "run_native_agent");
+    return calls[calls.length - 1]?.[1] as any;
+  }
+
+  // Use a unique tab id per test so the module-level "seeded" set doesn't leak.
+  function useTabWithMessages(id: string, messages: any[]) {
+    useClaudeChatStore.setState((s) => ({
+      tabs: [{ ...s.tabs[0], id, messages }],
+      activeTabId: id,
+    }));
+  }
+
+  it("seeds the first native turn with prior conversation context", async () => {
+    useTabWithMessages("tab-native-seed", [
+      {
+        type: "user",
+        message: { content: [{ type: "text", text: "earlier question" }] },
+      },
+      {
+        type: "assistant",
+        message: { content: [{ type: "text", text: "earlier answer" }] },
+      },
+    ]);
+
+    await useClaudeChatStore.getState().sendPrompt("follow up question");
+    const first = lastNativeArgs();
+    expect(first).toBeTruthy();
+    expect(first.prompt).toContain("[Provider switch context]");
+    expect(first.prompt).toContain("earlier question");
+    expect(first.prompt).toContain("earlier answer");
+    expect(first.prompt).toContain("follow up question");
+
+    // A later turn (simulate the previous one finishing) must NOT re-seed.
+    useClaudeChatStore.setState((s) => ({
+      tabs: s.tabs.map((t) =>
+        t.id === "tab-native-seed" ? { ...t, isStreaming: false } : t,
+      ),
+    }));
+    vi.mocked(invoke).mockClear();
+    await useClaudeChatStore.getState().sendPrompt("another question");
+    const second = lastNativeArgs();
+    expect(second.prompt).not.toContain("[Provider switch context]");
+    expect(second.prompt).toContain("another question");
+  });
+
+  it("does not seed when the tab has no prior messages", async () => {
+    useTabWithMessages("tab-native-empty", []);
+    await useClaudeChatStore.getState().sendPrompt("first question");
+    const args = lastNativeArgs();
+    expect(args).toBeTruthy();
+    expect(args.prompt).not.toContain("[Provider switch context]");
+    expect(args.prompt).toContain("first question");
+  });
+
+  it("forwards the configured native Ollama model", async () => {
+    useSettingsStore.getState().setNativeOllamaModel("llama3.2:latest");
+    useTabWithMessages("tab-native-model", []);
+    await useClaudeChatStore.getState().sendPrompt("hello");
+    expect(lastNativeArgs().model).toBe("llama3.2:latest");
+    useSettingsStore.getState().setNativeOllamaModel(null);
+  });
+
+  it("creates an agent-labelled snapshot before native edits", async () => {
+    useTabWithMessages("tab-native-snapshot", []);
+    await useClaudeChatStore.getState().sendPrompt("edit the intro");
+    expect(createSnapshotMock).toHaveBeenCalledWith(
+      "/project",
+      "[agent] Before AI edit",
+    );
+  });
+
+  it("forwards the open editor file so deictic prompts resolve", async () => {
+    // setMockDocumentState() (beforeEach) opens main.tex as the active file.
+    useTabWithMessages("tab-native-activefile", []);
+    await useClaudeChatStore.getState().sendPrompt("fix this paragraph");
+    expect(lastNativeArgs().activeFile).toBe("main.tex");
+  });
+
+  it("forwards null when no editor file is open", async () => {
+    setMockDocumentState({ activeFileId: "" });
+    useTabWithMessages("tab-native-noactive", []);
+    await useClaudeChatStore.getState().sendPrompt("hello");
+    expect(lastNativeArgs().activeFile).toBeNull();
+  });
+
+  it("forwards the selected text so 'this paragraph' is precise", async () => {
+    // The mock file content is "Line 1\nLine 2\n…"; select the first line.
+    setMockDocumentState({ selectionRange: { start: 0, end: 6 } });
+    useTabWithMessages("tab-native-selection", []);
+    await useClaudeChatStore.getState().sendPrompt("fix this");
+    expect(lastNativeArgs().selection).toBe("Line 1");
+  });
+
+  it("forwards null selection when nothing is selected", async () => {
+    setMockDocumentState({ selectionRange: null });
+    useTabWithMessages("tab-native-nosel", []);
+    await useClaudeChatStore.getState().sendPrompt("hi");
+    expect(lastNativeArgs().selection).toBeNull();
+  });
+
+  it("sends the raw prompt (no '[Currently open file]' ctx) — single path", async () => {
+    // File + selection ride the structured channel, not the user prompt, so the
+    // same context isn't embedded twice (and can't go stale in history).
+    setMockDocumentState({ selectionRange: { start: 0, end: 6 } });
+    useTabWithMessages("tab-native-noctx", []);
+    await useClaudeChatStore.getState().sendPrompt("fix this");
+    const args = lastNativeArgs();
+    expect(args.prompt).toBe("fix this");
+    expect(args.prompt).not.toContain("[Currently open file");
+    expect(args.selection).toBe("Line 1");
+    expect(args.activeFile).toBe("main.tex");
+  });
+
+  it("prefers the toolbar's explicit context over the live selection", async () => {
+    // The toolbar clears the live selection on dismiss, so its explicit
+    // selectedText must win even though selectionRange still points elsewhere.
+    setMockDocumentState({ selectionRange: { start: 0, end: 6 } });
+    useTabWithMessages("tab-native-ctxoverride", []);
+    await useClaudeChatStore.getState().sendPrompt("Proofread this", {
+      label: "main.tex:1:1-1:20",
+      selectedText: "explicit toolbar selection",
+    } as any);
+    expect(lastNativeArgs().selection).toBe("explicit toolbar selection");
+  });
+
+  it("forwards the selection's line range from live offsets", async () => {
+    // Content "Line 1\nLine 2\nLine 3\nLine 4"; offsets 7..13 cover "Line 2".
+    setMockDocumentState({ selectionRange: { start: 7, end: 13 } });
+    useTabWithMessages("tab-native-lines", []);
+    await useClaudeChatStore.getState().sendPrompt("rewrite this");
+    const args = lastNativeArgs();
+    expect(args.selectionStartLine).toBe(2);
+    expect(args.selectionEndLine).toBe(2);
+  });
+
+  it("derives the line range from a toolbar selection by locating it", async () => {
+    // No live selection; the unique selectedText is found in the content.
+    setMockDocumentState({ selectionRange: null });
+    useTabWithMessages("tab-native-locate", []);
+    await useClaudeChatStore.getState().sendPrompt("fix", {
+      label: "main.tex",
+      selectedText: "Line 3",
+    } as any);
+    const args = lastNativeArgs();
+    expect(args.selection).toBe("Line 3");
+    expect(args.selectionStartLine).toBe(3);
+    expect(args.selectionEndLine).toBe(3);
+  });
+
+  it("leaves the line range null when nothing is selected", async () => {
+    setMockDocumentState({ selectionRange: null });
+    useTabWithMessages("tab-native-noline", []);
+    await useClaudeChatStore.getState().sendPrompt("hi");
+    const args = lastNativeArgs();
+    expect(args.selectionStartLine).toBeNull();
+    expect(args.selectionEndLine).toBeNull();
+  });
+
+  function lastUserText(tabId: string): string {
+    const tab = useClaudeChatStore.getState().tabs.find((t) => t.id === tabId);
+    const last = [...(tab?.messages ?? [])]
+      .reverse()
+      .find((m) => m.type === "user");
+    const c = last?.message?.content as any;
+    return Array.isArray(c) ? (c[0]?.text ?? "") : (c ?? "");
+  }
+
+  it("shows the active-file chip even without a selection (native)", async () => {
+    setMockDocumentState({ selectionRange: null });
+    useTabWithMessages("tab-native-chip", []);
+    await useClaudeChatStore.getState().sendPrompt("fix this");
+    // A leading "@file" line is rendered as a context chip by the UI.
+    expect(lastUserText("tab-native-chip")).toBe("@main.tex\nfix this");
+  });
+
+  it("shows the selected line range in the chip", async () => {
+    // Content "Line 1\nLine 2\n…"; offsets 7..13 cover line 2 only.
+    setMockDocumentState({ selectionRange: { start: 7, end: 13 } });
+    useTabWithMessages("tab-native-chiplines", []);
+    await useClaudeChatStore.getState().sendPrompt("rewrite this");
+    expect(lastUserText("tab-native-chiplines")).toBe(
+      "@main.tex:2\nrewrite this",
+    );
+  });
+
+  it("shows a multi-line range in the chip", async () => {
+    // Offsets 0..13 span lines 1-2.
+    setMockDocumentState({ selectionRange: { start: 0, end: 13 } });
+    useTabWithMessages("tab-native-chiprange", []);
+    await useClaudeChatStore.getState().sendPrompt("tighten this");
+    expect(lastUserText("tab-native-chiprange")).toBe(
+      "@main.tex:1-2\ntighten this",
+    );
   });
 });

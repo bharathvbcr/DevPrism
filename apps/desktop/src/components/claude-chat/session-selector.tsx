@@ -49,7 +49,7 @@ function formatRelativeTime(unixSeconds: number): string {
   return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-export function SessionSelector() {
+export function SessionSelector({ hidden = false }: { hidden?: boolean }) {
   const [sessions, setSessions] = useState<ClaudeSessionInfo[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -153,6 +153,8 @@ export function SessionSelector() {
   const handleNewChat = useCallback(() => {
     newSession();
   }, [newSession]);
+
+  if (hidden) return null;
 
   return (
     <>

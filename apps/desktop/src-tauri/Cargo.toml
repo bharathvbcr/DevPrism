@@ -39,18 +39,21 @@ tectonic = { version = "0.15", default-features = true, features = ["external-ha
 #   Windows: vcpkg install harfbuzz[graphite2] freetype icu fontconfig (with TECTONIC_DEP_BACKEND=vcpkg)
 flate2 = "1"
 tar = "0.4"
+zip = { version = "4", default-features = false, features = ["deflate"] }
+tempfile = "3"
 
 [lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"
 
-[dev-dependencies]
-tempfile = "3"
-
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSImage", "NSRunningApplication"] }
-objc2-foundation = { version = "0.3", features = ["NSData"] }
+# NSWindow needs NSResponder: the NSWindow struct/impl are #[cfg(feature = "NSResponder")]
+# and the "NSWindow" feature does not imply it.
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSImage", "NSRunningApplication", "NSWindow", "NSResponder"] }
+# App Nap suppression: NSProcessInfo gates both beginActivityWithOptions:reason:
+# and the NSActivityOptions type (there is no separate NSActivityOptions feature).
+objc2-foundation = { version = "0.3", features = ["NSData", "NSProcessInfo", "NSString"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 winreg = "0.55"

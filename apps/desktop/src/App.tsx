@@ -1,6 +1,7 @@
 import { ThemeProvider, useTheme } from "next-themes";
 import { ErrorBoundary } from "react-error-boundary";
 import { Toaster } from "@/components/ui/sonner";
+import { TrackChangesPdfDialog } from "@/components/workspace/track-changes-pdf-dialog";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 
 import { useDocumentStore } from "@/stores/document-store";
@@ -15,6 +16,11 @@ import { useUvSetupStore } from "@/stores/uv-setup-store";
 import { ErrorFallback } from "@/components/error-fallback";
 import { createLogger } from "@/lib/debug/logger";
 import { EnvironmentOnboarding } from "@/components/environment-onboarding";
+import {
+  syncPersonalizationEnabled,
+  scheduleIdentityProfileSync,
+} from "@/lib/personalization";
+import { usePersonalizationStore } from "@/stores/personalization-store";
 
 const log = createLogger("app");
 
@@ -207,6 +213,12 @@ export function App({ onReady }: { onReady?: () => void }) {
   }, [onReady]);
 
   useEffect(() => {
+    const enabled = usePersonalizationStore.getState().personalizationEnabled;
+    void syncPersonalizationEnabled(enabled);
+    scheduleIdentityProfileSync(usePersonalizationStore.getState().profile);
+  }, []);
+
+  useEffect(() => {
     if (!projectRoot) {
       getCurrentWindow().setTitle("DevPrism");
     }
@@ -221,7 +233,7 @@ export function App({ onReady }: { onReady?: () => void }) {
 
   return (
     <ErrorBoundary FallbackComponent={ErrorFallback}>
-      <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
+      <ThemeProvider attribute="class" forcedTheme="dark">
         <TooltipProvider>
           <NativeWindowThemeBridge />
           {/* Global macOS titlebar drag region — sits above all content */}
@@ -262,6 +274,7 @@ export function App({ onReady }: { onReady?: () => void }) {
             </div>
           )}
           <Toaster />
+          <TrackChangesPdfDialog />
         </TooltipProvider>
       </ThemeProvider>
     </ErrorBoundary>

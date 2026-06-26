@@ -21,8 +21,21 @@ import {
   FlaskConicalIcon,
   ChevronRightIcon,
   ChevronLeftIcon,
+  SparklesIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useSettingsStore } from "@/stores/settings-store";
+import {
+  canUseAiAssist,
+  semanticRank,
+  summarizeSection,
+} from "@/lib/ai-assist";
+
+/**
+ * Module-level cache of AI-generated one-line descriptions, keyed by command id.
+ * A value of "" marks an in-flight/failed request so we never fire twice per id.
+ */
+const aiDescriptionCache = new Map<string, string>();
 
 export interface SlashCommand {
   id: string;
@@ -356,11 +369,25 @@ export const SlashCommandPicker: FC<SlashCommandPickerProps> = ({
   onSelect,
   onClose,
 }) => {
+  const aiCommandAssist = useSettingsStore((s) => s.aiCommandAssist);
   const [commands, setCommands] = useState<SlashCommand[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [activeTab, setActiveTab] = useState<Tab>("skills");
   const [showPreview, setShowPreview] = useState(false);
+  // AI-generated fallback descriptions, keyed by command id (mirrors the cache).
+  const [aiDescriptions, setAiDescriptions] = useState<Record<string, string>>(
+    {},
+  );
+  // Latest aiDescriptions kept in a ref so the semantic-rank effect can read
+  // fresh descriptions without listing them as a dependency (which would
+  // re-embed the whole list on every description arrival).
+  const aiDescriptionsRef = useRef(aiDescriptions);
+  aiDescriptionsRef.current = aiDescriptions;
+  // Semantic ranking of command ids (best first); empty = use lexical order.
+  const [semanticOrder, setSemanticOrder] = useState<string[]>([]);
+  const semanticReqId = useRef(0);
+  const semanticDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{
     left: number;
@@ -397,6 +424,88 @@ export const SlashCommandPicker: FC<SlashCommandPickerProps> = ({
       });
   }, [projectPath]);
 
+  // Rehydrate AI descriptions from the module-level cache when commands load.
+  // The cache survives remounts but `aiDescriptions` state resets to {} each
+  // mount, so without this previously-generated descriptions would vanish on
+  // reopen (the generation effect skips ids already present in the cache).
+  useEffect(() => {
+    if (commands.length === 0) return;
+    const cached: Record<string, string> = {};
+    for (const cmd of commands) {
+      const value = aiDescriptionCache.get(cmd.id);
+      if (value) cached[cmd.id] = value;
+    }
+    if (Object.keys(cached).length === 0) return;
+    setAiDescriptions((prev) => ({ ...cached, ...prev }));
+  }, [commands]);
+
+  // Lazily generate one-line descriptions for commands that load without one.
+  // Fires at most once per command id (cached module-level); fails silently.
+  useEffect(() => {
+    if (!aiCommandAssist || !canUseAiAssist() || commands.length === 0) return;
+
+    let cancelled = false;
+    const missing = commands.filter(
+      (cmd) =>
+        !cmd.description?.trim() &&
+        !aiDescriptionCache.has(cmd.id) &&
+        cmd.content.trim().length >= 20,
+    );
+    if (missing.length === 0) return;
+
+    for (const cmd of missing) {
+      aiDescriptionCache.set(cmd.id, ""); // claim the id so we never refire
+      void summarizeSection(cmd.content.slice(0, 2500))
+        .then((summary) => {
+          const oneLine = summary.replace(/\s+/g, " ").trim().slice(0, 120);
+          if (!oneLine) return;
+          aiDescriptionCache.set(cmd.id, oneLine);
+          if (!cancelled) {
+            setAiDescriptions((prev) => ({ ...prev, [cmd.id]: oneLine }));
+          }
+        })
+        .catch(() => {
+          // Leave the "" placeholder so we don't retry; degrade silently.
+        });
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [commands, aiCommandAssist]);
+
+  // Semantic reorder of the command list against the user's typed query.
+  // Debounced + requestId-guarded; failures fall back to lexical ordering.
+  useEffect(() => {
+    const q = query.trim();
+    if (!aiCommandAssist || !canUseAiAssist() || q.length < 3) {
+      setSemanticOrder([]);
+      return;
+    }
+
+    if (semanticDebounce.current) clearTimeout(semanticDebounce.current);
+    semanticDebounce.current = setTimeout(() => {
+      const id = ++semanticReqId.current;
+      const list = commands;
+      const descriptions = aiDescriptionsRef.current;
+      const candidates = list.map(
+        (c) => `${c.name} ${c.description ?? descriptions[c.id] ?? ""}`,
+      );
+      void semanticRank(q, candidates)
+        .then((ranked) => {
+          if (id !== semanticReqId.current) return;
+          setSemanticOrder(ranked.map((r) => list[r.index]?.id).filter(Boolean));
+        })
+        .catch(() => {
+          if (id === semanticReqId.current) setSemanticOrder([]);
+        });
+    }, 400);
+
+    return () => {
+      if (semanticDebounce.current) clearTimeout(semanticDebounce.current);
+    };
+  }, [query, commands, aiCommandAssist]);
+
   // Counts per tab (for badges)
   const tabCounts = useMemo(() => {
     const counts: Record<Tab, number> = { skills: 0, default: 0, custom: 0 };
@@ -411,12 +520,31 @@ export const SlashCommandPicker: FC<SlashCommandPickerProps> = ({
     const q = query.toLowerCase();
 
     if (isSearching) {
-      return filterAndSort(commands, q);
+      const lexical = filterAndSort(commands, q);
+
+      // Layer semantic ranking on top of the lexical base: stable-sort the
+      // already-filtered results by their position in semanticOrder, keeping
+      // lexical order as the tiebreak/fallback. Items the embedding didn't
+      // rank fall to the back in their original lexical order.
+      if (semanticOrder.length > 0) {
+        const rank = new Map<string, number>();
+        semanticOrder.forEach((id, i) => rank.set(id, i));
+        return lexical
+          .map((cmd, i) => ({
+            cmd,
+            i,
+            r: rank.has(cmd.id) ? (rank.get(cmd.id) as number) : Infinity,
+          }))
+          .sort((a, b) => a.r - b.r || a.i - b.i)
+          .map((x) => x.cmd);
+      }
+
+      return lexical;
     }
 
     const byTab = commands.filter((cmd) => scopeToTab(cmd.scope) === activeTab);
     return byTab;
-  }, [query, commands, activeTab, isSearching]);
+  }, [query, commands, activeTab, isSearching, semanticOrder]);
 
   // The currently highlighted command
   const selectedCommand = filtered.length > 0 ? filtered[selectedIndex] : null;
@@ -521,6 +649,9 @@ export const SlashCommandPicker: FC<SlashCommandPickerProps> = ({
   const renderItem = (cmd: SlashCommand, index: number) => {
     const isSelected = index === selectedIndex;
     const isSkill = cmd.scope === "skill";
+    const hasOwnDescription = !!cmd.description?.trim();
+    const aiDescription = hasOwnDescription ? null : aiDescriptions[cmd.id];
+    const description = hasOwnDescription ? cmd.description : aiDescription;
     return (
       <button
         key={cmd.id}
@@ -537,9 +668,15 @@ export const SlashCommandPicker: FC<SlashCommandPickerProps> = ({
       >
         {getCommandIcon(cmd)}
         <span className="truncate font-mono text-sm">{cmd.full_command}</span>
-        {cmd.description && (
-          <span className="min-w-0 flex-1 truncate text-muted-foreground text-xs">
-            {cmd.description}
+        {description && (
+          <span className="flex min-w-0 flex-1 items-center gap-1 truncate text-muted-foreground text-xs">
+            {aiDescription && (
+              <SparklesIcon
+                className="size-3 shrink-0 text-muted-foreground/70"
+                aria-label="AI-generated description"
+              />
+            )}
+            <span className="truncate">{description}</span>
           </span>
         )}
         {isSearching && (

@@ -38,13 +38,18 @@ import {
 } from "@codemirror/merge";
 import { latex, latexLinter } from "codemirror-lang-latex";
 import { bibtex } from "./lang-bibtex";
+import { latexAutocomplete } from "./latex-autocomplete";
 import {
   linter,
   lintGutter,
   forEachDiagnostic,
   type Diagnostic,
 } from "@codemirror/lint";
-import { useDocumentStore, type ProjectFile } from "@/stores/document-store";
+import {
+  useDocumentStore,
+  resolveTexRoot,
+  type ProjectFile,
+} from "@/stores/document-store";
 import {
   useProposedChangesStore,
   type ProposedChange,
@@ -54,11 +59,13 @@ import {
   type PromptContextOverride,
 } from "@/stores/claude-chat-store";
 import { useHistoryStore, type FileDiff } from "@/stores/history-store";
+import { compileLatex, formatCompileError } from "@/lib/latex-compiler";
+import { triggerForwardSync } from "@/lib/forward-sync";
 import {
-  compileLatex,
-  resolveCompileTarget,
-  formatCompileError,
-} from "@/lib/latex-compiler";
+  resolveActiveCompileTarget,
+  resolvePreviewCompileRoot,
+} from "@/lib/compile-root-preference";
+import { getChatLabels } from "@/lib/chat-labels";
 import { useSettingsStore } from "@/stores/settings-store";
 import { EditorToolbar } from "./editor-toolbar";
 import { SelectionToolbar, type ToolbarAction } from "./selection-toolbar";
@@ -77,12 +84,31 @@ import {
   TagIcon,
   CopyIcon,
   XIcon,
+  RefreshCwIcon,
+  ExpandIcon,
+  Minimize2Icon,
+  BriefcaseIcon,
+  SparklesIcon,
+  FileTextIcon,
 } from "lucide-react";
 import { ClaudeChatDrawer } from "@/components/claude-chat/claude-chat-drawer";
 import { ProposedChangesPanel } from "@/components/claude-chat/proposed-changes-panel";
 import { ImagePreview } from "./image-preview";
+import { filterImagePaths, insertDroppedImages } from "./image-drop";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { toast } from "sonner";
 import { SearchPanel } from "./search-panel";
-import { ProblemsPanel, type DiagnosticItem } from "./problems-panel";
+import { EditorStatusBar } from "./editor-status-bar";
+import { EditorAiSuggestions } from "./editor-ai-suggestions";
+import {
+  aiPredictiveCompartment,
+  aiPredictiveExtension,
+} from "./ai-predictive-extension";
+import {
+  aiGrammarCompartment,
+  aiGrammarExtension,
+} from "./ai-grammar-extension";
+import { ProblemsPopover, type DiagnosticItem } from "./problems-panel";
 import { PdfViewer } from "@/components/workspace/preview/pdf-viewer";
 import { readFile } from "@tauri-apps/plugin-fs";
 import { createLogger } from "@/lib/debug/logger";
@@ -90,6 +116,56 @@ import { commentsExtension, setCommentsEffect } from "./comments-extension";
 import { CommentComposer } from "./comment-composer";
 import { useCommentsStore } from "@/stores/comments-store";
 import { MessageSquareIcon, LightbulbIcon } from "lucide-react";
+import { TrackChangesActions } from "@/components/workspace/track-changes-actions";
+import {
+  buildTrackChangesMeta,
+  linearParentOf,
+} from "@/lib/track-changes-meta";
+import { InlineWordDiff } from "@/components/workspace/inline-word-diff";
+import {
+  runInlineEdit,
+  inlineEditSuccessMessage,
+  proposeLineReplacement,
+  applyLintLineFix,
+  type InlineEditAction,
+  type InlineEditSelection,
+} from "@/lib/inline-edit";
+import { canUseAiAssist, summarizeSection } from "@/lib/ai-assist";
+import { useSpaceFeatures } from "@/hooks/use-space-features";
+import {
+  analyzeSelectionBullets,
+  buildBulletCountInstruction,
+  bulletCountSuccessMessage,
+  findEnclosingBulletList,
+  findRoleContextBefore,
+  suggestedBulletTargets,
+  type BulletListEnv,
+} from "@/lib/resume-bullets";
+import {
+  analyzeBulletQuality,
+  buildResumeBulletSuggestions,
+  bulletQualityGrade,
+  bulletQualityInsights,
+  bulletQualityScore,
+  diagnoseBulletItems,
+  findSuggestionById,
+  recommendedBulletTarget,
+  refinementSuccessMessage,
+  suggestionIdForInsight,
+  type ResumeBulletSuggestion,
+} from "@/lib/resume-bullet-suggestions";
+
+const IS_MAC =
+  typeof navigator !== "undefined" &&
+  /Mac|iPhone|iPad|iPod/.test(navigator.platform);
+const INLINE_REPHRASE_HINT = IS_MAC ? "⇧⌘R" : "Ctrl+Shift+R";
+const INLINE_EXPAND_HINT = IS_MAC ? "⇧⌘E" : "Ctrl+Shift+E";
+const INLINE_PROOFREAD_HINT = IS_MAC ? "⇧⌘P" : "Ctrl+Shift+P";
+const INLINE_SIMPLIFY_HINT = IS_MAC ? "⇧⌘Y" : "Ctrl+Shift+Y";
+const INLINE_FORMALIZE_HINT = IS_MAC ? "⇧⌘O" : "Ctrl+Shift+O";
+const INLINE_SHORTEN_HINT = IS_MAC ? "⇧⌘T" : "Ctrl+Shift+T";
+const INLINE_GRAMMAR_HINT = IS_MAC ? "⇧⌘G" : "Ctrl+Shift+G";
+const BULLET_BLOCK_HINT = IS_MAC ? "⌥⇧B" : "Alt+Shift+B";
 
 const log = createLogger("merge-view");
 
@@ -97,6 +173,18 @@ function getActiveFileContent(): string {
   const state = useDocumentStore.getState();
   const activeFile = state.files.find((f) => f.id === state.activeFileId);
   return activeFile?.content ?? "";
+}
+
+/**
+ * Toggle native (OS/Chromium) spell checking on the editor's contenteditable.
+ * Autocorrect/autocapitalize stay off so the engine never rewrites LaTeX source.
+ */
+function spellCheckExtension(enabled: boolean) {
+  return EditorView.contentAttributes.of({
+    spellcheck: enabled ? "true" : "false",
+    autocorrect: "off",
+    autocapitalize: "off",
+  });
 }
 
 /** Per-file editor state cache: fileId → { cursor, scrollTop } */
@@ -129,6 +217,22 @@ export function LatexEditor() {
   const saveAllFiles = useDocumentStore((s) => s.saveAllFiles);
 
   const activeFile = files.find((f) => f.id === activeFileId);
+  const jobDescription = useDocumentStore((s) => {
+    const f = s.files.find(
+      (file) =>
+        file.name.toLowerCase() === "job_description.md" ||
+        file.relativePath?.toLowerCase().endsWith("/job_description.md"),
+    );
+    return f?.content?.trim() ?? "";
+  });
+  const compiledPageCount = useDocumentStore((s) => {
+    const rootId = resolvePreviewCompileRoot(
+      s.projectRoot,
+      s.activeFileId,
+      s.files,
+    );
+    return s.compiledPageCounts.get(rootId) ?? null;
+  });
   const isTextFile =
     activeFile?.type === "tex" ||
     activeFile?.type === "bib" ||
@@ -142,6 +246,15 @@ export function LatexEditor() {
   // History review state
   const reviewingSnapshot = useHistoryStore((s) => s.reviewingSnapshot);
   const historyDiffResult = useHistoryStore((s) => s.diffResult);
+  const historySnapshots = useHistoryStore((s) => s.snapshots);
+  const trackChangesMeta = useMemo(() => {
+    if (!reviewingSnapshot) return null;
+    // Derive the parent from the LINEAR (restore-collapsed) list — the same one
+    // the diff was computed against — so the "from" label names the diffed
+    // parent rather than the raw-array neighbor at a restore boundary.
+    const parent = linearParentOf(historySnapshots, reviewingSnapshot.id);
+    return buildTrackChangesMeta(parent, reviewingSnapshot);
+  }, [reviewingSnapshot, historySnapshots]);
 
   const [imageScale, setImageScale] = useState(1.0);
   const [cropMode, setCropMode] = useState(false);
@@ -161,23 +274,39 @@ export function LatexEditor() {
     current: 0,
   });
   const [diagnostics, setDiagnostics] = useState<DiagnosticItem[]>([]);
+  // True while an OS image drag is hovering over the text editor.
+  const [isImageDropActive, setIsImageDropActive] = useState(false);
   const [selectionCoords, setSelectionCoords] = useState<{
     top: number;
     left: number;
   } | null>(null);
+  const [inlineEditPending, setInlineEditPending] = useState(false);
+  const [bulletTargetCount, setBulletTargetCount] = useState(1);
   // When the selection toolbar is visible, prevent CM selection changes from clearing it.
   // Only explicit dismiss/send/action should clear the toolbar.
   const toolbarStickyRef = useRef(false);
   const parentRef = useRef<HTMLDivElement>(null);
+  const expandBulletBlockRef = useRef<() => void>(() => {});
 
   const { resolvedTheme } = useTheme();
+  const { kind: spaceKind } = useSpaceFeatures();
+  const spaceKindRef = useRef(spaceKind);
   const vimMode = useSettingsStore((s) => s.vimMode);
+  const spellCheck = useSettingsStore((s) => s.spellCheck);
+  const aiAssistEnabled = useSettingsStore((s) => s.aiAssistEnabled);
+  const aiGrammarHints = useSettingsStore((s) => s.aiGrammarHints);
+  const aiPredictiveText = useSettingsStore((s) => s.aiPredictiveText);
+  const aiLintFix = useSettingsStore((s) => s.aiLintFix);
+  const aiSummarize = useSettingsStore((s) => s.aiSummarize);
 
   const compileRef = useRef<() => void>(() => {});
   const isSearchOpenRef = useRef(false);
   const themeCompartmentRef = useRef(new Compartment());
   const mergeCompartmentRef = useRef(new Compartment());
   const vimCompartmentRef = useRef(new Compartment());
+  const spellCompartmentRef = useRef(new Compartment());
+  const aiPredictiveCompartmentRef = useRef(aiPredictiveCompartment);
+  const aiGrammarCompartmentRef = useRef(aiGrammarCompartment);
   const isMergeActiveRef = useRef(false);
   const pendingChangeRef = useRef<ProposedChange | null>(null);
   const handleKeepAllRef = useRef<() => void>(() => {});
@@ -393,7 +522,11 @@ export function LatexEditor() {
       return;
     }
     const { files: allFiles } = state;
-    const resolved = resolveCompileTarget(activeFile.id, allFiles);
+    const resolved = resolveActiveCompileTarget(
+      state.projectRoot,
+      activeFile.id,
+      allFiles,
+    );
     if (!resolved) {
       setCompileError(
         "No .tex file found in this project. Create a main.tex file to compile.",
@@ -568,6 +701,16 @@ export function LatexEditor() {
           },
         },
         {
+          key: "Mod-Shift-j",
+          run: (view) => {
+            const line = view.state.doc.lineAt(
+              view.state.selection.main.head,
+            ).number;
+            void triggerForwardSync({ line });
+            return true;
+          },
+        },
+        {
           key: "Mod-s",
           run: () => {
             const state = useDocumentStore.getState();
@@ -627,6 +770,13 @@ export function LatexEditor() {
           key: "Mod-/",
           run: toggleComment,
         },
+        {
+          key: "Alt-Shift-b",
+          run: () => {
+            expandBulletBlockRef.current();
+            return true;
+          },
+        },
       ]),
     );
 
@@ -634,6 +784,28 @@ export function LatexEditor() {
       doc: currentContent,
       extensions: [
         compileKeymap,
+        EditorView.domEventHandlers({
+          dblclick(event, view) {
+            if (spaceKindRef.current !== "resume") return false;
+            const pos = view.posAtCoords({
+              x: event.clientX,
+              y: event.clientY,
+            });
+            if (pos == null) return false;
+            const line = view.state.doc.lineAt(pos);
+            if (!/\\item\b/.test(line.text)) return false;
+            const block = findEnclosingBulletList(
+              view.state.doc.toString(),
+              pos,
+            );
+            if (!block) return false;
+            view.dispatch({
+              selection: { anchor: block.start, head: block.end },
+              effects: EditorView.scrollIntoView(block.start, { y: "nearest" }),
+            });
+            return true;
+          },
+        }),
         lineNumbers(),
         drawSelection(),
         highlightActiveLine(),
@@ -644,7 +816,10 @@ export function LatexEditor() {
           ...defaultKeymap,
           ...historyKeymap,
         ]),
-        activeFile?.type === "bib" ? bibtex() : latex({ enableLinting: false }),
+        activeFile?.type === "bib"
+          ? bibtex()
+          : latex({ enableLinting: false, enableAutocomplete: false }),
+        ...(activeFile?.type === "tex" ? [latexAutocomplete()] : []),
         ...(activeFile?.type === "tex"
           ? [
               linter((view) => {
@@ -660,7 +835,13 @@ export function LatexEditor() {
                   actions: [
                     ...(d.actions ?? []),
                     {
-                      name: "Fix with chat",
+                      name:
+                        useSettingsStore.getState().aiLintFix &&
+                        canUseAiAssist()
+                          ? "Fix with AI"
+                          : getChatLabels(
+                              useSettingsStore.getState().nativeAgentEnabled,
+                            ).fixWithChat,
                       apply: (v: EditorView, from: number, _to: number) => {
                         const line = v.state.doc.lineAt(from);
                         const docState = useDocumentStore.getState();
@@ -668,6 +849,38 @@ export function LatexEditor() {
                           (f) => f.id === docState.activeFileId,
                         );
                         const fileName = file?.relativePath ?? "main.tex";
+                        const content = file?.content;
+                        if (
+                          useSettingsStore.getState().aiLintFix &&
+                          canUseAiAssist() &&
+                          file?.absolutePath &&
+                          content != null
+                        ) {
+                          void applyLintLineFix({
+                            content,
+                            line: line.number,
+                            message: d.message,
+                            filePath: fileName,
+                            absolutePath: file.absolutePath,
+                          })
+                            .then(() =>
+                              toast.success(
+                                "Lint fix ready — review the change",
+                              ),
+                            )
+                            .catch((err) => {
+                              toast.error(
+                                err instanceof Error
+                                  ? err.message
+                                  : "AI lint fix failed",
+                              );
+                              const ctx = `[Lint error in ${fileName}:${line.number}]\n[Error: ${d.message}]`;
+                              useClaudeChatStore
+                                .getState()
+                                .sendPrompt(`${ctx}\n\nFix this lint error.`);
+                            });
+                          return;
+                        }
                         const ctx = `[Lint error in ${fileName}:${line.number}]\n[Error: ${d.message}]`;
                         useClaudeChatStore
                           .getState()
@@ -689,6 +902,32 @@ export function LatexEditor() {
         highlightSelectionMatches(),
         mergeCompartmentRef.current.of([]),
         vimCompartmentRef.current.of([]),
+        spellCompartmentRef.current.of(spellCheckExtension(spellCheck)),
+        ...(activeFile?.type === "tex"
+          ? [
+              aiPredictiveCompartmentRef.current.of(
+                aiPredictiveExtension(aiAssistEnabled && aiPredictiveText),
+              ),
+              aiGrammarCompartmentRef.current.of(
+                aiGrammarExtension(aiAssistEnabled && aiGrammarHints, {
+                  fileId: activeFileId,
+                  getAbsolutePath: () => {
+                    const f = useDocumentStore
+                      .getState()
+                      .files.find((file) => file.id === activeFileId);
+                    return f?.absolutePath ?? "";
+                  },
+                  getRelativePath: () => {
+                    const f = useDocumentStore
+                      .getState()
+                      .files.find((file) => file.id === activeFileId);
+                    return f?.relativePath ?? "main.tex";
+                  },
+                  getContent: getActiveFileContent,
+                }),
+              ),
+            ]
+          : []),
         latexStyling(),
         ...commentsExtension,
         updateListener,
@@ -859,6 +1098,52 @@ export function LatexEditor() {
     });
   }, [vimMode, activeFileId, isTextFile]);
 
+  // Toggle native spell checking without recreating the editor.
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    view.dispatch({
+      effects: spellCompartmentRef.current.reconfigure(
+        spellCheckExtension(spellCheck),
+      ),
+    });
+  }, [spellCheck, isTextFile]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view || activeFile?.type !== "tex") return;
+    view.dispatch({
+      effects: aiPredictiveCompartmentRef.current.reconfigure(
+        aiPredictiveExtension(aiAssistEnabled && aiPredictiveText),
+      ),
+    });
+  }, [aiAssistEnabled, aiPredictiveText, activeFile?.type, activeFileId]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view || activeFile?.type !== "tex") return;
+    view.dispatch({
+      effects: aiGrammarCompartmentRef.current.reconfigure(
+        aiGrammarExtension(aiAssistEnabled && aiGrammarHints, {
+          fileId: activeFileId,
+          getAbsolutePath: () => {
+            const f = useDocumentStore
+              .getState()
+              .files.find((file) => file.id === activeFileId);
+            return f?.absolutePath ?? "";
+          },
+          getRelativePath: () => {
+            const f = useDocumentStore
+              .getState()
+              .files.find((file) => file.id === activeFileId);
+            return f?.relativePath ?? "main.tex";
+          },
+          getContent: getActiveFileContent,
+        }),
+      ),
+    });
+  }, [aiAssistEnabled, aiGrammarHints, activeFile?.type, activeFileId]);
+
   useEffect(() => {
     const view = viewRef.current;
     if (!view || !isTextFile || isMergeActiveRef.current) return;
@@ -870,6 +1155,99 @@ export function LatexEditor() {
       });
     }
   }, [activeFileContent, isTextFile]);
+
+  // === Drag-and-drop image insertion ===
+  // OS file drops are delivered through Tauri's webview event (the browser's
+  // native DataTransfer is empty for real files). We claim the drop only when
+  // it lands over the editor's scroller, copy any images into images/, and
+  // insert a figure environment at the drop position.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+
+    const isOverEditor = (physX: number, physY: number): boolean => {
+      const scroller = viewRef.current?.scrollDOM;
+      if (!scroller) return false;
+      const logicalX = physX / window.devicePixelRatio;
+      const logicalY = physY / window.devicePixelRatio;
+      const el = document.elementFromPoint(logicalX, logicalY);
+      return !!el && scroller.contains(el);
+    };
+
+    getCurrentWebview()
+      .onDragDropEvent(async (event) => {
+        if (cancelled) return;
+        const { type } = event.payload;
+
+        if (type === "over" || type === "enter") {
+          const { position } = event.payload as {
+            position: { x: number; y: number };
+          };
+          setIsImageDropActive(
+            !isMergeActiveRef.current && isOverEditor(position.x, position.y),
+          );
+        } else if (type === "leave") {
+          setIsImageDropActive(false);
+        } else if (type === "drop") {
+          setIsImageDropActive(false);
+          const { paths, position } = event.payload as {
+            paths: string[];
+            position: { x: number; y: number };
+          };
+          const view = viewRef.current;
+          if (!view || isMergeActiveRef.current) return;
+          if (!isOverEditor(position.x, position.y)) return;
+          // Only intercept image drops; leave other files to the sidebar/chat.
+          if (filterImagePaths(paths).length === 0) return;
+          // Only the LaTeX/text editor accepts figure insertion.
+          const docState = useDocumentStore.getState();
+          const file = docState.files.find(
+            (f) => f.id === docState.activeFileId,
+          );
+          if (file?.type !== "tex") return;
+
+          // Claim the drop so the chat composer doesn't also attach the files.
+          (
+            window as Window & { __sidebarHandledDrop?: boolean }
+          ).__sidebarHandledDrop = true;
+          setTimeout(() => {
+            (
+              window as Window & { __sidebarHandledDrop?: boolean }
+            ).__sidebarHandledDrop = false;
+          }, 200);
+
+          const logicalX = position.x / window.devicePixelRatio;
+          const logicalY = position.y / window.devicePixelRatio;
+          const dropPos =
+            view.posAtCoords({ x: logicalX, y: logicalY }) ??
+            view.state.selection.main.head;
+
+          try {
+            const count = await insertDroppedImages(view, paths, dropPos);
+            if (count > 0) {
+              toast.success(
+                count === 1 ? "Image inserted" : `${count} images inserted`,
+              );
+            }
+          } catch (err) {
+            log.error("image drop failed", { error: String(err) });
+            toast.error("Failed to insert image");
+          }
+        }
+      })
+      .then((fn) => {
+        if (cancelled) fn();
+        else unlisten = fn;
+      })
+      .catch(() => {
+        // Not running inside Tauri (e.g. plain browser dev) — no native drops.
+      });
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
 
   // Watch for proposed changes → activate/deactivate/update merge view
   useEffect(() => {
@@ -1028,7 +1406,8 @@ export function LatexEditor() {
     );
   }, [cursorPosition, commentsForActiveFile, activeFileRelPath]);
 
-  // === Comments: keyboard shortcuts (Cmd+Shift+M / Cmd+Shift+S) ===
+  // === Comments: keyboard shortcuts (Cmd+Shift+M / Cmd+Shift+S) and inline AI
+  //     (Cmd+Shift+R/E/P for rephrase / expand / proofread). ===
   // Uses a ref so we can reference handleToolbarAction (declared later in
   // the function) without TDZ issues.
   const toolbarActionRef = useRef<((actionId: string) => void) | null>(null);
@@ -1036,7 +1415,7 @@ export function LatexEditor() {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey) || !e.shiftKey) return;
       const key = e.key.toLowerCase();
-      if (key !== "m" && key !== "s") return;
+      if (!["m", "s", "r", "e", "p", "y", "o", "t", "g"].includes(key)) return;
       const view = viewRef.current;
       if (!view) return;
       const active = document.activeElement;
@@ -1047,7 +1426,15 @@ export function LatexEditor() {
       const sel = view.state.selection.main;
       if (sel.empty) return;
       e.preventDefault();
-      toolbarActionRef.current?.(key === "s" ? "suggest" : "comment");
+      if (key === "s") toolbarActionRef.current?.("suggest");
+      else if (key === "m") toolbarActionRef.current?.("comment");
+      else if (key === "r") toolbarActionRef.current?.("rephrase");
+      else if (key === "e") toolbarActionRef.current?.("expand");
+      else if (key === "p") toolbarActionRef.current?.("proofread");
+      else if (key === "y") toolbarActionRef.current?.("simplify");
+      else if (key === "o") toolbarActionRef.current?.("formalize");
+      else if (key === "t") toolbarActionRef.current?.("shorten");
+      else if (key === "g") toolbarActionRef.current?.("grammar");
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -1160,10 +1547,7 @@ export function LatexEditor() {
     const relTop = selectionCoords.top - parentRect.top + 4; // 4px gap below selection
     const relLeft = Math.max(
       8,
-      Math.min(
-        selectionCoords.left - parentRect.left,
-        parentRect.width - 272, // 264px toolbar + 8px margin
-      ),
+      Math.min(selectionCoords.left - parentRect.left, parentRect.width - 392),
     );
     return { top: relTop, left: relLeft };
   }, [selectionCoords]);
@@ -1184,37 +1568,472 @@ export function LatexEditor() {
       };
     }, [selectionRange, selectionLabel, activeFile]);
 
-  const sendToolbarPromptWithSelectionContext = useCallback(
-    (prompt: string) => {
+  const buildInlineEditSelection =
+    useCallback((): InlineEditSelection | null => {
+      if (!selectionRange || !selectionLabel || !activeFile?.content) {
+        return null;
+      }
+      const from = Math.min(selectionRange.start, selectionRange.end);
+      const to = Math.max(selectionRange.start, selectionRange.end);
+      const selectedText = activeFile.content.slice(from, to);
+      if (!selectedText.trim()) return null;
+      return {
+        filePath: activeFile.relativePath,
+        absolutePath: activeFile.absolutePath,
+        content: activeFile.content,
+        from,
+        to,
+        selectedText,
+        contextLabel: selectionLabel,
+      };
+    }, [selectionRange, selectionLabel, activeFile]);
+
+  const selectionBulletStats = useMemo(() => {
+    if (!selectionRange || !activeFile?.content) return null;
+    const from = Math.min(selectionRange.start, selectionRange.end);
+    const to = Math.max(selectionRange.start, selectionRange.end);
+    return analyzeSelectionBullets(activeFile.content, from, to);
+  }, [selectionRange, activeFile]);
+
+  const effectiveBulletCount = useMemo(() => {
+    if (!selectionBulletStats?.block) {
+      return selectionBulletStats?.selectedCount ?? 0;
+    }
+    const block = selectionBulletStats.block;
+    if (
+      selectionBulletStats.selectedCount === 0 ||
+      selectionBulletStats.isPartialBlock
+    ) {
+      return block.itemCount;
+    }
+    return selectionBulletStats.selectedCount;
+  }, [selectionBulletStats]);
+
+  const showResumeBulletAdjust =
+    spaceKind === "resume" &&
+    effectiveBulletCount > 0 &&
+    selectionRange != null &&
+    !!selectionBulletStats?.block;
+
+  useEffect(() => {
+    if (showResumeBulletAdjust) {
+      const recommended = selectionBulletStats?.block
+        ? recommendedBulletTarget(
+            {
+              bulletText:
+                activeFile?.content?.slice(
+                  selectionBulletStats.block.start,
+                  selectionBulletStats.block.end,
+                ) ?? "",
+              itemCount: effectiveBulletCount,
+              compiledPageCount,
+              hasJobDescription: jobDescription.length > 0,
+            },
+            analyzeBulletQuality(
+              activeFile?.content?.slice(
+                selectionBulletStats.block.start,
+                selectionBulletStats.block.end,
+              ) ?? "",
+            ),
+          )
+        : null;
+      setBulletTargetCount(recommended ?? effectiveBulletCount);
+    }
+  }, [
+    showResumeBulletAdjust,
+    effectiveBulletCount,
+    selectionRange,
+    selectionBulletStats,
+    activeFile?.content,
+    compiledPageCount,
+    jobDescription,
+  ]);
+
+  const dismissSelectionToolbar = useCallback(() => {
+    toolbarStickyRef.current = false;
+    setSelectionCoords(null);
+    setSelectionRange(null);
+  }, [setSelectionRange]);
+
+  const runSelectionInlineEdit = useCallback(
+    async (
+      action: InlineEditAction,
+      customInstruction?: string,
+      selectionOverride?: InlineEditSelection,
+      successMessage?: string,
+    ) => {
+      const selection = selectionOverride ?? buildInlineEditSelection();
       const context = buildSelectionContext();
-      toolbarStickyRef.current = false;
-      setSelectionCoords(null);
-      setSelectionRange(null);
-      const chat = useClaudeChatStore.getState();
-      if (context) {
-        void chat.sendPrompt(prompt, context);
-        chat.requestPinnedContextRemoval([context.label]);
-      } else {
-        void chat.sendPrompt(prompt);
+      if (!selection) return;
+
+      dismissSelectionToolbar();
+      setInlineEditPending(true);
+      try {
+        const mode = await runInlineEdit({
+          action,
+          selection,
+          customInstruction,
+          contextOverride: context ?? undefined,
+        });
+        if (mode === "applied") {
+          toast.success(successMessage ?? inlineEditSuccessMessage(action));
+        }
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Inline edit failed");
+      } finally {
+        setInlineEditPending(false);
       }
     },
-    [buildSelectionContext, setSelectionRange],
+    [buildInlineEditSelection, buildSelectionContext, dismissSelectionToolbar],
+  );
+
+  // Summarize the current selection and insert the result as a LaTeX comment
+  // block (each line prefixed with "% ") immediately after the selection.
+  const summarizeSelection = useCallback(async () => {
+    if (!aiSummarize || !canUseAiAssist()) return;
+    const selection = buildInlineEditSelection();
+    if (!selection) return;
+
+    dismissSelectionToolbar();
+    setInlineEditPending(true);
+    try {
+      const summary = (await summarizeSection(selection.selectedText)).trim();
+      if (!summary) {
+        toast.error("Could not summarize the selection");
+        return;
+      }
+      const view = viewRef.current;
+      if (!view) return;
+      // Anchor the comment to the start of the line after the selection end so
+      // it reads as an independent block rather than trailing the prose.
+      const insertAt = Math.min(selection.to, view.state.doc.length);
+      const endLine = view.state.doc.lineAt(insertAt);
+      const commentBody = summary
+        .split(/\r?\n/)
+        .map((line) => `% ${line}`.trimEnd())
+        .join("\n");
+      const block = `\n% --- AI summary ---\n${commentBody}\n% --- end summary ---\n`;
+      view.dispatch({
+        changes: { from: endLine.to, insert: block },
+        selection: { anchor: endLine.to + block.length },
+        effects: EditorView.scrollIntoView(endLine.to, { y: "center" }),
+      });
+      view.focus();
+      toast.success("Summary inserted as a comment");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Summarize failed");
+    } finally {
+      setInlineEditPending(false);
+    }
+  }, [aiSummarize, buildInlineEditSelection, dismissSelectionToolbar]);
+
+  const buildBulletEditSelection = useCallback((): {
+    selection: InlineEditSelection;
+    currentCount: number;
+    env?: BulletListEnv;
+  } | null => {
+    const base = buildInlineEditSelection();
+    if (!base || !activeFile?.content) return null;
+
+    const stats = analyzeSelectionBullets(
+      activeFile.content,
+      base.from,
+      base.to,
+    );
+    const block = stats.block;
+    if (
+      block &&
+      stats.selectedCount > 0 &&
+      stats.selectedCount < block.itemCount
+    ) {
+      const blockText = activeFile.content.slice(block.start, block.end);
+      return {
+        selection: {
+          ...base,
+          from: block.start,
+          to: block.end,
+          selectedText: blockText,
+        },
+        currentCount: block.itemCount,
+        env: block.env,
+      };
+    }
+
+    return {
+      selection: base,
+      currentCount: stats.selectedCount,
+      env: block?.env,
+    };
+  }, [buildInlineEditSelection, activeFile]);
+
+  const expandSelectionToBulletBlock = useCallback(() => {
+    const view = viewRef.current;
+    if (!view || !activeFile?.content || spaceKind !== "resume") return;
+
+    const sel = view.state.selection.main;
+    const anchor =
+      sel.from === sel.to ? sel.head : Math.floor((sel.from + sel.to) / 2);
+    const block = findEnclosingBulletList(activeFile.content, anchor);
+    if (!block) return;
+
+    view.dispatch({
+      selection: { anchor: block.start, head: block.end },
+      effects: EditorView.scrollIntoView(block.start, { y: "nearest" }),
+    });
+    setSelectionRange({ start: block.start, end: block.end });
+    const startCoords = view.coordsAtPos(block.start);
+    const endCoords = view.coordsAtPos(block.end);
+    if (endCoords && startCoords) {
+      setSelectionCoords({
+        top: endCoords.bottom,
+        left: startCoords.left,
+      });
+    }
+    toolbarStickyRef.current = true;
+  }, [activeFile, spaceKind, setSelectionRange]);
+
+  useEffect(() => {
+    spaceKindRef.current = spaceKind;
+  }, [spaceKind]);
+
+  useEffect(() => {
+    expandBulletBlockRef.current = expandSelectionToBulletBlock;
+  }, [expandSelectionToBulletBlock]);
+
+  const runBulletCountEdit = useCallback(
+    (targetCount: number) => {
+      const edit = buildBulletEditSelection();
+      if (!edit || targetCount === edit.currentCount) return;
+
+      const role =
+        activeFile?.content && edit.selection
+          ? findRoleContextBefore(activeFile.content, edit.selection.from)
+          : null;
+
+      const instruction = buildBulletCountInstruction(
+        edit.currentCount,
+        targetCount,
+        { env: edit.env, roleLabel: role?.label },
+      );
+      void runSelectionInlineEdit(
+        "edit",
+        instruction,
+        edit.selection,
+        bulletCountSuccessMessage(edit.currentCount, targetCount),
+      );
+    },
+    [buildBulletEditSelection, runSelectionInlineEdit, activeFile?.content],
   );
 
   const handleToolbarSendPrompt = useCallback(
     (prompt: string) => {
-      sendToolbarPromptWithSelectionContext(prompt);
+      void runSelectionInlineEdit("edit", prompt);
     },
-    [sendToolbarPromptWithSelectionContext],
+    [runSelectionInlineEdit],
   );
+
+  const handleBulletCountApply = useCallback(() => {
+    runBulletCountEdit(bulletTargetCount);
+  }, [bulletTargetCount, runBulletCountEdit]);
+
+  const handleBulletQuickApply = useCallback(
+    (target: number) => {
+      setBulletTargetCount(target);
+      runBulletCountEdit(target);
+    },
+    [runBulletCountEdit],
+  );
+
+  const resumeBulletSuggestionPack = useMemo(() => {
+    if (!showResumeBulletAdjust || !selectionBulletStats?.block) {
+      return null;
+    }
+    const block = selectionBulletStats.block;
+    const bulletText = activeFile?.content?.slice(block.start, block.end) ?? "";
+    const role = activeFile?.content
+      ? findRoleContextBefore(activeFile.content, block.start)
+      : null;
+    const context = {
+      bulletText,
+      itemCount: effectiveBulletCount,
+      compiledPageCount,
+      hasJobDescription: jobDescription.length > 0,
+      roleLabel: role?.label,
+    };
+    const quality = analyzeBulletQuality(bulletText);
+    const suggestions = buildResumeBulletSuggestions(context, {
+      env: block.env,
+    });
+    const insights = bulletQualityInsights(quality, context);
+    return {
+      roleLabel: role?.label ?? null,
+      qualityScore: bulletQualityScore(quality),
+      qualityGrade: bulletQualityGrade(bulletQualityScore(quality)),
+      insights,
+      insightSuggestionIds: Object.fromEntries(
+        insights.map((insight) => [insight, suggestionIdForInsight(insight)]),
+      ),
+      bulletDiagnostics: diagnoseBulletItems(bulletText),
+      recommended: recommendedBulletTarget(context, quality),
+      suggestions,
+    };
+  }, [
+    showResumeBulletAdjust,
+    selectionBulletStats,
+    activeFile?.content,
+    effectiveBulletCount,
+    compiledPageCount,
+    jobDescription,
+  ]);
+
+  const handleBulletAiSuggestion = useCallback(
+    (suggestion: ResumeBulletSuggestion) => {
+      if (suggestion.kind === "count" && suggestion.targetCount != null) {
+        setBulletTargetCount(suggestion.targetCount);
+        runBulletCountEdit(suggestion.targetCount);
+        return;
+      }
+
+      if (suggestion.kind === "advice") {
+        const context = buildSelectionContext();
+        dismissSelectionToolbar();
+        const chat = useClaudeChatStore.getState();
+        void chat.sendPrompt(suggestion.instruction, context ?? undefined);
+        if (context) {
+          chat.requestPinnedContextRemoval([context.label]);
+        }
+        return;
+      }
+
+      const edit = buildBulletEditSelection();
+      if (!edit) return;
+      void runSelectionInlineEdit(
+        "edit",
+        suggestion.instruction,
+        edit.selection,
+        refinementSuccessMessage(suggestion.label),
+      );
+    },
+    [
+      runBulletCountEdit,
+      buildBulletEditSelection,
+      runSelectionInlineEdit,
+      buildSelectionContext,
+      dismissSelectionToolbar,
+    ],
+  );
+
+  const handleBulletInsightClick = useCallback(
+    (insight: string) => {
+      const id = resumeBulletSuggestionPack?.insightSuggestionIds[insight];
+      if (!id) return;
+      const suggestion = findSuggestionById(
+        resumeBulletSuggestionPack?.suggestions ?? [],
+        id,
+      );
+      if (suggestion) {
+        handleBulletAiSuggestion(suggestion);
+      }
+    },
+    [resumeBulletSuggestionPack, handleBulletAiSuggestion],
+  );
+
+  const resumeBulletAdjust = useMemo(() => {
+    if (!showResumeBulletAdjust || !selectionBulletStats) return undefined;
+    return {
+      currentCount: selectionBulletStats.selectedCount || effectiveBulletCount,
+      targetCount: bulletTargetCount,
+      blockItemCount: selectionBulletStats.isPartialBlock
+        ? selectionBulletStats.block?.itemCount
+        : null,
+      roleLabel: resumeBulletSuggestionPack?.roleLabel ?? null,
+      qualityScore: resumeBulletSuggestionPack?.qualityScore ?? null,
+      qualityGrade: resumeBulletSuggestionPack?.qualityGrade ?? null,
+      suggestedTargets: suggestedBulletTargets(effectiveBulletCount),
+      recommendedTarget: resumeBulletSuggestionPack?.recommended ?? null,
+      insights: resumeBulletSuggestionPack?.insights ?? [],
+      insightSuggestionIds:
+        resumeBulletSuggestionPack?.insightSuggestionIds ?? {},
+      bulletDiagnostics: resumeBulletSuggestionPack?.bulletDiagnostics ?? [],
+      aiSuggestions: resumeBulletSuggestionPack?.suggestions ?? [],
+      shortcutHint: `Double-click a bullet line or press ${BULLET_BLOCK_HINT} to select the full role`,
+      onTargetChange: setBulletTargetCount,
+      onApply: handleBulletCountApply,
+      onQuickApply: handleBulletQuickApply,
+      onAiSuggestion: handleBulletAiSuggestion,
+      onInsightClick: handleBulletInsightClick,
+      onSelectAllInBlock: selectionBulletStats.isPartialBlock
+        ? expandSelectionToBulletBlock
+        : undefined,
+      pending: inlineEditPending,
+    };
+  }, [
+    showResumeBulletAdjust,
+    selectionBulletStats,
+    effectiveBulletCount,
+    bulletTargetCount,
+    resumeBulletSuggestionPack,
+    handleBulletCountApply,
+    handleBulletQuickApply,
+    handleBulletAiSuggestion,
+    handleBulletInsightClick,
+    expandSelectionToBulletBlock,
+    inlineEditPending,
+  ]);
 
   const editorToolbarActions: ToolbarAction[] = useMemo(
     () => [
       {
+        id: "rephrase",
+        label: "Rephrase",
+        icon: <RefreshCwIcon className="size-4" />,
+        hint: INLINE_REPHRASE_HINT,
+      },
+      {
+        id: "expand",
+        label: "Expand",
+        icon: <ExpandIcon className="size-4" />,
+        hint: INLINE_EXPAND_HINT,
+      },
+      {
         id: "proofread",
         label: "Proofread",
         icon: <SpellCheckIcon className="size-4" />,
+        hint: INLINE_PROOFREAD_HINT,
       },
+      {
+        id: "grammar",
+        label: "Grammar",
+        icon: <SparklesIcon className="size-4" />,
+        hint: INLINE_GRAMMAR_HINT,
+      },
+      {
+        id: "shorten",
+        label: "Shorten",
+        icon: <Minimize2Icon className="size-4" />,
+        hint: INLINE_SHORTEN_HINT,
+      },
+      {
+        id: "formalize",
+        label: "Formalize",
+        icon: <BriefcaseIcon className="size-4" />,
+        hint: INLINE_FORMALIZE_HINT,
+      },
+      {
+        id: "simplify",
+        label: "Simplify",
+        icon: <SparklesIcon className="size-4" />,
+        hint: INLINE_SIMPLIFY_HINT,
+      },
+      ...(aiSummarize && canUseAiAssist()
+        ? [
+            {
+              id: "summarize",
+              label: "Summarize",
+              icon: <FileTextIcon className="size-4" />,
+            },
+          ]
+        : []),
       {
         id: "comment",
         label: "Comment",
@@ -1226,7 +2045,7 @@ export function LatexEditor() {
         icon: <LightbulbIcon className="size-4" />,
       },
     ],
-    [],
+    [aiSummarize],
   );
 
   const [composerState, setComposerState] = useState<{
@@ -1273,20 +2092,102 @@ export function LatexEditor() {
       toolbarStickyRef.current = false;
       setSelectionCoords(null);
       setSelectionRange(null);
-      if (actionId === "proofread") {
-        sendToolbarPromptWithSelectionContext(
-          "Proofread and fix any errors in this text",
-        );
+      if (actionId === "rephrase") {
+        void runSelectionInlineEdit("rephrase");
+      } else if (actionId === "expand") {
+        void runSelectionInlineEdit("expand");
+      } else if (actionId === "proofread") {
+        void runSelectionInlineEdit("proofread");
+      } else if (actionId === "grammar") {
+        void runSelectionInlineEdit("grammar");
+      } else if (actionId === "shorten") {
+        void runSelectionInlineEdit("shorten");
+      } else if (actionId === "formalize") {
+        void runSelectionInlineEdit("formalize");
+      } else if (actionId === "simplify") {
+        void runSelectionInlineEdit("simplify");
+      } else if (actionId === "summarize") {
+        void summarizeSelection();
       }
     },
-    [sendToolbarPromptWithSelectionContext],
+    [runSelectionInlineEdit, summarizeSelection],
   );
 
   const handleToolbarDismiss = useCallback(() => {
-    toolbarStickyRef.current = false;
-    setSelectionCoords(null);
-    setSelectionRange(null);
-  }, [setSelectionRange]);
+    if (inlineEditPending) return;
+    dismissSelectionToolbar();
+  }, [inlineEditPending, dismissSelectionToolbar]);
+
+  const lintAiAvailable = aiAssistEnabled && aiLintFix && canUseAiAssist();
+
+  const handleFixLintWithAi = useCallback(
+    async (message: string, line: number) => {
+      const file = activeFile;
+      const content = file?.content;
+      if (!file || content == null || !file.absolutePath) return;
+      try {
+        await applyLintLineFix({
+          content,
+          line,
+          message,
+          filePath: file.relativePath,
+          absolutePath: file.absolutePath,
+        });
+        toast.success("Lint fix ready — review the change");
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "AI lint fix failed");
+        const fileName = file.relativePath;
+        const ctx = `[Lint error in ${fileName}:${line}]\n[Error: ${message}]`;
+        useClaudeChatStore
+          .getState()
+          .sendPrompt(`${ctx}\n\nFix this lint error.`);
+      }
+    },
+    [activeFile],
+  );
+
+  const handleFixAllLintWithAi = useCallback(async () => {
+    const file = activeFile;
+    const content = file?.content;
+    if (
+      !file ||
+      content == null ||
+      !file.absolutePath ||
+      diagnostics.length === 0
+    ) {
+      return;
+    }
+    let fixed = 0;
+    for (const d of diagnostics) {
+      try {
+        await applyLintLineFix({
+          content,
+          line: d.line,
+          message: d.message,
+          filePath: file.relativePath,
+          absolutePath: file.absolutePath,
+        });
+        fixed++;
+      } catch {
+        // continue with remaining diagnostics
+      }
+    }
+    if (fixed > 0) {
+      toast.success(
+        `${fixed} lint fix${fixed === 1 ? "" : "es"} ready — review changes`,
+      );
+    } else {
+      const fileName = file.relativePath;
+      const errorList = diagnostics
+        .map((d) => `- ${fileName}:${d.line} — ${d.message}`)
+        .join("\n");
+      useClaudeChatStore
+        .getState()
+        .sendPrompt(
+          `[Lint errors in ${fileName}]\n${errorList}\n\nFix all these lint errors.`,
+        );
+    }
+  }, [activeFile, diagnostics]);
 
   // Keep the keyboard-shortcut ref in sync with the latest handleToolbarAction
   useEffect(() => {
@@ -1339,6 +2240,73 @@ export function LatexEditor() {
         onImageScaleChange={isPdf || isImage ? setImageScale : undefined}
         cropMode={isImage ? cropMode : undefined}
         onCropToggle={isImage ? () => setCropMode((v) => !v) : undefined}
+        problemsSlot={
+          !isPdf &&
+          !isImage &&
+          !isLargeFileNotLoaded &&
+          diagnostics.length > 0 ? (
+            <ProblemsPopover
+              diagnostics={diagnostics}
+              fileName={activeFile?.relativePath ?? "main.tex"}
+              aiFixAvailable={lintAiAvailable}
+              onNavigate={(from) => {
+                const view = viewRef.current;
+                if (!view) return;
+                view.dispatch({
+                  selection: { anchor: from },
+                  effects: EditorView.scrollIntoView(from, { y: "center" }),
+                });
+                view.focus();
+              }}
+              onFixWithAi={(message, line) => {
+                void handleFixLintWithAi(message, line);
+              }}
+              onFixSpanWithAi={(d) => {
+                if (!activeFile?.content) return;
+                const from = Math.min(d.from, d.to);
+                const to = Math.max(d.from, d.to);
+                const selectedText = activeFile.content.slice(from, to);
+                if (!selectedText.trim()) return;
+                const selection: InlineEditSelection = {
+                  filePath: activeFile.relativePath,
+                  absolutePath: activeFile.absolutePath,
+                  content: activeFile.content,
+                  from,
+                  to,
+                  selectedText,
+                  contextLabel: `@${activeFile.relativePath}:${d.line}`,
+                };
+                void runSelectionInlineEdit(
+                  "edit",
+                  `Fix this LaTeX error: ${d.message}`,
+                  selection,
+                  "Fix ready — review the change",
+                );
+              }}
+              onFixAllWithAi={() => {
+                void handleFixAllLintWithAi();
+              }}
+              onFixWithChat={(message, line) => {
+                const fileName = activeFile?.relativePath ?? "main.tex";
+                const ctx = `[Lint error in ${fileName}:${line}]\n[Error: ${message}]`;
+                useClaudeChatStore
+                  .getState()
+                  .sendPrompt(`${ctx}\n\nFix this lint error.`);
+              }}
+              onFixAllWithChat={() => {
+                const fileName = activeFile?.relativePath ?? "main.tex";
+                const errorList = diagnostics
+                  .map((d) => `- ${fileName}:${d.line} — ${d.message}`)
+                  .join("\n");
+                useClaudeChatStore
+                  .getState()
+                  .sendPrompt(
+                    `[Lint errors in ${fileName}]\n${errorList}\n\nFix all these lint errors.`,
+                  );
+              }}
+            />
+          ) : undefined
+        }
       />
       {/* Text-editor-only panels */}
       {!isPdf && !isImage && !isLargeFileNotLoaded && isSearchOpen && (
@@ -1399,6 +2367,18 @@ export function LatexEditor() {
               <CopyIcon className="size-3" />
               SHA
             </Button>
+            {projectRoot && historyDiffResult && trackChangesMeta && (
+              <>
+                <div className="mx-0.5 h-4 w-px bg-border" />
+                <TrackChangesActions
+                  projectRoot={projectRoot}
+                  diffs={historyDiffResult}
+                  meta={trackChangesMeta}
+                  variant="compact"
+                  className="flex items-center gap-0.5"
+                />
+              </>
+            )}
             <div className="mx-0.5 h-4 w-px bg-border" />
             <Button
               variant="ghost"
@@ -1465,13 +2445,21 @@ export function LatexEditor() {
               ref={containerRef}
               className={reviewingSnapshot ? "hidden" : "absolute inset-0"}
             />
+            {isImageDropActive && !reviewingSnapshot && (
+              <div className="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-lg border-2 border-primary border-dashed bg-primary/10 backdrop-blur-[1px]">
+                <span className="rounded-md bg-primary px-3 py-1.5 font-medium text-primary-foreground text-sm shadow-lg">
+                  Drop image to insert as a figure
+                </span>
+              </div>
+            )}
             {reviewingSnapshot && historyDiffResult && (
               <HistoryDiffView diffs={historyDiffResult} />
             )}
             {toolbarPosition &&
               selectionLabel &&
               !isMergeActiveRef.current &&
-              !isSearchOpen && (
+              !isSearchOpen &&
+              !inlineEditPending && (
                 <SelectionToolbar
                   position={toolbarPosition}
                   contextLabel={selectionLabel}
@@ -1479,8 +2467,23 @@ export function LatexEditor() {
                   onSendPrompt={handleToolbarSendPrompt}
                   onAction={handleToolbarAction}
                   onDismiss={handleToolbarDismiss}
+                  resumeBulletAdjust={resumeBulletAdjust}
                 />
               )}
+            {inlineEditPending && toolbarPosition && (
+              <div
+                className="absolute z-30 flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-sm shadow-xl"
+                style={{
+                  top: toolbarPosition.top,
+                  left: toolbarPosition.left,
+                }}
+              >
+                <span className="size-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                <span className="text-muted-foreground">
+                  Rewriting selection…
+                </span>
+              </div>
+            )}
             {composerState?.open && (
               <CommentComposer
                 open={composerState.open}
@@ -1621,42 +2624,6 @@ export function LatexEditor() {
         <ClaudeChatDrawer />
       </div>
       {/* Text-editor-only bottom panels */}
-      {!isPdf &&
-        !isImage &&
-        !isLargeFileNotLoaded &&
-        diagnostics.length > 0 && (
-          <ProblemsPanel
-            diagnostics={diagnostics}
-            fileName={activeFile?.relativePath ?? "main.tex"}
-            onNavigate={(from) => {
-              const view = viewRef.current;
-              if (!view) return;
-              view.dispatch({
-                selection: { anchor: from },
-                effects: EditorView.scrollIntoView(from, { y: "center" }),
-              });
-              view.focus();
-            }}
-            onFixWithChat={(message, line) => {
-              const fileName = activeFile?.relativePath ?? "main.tex";
-              const ctx = `[Lint error in ${fileName}:${line}]\n[Error: ${message}]`;
-              useClaudeChatStore
-                .getState()
-                .sendPrompt(`${ctx}\n\nFix this lint error.`);
-            }}
-            onFixAllWithChat={() => {
-              const fileName = activeFile?.relativePath ?? "main.tex";
-              const errorList = diagnostics
-                .map((d) => `- ${fileName}:${d.line} — ${d.message}`)
-                .join("\n");
-              useClaudeChatStore
-                .getState()
-                .sendPrompt(
-                  `[Lint errors in ${fileName}]\n${errorList}\n\nFix all these lint errors.`,
-                );
-            }}
-          />
-        )}
       {!isPdf && !isImage && !isLargeFileNotLoaded && activeFileChange && (
         <ProposedChangesPanel
           change={activeFileChange}
@@ -1668,6 +2635,17 @@ export function LatexEditor() {
           onUndo={() => handleUndoAllRef.current()}
         />
       )}
+      {/* Live document statistics */}
+      {!isPdf &&
+        !isImage &&
+        !isLargeFileNotLoaded &&
+        !reviewingSnapshot &&
+        activeFile && (
+          <>
+            <EditorAiSuggestions content={activeFileContent ?? ""} />
+            <EditorStatusBar content={activeFileContent ?? ""} />
+          </>
+        )}
       {/* History label dialog */}
       <Dialog
         open={historyLabelDialogOpen}
@@ -1843,7 +2821,7 @@ function DiffLines({ diff }: { diff: FileDiff }) {
             <span className="mr-1 select-none text-green-500/50">+</span>
             <span className="text-green-700 dark:text-green-400">
               {line || " "}
-            </span>
+            </span>{" "}
           </div>
         ))}
       </div>
@@ -1859,7 +2837,7 @@ function DiffLines({ diff }: { diff: FileDiff }) {
               {i + 1}
             </span>
             <span className="mr-1 select-none text-red-500/50">−</span>
-            <span className="text-red-700 dark:text-red-400">
+            <span className="text-red-700 line-through dark:text-red-400">
               {line || " "}
             </span>
           </div>
@@ -1880,61 +2858,78 @@ function DiffLines({ diff }: { diff: FileDiff }) {
             @@ -{hunk.oldStart},{hunk.oldCount} +{hunk.newStart},{hunk.newCount}{" "}
             @@
           </div>
-          {hunk.lines.map((line, li) => (
+          {mergeDelAddPairs(hunk.lines).map((entry, li) => (
             <div
               key={li}
               className={
-                line.type === "del"
-                  ? "flex bg-red-500/10"
-                  : line.type === "add"
-                    ? "flex bg-green-500/10"
-                    : "flex"
+                entry.wordPair
+                  ? "flex bg-amber-500/10"
+                  : entry.line.type === "del"
+                    ? "flex bg-red-500/10"
+                    : entry.line.type === "add"
+                      ? "flex bg-green-500/10"
+                      : "flex"
               }
             >
               <span
                 className={`w-12 shrink-0 select-none pr-2 text-right ${
-                  line.type === "del"
+                  entry.line.type === "del"
                     ? "text-red-500/50"
-                    : line.type === "add"
+                    : entry.line.type === "add"
                       ? "text-green-500/50"
                       : "text-muted-foreground/50"
                 }`}
               >
-                {line.type !== "add" ? line.oldNum : ""}
+                {entry.line.type !== "add" ? entry.line.oldNum : ""}
               </span>
               <span
                 className={`w-12 shrink-0 select-none pr-2 text-right ${
-                  line.type === "del"
+                  entry.line.type === "del"
                     ? "text-red-500/50"
-                    : line.type === "add"
+                    : entry.line.type === "add"
                       ? "text-green-500/50"
                       : "text-muted-foreground/50"
                 }`}
               >
-                {line.type !== "del" ? line.newNum : ""}
+                {entry.line.type !== "del" ? entry.line.newNum : ""}
               </span>
               <span
                 className={`mr-1 select-none ${
-                  line.type === "del"
-                    ? "text-red-500/50"
-                    : line.type === "add"
-                      ? "text-green-500/50"
-                      : "text-muted-foreground/30"
+                  entry.wordPair
+                    ? "text-amber-600/50"
+                    : entry.line.type === "del"
+                      ? "text-red-500/50"
+                      : entry.line.type === "add"
+                        ? "text-green-500/50"
+                        : "text-muted-foreground/30"
                 }`}
               >
-                {line.type === "del" ? "−" : line.type === "add" ? "+" : " "}
+                {entry.wordPair
+                  ? "~"
+                  : entry.line.type === "del"
+                    ? "−"
+                    : entry.line.type === "add"
+                      ? "+"
+                      : " "}
               </span>
-              <span
-                className={
-                  line.type === "del"
-                    ? "text-red-700 dark:text-red-400"
-                    : line.type === "add"
-                      ? "text-green-700 dark:text-green-400"
-                      : "text-muted-foreground"
-                }
-              >
-                {line.text || " "}
-              </span>
+              {entry.wordPair ? (
+                <InlineWordDiff
+                  oldLine={entry.wordPair.old}
+                  newLine={entry.wordPair.new}
+                />
+              ) : (
+                <span
+                  className={
+                    entry.line.type === "del"
+                      ? "text-red-700 line-through dark:text-red-400"
+                      : entry.line.type === "add"
+                        ? "text-green-700 dark:text-green-400"
+                        : "text-muted-foreground"
+                  }
+                >
+                  {entry.line.text || " "}
+                </span>
+              )}
             </div>
           ))}
         </div>
@@ -1948,6 +2943,37 @@ interface DiffLine {
   text: string;
   oldNum?: number;
   newNum?: number;
+}
+
+function mergeDelAddPairs(lines: DiffLine[]): Array<{
+  line: DiffLine;
+  wordPair?: { old: string; new: string };
+}> {
+  const rows: Array<{
+    line: DiffLine;
+    wordPair?: { old: string; new: string };
+  }> = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (line.type === "del" && lines[i + 1]?.type === "add") {
+      const next = lines[i + 1];
+      rows.push({
+        line: {
+          type: "ctx",
+          text: "",
+          oldNum: line.oldNum,
+          newNum: next.newNum,
+        },
+        wordPair: { old: line.text, new: next.text },
+      });
+      i += 2;
+    } else {
+      rows.push({ line });
+      i++;
+    }
+  }
+  return rows;
 }
 
 interface Hunk {

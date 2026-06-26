@@ -85,6 +85,40 @@ fn mtime_ms(p: &Path) -> u128 {
         .unwrap_or(0)
 }
 
+/// Watch every directory the context walks (up to DETECT_MAX_DEPTH) so adding or
+/// removing a file in a SUB-directory invalidates the cache. A directory's mtime
+/// only changes when its OWN entries change, so watching the root alone misses
+/// changes nested below it (e.g. a new `chapters/ch5.tex`). Bounded so the warm
+/// path stays a handful of stat() calls.
+fn collect_watch_dirs(dir: &Path, depth: usize, watch: &mut Vec<(PathBuf, u128)>) {
+    if depth > DETECT_MAX_DEPTH || watch.len() >= 64 {
+        return;
+    }
+    let rd = match fs::read_dir(dir) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    for e in rd.flatten() {
+        let ft = match e.file_type() {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+        if !ft.is_dir() || ft.is_symlink() {
+            continue;
+        }
+        let name = e.file_name().to_string_lossy().to_lowercase();
+        if EXCLUDE_DIRS.contains(&name.as_str()) {
+            continue;
+        }
+        if watch.len() >= 64 {
+            return;
+        }
+        let p = e.path();
+        watch.push((p.clone(), mtime_ms(&p)));
+        collect_watch_dirs(&p, depth + 1, watch);
+    }
+}
+
 /// Build (or return cached) the project-context block for `project_dir`.
 /// Returns an empty string when there is nothing useful to add (the agent's
 /// static prompt is then left unchanged).
@@ -122,6 +156,10 @@ fn build_uncached(project_dir: &Path) -> (String, Vec<(PathBuf, u128)>) {
         (project_dir.to_path_buf(), mtime_ms(project_dir)),
         (skills_root.clone(), mtime_ms(&skills_root)),
     ];
+    // Also watch nested directories so a file added/removed below the root (e.g.
+    // a new chapter under chapters/) invalidates the cached map, not just changes
+    // at the project root.
+    collect_watch_dirs(project_dir, 1, &mut watch);
 
     let detected = detect_context_files(project_dir);
     let data_files = detect_data_files(project_dir);
@@ -638,6 +676,39 @@ mod tests {
         let dir = temp_project("empty");
         let block = build_project_context_prompt(&dir);
         assert!(block.trim().is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn watches_nested_dirs_so_subdir_changes_invalidate() {
+        let dir = temp_project("watch");
+        fs::create_dir_all(dir.join("chapters/deep")).unwrap();
+        fs::create_dir_all(dir.join("node_modules/pkg")).unwrap();
+
+        let mut watch = Vec::new();
+        collect_watch_dirs(&dir, 1, &mut watch);
+        let watched: Vec<String> = watch
+            .iter()
+            .map(|(p, _)| p.to_string_lossy().replace('\\', "/"))
+            .collect();
+
+        // Nested dirs are watched (so adding a file under them invalidates the
+        // cache); excluded/managed dirs are not.
+        assert!(
+            watched.iter().any(|p| p.ends_with("/chapters")),
+            "chapters watched: {:?}",
+            watched
+        );
+        assert!(
+            watched.iter().any(|p| p.ends_with("/chapters/deep")),
+            "nested dir watched: {:?}",
+            watched
+        );
+        assert!(
+            !watched.iter().any(|p| p.contains("node_modules")),
+            "excluded dir not watched: {:?}",
+            watched
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }

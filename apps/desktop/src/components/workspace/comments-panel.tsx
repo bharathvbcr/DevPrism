@@ -24,14 +24,28 @@ import {
   XIcon,
   SearchIcon,
   ArrowUpDownIcon,
+  SparklesIcon,
+  WandSparklesIcon,
+  Loader2Icon,
 } from "lucide-react";
+import { toast } from "sonner";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
+import { displayAgentAuthor, useChatLabels } from "@/lib/chat-labels";
 import { useDocumentStore } from "@/stores/document-store";
 import { useCommentsStore } from "@/stores/comments-store";
+import { useSettingsStore } from "@/stores/settings-store";
+import { canUseAiAssist, draftCommentReply } from "@/lib/ai-assist";
+import { assessSuggestion } from "@/lib/ai-extras";
+import {
+  runInlineEdit,
+  inlineEditSuccessMessage,
+  type InlineEditSelection,
+} from "@/lib/inline-edit";
+import { readTexFileContent } from "@/lib/tauri/fs";
 import type { Comment, CommentStatus, Reply } from "@/lib/tauri/comments";
 
 export function CommentsHeader() {
@@ -275,12 +289,61 @@ function CommentRow({ comment, isFocused, isActive }: CommentRowProps) {
   );
   const [editingReplyIdx, setEditingReplyIdx] = useState<number | null>(null);
   const [replyDraft, setReplyDraft] = useState("");
+  const [draftingReply, setDraftingReply] = useState(false);
+  const [addressing, setAddressing] = useState(false);
+  // AI quality verdict for a human-authored suggestion, fetched lazily once per
+  // comment id. null = not yet/unavailable; "" while pending is avoided.
+  const [verdict, setVerdict] = useState<string | null>(null);
 
   const rowRef = useRef<HTMLDivElement>(null);
   const replyAreaRef = useRef<HTMLTextAreaElement>(null);
+  const draftReqRef = useRef(0);
+  const verdictReqRef = useRef(0);
 
   const isSuggestion = comment.type === "suggestion";
   const isOpen = comment.status === "open";
+
+  // AI comment-assist gating (master toggle + provider availability via helper).
+  const aiCommentAssist = useSettingsStore((s) => s.aiCommentAssist);
+  const aiEnabled = aiCommentAssist && canUseAiAssist();
+
+  // "Address with AI" needs a resolvable span on the commented passage.
+  const hasResolvableRange =
+    comment.anchor.char_end > comment.anchor.char_start;
+
+  // Lazily assess a human-authored suggestion's quality before the user applies
+  // it. Passive/background AI: fires once per comment (keyed by id + the two
+  // inputs), is cancellation-safe via requestId, and fails silently.
+  const original = comment.anchor.quoted_text;
+  const replacement = comment.proposed_replacement ?? "";
+  useEffect(() => {
+    if (
+      !aiEnabled ||
+      !isSuggestion ||
+      !isOpen ||
+      !replacement.trim() ||
+      !original.trim()
+    ) {
+      setVerdict(null);
+      return;
+    }
+    const id = ++verdictReqRef.current;
+    setVerdict(null);
+    assessSuggestion({ original, replacement })
+      .then((text) => {
+        if (id !== verdictReqRef.current) return;
+        const trimmed = text.trim();
+        if (trimmed) setVerdict(trimmed);
+      })
+      .catch(() => {
+        // Background assist degrades silently.
+      });
+    return () => {
+      // Invalidate any in-flight request when inputs change/unmount.
+      verdictReqRef.current++;
+    };
+    // comment.id is implied by the keyed inputs; re-run when gating flips too.
+  }, [comment.id, aiEnabled, isSuggestion, isOpen, original, replacement]);
 
   // Reset draft when the underlying comment changes (e.g. external edit)
   useEffect(() => {
@@ -387,6 +450,83 @@ function CommentRow({ comment, isFocused, isActive }: CommentRowProps) {
       await updateComment(comment.id, { status: "resolved" });
     } finally {
       setReplyText("");
+    }
+  };
+
+  // Draft a reply via AI and fill the reply textarea. User-triggered → toast on
+  // error. Cancellation-safe: stale requests are ignored via requestId guard.
+  const handleDraftReply = async () => {
+    if (!aiEnabled || draftingReply) return;
+    const id = ++draftReqRef.current;
+    setDraftingReply(true);
+    try {
+      const draft = await draftCommentReply({
+        commentText: comment.comment,
+        quotedText: comment.anchor.quoted_text || undefined,
+      });
+      if (id !== draftReqRef.current) return;
+      const text = draft.trim();
+      if (text) {
+        setReplyText(text);
+        setExpanded(true);
+        setTimeout(() => replyAreaRef.current?.focus(), 50);
+      }
+    } catch (err) {
+      if (id !== draftReqRef.current) return;
+      toast.error(
+        err instanceof Error ? err.message : "Could not draft a reply",
+      );
+    } finally {
+      if (id === draftReqRef.current) setDraftingReply(false);
+    }
+  };
+
+  // Rewrite the commented span to address the feedback via the proposed-changes
+  // flow. Builds an InlineEditSelection from the comment's file + range + the
+  // current file content (loaded on demand, mirroring the document store).
+  const handleAddressWithAi = async () => {
+    if (!aiEnabled || addressing || !hasResolvableRange) return;
+    const instruction = comment.comment.trim();
+    if (!instruction) return;
+    const target = files.find((f) => f.relativePath === comment.file_path);
+    if (!target) {
+      toast.error("The commented file is not open.");
+      return;
+    }
+    setAddressing(true);
+    try {
+      const content =
+        target.content ?? (await readTexFileContent(target.absolutePath));
+      const from = comment.anchor.char_start;
+      const to = comment.anchor.char_end;
+      const selectedText = content.slice(from, to);
+      if (!selectedText.trim()) {
+        toast.error("The commented passage could not be located.");
+        return;
+      }
+      const selection: InlineEditSelection = {
+        filePath: target.relativePath,
+        absolutePath: target.absolutePath,
+        content,
+        from,
+        to,
+        selectedText,
+        contextLabel: `@${target.relativePath}`,
+      };
+      const mode = await runInlineEdit({
+        action: "edit",
+        selection,
+        customInstruction: instruction,
+      });
+      if (mode === "applied") {
+        toast.success(inlineEditSuccessMessage("edit"));
+      }
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Could not address the comment",
+      );
+    } finally {
+      setAddressing(false);
     }
   };
 
@@ -534,7 +674,9 @@ function CommentRow({ comment, isFocused, isActive }: CommentRowProps) {
           />
         )}
         <AuthorChip author={comment.author} />
-        <span className="truncate font-medium">{comment.author}</span>
+        <span className="truncate font-medium">
+          <AgentAuthorName author={comment.author} />
+        </span>
         <span className="shrink-0 text-[10px] text-muted-foreground">
           {timeAgo(comment.updated_at)}
         </span>
@@ -625,7 +767,9 @@ function CommentRow({ comment, isFocused, isActive }: CommentRowProps) {
                   <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
                     <CornerDownRightIcon className="size-2.5" />
                     <AuthorChip author={r.author} small />
-                    <span className="font-medium">{r.author}</span>
+                    <span className="font-medium">
+                      <AgentAuthorName author={r.author} />
+                    </span>
                     <span>·</span>
                     <span>{timeAgo(r.ts)}</span>
                     {editingReplyIdx !== i && (
@@ -698,6 +842,32 @@ function CommentRow({ comment, isFocused, isActive }: CommentRowProps) {
                 >
                   <CheckIcon className="mr-1 size-3" />
                   Apply
+                </Button>
+              )}
+              {isSuggestion && comment.proposed_replacement && verdict && (
+                <span
+                  className="inline-flex w-full items-start gap-1 text-[10px] text-muted-foreground italic"
+                  title="AI assessment of this suggestion"
+                >
+                  <SparklesIcon className="mt-px size-2.5 shrink-0" />
+                  <span className="not-italic">{verdict}</span>
+                </span>
+              )}
+              {aiEnabled && hasResolvableRange && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-6 px-1.5 text-[10px]"
+                  onClick={handleAddressWithAi}
+                  disabled={addressing}
+                  title="Rewrite the commented passage to address this feedback"
+                >
+                  {addressing ? (
+                    <Loader2Icon className="mr-1 size-3 animate-spin" />
+                  ) : (
+                    <WandSparklesIcon className="mr-1 size-3" />
+                  )}
+                  Address with AI
                 </Button>
               )}
               <Button
@@ -781,35 +951,59 @@ function CommentRow({ comment, isFocused, isActive }: CommentRowProps) {
                   }
                 }}
               />
-              {replyText.trim() && (
-                <div className="flex items-center gap-1">
-                  <Button
-                    size="sm"
-                    variant="default"
-                    className="h-6 px-2 text-[10px]"
-                    onClick={handleReplySubmit}
-                    title="Reply (Cmd+Enter)"
-                  >
-                    Reply
-                    <span className="ml-1 opacity-60">⌘↵</span>
-                  </Button>
+              <div className="flex items-center gap-1">
+                {replyText.trim() && (
+                  <>
+                    <Button
+                      size="sm"
+                      variant="default"
+                      className="h-6 px-2 text-[10px]"
+                      onClick={handleReplySubmit}
+                      title="Reply (Cmd+Enter)"
+                    >
+                      Reply
+                      <span className="ml-1 opacity-60">⌘↵</span>
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 px-2 text-[10px]"
+                      onClick={handleReplyAndResolve}
+                      title="Reply and mark resolved (Cmd+Shift+Enter)"
+                    >
+                      Reply &amp; Resolve
+                    </Button>
+                  </>
+                )}
+                {aiEnabled && (
                   <Button
                     size="sm"
                     variant="ghost"
-                    className="h-6 px-2 text-[10px]"
-                    onClick={handleReplyAndResolve}
-                    title="Reply and mark resolved (Cmd+Shift+Enter)"
+                    className="ml-auto h-6 px-1.5 text-[10px] text-muted-foreground"
+                    onClick={handleDraftReply}
+                    disabled={draftingReply}
+                    title="Draft a reply with AI"
                   >
-                    Reply &amp; Resolve
+                    {draftingReply ? (
+                      <Loader2Icon className="mr-1 size-3 animate-spin" />
+                    ) : (
+                      <SparklesIcon className="mr-1 size-3" />
+                    )}
+                    Draft reply
                   </Button>
-                </div>
-              )}
+                )}
+              </div>
             </div>
           )}
         </div>
       )}
     </div>
   );
+}
+
+function AgentAuthorName({ author }: { author: string }) {
+  const nativeAgentEnabled = useSettingsStore((s) => s.nativeAgentEnabled);
+  return displayAgentAuthor(author, nativeAgentEnabled);
 }
 
 function AuthorChip({
@@ -819,16 +1013,21 @@ function AuthorChip({
   author: string;
   small?: boolean;
 }) {
-  const isClaude = author === "claude";
-  const initial = isClaude ? "C" : (author.charAt(0) || "?").toUpperCase();
+  const chatLabels = useChatLabels();
+  const nativeAgentEnabled = useSettingsStore((s) => s.nativeAgentEnabled);
+  const isAgent = author === "claude";
+  const initial = isAgent
+    ? chatLabels.agentAuthorInitial
+    : (author.charAt(0) || "?").toUpperCase();
+  const displayName = displayAgentAuthor(author, nativeAgentEnabled);
   return (
     <span
       className={cn(
         "inline-flex shrink-0 items-center justify-center rounded-full font-bold text-white",
         small ? "size-3 text-[7px]" : "size-3.5 text-[8px]",
-        isClaude ? "bg-violet-600" : "bg-amber-600",
+        isAgent ? "bg-violet-600" : "bg-amber-600",
       )}
-      title={author}
+      title={displayName}
     >
       {initial}
     </span>

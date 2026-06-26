@@ -43,4 +43,16 @@ describe("getProviderDisplayName", () => {
     expect(getProviderDisplayName(provider)).toBe("Ollama");
     expect(getProviderIconSrc(provider)).toContain("ollama");
   });
+
+  it("recognizes OpenRouter endpoints without confusing them for OpenAI", () => {
+    const provider = {
+      id: "openrouter",
+      label: "OpenRouter",
+      baseUrl: "https://openrouter.ai/api/v1",
+      model: "openai/gpt-4o",
+    };
+
+    expect(getProviderDisplayName(provider)).toBe("OpenRouter");
+    expect(getProviderIconSrc(provider)?.toLowerCase()).toContain("openrouter");
+  });
 });

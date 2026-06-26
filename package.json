@@ -17,6 +17,11 @@
     "build:desktop": "node scripts/build-desktop.mjs",
     "lint": "pnpm exec biome check",
     "lint:fix": "pnpm exec biome check --fix",
+    "gitnexus:status": "npx --yes gitnexus status",
+    "gitnexus:analyze": "npx --yes gitnexus analyze --skip-git --skills",
+    "gitnexus:refresh": "npx --yes gitnexus analyze --skip-git --skills --force",
+    "agents:verify": "node scripts/verify-agent-instructions.js",
+    "agents:verify:all": "node scripts/verify-agent-instructions.js --all",
     "release": "echo 'To release: git tag v<version> && git push origin v<version>'",
     "prepare": "husky"
   },

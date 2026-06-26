@@ -14,6 +14,7 @@ import {
 import { Sidebar } from "./sidebar";
 import { LatexEditor } from "./editor/latex-editor";
 import { PdfPreview } from "./preview/pdf-preview";
+import { CommandPalette } from "@/components/command-palette";
 import { useDocumentStore } from "@/stores/document-store";
 import { usePreviewStore } from "@/stores/preview-store";
 
@@ -181,6 +182,7 @@ export function WorkspaceLayout() {
 
   return (
     <div ref={workspaceRef} className="h-full">
+      <CommandPalette />
       <PanelGroup direction="horizontal" className="h-full">
         <Panel
           ref={sidebarPanelRef}

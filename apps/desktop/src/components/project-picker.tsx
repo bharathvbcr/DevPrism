@@ -1,5 +1,6 @@
 import {
   type ComponentType,
+  type DragEvent as ReactDragEvent,
   type ReactNode,
   useCallback,
   useEffect,
@@ -10,6 +11,7 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { readFile, readTextFile, stat } from "@tauri-apps/plugin-fs";
 import { toast } from "sonner";
@@ -28,27 +30,66 @@ import {
   PlusIcon,
   SettingsIcon,
   GithubIcon,
-  MonitorIcon,
-  MoonIcon,
-  SunIcon,
   LayersIcon,
   CheckIcon,
   MoreVerticalIcon,
   PencilIcon,
   Trash2Icon,
+  FileArchiveIcon,
+  GraduationCapIcon,
+  BriefcaseIcon,
+  FlaskConicalIcon,
+  BookOpenIcon,
+  RocketIcon,
+  StarIcon,
+  HeartIcon,
+  CodeIcon,
+  LightbulbIcon,
+  ZapIcon,
+  UserIcon,
+  WandSparklesIcon,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { useTheme } from "next-themes";
+import { PersonalizationSettings } from "./personalization-settings";
 import { useProjectStore } from "@/stores/project-store";
-import { useSpacesStore, type Space } from "@/stores/spaces-store";
+import {
+  useSpacesStore,
+  type Space,
+  type SpaceKind,
+  SPACE_COLORS,
+} from "@/stores/spaces-store";
+import {
+  SPACE_KIND_OPTIONS,
+  inferSpaceKind,
+  spaceKindLabel,
+  spaceFeatureConfig,
+  bundledSkillsForKind,
+} from "@/lib/space-features";
+import { installBundledSkills } from "@/lib/tauri/skills";
+import {
+  setupNewProjectInSpace,
+  formatNewProjectSetupToast,
+  applySpaceModelForProject,
+} from "@/lib/space-project";
+import { masterFileNameForKind } from "@/lib/space-master";
 import { useDocumentStore } from "@/stores/document-store";
-import { useClaudeChatStore } from "@/stores/claude-chat-store";
 import { useClaudeSetupStore } from "@/stores/claude-setup-store";
+import {
+  getOllamaBaseUrl,
+  listOllamaModels,
+  resolveOllamaCredential,
+  type OllamaModelInfo,
+} from "@/lib/ollama";
+import { useOllamaStatus } from "@/hooks/use-ollama-status";
+import { OllamaSetupHints } from "@/components/ollama-setup-hints";
 import { useUvSetupStore } from "@/stores/uv-setup-store";
-import { useSettingsStore } from "@/stores/settings-store";
+import {
+  useSettingsStore,
+  type HomepageDateField,
+} from "@/stores/settings-store";
 import { compileLatex } from "@/lib/latex-compiler";
 import { getMupdfClient } from "@/lib/mupdf/mupdf-client";
-import { exists, join } from "@/lib/tauri/fs";
+import { exists, join, scanProjectFolder } from "@/lib/tauri/fs";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -69,6 +110,12 @@ import {
 import { ProjectWizard, type CreationMode } from "./project-wizard";
 import { ClaudeSetup } from "./claude-setup";
 import { cn } from "@/lib/utils";
+import {
+  canUseAiAssist,
+  summarizeSection,
+  semanticRank,
+} from "@/lib/ai-assist";
+import { suggestSpaceMeta } from "@/lib/ai-extras";
 
 interface DefaultProject {
   path: string;
@@ -78,7 +125,7 @@ interface DefaultProject {
 }
 
 type ProjectPickerSection = "projects" | "settings";
-type SettingsDetailSection = "provider" | "environment";
+type SettingsDetailSection = "provider" | "environment" | "editor" | "ai" | "personalization";
 
 type RecentProject = {
   path: string;
@@ -88,6 +135,7 @@ type RecentProject = {
 
 type ProjectPreviewData = {
   createdAt: number | null;
+  modifiedAt: number | null;
 } & (
   | { kind: "pdf"; url: string }
   | { kind: "tex"; fileName: string; lines: string[] }
@@ -99,17 +147,148 @@ type ProjectPreviewState =
   | { status: "ready"; data: ProjectPreviewData }
   | { status: "error" };
 
+/**
+ * Icons a user can pick for a space. The `key` is what's persisted on the
+ * space (Space.icon); keep keys stable so saved spaces keep their icon.
+ */
+const SPACE_ICONS: { key: string; Icon: LucideIcon }[] = [
+  { key: "layers", Icon: LayersIcon },
+  { key: "graduation-cap", Icon: GraduationCapIcon },
+  { key: "briefcase", Icon: BriefcaseIcon },
+  { key: "flask", Icon: FlaskConicalIcon },
+  { key: "book", Icon: BookOpenIcon },
+  { key: "rocket", Icon: RocketIcon },
+  { key: "star", Icon: StarIcon },
+  { key: "heart", Icon: HeartIcon },
+  { key: "code", Icon: CodeIcon },
+  { key: "lightbulb", Icon: LightbulbIcon },
+  { key: "file", Icon: FileTextIcon },
+];
+
+const SPACE_ICON_MAP = new Map(SPACE_ICONS.map(({ key, Icon }) => [key, Icon]));
+
+/**
+ * Custom MIME used when dragging a project card onto a space (or "All Projects")
+ * to reassign it. Distinct from OS file drops, which Tauri handles separately.
+ */
+const PROJECT_DND_MIME = "application/x-devprism-project";
+
+/** Is this drag carrying a project card (vs. an OS file / something else)? */
+function isProjectDrag(event: ReactDragEvent): boolean {
+  return event.dataTransfer.types.includes(PROJECT_DND_MIME);
+}
+
+/**
+ * Renders a space's chosen icon tinted with its color, or a plain colored dot
+ * when no icon is set (the default / legacy state).
+ */
+function SpaceGlyph({
+  space,
+  className,
+}: {
+  space: Pick<Space, "color" | "icon">;
+  className?: string;
+}) {
+  const Icon = space.icon ? SPACE_ICON_MAP.get(space.icon) : undefined;
+  if (Icon) {
+    return (
+      <Icon
+        className={cn("size-3.5 shrink-0", className)}
+        style={{ color: space.color }}
+        aria-hidden
+      />
+    );
+  }
+  return (
+    <span
+      className={cn("size-2.5 shrink-0 rounded-full", className)}
+      style={{ backgroundColor: space.color }}
+      aria-hidden
+    />
+  );
+}
+
+function NewProjectSpaceHint() {
+  const activeSpaceId = useSpacesStore((s) => s.activeSpaceId);
+  const spaces = useSpacesStore((s) => s.spaces);
+  const space = useMemo(
+    () => spaces.find((s) => s.id === activeSpaceId) ?? null,
+    [spaces, activeSpaceId],
+  );
+  if (!space) return null;
+
+  const kind = inferSpaceKind(space);
+  const skills = bundledSkillsForKind(kind);
+  const master = kind !== "general" ? masterFileNameForKind(kind) : null;
+
+  const details: string[] = [`added to ${space.name}`];
+  if (skills?.length) {
+    details.push(`install ${skills.join(", ")} skills`);
+  }
+  if (master) {
+    details.push(`create ${master}`);
+  }
+
+  return (
+    <div className="rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-muted-foreground text-xs leading-relaxed">
+      <span className="font-medium text-foreground">
+        {spaceKindLabel(kind)} space active —{" "}
+      </span>
+      New projects will be {details.join(" · ")}.
+    </div>
+  );
+}
+
 const projectPreviewCache = new Map<string, ProjectPreviewData>();
 const projectPreviewRequests = new Map<string, Promise<ProjectPreviewData>>();
 let projectPreviewCompileQueue: Promise<void> = Promise.resolve();
+
+// One AI summary per project per session, keyed by project path (not the
+// preview cache key, which also folds in lastOpened — the blurb shouldn't be
+// recomputed just because a project moved to the top of the list).
+const projectBlurbCache = new Map<string, string>();
+const projectBlurbRequests = new Map<string, Promise<string>>();
+// Cap concurrent local-model calls so hovering across many cards doesn't fan
+// out into a flood of simultaneous Ollama requests.
+const MAX_CONCURRENT_BLURBS = 2;
+let activeBlurbCount = 0;
+const blurbWaiters: (() => void)[] = [];
+
+function acquireBlurbSlot(): Promise<void> {
+  if (activeBlurbCount < MAX_CONCURRENT_BLURBS) {
+    activeBlurbCount += 1;
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    blurbWaiters.push(() => {
+      activeBlurbCount += 1;
+      resolve();
+    });
+  });
+}
+
+function releaseBlurbSlot(): void {
+  activeBlurbCount -= 1;
+  const next = blurbWaiters.shift();
+  if (next) next();
+}
 
 export function ProjectPicker() {
   const [showModeDialog, setShowModeDialog] = useState(false);
   const [wizardMode, setWizardMode] = useState<CreationMode | null>(null);
   const [appVersion, setAppVersion] = useState("");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
-  const [activeSection, setActiveSection] =
-    useState<ProjectPickerSection>("projects");
+  const [activeSection, setActiveSection] = useState<ProjectPickerSection>(
+    () => useSpacesStore.getState().pendingPickerSection ?? "projects",
+  );
+  // The in-project sidebar can deep-link here (e.g. its Settings button closes
+  // the project and asks the picker to open on Settings). Consume the request
+  // once so a later manual "All Projects" navigation isn't overridden.
+  useEffect(() => {
+    if (useSpacesStore.getState().pendingPickerSection) {
+      useSpacesStore.getState().setPendingPickerSection(null);
+    }
+  }, []);
   const [settingsDetailSection, setSettingsDetailSection] =
     useState<SettingsDetailSection>("provider");
   const [searchQuery, setSearchQuery] = useState("");
@@ -118,14 +297,19 @@ export function ProjectPicker() {
   const [spaceDialog, setSpaceDialog] = useState<{
     editingId: string | null;
     name: string;
+    kind: SpaceKind;
+    color: string;
+    icon: string | null;
+    description: string;
   } | null>(null);
   const [installingSkills, setInstallingSkills] = useState(false);
   const [deleteSpaceTarget, setDeleteSpaceTarget] = useState<Space | null>(
     null,
   );
+  // True while a project card is being dragged, so drop targets can light up.
+  const [isDraggingProject, setIsDraggingProject] = useState(false);
   const defaultProjectsDiscoveredRef = useRef(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const { theme = "system", setTheme } = useTheme();
   const searchShortcutLabel = "⌘ K";
 
   const recentProjects = useProjectStore((s) => s.recentProjects);
@@ -199,13 +383,7 @@ export function ProjectPicker() {
   // the currently-selected provider credential (e.g. the local Ollama provider),
   // so opening a project in a space switches the agent to the space's model.
   const applySpaceModel = (path: string) => {
-    const space = useSpacesStore.getState().spaceForProject(path);
-    const model = space?.defaultModel?.trim();
-    if (!model) return;
-    const chat = useClaudeChatStore.getState();
-    if (chat.selectedProviderCredentialId) {
-      chat.setSelectedProviderModel(chat.selectedProviderCredentialId, model);
-    }
+    applySpaceModelForProject(path);
   };
 
   const handleOpenFolder = async () => {
@@ -245,13 +423,160 @@ export function ProjectPicker() {
     setWizardMode(mode);
   };
 
+  // ─── Drag-and-drop import (.zip LaTeX archives / project folders) ───
+  const [isDragging, setIsDragging] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+
+  const importDroppedPaths = async (paths: string[]) => {
+    const isZipName = (p: string) => p.toLowerCase().endsWith(".zip");
+
+    // Classify by what's actually on disk, not just the extension.
+    const zips: string[] = [];
+    const dirs: string[] = [];
+    const files: string[] = [];
+    for (const p of paths) {
+      let isDirectory = false;
+      try {
+        isDirectory = (await stat(p)).isDirectory;
+      } catch {
+        // Unreadable / not a real path — fall back to the name heuristic.
+      }
+      if (isDirectory) {
+        dirs.push(p);
+      } else if (isZipName(p)) {
+        zips.push(p);
+      } else {
+        files.push(p);
+      }
+    }
+
+    if (zips.length === 0 && dirs.length === 0 && files.length === 0) {
+      if (paths.length > 0) {
+        toast.error("Unsupported drop", {
+          description: "Drop a .zip archive, LaTeX files, or a project folder.",
+        });
+      }
+      return;
+    }
+
+    setIsImporting(true);
+    let firstPath: string | null = null;
+    try {
+      // 1) Each .zip becomes its own extracted project.
+      for (const zip of zips) {
+        try {
+          const imported = await invoke<{ path: string; name: string }>(
+            "import_zip_project",
+            { zipPath: zip },
+          );
+          const setup = await setupNewProjectInSpace(imported.path);
+          addRecentProject(imported.path);
+          applySpaceModel(imported.path);
+          firstPath = firstPath ?? imported.path;
+          toast.success(
+            formatNewProjectSetupToast(setup, `Imported "${imported.name}"`),
+          );
+        } catch (err) {
+          console.warn("Failed to import zip project:", { zip, error: err });
+          toast.error("Failed to import archive", {
+            description: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+
+      if (files.length > 0) {
+        // 2) Loose files (a bare main.tex + refs.bib + images, plus any figure
+        //    folders dropped alongside) are bundled into one new project.
+        try {
+          const imported = await invoke<{ path: string; name: string }>(
+            "import_loose_files",
+            { paths: [...files, ...dirs] },
+          );
+          const setup = await setupNewProjectInSpace(imported.path);
+          addRecentProject(imported.path);
+          applySpaceModel(imported.path);
+          firstPath = firstPath ?? imported.path;
+          toast.success(
+            formatNewProjectSetupToast(setup, `Created "${imported.name}"`),
+          );
+        } catch (err) {
+          console.warn("Failed to create project from files:", { error: err });
+          toast.error("Failed to create project from files", {
+            description: err instanceof Error ? err.message : String(err),
+          });
+        }
+      } else {
+        // 3) Only folders dropped → open each as an existing project.
+        for (const folder of dirs) {
+          addRecentProject(folder);
+          applySpaceModel(folder);
+          firstPath = firstPath ?? folder;
+        }
+      }
+
+      // Opening a project unmounts this view, so only open one (the first).
+      if (firstPath) {
+        await openProject(firstPath);
+      }
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
+  // Keep a stable listener that always calls the latest handler closure.
+  const importDroppedPathsRef = useRef(importDroppedPaths);
+  importDroppedPathsRef.current = importDroppedPaths;
+  // Guards read by the (once-registered) listener without re-subscribing.
+  const importingRef = useRef(false);
+  const wizardModeRef = useRef(wizardMode);
+  wizardModeRef.current = wizardMode;
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+
+    getCurrentWebview()
+      .onDragDropEvent((event) => {
+        if (cancelled) return;
+        const { type } = event.payload;
+        // While the wizard is open or an import is running, ignore OS drops so
+        // we never yank the user out of a flow or start a second import.
+        const blocked = wizardModeRef.current !== null || importingRef.current;
+        if (type === "enter" || type === "over") {
+          if (!blocked) setIsDragging(true);
+        } else if (type === "leave") {
+          setIsDragging(false);
+        } else if (type === "drop") {
+          setIsDragging(false);
+          if (blocked) return;
+          const paths = (event.payload as { paths?: string[] }).paths ?? [];
+          importingRef.current = true;
+          void importDroppedPathsRef.current(paths).finally(() => {
+            importingRef.current = false;
+          });
+        }
+      })
+      .then((fn) => {
+        if (cancelled) fn();
+        else unlisten = fn;
+      })
+      .catch(() => {
+        // Not in a Tauri webview (e.g. plain browser dev) — drag-drop is a no-op.
+      });
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
   // ─── Project Spaces ───
   const spaces = useSpacesStore((s) => s.spaces);
   const projectSpace = useSpacesStore((s) => s.projectSpace);
   const activeSpaceId = useSpacesStore((s) => s.activeSpaceId);
   const setActiveSpace = useSpacesStore((s) => s.setActiveSpace);
   const createSpace = useSpacesStore((s) => s.createSpace);
-  const renameSpace = useSpacesStore((s) => s.renameSpace);
+  const updateSpace = useSpacesStore((s) => s.updateSpace);
   const deleteSpace = useSpacesStore((s) => s.deleteSpace);
   const assignProject = useSpacesStore((s) => s.assignProject);
   const setSpaceDefaults = useSpacesStore((s) => s.setSpaceDefaults);
@@ -259,14 +584,244 @@ export function ProjectPicker() {
   const setNativeAgentEnabled = useSettingsStore(
     (s) => s.setNativeAgentEnabled,
   );
+  const aiAssistEnabled = useSettingsStore((s) => s.aiAssistEnabled);
+  const setAiAssistEnabled = useSettingsStore((s) => s.setAiAssistEnabled);
+  const aiGrammarHints = useSettingsStore((s) => s.aiGrammarHints);
+  const setAiGrammarHints = useSettingsStore((s) => s.setAiGrammarHints);
+  const aiPredictiveText = useSettingsStore((s) => s.aiPredictiveText);
+  const setAiPredictiveText = useSettingsStore((s) => s.setAiPredictiveText);
+  const aiContextSuggestions = useSettingsStore((s) => s.aiContextSuggestions);
+  const setAiContextSuggestions = useSettingsStore(
+    (s) => s.setAiContextSuggestions,
+  );
+  const aiLintFix = useSettingsStore((s) => s.aiLintFix);
+  const setAiLintFix = useSettingsStore((s) => s.setAiLintFix);
+  const aiCompileAssist = useSettingsStore((s) => s.aiCompileAssist);
+  const setAiCompileAssist = useSettingsStore((s) => s.setAiCompileAssist);
+  const aiBibAssist = useSettingsStore((s) => s.aiBibAssist);
+  const setAiBibAssist = useSettingsStore((s) => s.setAiBibAssist);
+  const aiChatFollowUps = useSettingsStore((s) => s.aiChatFollowUps);
+  const setAiChatFollowUps = useSettingsStore((s) => s.setAiChatFollowUps);
+  const aiPredictiveActions = useSettingsStore((s) => s.aiPredictiveActions);
+  const setAiPredictiveActions = useSettingsStore(
+    (s) => s.setAiPredictiveActions,
+  );
+  const aiChatGhostText = useSettingsStore((s) => s.aiChatGhostText);
+  const setAiChatGhostText = useSettingsStore((s) => s.setAiChatGhostText);
+  const aiPromptImprove = useSettingsStore((s) => s.aiPromptImprove);
+  const setAiPromptImprove = useSettingsStore((s) => s.setAiPromptImprove);
+  const aiAutoTitles = useSettingsStore((s) => s.aiAutoTitles);
+  const setAiAutoTitles = useSettingsStore((s) => s.setAiAutoTitles);
+  const aiSummarize = useSettingsStore((s) => s.aiSummarize);
+  const setAiSummarize = useSettingsStore((s) => s.setAiSummarize);
+  const aiNaming = useSettingsStore((s) => s.aiNaming);
+  const setAiNaming = useSettingsStore((s) => s.setAiNaming);
+  const aiTemplateRecommend = useSettingsStore((s) => s.aiTemplateRecommend);
+  const setAiTemplateRecommend = useSettingsStore(
+    (s) => s.setAiTemplateRecommend,
+  );
+  const aiProjectBlurb = useSettingsStore((s) => s.aiProjectBlurb);
+  const setAiProjectBlurb = useSettingsStore((s) => s.setAiProjectBlurb);
+  const aiCommentAssist = useSettingsStore((s) => s.aiCommentAssist);
+  const setAiCommentAssist = useSettingsStore((s) => s.setAiCommentAssist);
+  const aiSemanticSearch = useSettingsStore((s) => s.aiSemanticSearch);
+  const setAiSemanticSearch = useSettingsStore((s) => s.setAiSemanticSearch);
+  const aiCommandAssist = useSettingsStore((s) => s.aiCommandAssist);
+  const setAiCommandAssist = useSettingsStore((s) => s.setAiCommandAssist);
+  const aiSnippetFill = useSettingsStore((s) => s.aiSnippetFill);
+  const setAiSnippetFill = useSettingsStore((s) => s.setAiSnippetFill);
+  const aiVisionCaption = useSettingsStore((s) => s.aiVisionCaption);
+  const setAiVisionCaption = useSettingsStore((s) => s.setAiVisionCaption);
+  const aiCommandPalette = useSettingsStore((s) => s.aiCommandPalette);
+  const setAiCommandPalette = useSettingsStore((s) => s.setAiCommandPalette);
   const nativeNumCtx = useSettingsStore((s) => s.nativeNumCtx);
   const setNativeNumCtx = useSettingsStore((s) => s.setNativeNumCtx);
   const nativeTemperature = useSettingsStore((s) => s.nativeTemperature);
   const setNativeTemperature = useSettingsStore((s) => s.setNativeTemperature);
+  const nativeOllamaModel = useSettingsStore((s) => s.nativeOllamaModel);
+  const setNativeOllamaModel = useSettingsStore((s) => s.setNativeOllamaModel);
+  const openAiCredentials = useClaudeSetupStore((s) => s.openAiCredentials);
+  const [settingsOllamaModels, setSettingsOllamaModels] = useState<
+    OllamaModelInfo[]
+  >([]);
+  const [settingsOllamaModelsLoading, setSettingsOllamaModelsLoading] =
+    useState(false);
+  const [settingsOllamaModelsError, setSettingsOllamaModelsError] = useState<
+    string | null
+  >(null);
+  const settingsOllamaBaseUrl = useMemo(
+    () => getOllamaBaseUrl(resolveOllamaCredential(openAiCredentials, null)),
+    [openAiCredentials],
+  );
+  const compilerBackend = useSettingsStore((s) => s.compilerBackend);
+  const setCompilerBackend = useSettingsStore((s) => s.setCompilerBackend);
+  const autoCompile = useSettingsStore((s) => s.autoCompile);
+  const setAutoCompile = useSettingsStore((s) => s.setAutoCompile);
+  const pdfDarkMode = useSettingsStore((s) => s.pdfDarkMode);
+  const setPdfDarkMode = useSettingsStore((s) => s.setPdfDarkMode);
+  const homepageDateField = useSettingsStore((s) => s.homepageDateField);
+  const setHomepageDateField = useSettingsStore((s) => s.setHomepageDateField);
   const activeSpace = useMemo(
     () => spaces.find((s) => s.id === activeSpaceId) ?? null,
     [spaces, activeSpaceId],
   );
+
+  useEffect(() => {
+    if (!nativeAgentEnabled || settingsDetailSection !== "provider") return;
+
+    let cancelled = false;
+    setSettingsOllamaModelsLoading(true);
+    setSettingsOllamaModelsError(null);
+    void listOllamaModels(settingsOllamaBaseUrl)
+      .then((models) => {
+        if (!cancelled) setSettingsOllamaModels(models);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setSettingsOllamaModels([]);
+          setSettingsOllamaModelsError(
+            err instanceof Error ? err.message : String(err),
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setSettingsOllamaModelsLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    nativeAgentEnabled,
+    settingsDetailSection,
+    settingsOllamaBaseUrl,
+  ]);
+
+  const chatOllamaModels = useMemo(
+    () =>
+      settingsOllamaModels.filter((model) => model.chatCapable),
+    [settingsOllamaModels],
+  );
+  const { status: settingsOllamaStatus, refresh: refreshSettingsOllamaStatus } =
+    useOllamaStatus(
+    settingsOllamaBaseUrl,
+    nativeAgentEnabled && settingsDetailSection === "provider",
+  );
+
+  const reloadSettingsOllamaModels = useCallback(() => {
+    setSettingsOllamaModelsLoading(true);
+    setSettingsOllamaModelsError(null);
+    void listOllamaModels(settingsOllamaBaseUrl)
+      .then((models) => setSettingsOllamaModels(models))
+      .catch((err: unknown) => {
+        setSettingsOllamaModels([]);
+        setSettingsOllamaModelsError(
+          err instanceof Error ? err.message : String(err),
+        );
+      })
+      .finally(() => setSettingsOllamaModelsLoading(false));
+    void refreshSettingsOllamaStatus();
+  }, [refreshSettingsOllamaStatus, settingsOllamaBaseUrl]);
+
+  // Track whether the user has hand-edited name/description in the space dialog,
+  // so an AI suggestion only fills fields the user left untouched.
+  const [spaceFieldTouched, setSpaceFieldTouched] = useState<{
+    name: boolean;
+    description: boolean;
+  }>({ name: false, description: false });
+  const [spaceMetaPending, setSpaceMetaPending] = useState(false);
+  const spaceMetaRequestIdRef = useRef(0);
+
+  const openNewSpaceDialog = () => {
+    setSpaceFieldTouched({ name: false, description: false });
+    setSpaceMetaPending(false);
+    spaceMetaRequestIdRef.current += 1;
+    setSpaceDialog({
+      editingId: null,
+      name: "",
+      kind: "general",
+      color: SPACE_COLORS[spaces.length % SPACE_COLORS.length],
+      icon: null,
+      description: "",
+    });
+  };
+
+  const openEditSpaceDialog = (space: Space) => {
+    // An existing space already has a name/description the user chose; treat
+    // them as touched so AI fill doesn't clobber them without asking.
+    setSpaceFieldTouched({
+      name: Boolean(space.name.trim()),
+      description: Boolean(space.description?.trim()),
+    });
+    setSpaceMetaPending(false);
+    spaceMetaRequestIdRef.current += 1;
+    setSpaceDialog({
+      editingId: space.id,
+      name: space.name,
+      kind: space.kind ?? "general",
+      color: space.color,
+      icon: space.icon ?? null,
+      description: space.description ?? "",
+    });
+  };
+
+  // Display names of projects assigned to the space currently being edited
+  // (new spaces have no id yet, so none). Feeds the AI name/description suggest.
+  const dialogAssignedProjectNames = useMemo(() => {
+    const id = spaceDialog?.editingId;
+    if (!id) return [];
+    return recentProjects
+      .filter((p) => projectSpace[p.path] === id)
+      .map((p) => p.name);
+  }, [spaceDialog?.editingId, recentProjects, projectSpace]);
+
+  const canSuggestSpaceMeta =
+    aiNaming &&
+    canUseAiAssist() &&
+    dialogAssignedProjectNames.length > 0 &&
+    !(spaceFieldTouched.name && spaceFieldTouched.description);
+
+  const handleSuggestSpaceMeta = () => {
+    if (!canSuggestSpaceMeta || spaceMetaPending) return;
+    const names = dialogAssignedProjectNames;
+    const id = ++spaceMetaRequestIdRef.current;
+    setSpaceMetaPending(true);
+    void suggestSpaceMeta(names)
+      .then((meta) => {
+        if (id !== spaceMetaRequestIdRef.current) return;
+        setSpaceDialog((prev) => {
+          if (!prev) return prev;
+          let next = prev;
+          if (meta.name && !spaceFieldTouched.name) {
+            next = { ...next, name: meta.name };
+          }
+          if (meta.description && !spaceFieldTouched.description) {
+            next = { ...next, description: meta.description };
+          }
+          return next;
+        });
+      })
+      // Passive affordance — fail silently and just stop the spinner.
+      .catch(() => {})
+      .finally(() => {
+        if (id === spaceMetaRequestIdRef.current) setSpaceMetaPending(false);
+      });
+  };
+
+  // Reassign a dragged project to a space (or null = All Projects / no space).
+  const assignProjectViaDrop = (path: string, spaceId: string | null) => {
+    if (!path) return;
+    const current = useSpacesStore.getState().projectSpace[path] ?? null;
+    if (current === spaceId) return;
+    assignProject(path, spaceId);
+    const name = recentProjects.find((p) => p.path === path)?.name ?? "Project";
+    const target = spaceId ? spaces.find((s) => s.id === spaceId) : null;
+    toast.success(
+      target
+        ? `Moved “${name}” to ${target.name}`
+        : `Removed “${name}” from its space`,
+    );
+  };
   // Count per space from the SAME source as the grid/install handler (recentProjects),
   // so the badge can't drift from what's actually shown (and ignores orphaned mappings).
   const spaceCounts = useMemo(() => {
@@ -279,20 +834,99 @@ export function ProjectPicker() {
   }, [recentProjects, projectSpace]);
 
   const normalizedSearch = searchQuery.trim().toLowerCase();
+  // Projects in the current space (before applying the text query) — the
+  // candidate pool both the substring filter and semantic ranking draw from.
+  const spaceScopedProjects = useMemo(() => {
+    if (!activeSpaceId) return recentProjects;
+    return recentProjects.filter((p) => projectSpace[p.path] === activeSpaceId);
+  }, [recentProjects, activeSpaceId, projectSpace]);
+
+  const substringMatched = useMemo(() => {
+    if (!normalizedSearch) return spaceScopedProjects;
+    return spaceScopedProjects.filter(
+      (project) =>
+        project.name.toLowerCase().includes(normalizedSearch) ||
+        project.path.toLowerCase().includes(normalizedSearch),
+    );
+  }, [normalizedSearch, spaceScopedProjects]);
+
+  // Semantic fallback: when the literal filter surfaces few/zero matches for a
+  // >=3-char query, embed-rank the whole space-scoped pool so related projects
+  // still appear. Paths most-relevant first; null = no/failed ranking (fall
+  // back to the substring list). requestId-guarded + debounced; fails silently.
+  const [semanticOrder, setSemanticOrder] = useState<{
+    query: string;
+    paths: string[];
+  } | null>(null);
+  const semanticRequestIdRef = useRef(0);
+  const semanticDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+
+  // Substring already covers it well (>=3 hits) or the query is too short —
+  // skip the AI pass entirely and keep plain substring behavior.
+  const wantsSemantic =
+    aiSemanticSearch &&
+    normalizedSearch.length >= 3 &&
+    substringMatched.length < 3 &&
+    spaceScopedProjects.length > substringMatched.length;
+
+  useEffect(() => {
+    if (!wantsSemantic || !canUseAiAssist()) {
+      setSemanticOrder(null);
+      return;
+    }
+    if (semanticDebounceRef.current) clearTimeout(semanticDebounceRef.current);
+    const candidates = spaceScopedProjects;
+    const query = normalizedSearch;
+    semanticDebounceRef.current = setTimeout(() => {
+      const id = ++semanticRequestIdRef.current;
+      void semanticRank(
+        query,
+        candidates.map((p) => `${p.name} ${p.path}`),
+      )
+        .then((ranked) => {
+          if (id !== semanticRequestIdRef.current) return;
+          const ordered = ranked
+            .filter((r) => r.score > 0.2)
+            .map((r) => candidates[r.index]?.path)
+            .filter((path): path is string => Boolean(path));
+          setSemanticOrder(
+            ordered.length > 0 ? { query, paths: ordered } : null,
+          );
+        })
+        .catch(() => {
+          if (id === semanticRequestIdRef.current) setSemanticOrder(null);
+        });
+    }, 400);
+
+    return () => {
+      if (semanticDebounceRef.current) clearTimeout(semanticDebounceRef.current);
+    };
+  }, [wantsSemantic, normalizedSearch, spaceScopedProjects]);
+
   const visibleProjects = useMemo(() => {
-    let list = recentProjects;
-    if (activeSpaceId) {
-      list = list.filter((p) => projectSpace[p.path] === activeSpaceId);
+    // Use the semantic ordering only when it's for the live query (avoids
+    // showing stale results while the next ranking is in flight).
+    if (
+      wantsSemantic &&
+      semanticOrder &&
+      semanticOrder.query === normalizedSearch
+    ) {
+      const byPath = new Map(spaceScopedProjects.map((p) => [p.path, p]));
+      const surfaced = semanticOrder.paths
+        .map((path) => byPath.get(path))
+        .filter((p): p is (typeof spaceScopedProjects)[number] => Boolean(p));
+      if (surfaced.length > 0) return surfaced;
     }
-    if (normalizedSearch) {
-      list = list.filter(
-        (project) =>
-          project.name.toLowerCase().includes(normalizedSearch) ||
-          project.path.toLowerCase().includes(normalizedSearch),
-      );
-    }
-    return list;
-  }, [normalizedSearch, recentProjects, activeSpaceId, projectSpace]);
+    return substringMatched;
+  }, [
+    wantsSemantic,
+    semanticOrder,
+    normalizedSearch,
+    spaceScopedProjects,
+    substringMatched,
+  ]);
 
   const handleInstallSpaceSkills = async (space: Space) => {
     const projectsInSpace = recentProjects.filter(
@@ -302,16 +936,16 @@ export function ProjectPicker() {
       toast.info("Add projects to this space first.");
       return;
     }
+    const kind = inferSpaceKind(space);
+    const only = bundledSkillsForKind(kind);
     setInstallingSkills(true);
     let succeeded = 0;
     let failed = 0;
     let total = 0;
     for (const project of projectsInSpace) {
       try {
-        const installed = await invoke<unknown[]>("install_bundled_skills", {
-          projectPath: project.path,
-        });
-        total += Array.isArray(installed) ? installed.length : 0;
+        const installed = await installBundledSkills(project.path, only);
+        total += installed.length;
         succeeded += 1;
       } catch (err) {
         failed += 1;
@@ -319,9 +953,11 @@ export function ProjectPicker() {
       }
     }
     setInstallingSkills(false);
+    const skillHint =
+      only && only.length > 0 ? ` (${only.join(", ")})` : " (full bundle)";
     if (succeeded > 0) {
       toast.success(
-        `Installed DevPrism skills into ${succeeded} project${
+        `Installed DevPrism skills${skillHint} into ${succeeded} project${
           succeeded === 1 ? "" : "s"
         } (${total} skill folders)${failed > 0 ? `; ${failed} failed` : ""}.`,
       );
@@ -393,6 +1029,8 @@ export function ProjectPicker() {
               setActiveSection("projects");
               setActiveSpace(null);
             }}
+            droppable={isDraggingProject}
+            onDropProject={(path) => assignProjectViaDrop(path, null)}
           >
             All Projects
           </ProjectNavButton>
@@ -407,7 +1045,7 @@ export function ProjectPicker() {
                   type="button"
                   title="New space"
                   aria-label="New space"
-                  onClick={() => setSpaceDialog({ editingId: null, name: "" })}
+                  onClick={openNewSpaceDialog}
                   className="flex size-5 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   <PlusIcon className="size-3.5" />
@@ -430,26 +1068,17 @@ export function ProjectPicker() {
                       setActiveSection("projects");
                       setActiveSpace(space.id);
                     }}
-                    onRename={() =>
-                      setSpaceDialog({ editingId: space.id, name: space.name })
-                    }
+                    onEdit={() => openEditSpaceDialog(space)}
                     onDelete={() => setDeleteSpaceTarget(space)}
+                    droppable={isDraggingProject}
+                    onDropProject={(path) =>
+                      assignProjectViaDrop(path, space.id)
+                    }
                   />
                 ))
               )}
             </div>
           )}
-
-          <div className="mt-2">
-            <ProjectNavButton
-              active={activeSection === "settings"}
-              collapsed={isSidebarCollapsed}
-              icon={SettingsIcon}
-              onClick={() => setActiveSection("settings")}
-            >
-              Settings
-            </ProjectNavButton>
-          </div>
         </nav>
 
         <div
@@ -459,11 +1088,38 @@ export function ProjectPicker() {
           )}
         >
           {isSidebarCollapsed ? (
-            <img src="/icon-192.png" alt="DevPrism" className="size-4" />
+            <Button
+              variant="ghost"
+              size="icon"
+              className={cn(
+                "size-6",
+                activeSection === "settings" &&
+                  "bg-sidebar-accent text-foreground",
+              )}
+              onClick={() => setActiveSection("settings")}
+              title="Settings"
+              aria-label="Settings"
+            >
+              <SettingsIcon className="size-3.5" />
+            </Button>
           ) : (
             <>
               <span className="truncate">DevPrism v{appVersion}</span>
               <div className="flex shrink-0 items-center gap-1">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className={cn(
+                    "size-6",
+                    activeSection === "settings" &&
+                      "bg-sidebar-accent text-foreground",
+                  )}
+                  onClick={() => setActiveSection("settings")}
+                  title="Settings"
+                  aria-label="Settings"
+                >
+                  <SettingsIcon className="size-3.5" />
+                </Button>
                 <Button variant="ghost" size="icon" className="size-6" asChild>
                   <a
                     href="https://github.com/bharathvbcr/DevPrism"
@@ -474,38 +1130,6 @@ export function ProjectPicker() {
                   >
                     <GithubIcon className="size-3.5" />
                   </a>
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-6"
-                  onClick={() => {
-                    if (theme === "system") setTheme("light");
-                    else if (theme === "light") setTheme("dark");
-                    else setTheme("system");
-                  }}
-                  aria-label={`Switch theme (currently ${theme}, switch to ${
-                    theme === "system"
-                      ? "light"
-                      : theme === "light"
-                        ? "dark"
-                        : "system"
-                  })`}
-                  title={
-                    theme === "system"
-                      ? "System theme"
-                      : theme === "light"
-                        ? "Light mode"
-                        : "Dark mode"
-                  }
-                >
-                  {theme === "system" ? (
-                    <MonitorIcon className="size-3.5" />
-                  ) : theme === "light" ? (
-                    <SunIcon className="size-3.5" />
-                  ) : (
-                    <MoonIcon className="size-3.5" />
-                  )}
                 </Button>
               </div>
             </>
@@ -521,10 +1145,7 @@ export function ProjectPicker() {
                 "Settings"
               ) : activeSpace ? (
                 <>
-                  <span
-                    className="size-2.5 shrink-0 rounded-full"
-                    style={{ backgroundColor: activeSpace.color }}
-                  />
+                  <SpaceGlyph space={activeSpace} />
                   <span className="truncate">{activeSpace.name}</span>
                 </>
               ) : (
@@ -549,6 +1170,39 @@ export function ProjectPicker() {
                 </kbd>
               </div>
 
+              <div
+                className="hidden h-9 shrink-0 items-center rounded-lg border border-input p-0.5 sm:flex"
+                role="group"
+                aria-label="Date shown on project cards"
+              >
+                {(
+                  [
+                    { value: "modified", label: "Last edited" },
+                    { value: "created", label: "Created" },
+                  ] as const
+                ).map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => setHomepageDateField(option.value)}
+                    aria-pressed={homepageDateField === option.value}
+                    title={
+                      option.value === "modified"
+                        ? "Show each project's last edited date"
+                        : "Show each project's created date"
+                    }
+                    className={cn(
+                      "h-8 rounded-md px-2.5 font-medium text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      homepageDateField === option.value
+                        ? "bg-muted text-foreground"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+
               <Button
                 onClick={handleOpenFolder}
                 variant="secondary"
@@ -570,6 +1224,9 @@ export function ProjectPicker() {
 
         {activeSection === "projects" && activeSpace && (
           <div className="flex flex-wrap items-center gap-3 border-border/60 border-b bg-muted/20 px-5 py-2.5">
+            <span className="rounded-md bg-background px-2 py-0.5 font-medium text-[11px] text-muted-foreground ring-1 ring-border/60">
+              {spaceKindLabel(inferSpaceKind(activeSpace))}
+            </span>
             <span className="text-muted-foreground text-xs">Default model</span>
             <input
               value={activeSpace.defaultModel ?? ""}
@@ -585,6 +1242,16 @@ export function ProjectPicker() {
             />
             <div className="ml-auto flex items-center gap-2">
               <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 gap-1.5"
+                title="Customize this space"
+                onClick={() => openEditSpaceDialog(activeSpace)}
+              >
+                <PencilIcon className="size-3.5" />
+                Edit
+              </Button>
+              <Button
                 variant="secondary"
                 size="sm"
                 className="h-8 gap-1.5"
@@ -596,6 +1263,15 @@ export function ProjectPicker() {
                 {installingSkills ? "Installing…" : "Install skills"}
               </Button>
             </div>
+            {activeSpace.description?.trim() ? (
+              <p className="w-full text-muted-foreground text-xs leading-snug">
+                {activeSpace.description}
+              </p>
+            ) : (
+              <p className="w-full text-muted-foreground text-xs leading-snug">
+                {spaceFeatureConfig(activeSpace).description}
+              </p>
+            )}
           </div>
         )}
 
@@ -616,6 +1292,27 @@ export function ProjectPicker() {
                   label="Environment"
                   meta="Python / Skills"
                   onClick={() => setSettingsDetailSection("environment")}
+                />
+                <SettingsDetailButton
+                  active={settingsDetailSection === "ai"}
+                  icon={SparklesIcon}
+                  label="AI Features"
+                  meta="Predictive / Grammar"
+                  onClick={() => setSettingsDetailSection("ai")}
+                />
+                <SettingsDetailButton
+                  active={settingsDetailSection === "personalization"}
+                  icon={UserIcon}
+                  label="Personalization"
+                  meta="User Profile / Tone"
+                  onClick={() => setSettingsDetailSection("personalization")}
+                />
+                <SettingsDetailButton
+                  active={settingsDetailSection === "editor"}
+                  icon={ZapIcon}
+                  label="Compilation"
+                  meta="Engine / Auto-compile / Preview"
+                  onClick={() => setSettingsDetailSection("editor")}
                 />
               </aside>
 
@@ -663,6 +1360,36 @@ export function ProjectPicker() {
                     </label>
                     {nativeAgentEnabled && (
                       <div className="flex flex-wrap items-end gap-4 border-border/60 border-b px-4 py-3">
+                        <label className="flex min-w-[12rem] flex-1 flex-col gap-1">
+                          <span className="text-muted-foreground text-xs">
+                            Chat model
+                          </span>
+                          <select
+                            value={nativeOllamaModel ?? ""}
+                            disabled={settingsOllamaModelsLoading}
+                            onChange={(e) =>
+                              setNativeOllamaModel(e.target.value || null)
+                            }
+                            className="h-8 w-full min-w-0 rounded-md border border-input bg-background px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                          >
+                            <option value="">Auto (first chat model)</option>
+                            {chatOllamaModels.map((model) => (
+                              <option key={model.name} value={model.name}>
+                                {model.name}
+                              </option>
+                            ))}
+                          </select>
+                          {settingsOllamaModelsLoading && (
+                            <span className="text-[10px] text-muted-foreground">
+                              Loading models from {settingsOllamaBaseUrl}…
+                            </span>
+                          )}
+                          {settingsOllamaModelsError && (
+                            <span className="text-[10px] text-destructive">
+                              {settingsOllamaModelsError}
+                            </span>
+                          )}
+                        </label>
                         <label className="flex flex-col gap-1">
                           <span className="text-muted-foreground text-xs">
                             Context window (num_ctx)
@@ -700,15 +1427,681 @@ export function ProjectPicker() {
                         </p>
                       </div>
                     )}
+                    {nativeAgentEnabled &&
+                      settingsDetailSection === "provider" &&
+                      (settingsOllamaModelsError ||
+                        !settingsOllamaStatus?.connected ||
+                        chatOllamaModels.length === 0) && (
+                        <div className="border-border/60 border-b px-4 py-3">
+                          <OllamaSetupHints
+                            baseUrl={settingsOllamaBaseUrl}
+                            onModelsChanged={reloadSettingsOllamaModels}
+                            connected={Boolean(settingsOllamaStatus?.connected)}
+                            chatModels={
+                              settingsOllamaStatus?.chatModels ??
+                              chatOllamaModels.length
+                            }
+                          />
+                        </div>
+                      )}
+                    <div className="space-y-3 border-border/60 border-b p-4">
+                      <div className="font-medium text-sm">
+                        AI writing assist
+                      </div>
+                      <p className="text-muted-foreground text-xs">
+                        Lightweight local AI for grammar hints, predictive text
+                        (Tab to accept), contextual suggestions, and one-click
+                        selection edits — powered by Ollama or your configured
+                        OpenAI-compatible provider.
+                      </p>
+                      <label className="flex cursor-pointer items-start gap-3">
+                        <input
+                          type="checkbox"
+                          className="mt-0.5 size-4 shrink-0 accent-primary"
+                          checked={aiAssistEnabled}
+                          onChange={(e) => setAiAssistEnabled(e.target.checked)}
+                        />
+                        <span className="text-sm">
+                          Enable AI assist everywhere
+                        </span>
+                      </label>
+                      {aiAssistEnabled && (
+                        <div className="ml-7 space-y-2">
+                          <label className="flex cursor-pointer items-center gap-2 text-sm">
+                            <input
+                              type="checkbox"
+                              className="size-4 accent-primary"
+                              checked={aiGrammarHints}
+                              onChange={(e) =>
+                                setAiGrammarHints(e.target.checked)
+                              }
+                            />
+                            Grammar hints on the current line
+                          </label>
+                          <label className="flex cursor-pointer items-center gap-2 text-sm">
+                            <input
+                              type="checkbox"
+                              className="size-4 accent-primary"
+                              checked={aiPredictiveText}
+                              onChange={(e) =>
+                                setAiPredictiveText(e.target.checked)
+                              }
+                            />
+                            Predictive completions while typing
+                          </label>
+                          <label className="flex cursor-pointer items-center gap-2 text-sm">
+                            <input
+                              type="checkbox"
+                              className="size-4 accent-primary"
+                              checked={aiContextSuggestions}
+                              onChange={(e) =>
+                                setAiContextSuggestions(e.target.checked)
+                              }
+                            />
+                            Contextual action chips in the editor
+                          </label>
+                        </div>
+                      )}
+                    </div>
                     <ClaudeSetup variant="embedded" />
                   </SettingsPanel>
-                ) : (
+                ) : settingsDetailSection === "environment" ? (
                   <SettingsPanel
                     title="Environment"
                     icon={CheckCircle2Icon}
                     contentClassName="p-0"
                   >
                     <EnvironmentStatus appVersion={appVersion} />
+                  </SettingsPanel>
+                ) : settingsDetailSection === "ai" ? (
+                  <SettingsPanel
+                    title="AI Features"
+                    icon={SparklesIcon}
+                    contentClassName="p-0"
+                  >
+                    <label className="flex cursor-pointer items-start gap-3 border-border/60 border-b p-4">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 size-4 shrink-0 accent-primary"
+                        checked={aiAssistEnabled}
+                        onChange={(e) => setAiAssistEnabled(e.target.checked)}
+                      />
+                      <div className="min-w-0">
+                        <div className="font-medium text-sm">
+                          Enable AI assistant features
+                        </div>
+                        <p className="mt-0.5 text-muted-foreground text-xs">
+                          Master toggle for all lightweight AI assist features
+                          (predictive text, grammar hints, suggestions).
+                        </p>
+                      </div>
+                    </label>
+
+                    <label
+                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 size-4 shrink-0 accent-primary"
+                        checked={aiPredictiveText}
+                        disabled={!aiAssistEnabled}
+                        onChange={(e) => setAiPredictiveText(e.target.checked)}
+                      />
+                      <div className="min-w-0">
+                        <div className="font-medium text-sm">
+                          Predictive text (ghost text)
+                        </div>
+                        <p className="mt-0.5 text-muted-foreground text-xs">
+                          Show inline gray ghost text as you type. Press{" "}
+                          <kbd className="rounded bg-muted px-1">Tab</kbd> to
+                          accept or{" "}
+                          <kbd className="rounded bg-muted px-1">Esc</kbd> to
+                          dismiss.
+                        </p>
+                      </div>
+                    </label>
+
+                    <label
+                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 size-4 shrink-0 accent-primary"
+                        checked={aiGrammarHints}
+                        disabled={!aiAssistEnabled}
+                        onChange={(e) => setAiGrammarHints(e.target.checked)}
+                      />
+                      <div className="min-w-0">
+                        <div className="font-medium text-sm">
+                          AI grammar & style checks
+                        </div>
+                        <p className="mt-0.5 text-muted-foreground text-xs">
+                          Scan the paragraph around your cursor after you pause
+                          typing. Highlights grammar, style, or spelling errors
+                          with quick-fix options.
+                        </p>
+                      </div>
+                    </label>
+
+                    <label
+                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 size-4 shrink-0 accent-primary"
+                        checked={aiContextSuggestions}
+                        disabled={!aiAssistEnabled}
+                        onChange={(e) =>
+                          setAiContextSuggestions(e.target.checked)
+                        }
+                      />
+                      <div className="min-w-0">
+                        <div className="font-medium text-sm">
+                          Contextual prompt suggestions
+                        </div>
+                        <p className="mt-0.5 text-muted-foreground text-xs">
+                          Display context-aware quick action chips above the
+                          status bar based on your active document's contents.
+                        </p>
+                      </div>
+                    </label>
+
+                    <label
+                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 size-4 shrink-0 accent-primary"
+                        checked={aiLintFix}
+                        disabled={!aiAssistEnabled}
+                        onChange={(e) => setAiLintFix(e.target.checked)}
+                      />
+                      <div className="min-w-0">
+                        <div className="font-medium text-sm">
+                          Direct lint fixes
+                        </div>
+                        <p className="mt-0.5 text-muted-foreground text-xs">
+                          Fix LaTeX lint problems in one click via local AI
+                          instead of opening the full chat.
+                        </p>
+                      </div>
+                    </label>
+
+                    <label
+                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 size-4 shrink-0 accent-primary"
+                        checked={aiCompileAssist}
+                        disabled={!aiAssistEnabled}
+                        onChange={(e) => setAiCompileAssist(e.target.checked)}
+                      />
+                      <div className="min-w-0">
+                        <div className="font-medium text-sm">
+                          Compile error assist
+                        </div>
+                        <p className="mt-0.5 text-muted-foreground text-xs">
+                          Explain compilation failures and route fixes through
+                          AI from the PDF preview error screen.
+                        </p>
+                      </div>
+                    </label>
+
+                    <label
+                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 size-4 shrink-0 accent-primary"
+                        checked={aiBibAssist}
+                        disabled={!aiAssistEnabled}
+                        onChange={(e) => setAiBibAssist(e.target.checked)}
+                      />
+                      <div className="min-w-0">
+                        <div className="font-medium text-sm">
+                          Bibliography completion
+                        </div>
+                        <p className="mt-0.5 text-muted-foreground text-xs">
+                          Generate or complete BibTeX entries from a DOI, URL,
+                          or citation hint.
+                        </p>
+                      </div>
+                    </label>
+
+                    <label
+                      className={`flex cursor-pointer items-start gap-3 p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 size-4 shrink-0 accent-primary"
+                        checked={aiChatFollowUps}
+                        disabled={!aiAssistEnabled}
+                        onChange={(e) => setAiChatFollowUps(e.target.checked)}
+                      />
+                      <div className="min-w-0">
+                        <div className="font-medium text-sm">
+                          Chat follow-up suggestions
+                        </div>
+                        <p className="mt-0.5 text-muted-foreground text-xs">
+                          Show AI-suggested next prompts after the assistant
+                          replies in the chat drawer.
+                        </p>
+                      </div>
+                    </label>
+
+                    <label
+                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 size-4 shrink-0 accent-primary"
+                        checked={aiContextSuggestions}
+                        disabled={!aiAssistEnabled}
+                        onChange={(e) =>
+                          setAiContextSuggestions(e.target.checked)
+                        }
+                      />
+                      <div className="min-w-0">
+                        <div className="font-medium text-sm">
+                          Contextual prompt suggestions
+                        </div>
+                        <p className="mt-0.5 text-muted-foreground text-xs">
+                          Display context-aware quick action chips above the
+                          status bar based on your active document's contents.
+                        </p>
+                      </div>
+                    </label>
+
+                    <label
+                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 size-4 shrink-0 accent-primary"
+                        checked={aiPredictiveActions}
+                        disabled={!aiAssistEnabled}
+                        onChange={(e) =>
+                          setAiPredictiveActions(e.target.checked)
+                        }
+                      />
+                      <div className="min-w-0">
+                        <div className="font-medium text-sm">
+                          Predictive next-step actions
+                        </div>
+                        <p className="mt-0.5 text-muted-foreground text-xs">
+                          Suggest the most likely things to do next on the
+                          active document as one-click action chips.
+                        </p>
+                      </div>
+                    </label>
+
+                    <label
+                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 size-4 shrink-0 accent-primary"
+                        checked={aiChatGhostText}
+                        disabled={!aiAssistEnabled}
+                        onChange={(e) => setAiChatGhostText(e.target.checked)}
+                      />
+                      <div className="min-w-0">
+                        <div className="font-medium text-sm">
+                          Chat ghost-text completion
+                        </div>
+                        <p className="mt-0.5 text-muted-foreground text-xs">
+                          Show inline gray completions as you type in the chat
+                          box. Press{" "}
+                          <kbd className="rounded bg-muted px-1">Tab</kbd> to
+                          accept.
+                        </p>
+                      </div>
+                    </label>
+
+                    <label
+                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 size-4 shrink-0 accent-primary"
+                        checked={aiPromptImprove}
+                        disabled={!aiAssistEnabled}
+                        onChange={(e) => setAiPromptImprove(e.target.checked)}
+                      />
+                      <div className="min-w-0">
+                        <div className="font-medium text-sm">
+                          Improve my prompt
+                        </div>
+                        <p className="mt-0.5 text-muted-foreground text-xs">
+                          Add a button to rewrite your chat prompt to be clearer
+                          and more specific before sending.
+                        </p>
+                      </div>
+                    </label>
+
+                    <label
+                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 size-4 shrink-0 accent-primary"
+                        checked={aiAutoTitles}
+                        disabled={!aiAssistEnabled}
+                        onChange={(e) => setAiAutoTitles(e.target.checked)}
+                      />
+                      <div className="min-w-0">
+                        <div className="font-medium text-sm">
+                          AI chat titles
+                        </div>
+                        <p className="mt-0.5 text-muted-foreground text-xs">
+                          Name chat tabs automatically from the conversation
+                          instead of a fixed heuristic.
+                        </p>
+                      </div>
+                    </label>
+
+                    <label
+                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 size-4 shrink-0 accent-primary"
+                        checked={aiSummarize}
+                        disabled={!aiAssistEnabled}
+                        onChange={(e) => setAiSummarize(e.target.checked)}
+                      />
+                      <div className="min-w-0">
+                        <div className="font-medium text-sm">
+                          One-click summaries
+                        </div>
+                        <p className="mt-0.5 text-muted-foreground text-xs">
+                          Summarize the selected text from the editor toolbar
+                          and condense long assistant replies in chat.
+                        </p>
+                      </div>
+                    </label>
+
+                    <label
+                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 size-4 shrink-0 accent-primary"
+                        checked={aiNaming}
+                        disabled={!aiAssistEnabled}
+                        onChange={(e) => setAiNaming(e.target.checked)}
+                      />
+                      <div className="min-w-0">
+                        <div className="font-medium text-sm">
+                          AI naming suggestions
+                        </div>
+                        <p className="mt-0.5 text-muted-foreground text-xs">
+                          Propose names for new projects and tailored versions
+                          from your description or target text.
+                        </p>
+                      </div>
+                    </label>
+
+                    <label
+                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 size-4 shrink-0 accent-primary"
+                        checked={aiTemplateRecommend}
+                        disabled={!aiAssistEnabled}
+                        onChange={(e) =>
+                          setAiTemplateRecommend(e.target.checked)
+                        }
+                      />
+                      <div className="min-w-0">
+                        <div className="font-medium text-sm">
+                          AI template recommendations
+                        </div>
+                        <p className="mt-0.5 text-muted-foreground text-xs">
+                          Rank templates by what you describe you want to write
+                          in the template gallery.
+                        </p>
+                      </div>
+                    </label>
+
+                    <label
+                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 size-4 shrink-0 accent-primary"
+                        checked={aiProjectBlurb}
+                        disabled={!aiAssistEnabled}
+                        onChange={(e) => setAiProjectBlurb(e.target.checked)}
+                      />
+                      <div className="min-w-0">
+                        <div className="font-medium text-sm">
+                          Project card summaries
+                        </div>
+                        <p className="mt-0.5 text-muted-foreground text-xs">
+                          Show a one-line AI summary of each project on its card
+                          in the home screen.
+                        </p>
+                      </div>
+                    </label>
+
+                    <label
+                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 size-4 shrink-0 accent-primary"
+                        checked={aiCommentAssist}
+                        disabled={!aiAssistEnabled}
+                        onChange={(e) => setAiCommentAssist(e.target.checked)}
+                      />
+                      <div className="min-w-0">
+                        <div className="font-medium text-sm">
+                          Review &amp; comment assist
+                        </div>
+                        <p className="mt-0.5 text-muted-foreground text-xs">
+                          Draft replies to comments, address feedback, and
+                          summarize what changed between versions.
+                        </p>
+                      </div>
+                    </label>
+
+                    <label
+                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 size-4 shrink-0 accent-primary"
+                        checked={aiSemanticSearch}
+                        disabled={!aiAssistEnabled}
+                        onChange={(e) => setAiSemanticSearch(e.target.checked)}
+                      />
+                      <div className="min-w-0">
+                        <div className="font-medium text-sm">
+                          Semantic search
+                        </div>
+                        <p className="mt-0.5 text-muted-foreground text-xs">
+                          When an exact match isn't found, use local embeddings
+                          to surface related passages (e.g. PDF find). Needs an
+                          embedding model such as{" "}
+                          <code className="rounded bg-muted px-1">
+                            nomic-embed-text
+                          </code>
+                          .
+                        </p>
+                      </div>
+                    </label>
+
+                    <label
+                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 size-4 shrink-0 accent-primary"
+                        checked={aiCommandAssist}
+                        disabled={!aiAssistEnabled}
+                        onChange={(e) => setAiCommandAssist(e.target.checked)}
+                      />
+                      <div className="min-w-0">
+                        <div className="font-medium text-sm">
+                          Command &amp; skill assist
+                        </div>
+                        <p className="mt-0.5 text-muted-foreground text-xs">
+                          Summarize undocumented slash commands and rank them by
+                          what you type in the command picker.
+                        </p>
+                      </div>
+                    </label>
+
+                    <label
+                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 size-4 shrink-0 accent-primary"
+                        checked={aiSnippetFill}
+                        disabled={!aiAssistEnabled}
+                        onChange={(e) => setAiSnippetFill(e.target.checked)}
+                      />
+                      <div className="min-w-0">
+                        <div className="font-medium text-sm">
+                          Insert snippets with AI
+                        </div>
+                        <p className="mt-0.5 text-muted-foreground text-xs">
+                          Fill a LaTeX snippet's placeholders from the
+                          surrounding document instead of inserting a blank
+                          skeleton.
+                        </p>
+                      </div>
+                    </label>
+
+                    <label
+                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 size-4 shrink-0 accent-primary"
+                        checked={aiVisionCaption}
+                        disabled={!aiAssistEnabled}
+                        onChange={(e) => setAiVisionCaption(e.target.checked)}
+                      />
+                      <div className="min-w-0">
+                        <div className="font-medium text-sm">
+                          Image captions (vision)
+                        </div>
+                        <p className="mt-0.5 text-muted-foreground text-xs">
+                          Generate figure captions / alt-text from a captured
+                          region using a local vision model (e.g.{" "}
+                          <code className="rounded bg-muted px-1">
+                            llava
+                          </code>
+                          ).
+                        </p>
+                      </div>
+                    </label>
+
+                    <label
+                      className={`flex cursor-pointer items-start gap-3 p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 size-4 shrink-0 accent-primary"
+                        checked={aiCommandPalette}
+                        disabled={!aiAssistEnabled}
+                        onChange={(e) => setAiCommandPalette(e.target.checked)}
+                      />
+                      <div className="min-w-0">
+                        <div className="font-medium text-sm">
+                          AI command palette
+                        </div>
+                        <p className="mt-0.5 text-muted-foreground text-xs">
+                          Press{" "}
+                          <kbd className="rounded bg-muted px-1">Ctrl/Cmd+K</kbd>{" "}
+                          to run actions by name or describe what you want in
+                          plain language.
+                        </p>
+                      </div>
+                    </label>
+                  </SettingsPanel>
+                ) : settingsDetailSection === "personalization" ? (
+                  <SettingsPanel
+                    title="Personalization"
+                    icon={UserIcon}
+                    contentClassName="p-0"
+                  >
+                    <PersonalizationSettings />
+                  </SettingsPanel>
+                ) : (
+                  <SettingsPanel
+                    title="Compilation"
+                    icon={ZapIcon}
+                    contentClassName="p-0"
+                  >
+                    <div className="flex flex-wrap items-end gap-4 border-border/60 border-b px-4 py-4">
+                      <label className="flex flex-col gap-1">
+                        <span className="text-muted-foreground text-xs">
+                          Engine
+                        </span>
+                        <select
+                          value={compilerBackend}
+                          onChange={(e) =>
+                            setCompilerBackend(
+                              e.target.value as "tectonic" | "texlive",
+                            )
+                          }
+                          className="h-8 w-40 rounded-md border border-input bg-background px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                        >
+                          <option value="tectonic">Tectonic</option>
+                          <option value="texlive">TeXLive</option>
+                        </select>
+                      </label>
+                      <p className="max-w-xs text-muted-foreground/70 text-xs">
+                        Tectonic is bundled and works offline. TeXLive uses your
+                        local installation (pdflatex / xelatex / lualatex).
+                      </p>
+                    </div>
+                    <label className="flex cursor-pointer items-start gap-3 border-border/60 border-b p-4">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 size-4 shrink-0 accent-primary"
+                        checked={autoCompile}
+                        onChange={(e) => setAutoCompile(e.target.checked)}
+                      />
+                      <div className="min-w-0">
+                        <div className="font-medium text-sm">
+                          Auto-compile on edit
+                        </div>
+                        <p className="mt-0.5 text-muted-foreground text-xs">
+                          Automatically recompile the document a short moment
+                          after you stop typing. When off, compile manually with
+                          the toolbar button or{" "}
+                          <kbd className="rounded bg-muted px-1">
+                            Cmd/Ctrl+Enter
+                          </kbd>
+                          .
+                        </p>
+                      </div>
+                    </label>
+                    <label className="flex cursor-pointer items-start gap-3 p-4">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 size-4 shrink-0 accent-primary"
+                        checked={pdfDarkMode}
+                        onChange={(e) => setPdfDarkMode(e.target.checked)}
+                      />
+                      <div className="min-w-0">
+                        <div className="font-medium text-sm">
+                          Dark PDF preview
+                        </div>
+                        <p className="mt-0.5 text-muted-foreground text-xs">
+                          Invert the rendered PDF for a dark-friendly page (dark
+                          background, light ink). Affects the on-screen preview
+                          only — the exported PDF is unchanged.
+                        </p>
+                      </div>
+                    </label>
                   </SettingsPanel>
                 )}
               </div>
@@ -784,9 +2177,9 @@ export function ProjectPicker() {
                       onAssign={(spaceId) =>
                         assignProject(project.path, spaceId)
                       }
-                      onCreateSpace={() =>
-                        setSpaceDialog({ editingId: null, name: "" })
-                      }
+                      onCreateSpace={openNewSpaceDialog}
+                      onDragStateChange={setIsDraggingProject}
+                      dateField={homepageDateField}
                     />
                   ))}
                 </div>
@@ -803,6 +2196,7 @@ export function ProjectPicker() {
             <DialogTitle>Create New Project</DialogTitle>
             <DialogDescription>How would you like to start?</DialogDescription>
           </DialogHeader>
+          <NewProjectSpaceHint />
           <div className="flex gap-3 pt-2">
             <button
               onClick={() => handleSelectMode("template")}
@@ -840,7 +2234,7 @@ export function ProjectPicker() {
         </DialogContent>
       </Dialog>
 
-      {/* Create / rename space dialog */}
+      {/* Create / edit space dialog */}
       <Dialog
         open={!!spaceDialog}
         onOpenChange={(open) => {
@@ -850,12 +2244,12 @@ export function ProjectPicker() {
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
             <DialogTitle>
-              {spaceDialog?.editingId ? "Rename space" : "New space"}
+              {spaceDialog?.editingId ? "Edit space" : "New space"}
             </DialogTitle>
             <DialogDescription>
               {spaceDialog?.editingId
-                ? "Give this space a clearer name."
-                : "Group related projects with a shared default model and skills."}
+                ? "Customize this space's type, name, color, icon, and description."
+                : "Group related projects and choose which workspace features they get."}
             </DialogDescription>
           </DialogHeader>
           <form
@@ -865,26 +2259,239 @@ export function ProjectPicker() {
               const name = spaceDialog.name.trim();
               if (!name) return;
               if (spaceDialog.editingId) {
-                renameSpace(spaceDialog.editingId, name);
+                updateSpace(spaceDialog.editingId, {
+                  name,
+                  kind: spaceDialog.kind,
+                  color: spaceDialog.color,
+                  icon: spaceDialog.icon,
+                  description: spaceDialog.description,
+                });
               } else {
-                const created = createSpace(name);
+                const created = createSpace(name, {
+                  kind: spaceDialog.kind,
+                  color: spaceDialog.color,
+                  icon: spaceDialog.icon,
+                  description: spaceDialog.description,
+                });
                 setActiveSection("projects");
                 setActiveSpace(created.id);
               }
               setSpaceDialog(null);
             }}
+            className="space-y-4"
           >
-            <input
-              autoFocus
-              value={spaceDialog?.name ?? ""}
-              onChange={(event) =>
-                setSpaceDialog((prev) =>
-                  prev ? { ...prev, name: event.target.value } : prev,
-                )
-              }
-              placeholder="e.g. PhD Papers, Job Applications"
-              className="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm outline-none transition-[color,box-shadow] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
-            />
+            {/* Name */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <label
+                  htmlFor="space-name"
+                  className="font-medium text-muted-foreground text-xs"
+                >
+                  Name
+                </label>
+                {canSuggestSpaceMeta && (
+                  <button
+                    type="button"
+                    onClick={handleSuggestSpaceMeta}
+                    disabled={spaceMetaPending}
+                    title={`Suggest a name and description from the ${dialogAssignedProjectNames.length} project${
+                      dialogAssignedProjectNames.length === 1 ? "" : "s"
+                    } in this space`}
+                    className="flex items-center gap-1 rounded-md px-1.5 py-0.5 font-medium text-[11px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+                  >
+                    {spaceMetaPending ? (
+                      <Loader2Icon className="size-3 animate-spin" />
+                    ) : (
+                      <WandSparklesIcon className="size-3" />
+                    )}
+                    Suggest with AI
+                  </button>
+                )}
+              </div>
+              <input
+                id="space-name"
+                autoFocus
+                value={spaceDialog?.name ?? ""}
+                onChange={(event) => {
+                  setSpaceFieldTouched((prev) => ({ ...prev, name: true }));
+                  setSpaceDialog((prev) =>
+                    prev ? { ...prev, name: event.target.value } : prev,
+                  );
+                }}
+                placeholder="e.g. PhD Papers, Job Applications"
+                className="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm outline-none transition-[color,box-shadow] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+              />
+            </div>
+
+            {/* Space type */}
+            <div className="space-y-1.5">
+              <span className="font-medium text-muted-foreground text-xs">
+                Type
+              </span>
+              <div className="grid grid-cols-2 gap-2">
+                {SPACE_KIND_OPTIONS.map((option) => {
+                  const selected = spaceDialog?.kind === option.kind;
+                  return (
+                    <button
+                      key={option.kind}
+                      type="button"
+                      aria-pressed={selected}
+                      onClick={() =>
+                        setSpaceDialog((prev) =>
+                          prev
+                            ? {
+                                ...prev,
+                                kind: option.kind,
+                                icon:
+                                  prev.editingId || prev.icon
+                                    ? prev.icon
+                                    : option.defaultIcon,
+                              }
+                            : prev,
+                        )
+                      }
+                      className={cn(
+                        "rounded-lg border px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                        selected
+                          ? "border-foreground/40 bg-muted"
+                          : "border-border/60 hover:bg-muted/60",
+                      )}
+                    >
+                      <div className="font-medium text-sm">{option.label}</div>
+                      <p className="mt-0.5 text-[11px] text-muted-foreground leading-snug">
+                        {option.description}
+                      </p>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Color */}
+            <div className="space-y-1.5">
+              <span className="font-medium text-muted-foreground text-xs">
+                Color
+              </span>
+              <div className="flex flex-wrap gap-2">
+                {SPACE_COLORS.map((color) => {
+                  const selected = spaceDialog?.color === color;
+                  return (
+                    <button
+                      key={color}
+                      type="button"
+                      aria-label={`Use color ${color}`}
+                      aria-pressed={selected}
+                      onClick={() =>
+                        setSpaceDialog((prev) =>
+                          prev ? { ...prev, color } : prev,
+                        )
+                      }
+                      style={{ backgroundColor: color }}
+                      className={cn(
+                        "size-6 rounded-full ring-offset-2 ring-offset-background transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                        selected && "ring-2 ring-foreground",
+                      )}
+                    >
+                      {selected && (
+                        <CheckIcon className="mx-auto size-3.5 text-white drop-shadow" />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Icon */}
+            <div className="space-y-1.5">
+              <span className="font-medium text-muted-foreground text-xs">
+                Icon
+              </span>
+              <div className="flex flex-wrap gap-1.5">
+                <button
+                  type="button"
+                  aria-label="No icon"
+                  aria-pressed={!spaceDialog?.icon}
+                  title="No icon (colored dot)"
+                  onClick={() =>
+                    setSpaceDialog((prev) =>
+                      prev ? { ...prev, icon: null } : prev,
+                    )
+                  }
+                  className={cn(
+                    "flex size-8 items-center justify-center rounded-md border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    !spaceDialog?.icon
+                      ? "border-foreground/40 bg-muted"
+                      : "border-border/60 hover:bg-muted/60",
+                  )}
+                >
+                  <span
+                    className="size-2.5 rounded-full"
+                    style={{ backgroundColor: spaceDialog?.color }}
+                  />
+                </button>
+                {SPACE_ICONS.map(({ key, Icon }) => {
+                  const selected = spaceDialog?.icon === key;
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      aria-label={`Use icon ${key}`}
+                      aria-pressed={selected}
+                      onClick={() =>
+                        setSpaceDialog((prev) =>
+                          prev ? { ...prev, icon: key } : prev,
+                        )
+                      }
+                      className={cn(
+                        "flex size-8 items-center justify-center rounded-md border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                        selected
+                          ? "border-foreground/40 bg-muted"
+                          : "border-border/60 hover:bg-muted/60",
+                      )}
+                    >
+                      <Icon
+                        className="size-4"
+                        style={
+                          selected ? { color: spaceDialog?.color } : undefined
+                        }
+                      />
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Description */}
+            <div className="space-y-1.5">
+              <label
+                htmlFor="space-description"
+                className="font-medium text-muted-foreground text-xs"
+              >
+                Description{" "}
+                <span className="font-normal text-muted-foreground/60">
+                  (optional)
+                </span>
+              </label>
+              <textarea
+                id="space-description"
+                rows={2}
+                value={spaceDialog?.description ?? ""}
+                onChange={(event) => {
+                  setSpaceFieldTouched((prev) => ({
+                    ...prev,
+                    description: true,
+                  }));
+                  setSpaceDialog((prev) =>
+                    prev
+                      ? { ...prev, description: event.target.value }
+                      : prev,
+                  );
+                }}
+                placeholder="What is this space for?"
+                className="w-full resize-none rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none transition-[color,box-shadow] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+              />
+            </div>
+
             <DialogFooter className="mt-4">
               <Button
                 type="button"
@@ -985,6 +2592,28 @@ export function ProjectPicker() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {(isDragging || isImporting) && (
+        <div className="pointer-events-none fixed inset-0 z-[9000] flex items-center justify-center bg-background/80 p-8 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-3 rounded-xl border-2 border-primary/60 border-dashed bg-card px-12 py-10 text-center shadow-lg">
+            {isImporting ? (
+              <Loader2Icon className="size-8 animate-spin text-primary" />
+            ) : (
+              <FileArchiveIcon className="size-8 text-primary" />
+            )}
+            <div>
+              <p className="font-semibold text-base">
+                {isImporting ? "Importing project…" : "Drop to import"}
+              </p>
+              <p className="mt-1 text-muted-foreground text-sm">
+                {isImporting
+                  ? "Extracting your LaTeX archive"
+                  : "Release a .zip archive, LaTeX files, or a project folder"}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1034,6 +2663,55 @@ async function firstExistingPath(
     (await firstExistingProjectFile(projectPath, candidates))?.absolutePath ??
     null
   );
+}
+
+/**
+ * Find the project's main LaTeX source for previewing. Prefers the conventional
+ * root-level names, but falls back to scanning the tree so imported projects
+ * whose entry file is named differently (e.g. `paper.tex`, `src/thesis.tex`)
+ * still get a compiled/source preview instead of "No preview". Among scanned
+ * candidates, prefers the shallowest file that declares `\documentclass` (the
+ * compile root).
+ */
+async function findMainTexFile(
+  projectPath: string,
+): Promise<{ absolutePath: string; relativePath: string } | null> {
+  const named = await firstExistingProjectFile(projectPath, [
+    ["main.tex"],
+    ["document.tex"],
+  ]);
+  if (named) return named;
+
+  let texFiles: { absolutePath: string; relativePath: string }[];
+  try {
+    const scan = await scanProjectFolder(projectPath);
+    texFiles = scan.files
+      .filter((f) => f.type === "tex")
+      .sort(
+        (a, b) =>
+          a.relativePath.split("/").length - b.relativePath.split("/").length ||
+          a.relativePath.localeCompare(b.relativePath),
+      )
+      .map((f) => ({
+        absolutePath: f.absolutePath,
+        relativePath: f.relativePath,
+      }));
+  } catch {
+    return null;
+  }
+  if (texFiles.length === 0) return null;
+
+  for (const file of texFiles) {
+    try {
+      if (/\\documentclass/.test(await readTextFile(file.absolutePath))) {
+        return file;
+      }
+    } catch {
+      // Unreadable — skip and keep looking.
+    }
+  }
+  // No \documentclass anywhere — best-guess with the shallowest .tex.
+  return texFiles[0];
 }
 
 async function renderPdfThumbnailFromBytes(bytes: Uint8Array): Promise<string> {
@@ -1103,13 +2781,41 @@ async function getProjectCreatedAt(
   }
 }
 
-function formatProjectCreatedDate(createdAt: number | null) {
-  if (!createdAt) return "";
+async function statMtimeMs(path: string): Promise<number | null> {
+  try {
+    const info = (await stat(path)) as { mtime?: unknown };
+    return statDateToMs(info.mtime);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * When the project was last edited. The folder's mtime only changes when entries
+ * are added/removed (not on content edits), so we also fold in the main .tex
+ * file's mtime — the best available signal that the document itself changed —
+ * and take the most recent of the two.
+ */
+async function getProjectModifiedAt(
+  projectPath: string,
+  mainTexPath: string | null,
+): Promise<number | null> {
+  const [dirMtime, texMtime] = await Promise.all([
+    statMtimeMs(projectPath),
+    mainTexPath ? statMtimeMs(mainTexPath) : Promise.resolve(null),
+  ]);
+  if (dirMtime === null) return texMtime;
+  if (texMtime === null) return dirMtime;
+  return Math.max(dirMtime, texMtime);
+}
+
+function formatProjectDate(value: number | null) {
+  if (!value) return "";
   return new Intl.DateTimeFormat("en-US", {
     year: "numeric",
     month: "short",
     day: "numeric",
-  }).format(new Date(createdAt));
+  }).format(new Date(value));
 }
 
 async function loadProjectPreview(
@@ -1124,27 +2830,41 @@ async function loadProjectPreview(
 
   const promise = (async () => {
     const createdAt = await getProjectCreatedAt(project.path);
-    const pdfPath = await firstExistingPath(project.path, [
+    const texFile = await findMainTexFile(project.path);
+    const modifiedAt = await getProjectModifiedAt(
+      project.path,
+      texFile?.absolutePath ?? null,
+    );
+
+    const pdfCandidates: string[][] = [
       [".prism", "build", "main.pdf"],
       [".prism", "build", "document.pdf"],
       ["main.pdf"],
       ["document.pdf"],
-    ]);
+    ];
+    // Also look for a PDF that matches the discovered main .tex (same basename),
+    // both in the build dir and next to the source — covers non-standard names.
+    if (texFile) {
+      const base = texFile.relativePath.replace(/\.tex$/i, "");
+      const baseName = base.split("/").pop() ?? base;
+      pdfCandidates.push(
+        [".prism", "build", `${baseName}.pdf`],
+        `${base}.pdf`.split("/"),
+        [`${baseName}.pdf`],
+      );
+    }
+    const pdfPath = await firstExistingPath(project.path, pdfCandidates);
 
     if (pdfPath) {
       const data: ProjectPreviewData = {
         kind: "pdf",
         url: await renderPdfThumbnail(pdfPath),
         createdAt,
+        modifiedAt,
       };
       projectPreviewCache.set(cacheKey, data);
       return data;
     }
-
-    const texFile = await firstExistingProjectFile(project.path, [
-      ["main.tex"],
-      ["document.tex"],
-    ]);
 
     if (texFile) {
       try {
@@ -1157,6 +2877,7 @@ async function loadProjectPreview(
           kind: "pdf",
           url: await renderPdfThumbnailFromBytes(pdfBytes),
           createdAt,
+          modifiedAt,
         };
         projectPreviewCache.set(cacheKey, data);
         return data;
@@ -1174,12 +2895,13 @@ async function loadProjectPreview(
         fileName,
         lines: texPreviewLines(await readTextFile(texFile.absolutePath)),
         createdAt,
+        modifiedAt,
       };
       projectPreviewCache.set(cacheKey, data);
       return data;
     }
 
-    const data: ProjectPreviewData = { kind: "empty", createdAt };
+    const data: ProjectPreviewData = { kind: "empty", createdAt, modifiedAt };
     projectPreviewCache.set(cacheKey, data);
     return data;
   })();
@@ -1192,6 +2914,48 @@ async function loadProjectPreview(
   }
 }
 
+/**
+ * Lazily produce a one-line AI summary of a project's main .tex, reusing the
+ * same main-file discovery the preview uses. Cached per project path so each
+ * project is summarized at most once per session, deduped while in flight, and
+ * concurrency-limited so hovering across cards can't flood the local model.
+ * Resolves to "" on any failure (caller renders nothing) — never throws.
+ */
+async function loadProjectBlurb(project: RecentProject): Promise<string> {
+  const key = project.path;
+  const cached = projectBlurbCache.get(key);
+  if (cached !== undefined) return cached;
+
+  const pending = projectBlurbRequests.get(key);
+  if (pending) return pending;
+
+  const promise = (async () => {
+    await acquireBlurbSlot();
+    try {
+      const texFile = await findMainTexFile(project.path);
+      if (!texFile) return "";
+      const content = await readTextFile(texFile.absolutePath);
+      const blurb = (await summarizeSection(content)).trim();
+      projectBlurbCache.set(key, blurb);
+      return blurb;
+    } catch (err) {
+      console.warn("Failed to summarize project:", { path: project.path, err });
+      // Cache the empty result so we don't retry a failing project all session.
+      projectBlurbCache.set(key, "");
+      return "";
+    } finally {
+      releaseBlurbSlot();
+    }
+  })();
+
+  projectBlurbRequests.set(key, promise);
+  try {
+    return await promise;
+  } finally {
+    projectBlurbRequests.delete(key);
+  }
+}
+
 function ProjectPreviewCard({
   project,
   onOpen,
@@ -1200,6 +2964,8 @@ function ProjectPreviewCard({
   currentSpaceId,
   onAssign,
   onCreateSpace,
+  onDragStateChange,
+  dateField,
 }: {
   project: RecentProject;
   onOpen: () => void;
@@ -1208,15 +2974,53 @@ function ProjectPreviewCard({
   currentSpaceId: string | null;
   onAssign: (spaceId: string | null) => void;
   onCreateSpace: () => void;
+  /** Notify the picker so sidebar spaces can light up as drop targets. */
+  onDragStateChange: (dragging: boolean) => void;
+  /** Which timestamp to show under the card (created vs. last edited). */
+  dateField: HomepageDateField;
 }) {
+  const [dragging, setDragging] = useState(false);
   const [preview, setPreview] = useState<ProjectPreviewState>(() => {
     const cached = projectPreviewCache.get(projectPreviewCacheKey(project));
     return cached ? { status: "ready", data: cached } : { status: "loading" };
   });
-  const createdDateLabel =
+
+  // ─── AI one-line summary blurb (gated by aiProjectBlurb) ───
+  const aiProjectBlurb = useSettingsStore((s) => s.aiProjectBlurb);
+  const [blurb, setBlurb] = useState<string>(
+    () => projectBlurbCache.get(project.path) ?? "",
+  );
+  const [blurbLoading, setBlurbLoading] = useState(false);
+  // Fire the (cancellation-safe) summary at most once per card. We throttle by
+  // only kicking off on hover/focus rather than for every card on mount, so we
+  // never spin up dozens of concurrent local-model calls at once.
+  const blurbStartedRef = useRef(false);
+
+  const startBlurb = useCallback(() => {
+    if (blurbStartedRef.current) return;
+    if (!aiProjectBlurb || !canUseAiAssist()) return;
+    const cached = projectBlurbCache.get(project.path);
+    if (cached !== undefined) {
+      blurbStartedRef.current = true;
+      setBlurb(cached);
+      return;
+    }
+    blurbStartedRef.current = true;
+    setBlurbLoading(true);
+    loadProjectBlurb(project)
+      .then((text) => setBlurb(text))
+      .catch(() => {
+        // loadProjectBlurb never throws, but stay defensive: degrade silently.
+      })
+      .finally(() => setBlurbLoading(false));
+  }, [aiProjectBlurb, project]);
+  const dateValue =
     preview.status === "ready"
-      ? formatProjectCreatedDate(preview.data.createdAt)
-      : "";
+      ? dateField === "modified"
+        ? preview.data.modifiedAt
+        : preview.data.createdAt
+      : null;
+  const dateLabel = formatProjectDate(dateValue);
 
   useEffect(() => {
     let cancelled = false;
@@ -1245,11 +3049,35 @@ function ProjectPreviewCard({
     };
   }, [project]);
 
+  // When this card is reused for a different project (list reorder/filter),
+  // reset the blurb to the new project's cached value (or empty) and allow a
+  // fresh hover-triggered summary.
+  useEffect(() => {
+    blurbStartedRef.current = false;
+    setBlurbLoading(false);
+    setBlurb(projectBlurbCache.get(project.path) ?? "");
+  }, [project.path]);
+
   return (
-    <div className="group min-w-0">
+    <div
+      className={cn("group min-w-0", dragging && "opacity-50")}
+      onMouseEnter={startBlurb}
+      onFocus={startBlurb}
+      draggable
+      onDragStart={(event) => {
+        event.dataTransfer.setData(PROJECT_DND_MIME, project.path);
+        event.dataTransfer.effectAllowed = "move";
+        setDragging(true);
+        onDragStateChange(true);
+      }}
+      onDragEnd={() => {
+        setDragging(false);
+        onDragStateChange(false);
+      }}
+    >
       <div className="relative">
         <button
-          className="relative aspect-[3/4] w-full overflow-hidden rounded-lg border border-border/70 bg-background text-left outline-none transition-all duration-200 hover:border-foreground/20 hover:shadow-md focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          className="relative aspect-[3/4] w-full cursor-grab overflow-hidden rounded-lg border border-border/70 bg-background text-left outline-none transition-all duration-200 hover:border-foreground/20 hover:shadow-md focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background active:cursor-grabbing"
           onClick={onOpen}
           tabIndex={-1}
           aria-hidden
@@ -1283,10 +3111,7 @@ function ProjectPreviewCard({
                   key={space.id}
                   onClick={() => onAssign(space.id)}
                 >
-                  <span
-                    className="size-2.5 shrink-0 rounded-full"
-                    style={{ backgroundColor: space.color }}
-                  />
+                  <SpaceGlyph space={space} />
                   <span className="flex-1 truncate">{space.name}</span>
                   {currentSpaceId === space.id && (
                     <CheckIcon className="size-3.5" />
@@ -1318,8 +3143,21 @@ function ProjectPreviewCard({
       >
         {project.name}
       </button>
+      {aiProjectBlurb && (blurbLoading || blurb) && (
+        <div className="mt-1 flex items-start gap-1 text-left text-muted-foreground text-xs leading-snug">
+          {blurbLoading ? (
+            <Loader2Icon className="mt-px size-3 shrink-0 animate-spin" />
+          ) : (
+            <SparklesIcon className="mt-px size-3 shrink-0 text-primary/70" />
+          )}
+          <span className="line-clamp-2">
+            {blurbLoading ? "Summarizing…" : blurb}
+          </span>
+        </div>
+      )}
       <div className="mt-1 h-4 truncate text-left text-muted-foreground text-xs">
-        {createdDateLabel}
+        {dateLabel &&
+          `${dateField === "modified" ? "Edited" : "Created"} ${dateLabel}`}
       </div>
     </div>
   );
@@ -1382,36 +3220,60 @@ function SpaceNavButton({
   active,
   count,
   onSelect,
-  onRename,
+  onEdit,
   onDelete,
+  droppable,
+  onDropProject,
 }: {
   space: Space;
   active: boolean;
   count: number;
   onSelect: () => void;
-  onRename: () => void;
+  onEdit: () => void;
   onDelete: () => void;
+  /** True while a project drag is in progress, so this space can light up. */
+  droppable: boolean;
+  /** Dropping a project card here reassigns it to this space (path => …). */
+  onDropProject: (path: string) => void;
 }) {
+  const [isOver, setIsOver] = useState(false);
   return (
     <div
+      onDragOver={(event) => {
+        if (!isProjectDrag(event)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        if (!isOver) setIsOver(true);
+      }}
+      onDragLeave={() => setIsOver(false)}
+      onDrop={(event) => {
+        if (!isProjectDrag(event)) return;
+        event.preventDefault();
+        setIsOver(false);
+        onDropProject(event.dataTransfer.getData(PROJECT_DND_MIME));
+      }}
       className={cn(
         "group/space flex items-center rounded-lg transition-colors",
         active
           ? "bg-muted text-foreground"
           : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+        droppable && "ring-1 ring-border ring-inset",
+        isOver && "bg-primary/10 text-foreground ring-2 ring-primary",
       )}
     >
       <button
         type="button"
         onClick={onSelect}
         className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md px-2 text-left font-medium text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
-        title={space.name}
+        title={space.description?.trim() || space.name}
       >
-        <span
-          className="size-2.5 shrink-0 rounded-full"
-          style={{ backgroundColor: space.color }}
-        />
+        <SpaceGlyph space={space} />
         <span className="truncate">{space.name}</span>
+        {inferSpaceKind(space) !== "general" && (
+          <span className="shrink-0 rounded bg-muted px-1 py-px text-[9px] text-muted-foreground uppercase tracking-wide">
+            {spaceKindLabel(inferSpaceKind(space)).split(" / ")[0]}
+          </span>
+        )}
         {count > 0 && (
           <span className="ml-auto shrink-0 text-[10px] text-muted-foreground/70">
             {count}
@@ -1429,9 +3291,9 @@ function SpaceNavButton({
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-40">
-          <DropdownMenuItem onClick={onRename}>
+          <DropdownMenuItem onClick={onEdit}>
             <PencilIcon className="size-3.5" />
-            Rename
+            Edit
           </DropdownMenuItem>
           <DropdownMenuItem
             onClick={onDelete}
@@ -1452,17 +3314,46 @@ function ProjectNavButton({
   icon: Icon,
   onClick,
   children,
+  droppable = false,
+  onDropProject,
 }: {
   active: boolean;
   collapsed: boolean;
   icon: LucideIcon;
   onClick: () => void;
   children: ReactNode;
+  /** True while a project drag is in progress, so this target can light up. */
+  droppable?: boolean;
+  /** When set, dropping a project card here reassigns it (path => …). */
+  onDropProject?: (path: string) => void;
 }) {
+  const [isOver, setIsOver] = useState(false);
+  const canDrop = !!onDropProject;
   return (
     <button
       type="button"
       onClick={onClick}
+      onDragOver={
+        canDrop
+          ? (event) => {
+              if (!isProjectDrag(event)) return;
+              event.preventDefault();
+              event.dataTransfer.dropEffect = "move";
+              if (!isOver) setIsOver(true);
+            }
+          : undefined
+      }
+      onDragLeave={canDrop ? () => setIsOver(false) : undefined}
+      onDrop={
+        canDrop
+          ? (event) => {
+              if (!isProjectDrag(event)) return;
+              event.preventDefault();
+              setIsOver(false);
+              onDropProject?.(event.dataTransfer.getData(PROJECT_DND_MIME));
+            }
+          : undefined
+      }
       className={cn(
         "flex items-center rounded-lg font-medium text-sm outline-none transition-colors focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
         collapsed
@@ -1471,6 +3362,8 @@ function ProjectNavButton({
         active
           ? "bg-muted text-foreground"
           : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+        droppable && "ring-1 ring-border ring-inset",
+        isOver && "bg-primary/10 text-foreground ring-2 ring-primary",
       )}
       title={typeof children === "string" ? children : undefined}
     >

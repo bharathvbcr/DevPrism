@@ -55,6 +55,7 @@ space yet — suggest one once they have two or more related projects.
 4. **Attach skills.** Decide which DevPrism skills auto-install for every project
    in the space. Pick from the available skill folder names:
    - `resume-cv` — resumes and CVs.
+   - `statement-authoring` — personal statements and SOPs.
    - `manuscript-paper` — journal/conference papers.
    - `latex-toolkit` — general LaTeX helpers (always useful).
    - `thesis` — multi-chapter theses/dissertations.

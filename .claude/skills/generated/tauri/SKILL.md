@@ -1,61 +1,77 @@
 ---
 name: tauri
-description: "Skill for the Tauri area of devprism-main. 11 symbols across 4 files."
+description: "Skill for the Tauri area of DevPrism. 14 symbols across 6 files."
 ---
 
 # Tauri
 
-11 symbols | 4 files | Cohesion: 95%
+14 symbols | 6 files | Cohesion: 76%
 
 ## When to Use
 
 - Working with code in `apps/`
-- Understanding how offsetToLineCol, getUniqueTargetName, copyFileToProject work
+- Understanding how shouldSkipProjectDirectory, getProjectFileType, scanProjectFolder work
 - Modifying tauri-related functionality
 
 ## Key Files
 
 | File | Symbols |
 |------|---------|
-| `apps/desktop/src/lib/tauri/fs.ts` | getUniqueTargetName, copyFileToProject, shouldSkipProjectDirectory, getProjectFileType, scanProjectFolder (+2) |
-| `apps/desktop/src/components/agent-chat/chat-composer.tsx` | getFileIcon, ChatComposer |
-| `apps/desktop/src/stores/agent-chat-store.ts` | offsetToLineCol |
+| `apps/desktop/src/lib/tauri/fs.ts` | shouldSkipProjectDirectory, getProjectFileType, scanProjectFolder, walk, getAssetUrl |
+| `apps/desktop/src/components/project-picker.tsx` | firstExistingProjectFile, firstExistingPath, findMainTexFile, handleInstallSpaceSkills |
+| `apps/desktop/src/lib/tauri/skills.ts` | installBundledSkills, listInstalledSkills |
+| `apps/desktop/src/lib/space-project.ts` | installMissingSkillsForKind |
+| `apps/desktop/src/lib/space-features.ts` | bundledSkillsForKind |
 | `apps/desktop/src/components/workspace/editor/image-preview.tsx` | ImagePreview |
 
 ## Entry Points
 
 Start here when exploring this area:
 
-- **`offsetToLineCol`** (Function) — `apps/desktop/src/stores/agent-chat-store.ts:11`
-- **`getUniqueTargetName`** (Function) — `apps/desktop/src/lib/tauri/fs.ts:270`
-- **`copyFileToProject`** (Function) — `apps/desktop/src/lib/tauri/fs.ts:293`
-- **`ChatComposer`** (Function) — `apps/desktop/src/components/agent-chat/chat-composer.tsx:66`
-- **`shouldSkipProjectDirectory`** (Function) — `apps/desktop/src/lib/tauri/fs.ts:129`
+- **`shouldSkipProjectDirectory`** (Function) — `apps/desktop/src/lib/tauri/fs.ts:98`
+- **`getProjectFileType`** (Function) — `apps/desktop/src/lib/tauri/fs.ts:104`
+- **`scanProjectFolder`** (Function) — `apps/desktop/src/lib/tauri/fs.ts:128`
+- **`walk`** (Function) — `apps/desktop/src/lib/tauri/fs.ts:132`
+- **`bundledSkillsForKind`** (Function) — `apps/desktop/src/lib/space-features.ts:552`
 
 ## Key Symbols
 
 | Symbol | Type | File | Line |
 |--------|------|------|------|
-| `offsetToLineCol` | Function | `apps/desktop/src/stores/agent-chat-store.ts` | 11 |
-| `getUniqueTargetName` | Function | `apps/desktop/src/lib/tauri/fs.ts` | 270 |
-| `copyFileToProject` | Function | `apps/desktop/src/lib/tauri/fs.ts` | 293 |
-| `ChatComposer` | Function | `apps/desktop/src/components/agent-chat/chat-composer.tsx` | 66 |
-| `shouldSkipProjectDirectory` | Function | `apps/desktop/src/lib/tauri/fs.ts` | 129 |
-| `getProjectFileType` | Function | `apps/desktop/src/lib/tauri/fs.ts` | 135 |
-| `scanProjectFolder` | Function | `apps/desktop/src/lib/tauri/fs.ts` | 159 |
-| `walk` | Function | `apps/desktop/src/lib/tauri/fs.ts` | 163 |
-| `getAssetUrl` | Function | `apps/desktop/src/lib/tauri/fs.ts` | 243 |
+| `shouldSkipProjectDirectory` | Function | `apps/desktop/src/lib/tauri/fs.ts` | 98 |
+| `getProjectFileType` | Function | `apps/desktop/src/lib/tauri/fs.ts` | 104 |
+| `scanProjectFolder` | Function | `apps/desktop/src/lib/tauri/fs.ts` | 128 |
+| `walk` | Function | `apps/desktop/src/lib/tauri/fs.ts` | 132 |
+| `bundledSkillsForKind` | Function | `apps/desktop/src/lib/space-features.ts` | 552 |
+| `handleInstallSpaceSkills` | Function | `apps/desktop/src/components/project-picker.tsx` | 750 |
+| `installBundledSkills` | Function | `apps/desktop/src/lib/tauri/skills.ts` | 11 |
+| `listInstalledSkills` | Function | `apps/desktop/src/lib/tauri/skills.ts` | 21 |
+| `getAssetUrl` | Function | `apps/desktop/src/lib/tauri/fs.ts` | 212 |
 | `ImagePreview` | Function | `apps/desktop/src/components/workspace/editor/image-preview.tsx` | 41 |
-| `getFileIcon` | Function | `apps/desktop/src/components/agent-chat/chat-composer.tsx` | 52 |
+| `firstExistingProjectFile` | Function | `apps/desktop/src/components/project-picker.tsx` | 2326 |
+| `firstExistingPath` | Function | `apps/desktop/src/components/project-picker.tsx` | 2342 |
+| `findMainTexFile` | Function | `apps/desktop/src/components/project-picker.tsx` | 2360 |
+| `installMissingSkillsForKind` | Function | `apps/desktop/src/lib/space-project.ts` | 71 |
+
+## Execution Flows
+
+| Flow | Type | Steps |
+|------|------|-------|
+| `ProjectPreviewCard → Has` | cross_community | 7 |
+| `ProjectPreviewCard → GetProjectFileType` | cross_community | 6 |
+| `LoadProjectPreview → Has` | cross_community | 6 |
+| `LoadProjectPreview → GetProjectFileType` | cross_community | 5 |
+| `ProjectPreviewCard → FirstExistingProjectFile` | cross_community | 4 |
 
 ## Connected Areas
 
 | Area | Connections |
 |------|-------------|
-| Ui | 1 calls |
+| Editor | 2 calls |
+| Cluster_156 | 1 calls |
 
 ## How to Explore
 
-1. `gitnexus_context({name: "offsetToLineCol"})` — see callers and callees
+1. `gitnexus_context({name: "shouldSkipProjectDirectory"})` — see callers and callees
 2. `gitnexus_query({query: "tauri"})` — find related execution flows
 3. Read key files listed above for implementation details

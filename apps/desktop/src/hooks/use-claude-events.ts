@@ -14,10 +14,11 @@ import { useSettingsStore } from "@/stores/settings-store";
 import { readTexFileContent } from "@/lib/tauri/fs";
 import {
   compileLatex,
-  resolveCompileTarget,
   formatCompileError,
 } from "@/lib/latex-compiler";
+import { resolveActiveCompileTarget } from "@/lib/compile-root-preference";
 import { createLogger } from "@/lib/debug/logger";
+import { getChatLabels } from "@/lib/chat-labels";
 
 const log = createLogger("claude-event");
 
@@ -140,12 +141,19 @@ export function useClaudeEvents() {
     ) {
       const docState = useDocumentStore.getState();
       const projectRoot = docState.projectRoot;
-      let relativePath = filePath;
-      if (projectRoot && filePath.startsWith(projectRoot)) {
-        relativePath = filePath.slice(projectRoot.length).replace(/^\//, "");
+      // Normalize separators so a Windows back-slash path, a forward-slash path,
+      // and absolute vs project-relative all match. The native model emits
+      // project-relative paths (either separator); the CLI emits absolute ones.
+      const norm = (p: string) => p.replace(/\\/g, "/");
+      const fp = norm(filePath);
+      const root = projectRoot ? norm(projectRoot).replace(/\/+$/, "") : null;
+      let relativePath = fp;
+      if (root && fp.toLowerCase().startsWith(root.toLowerCase())) {
+        relativePath = fp.slice(root.length).replace(/^\/+/, "");
       }
       const file = docState.files.find(
-        (f) => f.relativePath === relativePath || f.absolutePath === filePath,
+        (f) =>
+          norm(f.relativePath) === relativePath || norm(f.absolutePath) === fp,
       );
       if (!file) return;
 
@@ -374,22 +382,30 @@ export function useClaudeEvents() {
         !chatStore._cancelledByUser
       ) {
         const isDirectProvider = directProviderTabRef.current.get(tabId);
+        const nativeAgentEnabled =
+          useSettingsStore.getState().nativeAgentEnabled;
+        const chatLabels = getChatLabels(nativeAgentEnabled);
         if (count === 0) {
           const isWindows = navigator.userAgent.includes("Windows");
           chatStore._setError(
             tabId,
             isDirectProvider
               ? "AI provider request failed to start. Check the provider API key, Base URL, model name, and model access."
-              : isWindows
-                ? "Claude process failed to start. Check that Claude Code CLI is installed and git-bash is available."
-                : "Claude process failed to start. Check that Claude Code CLI is installed.",
+              : nativeAgentEnabled
+                ? chatLabels.processFailedStart
+                : isWindows
+                  ? chatLabels.processFailedStartWindows ??
+                    chatLabels.processFailedStart
+                  : chatLabels.processFailedStart,
           );
         } else {
           chatStore._setError(
             tabId,
             isDirectProvider
               ? "AI provider request stopped unexpectedly. Check the provider API key, model access, Base URL, tool-call support, or rate limits."
-              : "Claude process exited unexpectedly. This may be due to rate limiting or an API error.",
+              : nativeAgentEnabled
+                ? chatLabels.processExited
+                : chatLabels.processExited,
           );
         }
       }
@@ -424,7 +440,11 @@ export function useClaudeEvents() {
 
       // Snapshot after Claude edit
       const projectPath = useDocumentStore.getState().projectRoot;
-      if (projectPath && completedSessionId) {
+      // The native agent has no CLI session JSONL — its session_id is just the
+      // tab id — so skip CLI-only title generation (it would read a non-existent
+      // session on every native turn and never produce a title).
+      const nativeAgentEnabled = useSettingsStore.getState().nativeAgentEnabled;
+      if (projectPath && completedSessionId && !nativeAgentEnabled) {
         void (async () => {
           try {
             const title = await invoke<string | null>(
@@ -449,9 +469,12 @@ export function useClaudeEvents() {
 
       if (projectPath) {
         try {
+          const snapshotLabel = getChatLabels(
+            useSettingsStore.getState().nativeAgentEnabled,
+          ).snapshotAfterEdit;
           await useHistoryStore
             .getState()
-            .createSnapshot(projectPath, "[claude] After Claude edit");
+            .createSnapshot(projectPath, snapshotLabel);
         } catch {
           // snapshot failure should not break the flow
         }
@@ -482,7 +505,11 @@ export function useClaudeEvents() {
         isCompiling: alreadyCompiling,
       } = useDocumentStore.getState();
       if (projectRoot && !alreadyCompiling) {
-        const resolved = resolveCompileTarget(activeFileId, files);
+        const resolved = resolveActiveCompileTarget(
+          projectRoot,
+          activeFileId,
+          files,
+        );
         if (resolved) {
           const { rootId, targetPath } = resolved;
           useDocumentStore.getState().setIsCompiling(true);
@@ -565,6 +592,7 @@ export function useClaudeEvents() {
             }
             // Surface critical stderr messages to the user UI (only if no error is already set)
             if (
+              !useSettingsStore.getState().nativeAgentEnabled &&
               (payload.includes("git-bash") ||
                 payload.includes("git bash") ||
                 payload.includes("bash.exe")) &&

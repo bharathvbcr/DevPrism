@@ -1,11 +1,11 @@
 ---
 name: scripts
-description: "Skill for the Scripts area of devprism-main. 18 symbols across 5 files."
+description: "Skill for the Scripts area of DevPrism. 18 symbols across 5 files."
 ---
 
 # Scripts
 
-18 symbols | 5 files | Cohesion: 100%
+18 symbols | 5 files | Cohesion: 94%
 
 ## When to Use
 
@@ -55,6 +55,12 @@ Start here when exploring this area:
 | `loadTemplates` | Function | `apps/desktop/scripts/generate-previews.ts` | 22 |
 | `main` | Function | `apps/desktop/scripts/generate-previews.ts` | 36 |
 | `computeFiltered` | Function | `apps/desktop/src/stores/template-store.ts` | 29 |
+
+## Connected Areas
+
+| Area | Connections |
+|------|-------------|
+| Editor | 1 calls |
 
 ## How to Explore
 

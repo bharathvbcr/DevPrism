@@ -1,75 +1,88 @@
 ---
 name: stores
-description: "Skill for the Stores area of devprism-main. 20 symbols across 5 files."
+description: "Skill for the Stores area of DevPrism. 54 symbols across 11 files."
 ---
 
 # Stores
 
-20 symbols | 5 files | Cohesion: 80%
+54 symbols | 11 files | Cohesion: 87%
 
 ## When to Use
 
 - Working with code in `apps/`
-- Understanding how isWindowsRuntime, getPdfBytes, getCurrentPdfBytes work
+- Understanding how loadSelectedProviderCredentialId, resolveTexRoot, isStandaloneCompileRoot work
 - Modifying stores-related functionality
 
 ## Key Files
 
 | File | Symbols |
 |------|---------|
-| `apps/desktop/src/stores/document-store.ts` | getPdfBytes, getCurrentPdfBytes, hasPdfData, resolveTexRoot, fileName (+2) |
-| `apps/desktop/src/components/workspace/preview/pdf-preview.tsx` | PdfPreview, handleExport, renderContent, compile, handleCompile |
-| `apps/desktop/src/lib/latex-compiler.ts` | synctexEdit, resolveCompileTarget, formatCompileError, compileLatex |
-| `apps/desktop/src/stores/settings-store.ts` | isWindowsRuntime, defaultCompilerBackend, normalizeCompilerBackend |
-| `apps/desktop/src/hooks/use-agent-events.ts` | handleComplete |
+| `apps/desktop/src/stores/claude-chat-store.ts` | truncateChatTitle, normalizeChatTitleWhitespace, isNoiseChatTitleLine, extractMarkedRequestBody, firstMeaningfulTitleLine (+22) |
+| `apps/desktop/src/stores/document-store.ts` | resolveTexRoot, sleep, isWindowsFolderLockError, formatProjectRenameError, renameProjectRootWithRetry (+8) |
+| `apps/desktop/src/stores/project-store.ts` | normalizeRecentPath, recentProjectName, isSameProjectPath |
+| `apps/desktop/src/lib/latex-compiler.ts` | isStandaloneCompileRoot, synctexForward |
+| `apps/desktop/src/lib/compile-root-preference.ts` | setCompileRootPreference, syncCompileRootForActiveFile |
+| `apps/desktop/src/stores/personalization-store.ts` | cleanLatexText, extractFirstMatch |
+| `apps/desktop/src/lib/forward-sync.ts` | triggerForwardSync |
+| `apps/desktop/src/lib/tauri/fs.ts` | renameFileOnDisk |
+| `apps/desktop/src/stores/annotation-store.ts` | getHighlightsForRoot |
+| `apps/desktop/src/lib/mupdf/mupdf-client.ts` | exportAnnotatedPdf |
 
 ## Entry Points
 
 Start here when exploring this area:
 
-- **`isWindowsRuntime`** (Function) — `apps/desktop/src/stores/settings-store.ts:11`
-- **`getPdfBytes`** (Function) — `apps/desktop/src/stores/document-store.ts:48`
-- **`getCurrentPdfBytes`** (Function) — `apps/desktop/src/stores/document-store.ts:53`
-- **`synctexEdit`** (Function) — `apps/desktop/src/lib/latex-compiler.ts:75`
-- **`PdfPreview`** (Function) — `apps/desktop/src/components/workspace/preview/pdf-preview.tsx:88`
+- **`loadSelectedProviderCredentialId`** (Function) — `apps/desktop/src/stores/claude-chat-store.ts:27`
+- **`resolveTexRoot`** (Function) — `apps/desktop/src/stores/document-store.ts:196`
+- **`isStandaloneCompileRoot`** (Function) — `apps/desktop/src/lib/latex-compiler.ts:51`
+- **`synctexForward`** (Function) — `apps/desktop/src/lib/latex-compiler.ts:183`
+- **`triggerForwardSync`** (Function) — `apps/desktop/src/lib/forward-sync.ts:9`
 
 ## Key Symbols
 
 | Symbol | Type | File | Line |
 |--------|------|------|------|
-| `isWindowsRuntime` | Function | `apps/desktop/src/stores/settings-store.ts` | 11 |
-| `getPdfBytes` | Function | `apps/desktop/src/stores/document-store.ts` | 48 |
-| `getCurrentPdfBytes` | Function | `apps/desktop/src/stores/document-store.ts` | 53 |
-| `synctexEdit` | Function | `apps/desktop/src/lib/latex-compiler.ts` | 75 |
-| `PdfPreview` | Function | `apps/desktop/src/components/workspace/preview/pdf-preview.tsx` | 88 |
-| `handleExport` | Function | `apps/desktop/src/components/workspace/preview/pdf-preview.tsx` | 469 |
-| `renderContent` | Function | `apps/desktop/src/components/workspace/preview/pdf-preview.tsx` | 624 |
-| `hasPdfData` | Function | `apps/desktop/src/stores/document-store.ts` | 60 |
-| `resolveTexRoot` | Function | `apps/desktop/src/stores/document-store.ts` | 159 |
-| `resolveCompileTarget` | Function | `apps/desktop/src/lib/latex-compiler.ts` | 10 |
-| `formatCompileError` | Function | `apps/desktop/src/lib/latex-compiler.ts` | 28 |
-| `compileLatex` | Function | `apps/desktop/src/lib/latex-compiler.ts` | 36 |
-| `handleComplete` | Function | `apps/desktop/src/hooks/use-agent-events.ts` | 292 |
-| `compile` | Function | `apps/desktop/src/components/workspace/preview/pdf-preview.tsx` | 409 |
-| `handleCompile` | Function | `apps/desktop/src/components/workspace/preview/pdf-preview.tsx` | 522 |
-| `defaultCompilerBackend` | Function | `apps/desktop/src/stores/settings-store.ts` | 17 |
-| `normalizeCompilerBackend` | Function | `apps/desktop/src/stores/settings-store.ts` | 21 |
-| `getActiveFile` | Function | `apps/desktop/src/stores/document-store.ts` | 145 |
-| `fileName` | Method | `apps/desktop/src/stores/document-store.ts` | 139 |
-| `content` | Method | `apps/desktop/src/stores/document-store.ts` | 140 |
+| `loadSelectedProviderCredentialId` | Function | `apps/desktop/src/stores/claude-chat-store.ts` | 27 |
+| `resolveTexRoot` | Function | `apps/desktop/src/stores/document-store.ts` | 196 |
+| `isStandaloneCompileRoot` | Function | `apps/desktop/src/lib/latex-compiler.ts` | 51 |
+| `synctexForward` | Function | `apps/desktop/src/lib/latex-compiler.ts` | 183 |
+| `triggerForwardSync` | Function | `apps/desktop/src/lib/forward-sync.ts` | 9 |
+| `setCompileRootPreference` | Function | `apps/desktop/src/lib/compile-root-preference.ts` | 8 |
+| `syncCompileRootForActiveFile` | Function | `apps/desktop/src/lib/compile-root-preference.ts` | 16 |
+| `renameFileOnDisk` | Function | `apps/desktop/src/lib/tauri/fs.ts` | 297 |
+| `getCurrentPdfBytes` | Function | `apps/desktop/src/stores/document-store.ts` | 62 |
+| `getHighlightsForRoot` | Function | `apps/desktop/src/stores/annotation-store.ts` | 115 |
+| `handleExport` | Function | `apps/desktop/src/components/workspace/preview/pdf-preview.tsx` | 824 |
+| `messageContentText` | Function | `apps/desktop/src/stores/claude-chat-store.ts` | 273 |
+| `exportAnnotatedPdf` | Method | `apps/desktop/src/lib/mupdf/mupdf-client.ts` | 28 |
+| `truncateChatTitle` | Function | `apps/desktop/src/stores/claude-chat-store.ts` | 399 |
+| `normalizeChatTitleWhitespace` | Function | `apps/desktop/src/stores/claude-chat-store.ts` | 405 |
+| `isNoiseChatTitleLine` | Function | `apps/desktop/src/stores/claude-chat-store.ts` | 409 |
+| `extractMarkedRequestBody` | Function | `apps/desktop/src/stores/claude-chat-store.ts` | 425 |
+| `firstMeaningfulTitleLine` | Function | `apps/desktop/src/stores/claude-chat-store.ts` | 445 |
+| `summarizeChatTitle` | Function | `apps/desktop/src/stores/claude-chat-store.ts` | 455 |
+| `sanitizeAiChatTitle` | Function | `apps/desktop/src/stores/claude-chat-store.ts` | 504 |
 
 ## Execution Flows
 
 | Flow | Type | Steps |
 |------|------|-------|
-| `AgentChatDrawer → ResolveTexRoot` | cross_community | 5 |
-| `AgentChatDrawer → CompileLatex` | cross_community | 4 |
-| `AgentChatDrawer → FormatCompileError` | cross_community | 4 |
-| `RenderContent → ResolveTexRoot` | cross_community | 4 |
+| `Main → SetCompileRootPreference` | cross_community | 6 |
+| `HandleExport → Has` | cross_community | 5 |
+| `ClaudeChatDrawer → ResolveTexRoot` | cross_community | 5 |
 | `LatexEditor → ResolveTexRoot` | cross_community | 3 |
+
+## Connected Areas
+
+| Area | Connections |
+|------|-------------|
+| Editor | 2 calls |
+| Workspace | 1 calls |
+| Hooks | 1 calls |
+| Mupdf | 1 calls |
 
 ## How to Explore
 
-1. `gitnexus_context({name: "isWindowsRuntime"})` — see callers and callees
+1. `gitnexus_context({name: "loadSelectedProviderCredentialId"})` — see callers and callees
 2. `gitnexus_query({query: "stores"})` — find related execution flows
 3. Read key files listed above for implementation details

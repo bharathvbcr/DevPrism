@@ -19,20 +19,18 @@
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        background: #fafafa;
+        /* App is locked to dark; splash is always dark to match. */
+        background: #0a0a0a;
+        color: #fafafa;
         z-index: 9999;
         font-family: 'Geist', system-ui, sans-serif;
         transition: opacity 0.3s ease;
       }
-      @media (prefers-color-scheme: dark) {
-        #loading-screen { background: #0a0a0a; color: #fafafa; }
-        #loading-spinner { border-color: #333; border-top-color: #fafafa; }
-      }
       #loading-spinner {
         width: 32px;
         height: 32px;
-        border: 3px solid #e5e5e5;
-        border-top-color: #171717;
+        border: 3px solid #333;
+        border-top-color: #fafafa;
         border-radius: 50%;
         animation: spin 0.8s linear infinite;
         margin-bottom: 16px;
@@ -42,10 +40,21 @@
         color: #737373;
       }
       @keyframes spin { to { transform: rotate(360deg); } }
+      /* Splash renders before the bundle/globals.css; honor Reduce Motion here too */
+      @media (prefers-reduced-motion: reduce) {
+        #loading-spinner { animation: none !important; }
+      }
     </style>
   </head>
   <body class="h-full antialiased">
     <div id="loading-screen">
+      <img
+        src="/icon-192.png"
+        alt="DevPrism"
+        width="64"
+        height="64"
+        style="margin-bottom: 20px"
+      />
       <div id="loading-spinner"></div>
       <p>Loading DevPrism...</p>
     </div>

@@ -1,4 +1,13 @@
-import { RefObject, useCallback, useEffect, useState } from "react";
+import {
+  Fragment,
+  type ReactNode,
+  RefObject,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { EditorView } from "@codemirror/view";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -16,14 +25,26 @@ import {
   PlusIcon,
   BookMarkedIcon,
   ExternalLinkIcon,
+  ChevronRightIcon,
+  ListTreeIcon,
+  Loader2Icon,
+  SpellCheckIcon,
+  CrosshairIcon,
+  SparklesIcon,
+  type LucideIcon,
 } from "lucide-react";
+import { toast } from "sonner";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
+import { ToolbarGroup } from "@/components/ui/toolbar-group";
+import { cn } from "@/lib/utils";
 import vscodeIcon from "@/assets/vscode.svg";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -33,8 +54,21 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { useDocumentStore } from "@/stores/document-store";
+import { useDocumentStore, resolveTexRoot } from "@/stores/document-store";
 import { useSettingsStore } from "@/stores/settings-store";
+import { useSpaceFeatures } from "@/hooks/use-space-features";
+import { snippetsForKind } from "@/lib/latex-snippets";
+import { canUseAiAssist } from "@/lib/ai-assist";
+import { fillSnippet } from "@/lib/ai-extras";
+import {
+  applyCompileProfile,
+  compileProfilesForKind,
+  defaultCompileProfileForKind,
+  detectCompileProfile,
+} from "@/lib/compile-profiles";
+import { triggerForwardSync } from "@/lib/forward-sync";
+import { DocumentOutline } from "./document-outline";
+import { ExportMenu } from "./export-menu";
 
 interface EditorInfo {
   id: string;
@@ -74,6 +108,130 @@ function getOpenEditorButtonClassName(editor: EditorInfo) {
     : undefined;
 }
 
+// Active-file context shown at the top-left of the editor: folder path as
+// muted crumbs leading to the emphasized file name. Deep paths collapse the
+// middle to an ellipsis so the file name always stays visible. When the file
+// has a real project-relative path, every crumb is clickable to reveal that
+// file/folder in the sidebar tree.
+function FileBreadcrumb({
+  path,
+  fileName,
+  icon: Icon,
+  onReveal,
+}: {
+  path?: string;
+  fileName: string;
+  icon: LucideIcon;
+  onReveal?: (path: string, type: "file" | "folder") => void;
+}) {
+  const hasPath = !!(path && path.length > 0);
+  const segments = (hasPath ? (path as string) : fileName)
+    .split("/")
+    .filter(Boolean);
+  const crumbs = segments.map((label, i) => ({
+    label,
+    fullPath: segments.slice(0, i + 1).join("/"),
+    isFile: i === segments.length - 1,
+  }));
+  const fileCrumb = crumbs[crumbs.length - 1];
+  const folderCrumbs = crumbs.slice(0, -1);
+  const MAX_FOLDERS = 2;
+  const collapsed = folderCrumbs.length > MAX_FOLDERS;
+  const shownFolders = collapsed
+    ? folderCrumbs.slice(-MAX_FOLDERS)
+    : folderCrumbs;
+
+  const clickable = hasPath && !!onReveal;
+
+  const renderCrumb = (
+    label: string,
+    fullPath: string,
+    type: "file" | "folder",
+  ) => {
+    const emphasis =
+      type === "file" ? "font-medium text-foreground" : "text-muted-foreground";
+    if (!clickable) {
+      return (
+        <span className={`max-w-[8rem] shrink truncate ${emphasis}`}>
+          {label}
+        </span>
+      );
+    }
+    return (
+      <button
+        type="button"
+        onClick={() => onReveal?.(fullPath, type)}
+        title={`Reveal ${fullPath} in sidebar`}
+        className={`max-w-[8rem] shrink truncate rounded px-1 outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring ${emphasis}`}
+      >
+        {label}
+      </button>
+    );
+  };
+
+  return (
+    <div
+      className="flex min-w-0 max-w-[min(20rem,38vw)] items-center gap-0.5 text-sm"
+      title={path ?? fileName}
+    >
+      <Icon className="size-4 shrink-0 text-muted-foreground" />
+      {collapsed && (
+        <>
+          <span className="shrink-0 px-1 text-muted-foreground/70">…</span>
+          <ChevronRightIcon className="size-3 shrink-0 text-muted-foreground/50" />
+        </>
+      )}
+      {shownFolders.map((crumb) => (
+        <Fragment key={crumb.fullPath}>
+          {renderCrumb(crumb.label, crumb.fullPath, "folder")}
+          <ChevronRightIcon className="size-3 shrink-0 text-muted-foreground/50" />
+        </Fragment>
+      ))}
+      {renderCrumb(fileCrumb.label, fileCrumb.fullPath, "file")}
+    </div>
+  );
+}
+
+// Platform-aware modifier label so tooltips advertise the real shortcut.
+const MOD =
+  typeof navigator !== "undefined" &&
+  /Mac|iPhone|iPad/i.test(navigator.platform)
+    ? "⌘"
+    : "Ctrl";
+
+// Compact save-state indicator shown beside the active file name: a spinner
+// while a save is in flight, an amber dot when the buffer has unsaved edits,
+// and nothing once the file is clean.
+function SaveStatus({
+  isDirty,
+  isSaving,
+}: {
+  isDirty: boolean;
+  isSaving: boolean;
+}) {
+  if (isSaving) {
+    return (
+      <span
+        className="flex shrink-0 items-center text-muted-foreground"
+        title="Saving…"
+      >
+        <Loader2Icon className="size-3 animate-spin" />
+      </span>
+    );
+  }
+  if (isDirty) {
+    return (
+      <span
+        role="status"
+        className="size-1.5 shrink-0 rounded-full bg-amber-500"
+        title="Unsaved changes"
+        aria-label="Unsaved changes"
+      />
+    );
+  }
+  return null;
+}
+
 interface EditorToolbarProps {
   editorView: RefObject<EditorView | null>;
   fileType?: "tex" | "image";
@@ -81,6 +239,8 @@ interface EditorToolbarProps {
   onImageScaleChange?: (scale: number) => void;
   cropMode?: boolean;
   onCropToggle?: () => void;
+  /** Diagnostics surface (Problems popover) shown in the tex toolbar's right cluster. */
+  problemsSlot?: ReactNode;
 }
 
 export function EditorToolbar({
@@ -90,9 +250,13 @@ export function EditorToolbar({
   onImageScaleChange,
   cropMode,
   onCropToggle,
+  problemsSlot,
 }: EditorToolbarProps) {
   const vimMode = useSettingsStore((s) => s.vimMode);
   const setVimMode = useSettingsStore((s) => s.setVimMode);
+  const spellCheck = useSettingsStore((s) => s.spellCheck);
+  const setSpellCheck = useSettingsStore((s) => s.setSpellCheck);
+  const aiSnippetFill = useSettingsStore((s) => s.aiSnippetFill);
 
   const fileName = useDocumentStore((s) => {
     const activeFile = s.files.find((f) => f.id === s.activeFileId);
@@ -102,7 +266,40 @@ export function EditorToolbar({
     const activeFile = s.files.find((f) => f.id === s.activeFileId);
     return activeFile?.relativePath;
   });
+  const isDirty = useDocumentStore((s) => {
+    const activeFile = s.files.find((f) => f.id === s.activeFileId);
+    return !!activeFile?.isDirty;
+  });
+  const isSaving = useDocumentStore((s) => s.isSaving);
   const projectRoot = useDocumentStore((s) => s.projectRoot);
+  const requestRevealInTree = useDocumentStore((s) => s.requestRevealInTree);
+  const activeFileId = useDocumentStore((s) => s.activeFileId);
+  const files = useDocumentStore((s) => s.files);
+  const updateFileContent = useDocumentStore((s) => s.updateFileContent);
+  const activeTexContent = useDocumentStore((s) => {
+    const f = s.files.find((file) => file.id === s.activeFileId);
+    return f?.type === "tex" ? (f.content ?? "") : "";
+  });
+
+  const isCompileRoot = useMemo(
+    () => resolveTexRoot(activeFileId, files) === activeFileId,
+    [activeFileId, files],
+  );
+  const currentProfile = useMemo(
+    () => detectCompileProfile(activeTexContent),
+    [activeTexContent],
+  );
+  const showCompileProfiles =
+    fileType === "tex" &&
+    isCompileRoot &&
+    /\\documentclass/.test(activeTexContent);
+
+  const { kind: snippetKind } = useSpaceFeatures();
+  const snippets = useMemo(() => snippetsForKind(snippetKind), [snippetKind]);
+  const compileProfiles = useMemo(
+    () => compileProfilesForKind(snippetKind),
+    [snippetKind],
+  );
 
   const [editors, setEditors] = useState<EditorInfo[]>([]);
 
@@ -150,6 +347,62 @@ export function EditorToolbar({
     view.focus();
   };
 
+  const insertSnippet = (text: string) => {
+    const view = editorView.current;
+    if (!view) return;
+    const { from, to } = view.state.selection.main;
+    view.dispatch({
+      changes: { from, to, insert: text },
+      selection: { anchor: from + text.length },
+    });
+    view.focus();
+  };
+
+  // "Insert with AI": fill the snippet's placeholders from the text surrounding
+  // the cursor, then insert the filled LaTeX. Falls back to the blank skeleton
+  // on any failure so the action never strands the user.
+  const aiFillEnabled = aiSnippetFill && canUseAiAssist();
+  const [aiFillingId, setAiFillingId] = useState<string | null>(null);
+  const aiFillRequestId = useRef(0);
+
+  const insertSnippetWithAI = async (snippetId: string, text: string) => {
+    const view = editorView.current;
+    if (!view) return;
+
+    // Gather document context near the cursor (window before/after the caret).
+    const { from } = view.state.selection.main;
+    const docLength = view.state.doc.length;
+    const context = view.state.sliceDoc(
+      Math.max(0, from - 800),
+      Math.min(docLength, from + 400),
+    );
+
+    const id = ++aiFillRequestId.current;
+    setAiFillingId(snippetId);
+    try {
+      const filled = await fillSnippet({ snippet: text, context });
+      // Stale request (another fill started, or selection changed) — ignore.
+      if (id !== aiFillRequestId.current) return;
+      insertSnippet(filled.trim() ? filled : text);
+    } catch (err) {
+      console.error("fillSnippet failed:", err);
+      if (id !== aiFillRequestId.current) return;
+      toast.error("AI fill failed — inserted blank snippet instead.");
+      insertSnippet(text);
+    } finally {
+      if (id === aiFillRequestId.current) setAiFillingId(null);
+    }
+  };
+
+  const handleProfileChange = (profileId: string) => {
+    const file = files.find((f) => f.id === activeFileId);
+    if (!file?.content) return;
+    updateFileContent(
+      activeFileId,
+      applyCompileProfile(file.content, profileId),
+    );
+  };
+
   const wrapSelection = (wrapper: string) => {
     insertText(wrapper, wrapper);
   };
@@ -159,64 +412,73 @@ export function EditorToolbar({
 
   if (fileType === "image") {
     return (
-      <div className="flex h-[calc(var(--workspace-topbar-height)+var(--titlebar-height))] min-w-0 items-center justify-between border-border border-b bg-muted/30 px-2">
-        <div className="flex min-w-0 max-w-[min(18rem,35vw)] items-center gap-1.5">
-          <ImageIcon className="size-4 shrink-0 text-muted-foreground" />
-          <span
-            className="min-w-0 truncate font-medium text-muted-foreground text-sm"
-            title={activeFilePath ?? fileName}
-          >
-            {fileName}
-          </span>
+      <div className="flex h-[calc(var(--workspace-topbar-height)+var(--titlebar-height))] min-w-0 items-center gap-2 border-border border-b bg-muted/30 px-2">
+        <div className="flex min-w-0 items-center gap-0.5">
+          <FileBreadcrumb
+            path={activeFilePath}
+            fileName={fileName}
+            icon={ImageIcon}
+            onReveal={requestRevealInTree}
+          />
+          {activeFilePath && (
+            <TooltipIconButton
+              tooltip="Reveal in sidebar"
+              className="size-6"
+              onClick={() => requestRevealInTree(activeFilePath, "file")}
+            >
+              <ListTreeIcon className="size-3.5" />
+            </TooltipIconButton>
+          )}
         </div>
-        <div className="flex-1" />
-        <div className="flex items-center gap-0.5">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-6"
-            onClick={zoomOut}
-            disabled={imageScale <= 0.25}
-          >
-            <MinusIcon className="size-3.5" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-6"
-            onClick={zoomIn}
-            disabled={imageScale >= 4}
-          >
-            <PlusIcon className="size-3.5" />
-          </Button>
-          <Select
-            value={imageScale.toString()}
-            onValueChange={(v) => onImageScaleChange?.(Number(v))}
-          >
-            <SelectTrigger size="sm" className="h-6! w-auto text-xs">
-              <SelectValue>{Math.round(imageScale * 100)}%</SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              {ZOOM_OPTIONS.map((opt) => (
-                <SelectItem key={opt.value} value={opt.value}>
-                  {opt.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          {onCropToggle && !fileName.toLowerCase().endsWith(".svg") && (
-            <>
-              <div className="mx-1 h-4 w-px bg-border" />
-              <Button
-                variant={cropMode ? "default" : "ghost"}
+        <div data-tauri-drag-region className="h-full flex-1" />
+        <div className="flex shrink-0 items-center gap-1.5">
+          <ToolbarGroup>
+            <TooltipIconButton
+              tooltip="Zoom out"
+              className="size-6"
+              onClick={zoomOut}
+              disabled={imageScale <= 0.25}
+            >
+              <MinusIcon className="size-3.5" />
+            </TooltipIconButton>
+            <Select
+              value={imageScale.toString()}
+              onValueChange={(v) => onImageScaleChange?.(Number(v))}
+            >
+              <SelectTrigger
                 size="sm"
-                className="h-6 gap-1 px-2 text-xs"
-                onClick={onCropToggle}
+                className="h-6! w-auto border-0 bg-transparent px-1.5 text-xs tabular-nums shadow-none hover:bg-accent"
               >
-                <CropIcon className="size-3.5" />
-                Crop
-              </Button>
-            </>
+                <SelectValue>{Math.round(imageScale * 100)}%</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {ZOOM_OPTIONS.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <TooltipIconButton
+              tooltip="Zoom in"
+              className="size-6"
+              onClick={zoomIn}
+              disabled={imageScale >= 4}
+            >
+              <PlusIcon className="size-3.5" />
+            </TooltipIconButton>
+          </ToolbarGroup>
+          {onCropToggle && !fileName.toLowerCase().endsWith(".svg") && (
+            <Button
+              variant={cropMode ? "default" : "outline"}
+              size="sm"
+              className="h-7 gap-1.5 px-2.5 text-xs"
+              onClick={onCropToggle}
+              aria-pressed={cropMode}
+            >
+              <CropIcon className="size-3.5" />
+              Crop
+            </Button>
           )}
           {editors.length === 1 && (
             <TooltipIconButton
@@ -257,127 +519,338 @@ export function EditorToolbar({
     );
   }
 
+  // Structure + insert actions are shared between the inline (wide) toolbar
+  // groups and the collapsed (narrow) "Insert" dropdown so behaviour stays in
+  // one place.
+  const displayMathIcon = (
+    <span
+      aria-hidden
+      className="flex size-4 items-center justify-center font-mono text-sm leading-none"
+    >
+      ∫
+    </span>
+  );
+  const structureActions = [
+    {
+      label: "Section",
+      icon: <Heading1Icon className="size-4" />,
+      run: () => insertText("\\section{", "}"),
+    },
+    {
+      label: "Subsection",
+      icon: <Heading2Icon className="size-4" />,
+      run: () => insertText("\\subsection{", "}"),
+    },
+    {
+      label: "List item",
+      icon: <ListIcon className="size-4" />,
+      run: () => insertText("\\item "),
+    },
+  ];
+  const insertActions = [
+    {
+      label: "Inline math ($…$)",
+      icon: <FunctionSquareIcon className="size-4" />,
+      run: () => wrapSelection("$"),
+    },
+    {
+      label: "Display math (\\[…\\])",
+      icon: displayMathIcon,
+      run: () => insertText("\\[\n  ", "\n\\]"),
+    },
+    {
+      label: "Citation (\\cite)",
+      icon: <BookMarkedIcon className="size-4" />,
+      run: () => insertText("\\cite{", "}"),
+    },
+  ];
+
   return (
-    <div className="flex h-[calc(var(--workspace-topbar-height)+var(--titlebar-height))] min-w-0 items-center gap-1 border-border border-b bg-muted/30 px-2">
-      <div className="flex min-w-0 max-w-[min(18rem,35vw)] shrink items-center gap-1.5">
-        <FileTextIcon className="size-4 shrink-0 text-muted-foreground" />
-        <span
-          className="min-w-0 truncate font-medium text-muted-foreground text-sm"
-          title={activeFilePath ?? fileName}
-        >
-          {fileName}
-        </span>
+    <div className="@container/tb flex h-[calc(var(--workspace-topbar-height)+var(--titlebar-height))] min-w-0 items-center gap-2 border-border border-b bg-muted/30 px-2">
+      {/* Active file context */}
+      <div className="flex min-w-0 items-center gap-1.5">
+        <FileBreadcrumb
+          path={activeFilePath}
+          fileName={fileName}
+          icon={FileTextIcon}
+          onReveal={requestRevealInTree}
+        />
+        <SaveStatus isDirty={isDirty} isSaving={isSaving} />
+        {activeFilePath && (
+          <TooltipIconButton
+            tooltip="Reveal in sidebar"
+            className="size-6"
+            onClick={() => requestRevealInTree(activeFilePath, "file")}
+          >
+            <ListTreeIcon className="size-3.5" />
+          </TooltipIconButton>
+        )}
       </div>
-      <div className="mx-2 h-4 w-px shrink-0 bg-border" />
-      <TooltipIconButton
-        tooltip="Bold (\\textbf)"
-        onClick={() => insertText("\\textbf{", "}")}
-      >
-        <BoldIcon className="size-4" />
-      </TooltipIconButton>
-      <TooltipIconButton
-        tooltip="Italic (\\textit)"
-        onClick={() => insertText("\\textit{", "}")}
-      >
-        <ItalicIcon className="size-4" />
-      </TooltipIconButton>
-      <TooltipIconButton
-        tooltip="Code (\\texttt)"
-        onClick={() => insertText("\\texttt{", "}")}
-      >
-        <CodeIcon className="size-4" />
-      </TooltipIconButton>
-      <div className="mx-2 h-4 w-px bg-border" />
-      <TooltipIconButton
-        tooltip="Section"
-        onClick={() => insertText("\\section{", "}")}
-      >
-        <Heading1Icon className="size-4" />
-      </TooltipIconButton>
-      <TooltipIconButton
-        tooltip="Subsection"
-        onClick={() => insertText("\\subsection{", "}")}
-      >
-        <Heading2Icon className="size-4" />
-      </TooltipIconButton>
-      <TooltipIconButton
-        tooltip="List item"
-        onClick={() => insertText("\\item ")}
-      >
-        <ListIcon className="size-4" />
-      </TooltipIconButton>
-      <div className="mx-2 h-4 w-px bg-border" />
-      <TooltipIconButton
-        tooltip="Inline math ($...$)"
-        onClick={() => wrapSelection("$")}
-      >
-        <FunctionSquareIcon className="size-4" />
-      </TooltipIconButton>
-      <TooltipIconButton
-        tooltip="Display math (\\[...\\])"
-        onClick={() => insertText("\\[\n  ", "\n\\]")}
-      >
-        <span
-          aria-hidden
-          className="flex size-4 items-center justify-center font-mono text-sm leading-none"
-        >
-          ∫
-        </span>
-      </TooltipIconButton>
-      <div className="mx-2 h-4 w-px bg-border" />
-      <TooltipIconButton
-        tooltip="Citation (\\cite)"
-        onClick={() => insertText("\\cite{", "}")}
-      >
-        <BookMarkedIcon className="size-4" />
-      </TooltipIconButton>
-      <div className="mx-2 h-4 w-px bg-border" />
-      <Button
-        variant={vimMode ? "default" : "ghost"}
-        size="sm"
-        className="h-6 px-2 font-mono text-xs"
-        onClick={() => setVimMode(!vimMode)}
-        title="Toggle Vim mode"
-        aria-label="Toggle Vim mode"
-        aria-pressed={vimMode}
-      >
-        VIM
-      </Button>
-      <div data-tauri-drag-region className="flex-1 self-stretch" />
-      {editors.length === 1 && (
-        <TooltipIconButton
-          tooltip={`Open in ${editors[0].name}`}
-          onClick={() => openInEditor(editors[0].id)}
-          className={getOpenEditorButtonClassName(editors[0])}
-        >
-          <OpenEditorIcon editor={editors[0]} />
-        </TooltipIconButton>
-      )}
-      {editors.length > 1 && (
+
+      {/* Formatting / insert actions, grouped into segments */}
+      <div className="flex shrink-0 items-center gap-1.5">
+        <ToolbarGroup>
+          <TooltipIconButton
+            tooltip={`Bold  ${MOD}B`}
+            onClick={() => insertText("\\textbf{", "}")}
+          >
+            <BoldIcon className="size-4" />
+          </TooltipIconButton>
+          <TooltipIconButton
+            tooltip={`Italic  ${MOD}I`}
+            onClick={() => insertText("\\textit{", "}")}
+          >
+            <ItalicIcon className="size-4" />
+          </TooltipIconButton>
+          <TooltipIconButton
+            tooltip="Inline code (\\texttt)"
+            onClick={() => insertText("\\texttt{", "}")}
+          >
+            <CodeIcon className="size-4" />
+          </TooltipIconButton>
+        </ToolbarGroup>
+
+        {/* Wide layout: structure + insert shown inline */}
+        <ToolbarGroup className="@[46rem]/tb:flex hidden">
+          {structureActions.map((a) => (
+            <TooltipIconButton key={a.label} tooltip={a.label} onClick={a.run}>
+              {a.icon}
+            </TooltipIconButton>
+          ))}
+        </ToolbarGroup>
+        <ToolbarGroup className="@[46rem]/tb:flex hidden">
+          {insertActions.map((a) => (
+            <TooltipIconButton key={a.label} tooltip={a.label} onClick={a.run}>
+              {a.icon}
+            </TooltipIconButton>
+          ))}
+        </ToolbarGroup>
+
+        {/* Narrow layout: collapse structure + insert into one menu */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
-              variant="ghost"
-              size="icon"
-              className="size-6 p-1"
-              title="Open in Editor"
-              aria-label="Open in editor"
+              variant="outline"
+              size="sm"
+              className="@[46rem]/tb:hidden h-7 gap-1 px-2 text-xs"
             >
-              <ExternalLinkIcon className="size-4" />
+              <PlusIcon className="size-3.5" />
+              Insert
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            {editors.map((editor) => (
+          <DropdownMenuContent
+            align="start"
+            className="max-h-[70vh] overflow-y-auto"
+          >
+            {structureActions.map((a) => (
+              <DropdownMenuItem key={a.label} onClick={a.run}>
+                {a.icon}
+                {a.label}
+              </DropdownMenuItem>
+            ))}
+            <DropdownMenuSeparator />
+            {insertActions.map((a) => (
+              <DropdownMenuItem key={a.label} onClick={a.run}>
+                {a.icon}
+                {a.label}
+              </DropdownMenuItem>
+            ))}
+            {snippets.length > 0 && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel>Snippets</DropdownMenuLabel>
+                {snippets.map((s) => (
+                  <DropdownMenuItem
+                    key={s.id}
+                    onClick={() => insertSnippet(s.insert)}
+                    title={s.description}
+                  >
+                    {s.label}
+                    {aiFillEnabled && (
+                      <button
+                        type="button"
+                        title="Insert with AI (fill from surrounding context)"
+                        aria-label={`Insert ${s.label} with AI`}
+                        disabled={aiFillingId !== null}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          void insertSnippetWithAI(s.id, s.insert);
+                        }}
+                        className="ml-auto shrink-0 rounded p-0.5 text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
+                      >
+                        {aiFillingId === s.id ? (
+                          <Loader2Icon className="size-3.5 animate-spin" />
+                        ) : (
+                          <SparklesIcon className="size-3.5" />
+                        )}
+                      </button>
+                    )}
+                  </DropdownMenuItem>
+                ))}
+              </>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
+
+        {/* Wide layout: snippet menu for document-type structures */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="outline"
+              size="sm"
+              className="@[46rem]/tb:inline-flex hidden h-7 gap-1 px-2 text-xs"
+            >
+              <PlusIcon className="size-3.5" />
+              Snippets
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            align="start"
+            className="max-h-[70vh] w-56 overflow-y-auto"
+          >
+            <DropdownMenuLabel>Insert snippet</DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            {snippets.map((s) => (
               <DropdownMenuItem
-                key={editor.id}
-                onClick={() => openInEditor(editor.id)}
+                key={s.id}
+                onClick={() => insertSnippet(s.insert)}
+                title={s.description}
               >
-                {editor.name}
+                <span className="font-medium">{s.label}</span>
+                <span className="ml-auto truncate pl-2 text-muted-foreground text-xs">
+                  {s.description}
+                </span>
+                {aiFillEnabled && (
+                  <button
+                    type="button"
+                    title="Insert with AI (fill from surrounding context)"
+                    aria-label={`Insert ${s.label} with AI`}
+                    disabled={aiFillingId !== null}
+                    onClick={(e) => {
+                      // Run AI fill instead of the plain insert; keep the menu
+                      // from also firing its own onClick insert.
+                      e.preventDefault();
+                      e.stopPropagation();
+                      void insertSnippetWithAI(s.id, s.insert);
+                    }}
+                    className="ml-1.5 shrink-0 rounded p-0.5 text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
+                  >
+                    {aiFillingId === s.id ? (
+                      <Loader2Icon className="size-3.5 animate-spin" />
+                    ) : (
+                      <SparklesIcon className="size-3.5" />
+                    )}
+                  </button>
+                )}
               </DropdownMenuItem>
             ))}
           </DropdownMenuContent>
         </DropdownMenu>
+      </div>
+
+      {/* Draggable spacer keeps the window movable from the toolbar */}
+      <div data-tauri-drag-region className="h-full min-w-2 flex-1" />
+
+      {showCompileProfiles && (
+        <ToolbarGroup className="@[40rem]/tb:flex hidden">
+          <Select
+            value={currentProfile ?? defaultCompileProfileForKind(snippetKind)}
+            onValueChange={handleProfileChange}
+          >
+            <SelectTrigger
+              size="sm"
+              className="h-7! w-[7.5rem] border-0 bg-transparent text-xs shadow-none hover:bg-accent"
+              title="Document class preset for this space type"
+            >
+              <SelectValue placeholder="Class" />
+            </SelectTrigger>
+            <SelectContent>
+              {compileProfiles.map((p) => (
+                <SelectItem key={p.id} value={p.id} title={p.description}>
+                  {p.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </ToolbarGroup>
       )}
+
+      {/* Right-side utilities: outline, export, diagnostics, editor mode, external editor */}
+      <div className="flex shrink-0 items-center gap-1.5">
+        {problemsSlot}
+        <DocumentOutline editorView={editorView} />
+        {fileType === "tex" && (
+          <TooltipIconButton
+            tooltip={`Show cursor in PDF (${MOD === "⌘" ? "⌘⇧J" : "Ctrl+Shift+J"})`}
+            className="size-7 text-muted-foreground"
+            onClick={() => void triggerForwardSync()}
+          >
+            <CrosshairIcon className="size-4" />
+          </TooltipIconButton>
+        )}
+        <ExportMenu />
+        <TooltipIconButton
+          tooltip={spellCheck ? "Spell check on" : "Spell check off"}
+          onClick={() => setSpellCheck(!spellCheck)}
+          aria-pressed={spellCheck}
+          className={cn(
+            "size-7",
+            spellCheck
+              ? "bg-primary text-primary-foreground hover:bg-primary/90"
+              : "text-muted-foreground",
+          )}
+        >
+          <SpellCheckIcon className="size-4" />
+        </TooltipIconButton>
+        <TooltipIconButton
+          tooltip={vimMode ? "Vim mode on" : "Vim mode off"}
+          onClick={() => setVimMode(!vimMode)}
+          aria-pressed={vimMode}
+          className={cn(
+            "h-7 w-auto gap-1 px-2 font-mono text-[11px] tracking-wide",
+            vimMode
+              ? "bg-primary text-primary-foreground hover:bg-primary/90"
+              : "text-muted-foreground",
+          )}
+        >
+          VIM
+        </TooltipIconButton>
+        {editors.length === 1 && (
+          <TooltipIconButton
+            tooltip={`Open in ${editors[0].name}`}
+            onClick={() => openInEditor(editors[0].id)}
+            className={getOpenEditorButtonClassName(editors[0])}
+          >
+            <OpenEditorIcon editor={editors[0]} />
+          </TooltipIconButton>
+        )}
+        {editors.length > 1 && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-6 p-1"
+                title="Open in Editor"
+                aria-label="Open in editor"
+              >
+                <ExternalLinkIcon className="size-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              {editors.map((editor) => (
+                <DropdownMenuItem
+                  key={editor.id}
+                  onClick={() => openInEditor(editor.id)}
+                >
+                  {editor.name}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
+      </div>
     </div>
   );
 }

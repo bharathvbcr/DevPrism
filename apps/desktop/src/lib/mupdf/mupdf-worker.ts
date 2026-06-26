@@ -173,6 +173,49 @@ methods.getPageText = (docId: number, pageIndex: number): unknown => {
   return { blocks };
 };
 
+/** Bounding rect (in PDF point coordinates) of a MuPDF quad. Quads arrive
+ *  either as flat 8-number arrays or as {ul,ur,ll,lr} point objects. */
+function quadToRect(q: any): { x: number; y: number; w: number; h: number } {
+  let xs: number[];
+  let ys: number[];
+  if (Array.isArray(q)) {
+    xs = [q[0], q[2], q[4], q[6]];
+    ys = [q[1], q[3], q[5], q[7]];
+  } else {
+    xs = [q.ul.x, q.ur.x, q.ll.x, q.lr.x];
+    ys = [q.ul.y, q.ur.y, q.ll.y, q.lr.y];
+  }
+  const x = Math.min(...xs);
+  const y = Math.min(...ys);
+  return { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y };
+}
+
+methods.searchPage = (
+  docId: number,
+  pageIndex: number,
+  needle: string,
+): { x: number; y: number; w: number; h: number }[] => {
+  if (!needle) return [];
+  const doc = documentMap.get(docId)!;
+  const page = doc.loadPage(pageIndex);
+  let hits: any[] = [];
+  try {
+    hits = (page.search(needle, 500) as any[]) || [];
+  } catch {
+    return [];
+  }
+  const rects: { x: number; y: number; w: number; h: number }[] = [];
+  for (const hit of hits) {
+    // A hit is either a single quad (flat 8 numbers) or an array of quads.
+    if (typeof hit[0] === "number") {
+      rects.push(quadToRect(hit));
+    } else {
+      for (const q of hit) rects.push(quadToRect(q));
+    }
+  }
+  return rects;
+};
+
 methods.getPageLinks = (docId: number, pageIndex: number): unknown[] => {
   const doc = documentMap.get(docId)!;
   const page = doc.loadPage(pageIndex);
@@ -207,6 +250,69 @@ methods.getPageLinks = (docId: number, pageIndex: number): unknown[] => {
       isExternal,
     };
   });
+};
+
+interface HighlightInput {
+  pageIndex: number;
+  /** RGB 0..1. */
+  color: [number, number, number];
+  opacity?: number;
+  /** Quads in page-space points: [ulx, uly, urx, ury, llx, lly, lrx, lry]. */
+  quads: number[][];
+  /** Optional note text stored on the annotation. */
+  note?: string;
+}
+
+/** Apply Highlight annotations to a *fresh* copy of the PDF and return the saved
+ *  bytes. Opens its own document so the cached rendering document is untouched. */
+methods.exportAnnotatedPdf = (
+  buffer: ArrayBuffer,
+  highlights: HighlightInput[],
+): ArrayBuffer => {
+  const doc = mupdf.Document.openDocument(
+    buffer,
+    "application/pdf",
+  ) as unknown as PDFDocument;
+  try {
+    // Group by page so each page is loaded once.
+    const byPage = new Map<number, HighlightInput[]>();
+    for (const h of highlights) {
+      const arr = byPage.get(h.pageIndex) ?? [];
+      arr.push(h);
+      byPage.set(h.pageIndex, arr);
+    }
+
+    for (const [pageIndex, items] of byPage) {
+      const page = doc.loadPage(pageIndex);
+      for (const h of items) {
+        if (!h.quads || h.quads.length === 0) continue;
+        const annot = page.createAnnotation("Highlight");
+        annot.setColor(h.color);
+        if (typeof h.opacity === "number") annot.setOpacity(h.opacity);
+        annot.setQuadPoints(h.quads as unknown as any);
+        if (h.note) annot.setContents(h.note);
+        try {
+          annot.setModificationDate(new Date());
+        } catch {
+          // Optional metadata; ignore if unsupported.
+        }
+        annot.update();
+      }
+    }
+
+    const out = doc.saveToBuffer();
+    const u8 = out.asUint8Array();
+    // Copy into a standalone ArrayBuffer that can be transferred back.
+    const copy = new Uint8Array(u8.length);
+    copy.set(u8);
+    return copy.buffer;
+  } finally {
+    try {
+      doc.destroy();
+    } catch {
+      // Best-effort cleanup.
+    }
+  }
 };
 
 methods.renderThumbnail = (

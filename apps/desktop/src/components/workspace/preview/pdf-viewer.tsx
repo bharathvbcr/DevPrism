@@ -1,22 +1,37 @@
 import {
   useCallback,
+  useMemo,
   useRef,
   useEffect,
   useLayoutEffect,
   useState,
 } from "react";
-import { LoaderIcon } from "lucide-react";
+import {
+  LoaderIcon,
+  SearchIcon,
+  SparklesIcon,
+  ChevronUpIcon,
+  ChevronDownIcon,
+  XIcon,
+} from "lucide-react";
 import { open as shellOpen } from "@tauri-apps/plugin-shell";
 import { ask } from "@tauri-apps/plugin-dialog";
 import {
   getCachedDocument,
   getOrOpenDocument,
 } from "@/lib/mupdf/pdf-doc-cache";
+import { getMupdfClient } from "@/lib/mupdf/mupdf-client";
+import { expandSearchTerms, canUseAiAssist } from "@/lib/ai-assist";
+import { useSettingsStore } from "@/stores/settings-store";
 import { LOCAL_ZOOM_SHORTCUTS_ATTR } from "@/lib/app-zoom";
-import { MupdfPage } from "./mupdf-page";
+import { MupdfPage, type PageAnnotation } from "./mupdf-page";
+import {
+  useAnnotationStore,
+  type PdfHighlight,
+} from "@/stores/annotation-store";
 import { createLogger } from "@/lib/debug/logger";
 import { APP_VISIBILITY_RESTORED } from "@/lib/debug/log-store";
-import type { PageSize } from "@/lib/mupdf/types";
+import type { PageSize, Rect } from "@/lib/mupdf/types";
 
 const log = createLogger("pdf-viewer");
 
@@ -187,13 +202,26 @@ export interface PdfTextSelection {
   position: { top: number; left: number };
   pdfX: number;
   pdfY: number;
+  /** Per-line quads of the selection in PDF page-space points:
+   *  [ulx, uly, urx, ury, llx, lly, lrx, lry]. Used for highlighting. */
+  quads: number[][];
 }
+
+const EMPTY_HIGHLIGHTS: PdfHighlight[] = [];
 
 export interface CaptureResult {
   dataUrl: string;
   pageNumber: number;
   pdfX: number;
   pdfY: number;
+}
+
+export interface ForwardSyncPulse {
+  page: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 interface PdfViewerProps {
@@ -203,15 +231,20 @@ interface PdfViewerProps {
   rootFileId?: string;
   /** Whether this viewer is currently the active/visible one (for keep-alive). */
   isActive?: boolean;
+  /** Invert page rendering for a dark-friendly view. */
+  darkMode?: boolean;
   onError?: (error: string) => void;
   onLoadSuccess?: (numPages: number) => void;
   onScaleChange?: (scale: number) => void;
   onTextClick?: (text: string) => void;
   onSynctexClick?: (page: number, x: number, y: number) => void;
+  forwardPulse?: ForwardSyncPulse | null;
   onTextSelect?: (selection: PdfTextSelection | null) => void;
   onFirstPageSize?: (width: number, height: number) => void;
   onContainerResize?: (width: number, height: number) => void;
   onCurrentPageChange?: (page: number) => void;
+  /** Fired when the user scrolls or zooms inside the viewer. */
+  onViewerActivity?: () => void;
   scrollToPageRef?: React.RefObject<((page: number) => void) | null>;
   captureMode?: boolean;
   onCapture?: (result: CaptureResult) => void;
@@ -223,15 +256,18 @@ export function PdfViewer({
   scale,
   rootFileId,
   isActive = true,
+  darkMode = false,
   onError,
   onLoadSuccess,
   onScaleChange,
   onTextClick,
   onSynctexClick,
+  forwardPulse = null,
   onTextSelect,
   onFirstPageSize,
   onContainerResize,
   onCurrentPageChange,
+  onViewerActivity,
   scrollToPageRef,
   captureMode = false,
   onCapture,
@@ -245,6 +281,10 @@ export function PdfViewer({
   const [loading, setLoading] = useState(true);
   const docIdRef = useRef(0);
   const loadGenRef = useRef(0);
+  // Bumped each time a document's geometry is (re)applied — including a silent
+  // recompile of the same root with an unchanged page count — so an open search
+  // re-runs against the new doc instead of showing stale matches.
+  const [loadGen, setLoadGen] = useState(0);
 
   const scaleRef = useRef(scale);
   scaleRef.current = scale;
@@ -345,6 +385,227 @@ export function PdfViewer({
   const [dragPageNum, setDragPageNum] = useState(0);
 
   const numPages = pageSizes.length;
+
+  // ── Persistent user highlights (annotation store, scoped to this root) ──
+  const rootHighlights = useAnnotationStore((s) =>
+    rootFileId
+      ? (s.highlightsByRoot[rootFileId] ?? EMPTY_HIGHLIGHTS)
+      : EMPTY_HIGHLIGHTS,
+  );
+  const removeHighlight = useAnnotationStore((s) => s.removeHighlight);
+  const setHighlightNote = useAnnotationStore((s) => s.setHighlightNote);
+  const handleRemoveAnnotation = useCallback(
+    (id: string) => {
+      if (rootFileId) removeHighlight(rootFileId, id);
+    },
+    [rootFileId, removeHighlight],
+  );
+  const handleUpdateNote = useCallback(
+    (id: string, note: string) => {
+      if (rootFileId) setHighlightNote(rootFileId, id, note);
+    },
+    [rootFileId, setHighlightNote],
+  );
+
+  // Group highlights by page, converting each quad to a render rect.
+  const annotationsByPage = useMemo(() => {
+    if (rootHighlights.length === 0) return null;
+    const map = new Map<number, PageAnnotation[]>();
+    for (const h of rootHighlights) {
+      const rects = h.quads.map((q) => ({
+        x: q[0],
+        y: q[1],
+        w: q[2] - q[0],
+        h: q[5] - q[1],
+      }));
+      const arr = map.get(h.pageIndex) ?? [];
+      arr.push({ id: h.id, rects, css: h.css, note: h.note });
+      map.set(h.pageIndex, arr);
+    }
+    return map;
+  }, [rootHighlights]);
+
+  // ── Full-document text search ──────────────────────────────────────────
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchMatches, setSearchMatches] = useState<
+    { pageIndex: number; rect: Rect }[]
+  >([]);
+  const [activeMatch, setActiveMatch] = useState(-1);
+  const [searching, setSearching] = useState(false);
+  // When a literal search yields nothing, AI may surface matches for an
+  // alternative wording; this holds that term so we can note it in the UI.
+  const [semanticAltTerm, setSemanticAltTerm] = useState<string | null>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const searchGenRef = useRef(0);
+
+  // Read once per render; non-component guards use getState() instead.
+  const aiSemanticSearch = useSettingsStore((s) => s.aiSemanticSearch);
+
+  /** Scroll a given match roughly to the vertical center of the viewport. */
+  const scrollToMatch = useCallback((m: { pageIndex: number; rect: Rect }) => {
+    const container = containerRef.current;
+    if (!container) return;
+    const pageEl = container.querySelector(
+      `[data-page-number="${m.pageIndex + 1}"]`,
+    ) as HTMLElement | null;
+    if (!pageEl) return;
+    const containerRect = container.getBoundingClientRect();
+    const pageRect = pageEl.getBoundingClientRect();
+    const matchTop = m.rect.y * scaleRef.current;
+    const target =
+      container.scrollTop +
+      (pageRect.top - containerRect.top) +
+      matchTop -
+      container.clientHeight / 2;
+    container.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
+  }, []);
+
+  const goToMatch = useCallback(
+    (idx: number) => {
+      setSearchMatches((matches) => {
+        if (matches.length === 0) return matches;
+        const next = ((idx % matches.length) + matches.length) % matches.length;
+        setActiveMatch(next);
+        scrollToMatch(matches[next]);
+        return matches;
+      });
+    },
+    [scrollToMatch],
+  );
+
+  // Run the search (debounced) across every page whenever the query changes.
+  useEffect(() => {
+    if (!searchOpen) return;
+    const q = searchQuery.trim();
+    setSemanticAltTerm(null);
+    if (q.length < 1) {
+      setSearchMatches([]);
+      setActiveMatch(-1);
+      setSearching(false);
+      return;
+    }
+    const gen = ++searchGenRef.current;
+    setSearching(true);
+
+    // Literal substring search across every page for one term. Returns null if
+    // a newer search has superseded this one (stale-run guard).
+    const runLiteralSearch = async (
+      term: string,
+    ): Promise<{ pageIndex: number; rect: Rect }[] | null> => {
+      const client = getMupdfClient();
+      const docId = docIdRef.current;
+      const results: { pageIndex: number; rect: Rect }[] = [];
+      for (let i = 0; i < numPages; i++) {
+        if (gen !== searchGenRef.current) return null;
+        try {
+          const rects = await client.searchPage(docId, i, term);
+          for (const r of rects) results.push({ pageIndex: i, rect: r });
+        } catch {
+          // Skip pages that fail to search.
+        }
+      }
+      return results;
+    };
+
+    const handle = setTimeout(async () => {
+      const results = await runLiteralSearch(q);
+      if (results === null || gen !== searchGenRef.current) return;
+
+      if (results.length > 0) {
+        setSearchMatches(results);
+        setSearching(false);
+        setActiveMatch(0);
+        requestAnimationFrame(() => scrollToMatch(results[0]));
+        return;
+      }
+
+      // ── Semantic fallback: literal search found nothing. Ask the AI for
+      // alternative wordings and re-run the literal routine for each until one
+      // yields matches. Passive/background AI — fails silently. ──
+      if (aiSemanticSearch && canUseAiAssist()) {
+        let alternatives: string[] = [];
+        try {
+          alternatives = await expandSearchTerms(q);
+        } catch {
+          alternatives = [];
+        }
+        if (gen !== searchGenRef.current) return;
+
+        const qLower = q.toLowerCase();
+        for (const alt of alternatives) {
+          const term = alt.trim();
+          if (!term || term.toLowerCase() === qLower) continue;
+          const altResults = await runLiteralSearch(term);
+          if (altResults === null || gen !== searchGenRef.current) return;
+          if (altResults.length > 0) {
+            setSemanticAltTerm(term);
+            setSearchMatches(altResults);
+            setSearching(false);
+            setActiveMatch(0);
+            requestAnimationFrame(() => scrollToMatch(altResults[0]));
+            return;
+          }
+        }
+        if (gen !== searchGenRef.current) return;
+      }
+
+      // No literal or semantic matches — keep the existing no-results state.
+      setSearchMatches(results);
+      setSearching(false);
+      setActiveMatch(-1);
+    }, 250);
+    return () => clearTimeout(handle);
+  }, [searchQuery, searchOpen, numPages, loadGen, scrollToMatch, aiSemanticSearch]);
+
+  // Ctrl/Cmd+F opens the in-PDF search; Escape closes it.
+  useEffect(() => {
+    if (!isActive) return;
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === "f" || e.key === "F")) {
+        e.preventDefault();
+        e.stopPropagation();
+        setSearchOpen(true);
+        requestAnimationFrame(() => {
+          searchInputRef.current?.focus();
+          searchInputRef.current?.select();
+        });
+      } else if (e.key === "Escape" && searchOpen) {
+        setSearchOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [isActive, searchOpen]);
+
+  // Group matches by page so each MupdfPage receives only its own highlights.
+  const highlightsByPage = useMemo(() => {
+    const map = new Map<
+      number,
+      { rect: Rect; active: boolean; pulse?: boolean }[]
+    >();
+
+    if (forwardPulse) {
+      const pageIndex = forwardPulse.page - 1;
+      const rect: Rect = {
+        x: forwardPulse.x,
+        y: forwardPulse.y,
+        w: forwardPulse.width,
+        h: forwardPulse.height,
+      };
+      map.set(pageIndex, [{ rect, active: true, pulse: true }]);
+    }
+
+    if (searchOpen && searchMatches.length > 0) {
+      searchMatches.forEach((m, idx) => {
+        const arr = map.get(m.pageIndex) ?? [];
+        arr.push({ rect: m.rect, active: idx === activeMatch });
+        map.set(m.pageIndex, arr);
+      });
+    }
+
+    return map.size > 0 ? map : null;
+  }, [searchOpen, searchMatches, activeMatch, forwardPulse]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -484,6 +745,7 @@ export function PdfViewer({
     if (syncResult) {
       docIdRef.current = syncResult.docId;
       setPageSizes(syncResult.pageSizes);
+      setLoadGen((g) => g + 1);
       setLoading(false);
 
       if (isFirstLoad.current && syncResult.pageSizes.length > 0) {
@@ -512,6 +774,7 @@ export function PdfViewer({
 
         docIdRef.current = docId;
         setPageSizes(sizes);
+        setLoadGen((g) => g + 1);
         setLoading(false);
 
         if (isFirstLoad.current && sizes.length > 0) {
@@ -583,12 +846,12 @@ export function PdfViewer({
     return () => ro.disconnect();
   }, [onContainerResize]);
 
-  // Native dblclick listener for synctex
+  // SyncTeX: double-click or Ctrl/Cmd+click jumps to source
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
 
-    const handleDblClick = (e: MouseEvent) => {
+    const jumpToSource = (e: MouseEvent) => {
       if (captureMode) return;
       const cb = synctexClickRef.current;
       if (!cb) return;
@@ -614,8 +877,22 @@ export function PdfViewer({
       cb(pageNum, pdfX, pdfY);
     };
 
+    const handleDblClick = (e: MouseEvent) => {
+      jumpToSource(e);
+    };
+
+    const handleClick = (e: MouseEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      jumpToSource(e);
+    };
+
     container.addEventListener("dblclick", handleDblClick);
-    return () => container.removeEventListener("dblclick", handleDblClick);
+    container.addEventListener("click", handleClick);
+    return () => {
+      container.removeEventListener("dblclick", handleDblClick);
+      container.removeEventListener("click", handleClick);
+    };
   }, [captureMode]);
 
   // Text selection detection via mouseup
@@ -669,11 +946,55 @@ export function PdfViewer({
 
         let pdfX = 0;
         let pdfY = 0;
+        const quads: number[][] = [];
         if (pageEl) {
           const pageRect = pageEl.getBoundingClientRect();
           const currentScale = scaleRef.current;
           pdfX = (rect.left - pageRect.left) / currentScale;
           pdfY = (rect.top - pageRect.top) / currentScale;
+
+          // getClientRects() yields one rect per span, so a single visual line
+          // can arrive as several overlapping rects. Keep only rects whose
+          // centre is on this page (selections can span pages), then merge
+          // rects that share a line into one bar — otherwise the multiply
+          // overlay stacks into dark bands and the export gets duplicate quads.
+          const lines: {
+            top: number;
+            bottom: number;
+            left: number;
+            right: number;
+          }[] = [];
+          for (const r of Array.from(range.getClientRects())) {
+            if (r.width < 1 || r.height < 1) continue;
+            const cy = r.top + r.height / 2;
+            if (cy < pageRect.top - 1 || cy > pageRect.bottom + 1) continue;
+            const tol = r.height * 0.5;
+            const sameLine = lines.find(
+              (l) =>
+                Math.abs(l.top - r.top) < tol &&
+                Math.abs(l.bottom - r.bottom) < tol,
+            );
+            if (sameLine) {
+              sameLine.top = Math.min(sameLine.top, r.top);
+              sameLine.bottom = Math.max(sameLine.bottom, r.bottom);
+              sameLine.left = Math.min(sameLine.left, r.left);
+              sameLine.right = Math.max(sameLine.right, r.right);
+            } else {
+              lines.push({
+                top: r.top,
+                bottom: r.bottom,
+                left: r.left,
+                right: r.right,
+              });
+            }
+          }
+          for (const l of lines) {
+            const x = (l.left - pageRect.left) / currentScale;
+            const y = (l.top - pageRect.top) / currentScale;
+            const w = (l.right - l.left) / currentScale;
+            const h = (l.bottom - l.top) / currentScale;
+            quads.push([x, y, x + w, y, x, y + h, x + w, y + h]);
+          }
         }
 
         cb({
@@ -682,6 +1003,7 @@ export function PdfViewer({
           position: { top: rect.bottom, left: rect.left },
           pdfX,
           pdfY,
+          quads,
         });
       }, 300);
     };
@@ -698,12 +1020,14 @@ export function PdfViewer({
   // Track current visible page on scroll
   const currentPageChangeRef = useRef(onCurrentPageChange);
   currentPageChangeRef.current = onCurrentPageChange;
+  const viewerActivityRef = useRef(onViewerActivity);
+  viewerActivityRef.current = onViewerActivity;
   useEffect(() => {
     const container = containerRef.current;
     if (!container || !isActive) return;
 
     let rafId = 0;
-    const handleScroll = () => {
+    const updateVisiblePage = () => {
       cancelAnimationFrame(rafId);
       rafId = requestAnimationFrame(() => {
         const cb = currentPageChangeRef.current;
@@ -711,9 +1035,14 @@ export function PdfViewer({
       });
     };
 
+    const handleScroll = () => {
+      viewerActivityRef.current?.();
+      updateVisiblePage();
+    };
+
     container.addEventListener("scroll", handleScroll, { passive: true });
-    // Fire initial value
-    handleScroll();
+    // Fire initial value without treating mount as user activity.
+    updateVisiblePage();
     return () => {
       container.removeEventListener("scroll", handleScroll);
       cancelAnimationFrame(rafId);
@@ -793,6 +1122,7 @@ export function PdfViewer({
 
       scaleRef.current = nextScale;
       onScaleChange(nextScale);
+      viewerActivityRef.current?.();
     },
     [onScaleChange],
   );
@@ -1154,49 +1484,125 @@ export function PdfViewer({
       : null;
 
   return (
-    <div
-      ref={containerRef}
-      tabIndex={-1}
-      {...{ [LOCAL_ZOOM_SHORTCUTS_ATTR]: "true" }}
-      className="min-h-0 flex-1 overflow-auto outline-none"
-      style={{
-        cursor: captureMode ? "crosshair" : undefined,
-        touchAction: captureMode ? "none" : "pan-x pan-y",
-      }}
-      onMouseDownCapture={() => containerRef.current?.focus()}
-      onMouseDown={handleCaptureMouseDown}
-      onMouseMove={handleCaptureMouseMove}
-      onMouseUp={handleCaptureMouseUp}
-    >
-      <div
-        ref={contentRef}
-        className="flex min-w-fit flex-col items-center gap-4 p-4"
-        onClick={handleTextLayerClick}
-      >
-        {loading && numPages === 0 && (
-          <div className="flex items-center gap-2 text-muted-foreground">
-            <LoaderIcon className="size-4 animate-spin" />
-            Loading PDF...
-          </div>
-        )}
-        {pageSizes.map((size, i) => (
-          <MupdfPage
-            key={i}
-            docId={docIdRef.current}
-            pageIndex={i}
-            scale={scale}
-            pageWidth={size.width}
-            pageHeight={size.height}
-            isVisible={visiblePages.has(i + 1)}
+    <div className="relative flex min-h-0 flex-1 flex-col">
+      {searchOpen && (
+        <div className="absolute top-3 right-3 z-30 flex items-center gap-1 rounded-lg border border-border bg-background/95 px-2 py-1 shadow-lg backdrop-blur">
+          <SearchIcon className="size-3.5 shrink-0 text-muted-foreground" />
+          <input
+            ref={searchInputRef}
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                goToMatch(activeMatch + (e.shiftKey ? -1 : 1));
+              } else if (e.key === "Escape") {
+                setSearchOpen(false);
+              }
+            }}
+            placeholder="Find in document"
+            className="w-44 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
           />
-        ))}
-      </div>
-      {selRect && (
-        <div
-          className="pointer-events-none fixed border-2 border-primary bg-primary/10"
-          style={selRect}
-        />
+          <span className="shrink-0 px-1 text-muted-foreground text-xs tabular-nums">
+            {searching
+              ? "…"
+              : searchMatches.length > 0
+                ? `${activeMatch + 1}/${searchMatches.length}`
+                : searchQuery.trim()
+                  ? "0/0"
+                  : ""}
+          </span>
+          {!searching && semanticAltTerm && searchMatches.length > 0 && (
+            <span
+              className="flex shrink-0 items-center gap-1 px-1 text-muted-foreground text-xs"
+              title={`No exact matches; showing results for "${semanticAltTerm}"`}
+            >
+              <SparklesIcon className="size-3 shrink-0" />
+              <span className="max-w-28 truncate">
+                Showing results for: {semanticAltTerm}
+              </span>
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => goToMatch(activeMatch - 1)}
+            disabled={searchMatches.length === 0}
+            className="rounded p-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+            title="Previous match (Shift+Enter)"
+            aria-label="Previous match"
+          >
+            <ChevronUpIcon className="size-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => goToMatch(activeMatch + 1)}
+            disabled={searchMatches.length === 0}
+            className="rounded p-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+            title="Next match (Enter)"
+            aria-label="Next match"
+          >
+            <ChevronDownIcon className="size-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => setSearchOpen(false)}
+            className="rounded p-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            title="Close (Esc)"
+            aria-label="Close search"
+          >
+            <XIcon className="size-3.5" />
+          </button>
+        </div>
       )}
+      <div
+        ref={containerRef}
+        tabIndex={-1}
+        {...{ [LOCAL_ZOOM_SHORTCUTS_ATTR]: "true" }}
+        className="min-h-0 flex-1 overflow-auto overscroll-contain outline-none"
+        style={{
+          cursor: captureMode ? "crosshair" : undefined,
+          touchAction: captureMode ? "none" : "pan-x pan-y",
+        }}
+        onMouseDownCapture={() => containerRef.current?.focus()}
+        onMouseDown={handleCaptureMouseDown}
+        onMouseMove={handleCaptureMouseMove}
+        onMouseUp={handleCaptureMouseUp}
+      >
+        <div
+          ref={contentRef}
+          className="flex min-w-fit flex-col items-center gap-4 p-4"
+          onClick={handleTextLayerClick}
+        >
+          {loading && numPages === 0 && (
+            <div className="flex items-center gap-2 text-muted-foreground">
+              <LoaderIcon className="size-4 animate-spin" />
+              Loading PDF...
+            </div>
+          )}
+          {pageSizes.map((size, i) => (
+            <MupdfPage
+              key={i}
+              docId={docIdRef.current}
+              pageIndex={i}
+              scale={scale}
+              pageWidth={size.width}
+              pageHeight={size.height}
+              isVisible={visiblePages.has(i + 1)}
+              darkMode={darkMode}
+              highlights={highlightsByPage?.get(i)}
+              annotations={annotationsByPage?.get(i)}
+              onRemoveAnnotation={handleRemoveAnnotation}
+              onUpdateNote={handleUpdateNote}
+            />
+          ))}
+        </div>
+        {selRect && (
+          <div
+            className="pointer-events-none fixed border-2 border-primary bg-primary/10"
+            style={selRect}
+          />
+        )}
+      </div>
     </div>
   );
 }

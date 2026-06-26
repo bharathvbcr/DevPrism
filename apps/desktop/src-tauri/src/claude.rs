@@ -2549,6 +2549,7 @@ fn common_claude_args(cwd: &str) -> Vec<String> {
     system_prompt.push_str(&crate::project_context::build_project_context_prompt(
         std::path::Path::new(cwd),
     ));
+    system_prompt.push_str(&crate::personalization::build_personalization_prompt());
     vec![
         "--output-format".to_string(),
         "stream-json".to_string(),
@@ -2820,6 +2821,7 @@ async fn send_openai_compatible_no_tools_text_request(
     client: &reqwest::Client,
     credential: &StoredOpenAiCompatibleCredential,
     messages: &[serde_json::Value],
+    temperature: Option<f32>,
 ) -> Result<(String, String), String> {
     if let Some(anthropic_base_url) = native_anthropic_base_url(credential) {
         return send_native_anthropic_no_tools_text_request(
@@ -2831,11 +2833,17 @@ async fn send_openai_compatible_no_tools_text_request(
         .await;
     }
 
-    let request_body = json!({
-        "model": credential.model.clone(),
-        "messages": messages,
-        "stream": false,
-    });
+    let request_body = {
+        let mut body = json!({
+            "model": credential.model.clone(),
+            "messages": messages,
+            "stream": false,
+        });
+        if let Some(temp) = temperature.filter(|t| (0.0..=2.0).contains(t)) {
+            body["temperature"] = json!(temp);
+        }
+        body
+    };
 
     let request = client
         .post(openai_chat_completions_url(&credential.base_url))
@@ -2882,6 +2890,40 @@ async fn send_openai_compatible_no_tools_text_request(
         .to_string();
 
     Ok((content, reasoning))
+}
+
+/// One-shot chat completion for inline selection transforms (no tools).
+pub async fn complete_openai_compatible_chat(
+    credential_id: Option<&str>,
+    messages: Vec<serde_json::Value>,
+    model_override: Option<&str>,
+    temperature: Option<f32>,
+) -> Result<String, String> {
+    let mut credential = stored_openai_compatible_credential_by_id(credential_id)?
+        .ok_or_else(|| "No provider credential configured.".to_string())?;
+    if let Some(model) = model_override.filter(|m| !m.trim().is_empty()) {
+        credential.model = model.trim().to_string();
+    }
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|err| format!("Failed to create provider client: {}", err))?;
+    let (content, reasoning) = send_openai_compatible_no_tools_text_request(
+        &client,
+        &credential,
+        &messages,
+        temperature,
+    )
+    .await?;
+    let text = if content.trim().is_empty() {
+        reasoning
+    } else {
+        content
+    };
+    if text.trim().is_empty() {
+        return Err("Provider returned an empty response.".to_string());
+    }
+    Ok(text)
 }
 
 async fn send_native_anthropic_no_tools_text_request(
@@ -3856,7 +3898,7 @@ async fn generate_model_session_title(
     ];
 
     let (content, reasoning) =
-        send_openai_compatible_no_tools_text_request(client, credential, &messages).await?;
+        send_openai_compatible_no_tools_text_request(client, credential, &messages, None).await?;
     let title = if content.trim().is_empty() {
         reasoning.trim()
     } else {

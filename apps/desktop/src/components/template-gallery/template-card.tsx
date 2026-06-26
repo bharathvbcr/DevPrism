@@ -112,9 +112,10 @@ export function getFallbackThumbnail(
 
 interface TemplateCardProps {
   template: TemplateDefinition;
+  recommended?: boolean;
 }
 
-export function TemplateCard({ template }: TemplateCardProps) {
+export function TemplateCard({ template, recommended }: TemplateCardProps) {
   const openPreview = useTemplateStore((s) => s.openPreview);
   const FallbackThumbnail = getFallbackThumbnail(template);
 
@@ -160,7 +161,16 @@ export function TemplateCard({ template }: TemplateCardProps) {
         </button>
       </div>
       <div className="mt-2 px-0.5">
-        <div className="font-medium text-sm leading-tight">{template.name}</div>
+        <div className="flex items-center gap-1.5">
+          <div className="font-medium text-sm leading-tight">
+            {template.name}
+          </div>
+          {recommended && (
+            <span className="shrink-0 rounded bg-primary/10 px-1.5 py-px font-medium text-[10px] text-primary">
+              Recommended
+            </span>
+          )}
+        </div>
         <div className="mt-0.5 line-clamp-2 text-muted-foreground text-xs leading-snug">
           {template.description}
         </div>

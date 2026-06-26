@@ -1,10 +1,12 @@
 import { useCallback, useRef, useEffect } from "react";
 import { PlusIcon, XIcon } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { useChatLabels } from "@/lib/chat-labels";
 import { useClaudeChatStore, type TabState } from "@/stores/claude-chat-store";
 import { SessionSelector } from "./session-selector";
+import { cn } from "@/lib/utils";
 
-export function ChatTabBar() {
+export function ChatTabBar({ enabled = true }: { enabled?: boolean }) {
+  const chatLabels = useChatLabels();
   const tabs = useClaudeChatStore((s) => s.tabs);
   const activeTabId = useClaudeChatStore((s) => s.activeTabId);
   const setActiveTab = useClaudeChatStore((s) => s.setActiveTab);
@@ -27,6 +29,7 @@ export function ChatTabBar() {
   // Keyboard shortcuts: Ctrl+Tab / Ctrl+Shift+Tab to switch tabs, Ctrl+T new, Ctrl+W close
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (!enabled) return;
       const isMac = navigator.platform.startsWith("Mac");
       const state = useClaudeChatStore.getState();
       const { tabs: currentTabs, activeTabId: currentActive } = state;
@@ -63,7 +66,7 @@ export function ChatTabBar() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  }, [enabled]);
 
   const handleCreate = useCallback(() => {
     createTab();
@@ -104,7 +107,7 @@ export function ChatTabBar() {
         >
           <PlusIcon className="size-3.5" />
         </button>
-        <SessionSelector />
+        <SessionSelector hidden={!chatLabels.showSessionHistory} />
       </div>
     </div>
   );

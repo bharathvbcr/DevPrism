@@ -41,6 +41,10 @@ import {
 import { getTemplatePdfUrl } from "@/lib/template-preview-cache";
 import { getMupdfClient } from "@/lib/mupdf/mupdf-client";
 import { exists, join } from "@/lib/tauri/fs";
+import {
+  setupNewProjectInSpace,
+  formatNewProjectSetupToast,
+} from "@/lib/space-project";
 import type { PageSize } from "@/lib/mupdf/types";
 import { createLogger } from "@/lib/debug/logger";
 import {
@@ -48,6 +52,8 @@ import {
   importReferenceFiles,
 } from "@/lib/project-attachments";
 import { getProjectNameError, normalizeProjectName } from "@/lib/project-name";
+import { useSettingsStore } from "@/stores/settings-store";
+import { canUseAiAssist, suggestProjectName } from "@/lib/ai-assist";
 
 const log = createLogger("template-preview");
 
@@ -91,6 +97,15 @@ export function TemplatePreview() {
   const projectNameRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  // ── AI-suggested project name (from purpose) ──
+  const aiNaming = useSettingsStore((s) => s.aiNaming);
+  const [nameSuggesting, setNameSuggesting] = useState(false);
+  const nameTouchedRef = useRef(false);
+  const nameSuggestDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const nameSuggestRequestRef = useRef(0);
+
   // ── Store access ──
   const addRecentProject = useProjectStore((s) => s.addRecentProject);
   const lastProjectFolder = useProjectStore((s) => s.lastProjectFolder);
@@ -128,8 +143,52 @@ export function TemplatePreview() {
       setProjectNameError("");
       setRefFilesOpen(false);
       setLocationOpen(false);
+      nameTouchedRef.current = false;
+      setNameSuggesting(false);
     }
   }, [previewTemplateId]);
+
+  // ── Debounced AI name suggestion from the purpose text ──
+  // Only prefills while the user has not manually edited the name field.
+  useEffect(() => {
+    if (nameSuggestDebounceRef.current) {
+      clearTimeout(nameSuggestDebounceRef.current);
+    }
+
+    if (!aiNaming || !canUseAiAssist()) return;
+    if (modalStep !== "details") return;
+    if (nameTouchedRef.current) return;
+
+    const goal = purpose.trim();
+    if (goal.length < 12) return;
+
+    nameSuggestDebounceRef.current = setTimeout(() => {
+      const id = ++nameSuggestRequestRef.current;
+      setNameSuggesting(true);
+      void suggestProjectName(goal)
+        .then((suggested) => {
+          if (id !== nameSuggestRequestRef.current) return;
+          if (nameTouchedRef.current) return;
+          const normalized = normalizeProjectName(suggested);
+          if (normalized) {
+            setProjectName(normalized);
+            setProjectNameError("");
+          }
+        })
+        .catch(() => {
+          // Passive/background AI: fail silently.
+        })
+        .finally(() => {
+          if (id === nameSuggestRequestRef.current) setNameSuggesting(false);
+        });
+    }, 800);
+
+    return () => {
+      if (nameSuggestDebounceRef.current) {
+        clearTimeout(nameSuggestDebounceRef.current);
+      }
+    };
+  }, [purpose, aiNaming, modalStep]);
 
   // Default project folder
   useEffect(() => {
@@ -419,8 +478,11 @@ export function TemplatePreview() {
       }
 
       setLastProjectFolder(projectFolder);
+      const setup = await setupNewProjectInSpace(projectPath);
       addRecentProject(projectPath);
       await openProject(projectPath);
+      const toastMsg = formatNewProjectSetupToast(setup, `Created "${name}"`);
+      toast.success(toastMsg);
 
       // Close modal on success
       closePreview();
@@ -561,7 +623,12 @@ export function TemplatePreview() {
               <div className="space-y-4 p-5">
                 <div className="space-y-2">
                   <div>
-                    <span className="font-semibold text-sm">Project name</span>
+                    <span className="flex items-center gap-1.5 font-semibold text-sm">
+                      Project name
+                      {nameSuggesting && (
+                        <Loader2Icon className="size-3 animate-spin text-muted-foreground" />
+                      )}
+                    </span>
                     <p className="mt-0.5 text-muted-foreground text-xs leading-relaxed">
                       This becomes the folder name on disk.
                     </p>
@@ -571,6 +638,7 @@ export function TemplatePreview() {
                     placeholder="e.g., conference-paper"
                     value={projectName}
                     onChange={(e) => {
+                      nameTouchedRef.current = true;
                       setProjectName(e.target.value);
                       setProjectNameError("");
                     }}

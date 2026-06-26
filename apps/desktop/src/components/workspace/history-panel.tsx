@@ -7,9 +7,23 @@ import {
   CopyIcon,
   PlusIcon,
   XIcon,
+  FileDownIcon,
+  FileTextIcon,
 } from "lucide-react";
 import { useHistoryStore, type SnapshotInfo } from "@/stores/history-store";
 import { useDocumentStore } from "@/stores/document-store";
+import { snapshotTypeLabel, isAgentSnapshotMessage } from "@/lib/chat-labels";
+import { useSettingsStore } from "@/stores/settings-store";
+import {
+  exportTrackedTex,
+  previewTrackedChangesPdf,
+  toTexFileDiffs,
+} from "@/lib/track-changes-export";
+import {
+  buildTrackChangesMeta,
+  linearizeSnapshots,
+} from "@/lib/track-changes-meta";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -41,19 +55,8 @@ function formatRelativeTime(timestamp: number): string {
   return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-function snapshotTypeLabel(message: string): string {
-  if (message.startsWith("[auto]")) return "Auto-save";
-  if (message.startsWith("[manual]")) return "Save";
-  if (message.startsWith("[compile]")) return "Compile";
-  if (message.startsWith("[claude]"))
-    return message.includes("Before") ? "Before Claude" : "After Claude";
-  if (message.startsWith("[restore]")) return "Restore";
-  if (message.startsWith("[init]")) return "Initial";
-  return message;
-}
-
 function snapshotTypeBadgeColor(message: string): string {
-  if (message.startsWith("[claude]"))
+  if (isAgentSnapshotMessage(message))
     return "bg-violet-500/15 text-violet-600 dark:text-violet-400";
   if (message.startsWith("[restore]"))
     return "bg-amber-500/15 text-amber-600 dark:text-amber-400";
@@ -67,6 +70,7 @@ function snapshotTypeBadgeColor(message: string): string {
 // ─── Panel ───
 
 export function HistoryPanel({ maxHeight }: { maxHeight?: string }) {
+  const nativeAgentEnabled = useSettingsStore((s) => s.nativeAgentEnabled);
   const projectRoot = useDocumentStore((s) => s.projectRoot);
   const snapshots = useHistoryStore((s) => s.snapshots);
   const isLoading = useHistoryStore((s) => s.isLoading);
@@ -82,38 +86,70 @@ export function HistoryPanel({ maxHeight }: { maxHeight?: string }) {
   const removeLabel = useHistoryStore((s) => s.removeLabel);
   const openProject = useDocumentStore((s) => s.openProject);
 
-  // Compute linear history: when a [restore] snapshot appears,
-  // skip all snapshots between it and the restored target
-  const linearSnapshots = useMemo(() => {
-    const result: SnapshotInfo[] = [];
-    let skipUntilSha: string | null = null;
-
-    for (const snap of snapshots) {
-      if (skipUntilSha) {
-        // Skip until we find the snapshot that was restored to
-        if (snap.id.startsWith(skipUntilSha)) {
-          skipUntilSha = null;
-          result.push(snap);
-        }
-        continue;
-      }
-
-      result.push(snap);
-
-      // If this is a restore snapshot, extract the target SHA and start skipping
-      if (snap.message.startsWith("[restore]")) {
-        const match = snap.message.match(/Restored to ([a-f0-9]+)/);
-        if (match) {
-          skipUntilSha = match[1];
-        }
-      }
-    }
-    return result;
-  }, [snapshots]);
+  // Linear history (restore-collapsed). Shared with the editor's track-changes
+  // label via linearizeSnapshots so the two never diverge.
+  const linearSnapshots = useMemo(
+    () => linearizeSnapshots(snapshots),
+    [snapshots],
+  );
 
   const [labelDialogOpen, setLabelDialogOpen] = useState(false);
   const [labelTargetId, setLabelTargetId] = useState<string | null>(null);
   const [labelValue, setLabelValue] = useState("");
+  const [trackChangesBusyId, setTrackChangesBusyId] = useState<string | null>(
+    null,
+  );
+
+  const hasTexChanges = useCallback((snap: SnapshotInfo) => {
+    return snap.changed_files.some((f) => f.toLowerCase().endsWith(".tex"));
+  }, []);
+
+  const handleTrackChanges = useCallback(
+    async (snap: SnapshotInfo, action: "export" | "preview") => {
+      if (!projectRoot) return;
+      const idx = linearSnapshots.findIndex((s) => s.id === snap.id);
+      const parent = linearSnapshots[idx + 1];
+      if (!parent) {
+        toast.error("No previous snapshot to compare against.");
+        return;
+      }
+      setTrackChangesBusyId(snap.id);
+      // Toast covers the diff-loading prep only. exportTrackedTex /
+      // previewTrackedChangesPdf own their own loading/success/error toasts, so
+      // once we hand off we dismiss this one to avoid stacked duplicates.
+      const toastId = toast.loading("Loading changes…");
+      let handedOff = false;
+      try {
+        await loadDiff(projectRoot, parent.id, snap.id);
+        const diffResult = useHistoryStore.getState().diffResult;
+        if (!diffResult?.length) {
+          toast.error("No changes found in this snapshot.", { id: toastId });
+          return;
+        }
+        const meta = buildTrackChangesMeta(parent, snap);
+        const texDiffs = toTexFileDiffs(diffResult);
+        handedOff = true;
+        toast.dismiss(toastId);
+        if (action === "export") {
+          await exportTrackedTex(projectRoot, texDiffs, meta, "word");
+        } else {
+          await previewTrackedChangesPdf(projectRoot, texDiffs, meta, "word");
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        // previewTrackedChangesPdf already surfaced its own error toast; only
+        // show one here for prep/export failures that wouldn't otherwise toast.
+        if (!handedOff) {
+          toast.error(message, { id: toastId });
+        } else if (action === "export") {
+          toast.error(message);
+        }
+      } finally {
+        setTrackChangesBusyId(null);
+      }
+    },
+    [projectRoot, linearSnapshots, loadDiff],
+  );
 
   // Init history when project opens
   useEffect(() => {
@@ -217,6 +253,8 @@ export function HistoryPanel({ maxHeight }: { maxHeight?: string }) {
                 snapshot={snap}
                 isSelected={reviewingSnapshot?.id === snap.id}
                 isRestoring={isRestoring}
+                trackChangesBusy={trackChangesBusyId === snap.id}
+                canTrackChanges={hasTexChanges(snap)}
                 onClick={() => handleClick(snap)}
                 onRestore={() => handleRestore(snap.id)}
                 onAddLabel={() => openLabelDialog(snap.id)}
@@ -224,6 +262,8 @@ export function HistoryPanel({ maxHeight }: { maxHeight?: string }) {
                   projectRoot && removeLabel(projectRoot, label)
                 }
                 onCopySha={() => navigator.clipboard.writeText(snap.id)}
+                onExportTrackedTex={() => handleTrackChanges(snap, "export")}
+                onPreviewTrackedPdf={() => handleTrackChanges(snap, "preview")}
               />
             ))}
           </div>
@@ -273,21 +313,30 @@ function SnapshotRow({
   snapshot,
   isSelected,
   isRestoring,
+  trackChangesBusy,
+  canTrackChanges,
   onClick,
   onRestore,
   onAddLabel,
   onRemoveLabel,
   onCopySha,
+  onExportTrackedTex,
+  onPreviewTrackedPdf,
 }: {
   snapshot: SnapshotInfo;
   isSelected: boolean;
   isRestoring: boolean;
+  trackChangesBusy: boolean;
+  canTrackChanges: boolean;
   onClick: () => void;
   onRestore: () => void;
   onAddLabel: () => void;
   onRemoveLabel: (label: string) => void;
   onCopySha: () => void;
+  onExportTrackedTex: () => void;
+  onPreviewTrackedPdf: () => void;
 }) {
+  const nativeAgentEnabled = useSettingsStore((s) => s.nativeAgentEnabled);
   const hasFiles = snapshot.changed_files.length > 0;
 
   return (
@@ -308,7 +357,7 @@ function SnapshotRow({
                   snapshotTypeBadgeColor(snapshot.message),
                 )}
               >
-                {snapshotTypeLabel(snapshot.message)}
+                {snapshotTypeLabel(snapshot.message, nativeAgentEnabled)}
               </span>
               <span className="text-muted-foreground text-xs">
                 {formatRelativeTime(snapshot.timestamp)}
@@ -360,6 +409,33 @@ function SnapshotRow({
           <PlusIcon className="mr-2 size-3.5" />
           Add label
         </ContextMenuItem>
+        {canTrackChanges && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem
+              onClick={onExportTrackedTex}
+              disabled={trackChangesBusy}
+            >
+              {trackChangesBusy ? (
+                <LoaderIcon className="mr-2 size-3.5 animate-spin" />
+              ) : (
+                <FileDownIcon className="mr-2 size-3.5" />
+              )}
+              Export tracked .tex
+            </ContextMenuItem>
+            <ContextMenuItem
+              onClick={onPreviewTrackedPdf}
+              disabled={trackChangesBusy}
+            >
+              {trackChangesBusy ? (
+                <LoaderIcon className="mr-2 size-3.5 animate-spin" />
+              ) : (
+                <FileTextIcon className="mr-2 size-3.5" />
+              )}
+              Preview changes PDF
+            </ContextMenuItem>
+          </>
+        )}
         <ContextMenuSeparator />
         <ContextMenuItem onClick={onCopySha}>
           <CopyIcon className="mr-2 size-3.5" />

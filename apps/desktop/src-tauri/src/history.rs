@@ -93,13 +93,15 @@ Thumbs.db
 # DevPrism internal
 .claudeprism/
 .prism/
+.devprism-*
 "#;
     if !excludes_path.exists() {
         let _ = fs::write(&excludes_path, content);
     } else {
-        // Migrate: add .prism/ if missing from existing excludes file
+        // Migrate: rewrite if missing a marker we expect (.prism/ from an older
+        // version, or .devprism-* for the track-changes temp files).
         if let Ok(existing) = fs::read_to_string(&excludes_path) {
-            if !existing.contains(".prism/") {
+            if !existing.contains(".prism/") || !existing.contains(".devprism-*") {
                 let _ = fs::write(&excludes_path, content);
             }
         }

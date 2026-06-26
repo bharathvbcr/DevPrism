@@ -47,6 +47,9 @@
 }
 
 :root {
+  /* Render native scrollbars, form controls, and default surfaces in the light
+     variant (theme is class-driven; .dark overrides below). */
+  color-scheme: light;
   --radius: 0.625rem;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
@@ -82,6 +85,8 @@
 }
 
 .dark {
+  /* Native scrollbars/controls track the app's dark theme. */
+  color-scheme: dark;
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.205 0 0);
@@ -120,7 +125,8 @@
     @apply border-border outline-ring/50;
   }
   html {
-    @apply overscroll-y-none scroll-smooth;
+    /* overscroll-none (not -y-none) also kills horizontal rubber-band on macOS */
+    @apply overscroll-none scroll-smooth;
     /* macOS overlay titlebar inset — traffic lights safe area */
     --titlebar-height: 18px;
     --traffic-light-width: 70px;
@@ -128,6 +134,37 @@
   }
   body {
     @apply bg-background text-foreground;
+    /* Native macOS-style type rendering (also crisper on Windows WebView2) */
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+/* Contain scroll within the editor viewport so trackpad overscroll does not
+   chain to the window/body. Applied via the stylesheet only — the load-bearing
+   translateZ(0)/backface-visibility GPU hints stay inline in latex-editor.tsx. */
+.cm-scroller {
+  overscroll-behavior: contain;
+}
+
+/* Off-screen chat rows skip layout/paint where the engine supports it.
+   content-visibility:auto needs WebKit 18+ (macOS 15+ Safari/WKWebView); it is a
+   silent no-op on older macOS and fully supported on Windows WebView2/Chromium. */
+.cv-auto-chat {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 200px; /* est. typical message-row height */
+}
+
+/* Hide the scrollbar while keeping the element scrollable (e.g. horizontal
+   suggestion pill rows, chat tab bar). */
+@utility scrollbar-none {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* legacy Edge/IE */
+  &::-webkit-scrollbar {
+    display: none; /* Chromium/WebKit */
+    width: 0;
+    height: 0;
   }
 }
 
@@ -189,4 +226,82 @@
   position: absolute;
   pointer-events: auto;
   cursor: pointer;
+}
+
+/* ── Honor macOS "Reduce Motion" (System Settings › Accessibility › Display) ──
+   Neutralizes scroll-smooth, tw-animate-css dialog transitions, and spinners. */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto !important;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ── Honor macOS "Reduce Transparency" (System Settings › Accessibility) ──
+   Drops the GPU backdrop blur and makes translucent panel surfaces opaque so
+   they stay legible. Resolves on WebKit/Safari 17+ (macOS ~13.5+); inert no-op
+   on older macOS. Targets Tailwind v4 generated classes. */
+@media (prefers-reduced-transparency: reduce) {
+  [class*="backdrop-blur"] {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+  .bg-popover\/95 {
+    background-color: var(--popover) !important;
+  }
+  .bg-background\/90,
+  .bg-background\/95 {
+    background-color: var(--background) !important;
+  }
+  .bg-muted\/80 {
+    background-color: var(--muted) !important;
+  }
+  /* Dialog scrim stays a dimming layer; only its blur is removed above. */
+  .bg-black\/35 {
+    background-color: color-mix(in oklab, black 35%, transparent) !important;
+  }
+  .dark\:bg-black\/45 {
+    background-color: color-mix(in oklab, black 45%, transparent) !important;
+  }
+}
+
+/* ── Honor macOS "Increase Contrast" (System Settings › Accessibility › Display) ──
+   Strengthens separators/focus rings and drops decorative blur so UI chrome
+   reads clearly. Overrides the design-token borders defined in :root / .dark. */
+@media (prefers-contrast: more) {
+  :root {
+    --border: oklch(0.78 0 0);
+    --ring: oklch(0.45 0 0);
+  }
+  .dark {
+    --border: oklch(1 0 0 / 35%);
+    --ring: oklch(0.75 0 0);
+  }
+  [class*="backdrop-blur"] {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+}
+
+@keyframes synctex-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgba(14, 165, 233, 0.55);
+  }
+  50% {
+    opacity: 0.72;
+    box-shadow: 0 0 0 6px rgba(14, 165, 233, 0.15);
+  }
+}
+
+.animate-synctex-pulse {
+  animation: synctex-pulse 1.15s ease-in-out infinite;
 }

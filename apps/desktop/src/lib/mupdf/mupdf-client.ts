@@ -2,6 +2,7 @@ import type {
   StructuredTextData,
   LinkData,
   PageSize,
+  Rect,
   WorkerResponse,
 } from "./types";
 import { createLogger } from "@/lib/debug/logger";
@@ -17,12 +18,29 @@ export interface MupdfClient {
   drawPage(docId: number, pageIndex: number, dpi: number): Promise<ImageData>;
   getPageText(docId: number, pageIndex: number): Promise<StructuredTextData>;
   getPageLinks(docId: number, pageIndex: number): Promise<LinkData[]>;
+  /** Find `needle` on a page, returning match rects in PDF point coordinates. */
+  searchPage(docId: number, pageIndex: number, needle: string): Promise<Rect[]>;
   renderThumbnail(
     docId: number,
     pageIndex: number,
     targetWidth: number,
   ): Promise<ArrayBuffer>;
+  /** Apply Highlight annotations to a copy of `buffer` and return saved PDF bytes. */
+  exportAnnotatedPdf(
+    buffer: ArrayBuffer,
+    highlights: HighlightInput[],
+  ): Promise<ArrayBuffer>;
   destroy(): void;
+}
+
+export interface HighlightInput {
+  pageIndex: number;
+  /** RGB 0..1. */
+  color: [number, number, number];
+  opacity?: number;
+  /** Quads in page-space points: [ulx, uly, urx, ury, llx, lly, lrx, lry]. */
+  quads: number[][];
+  note?: string;
 }
 
 type PendingRequest = {
@@ -124,8 +142,12 @@ function createClient(): MupdfClient {
       call("drawPage", docId, pageIndex, dpi),
     getPageText: (docId, pageIndex) => call("getPageText", docId, pageIndex),
     getPageLinks: (docId, pageIndex) => call("getPageLinks", docId, pageIndex),
+    searchPage: (docId, pageIndex, needle) =>
+      call("searchPage", docId, pageIndex, needle),
     renderThumbnail: (docId, pageIndex, targetWidth) =>
       call("renderThumbnail", docId, pageIndex, targetWidth),
+    exportAnnotatedPdf: (buffer, highlights) =>
+      call("exportAnnotatedPdf", buffer, highlights),
     destroy: () => worker.terminate(),
   };
 }

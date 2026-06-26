@@ -119,6 +119,12 @@ pub async fn spawn_claude_process(
         processes.insert(process_key.clone(), child);
     }
 
+    // Suppress macOS App Nap for the lifetime of this run so a backgrounded
+    // window does not stall the Claude CLI mid-stream. Released when the wait
+    // task below finishes (normal exit, error, or kill).
+    #[cfg(target_os = "macos")]
+    let nap = crate::app_nap::NapActivity::begin("Claude Code session");
+
     let stdout_reader = BufReader::new(stdout);
     let stderr_reader = BufReader::new(stderr);
     let result_success_holder: Arc<std::sync::Mutex<Option<bool>>> =
@@ -223,6 +229,10 @@ pub async fn spawn_claude_process(
     let tab_id_wait = tab_id;
     let result_success_wait = result_success_holder.clone();
     tokio::spawn(async move {
+        // Hold the App Nap guard for the whole run; dropped when this task ends.
+        #[cfg(target_os = "macos")]
+        let _nap = nap;
+
         let _ = stdout_task.await;
         let _ = stderr_task.await;
 

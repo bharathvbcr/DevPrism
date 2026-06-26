@@ -1,13 +1,23 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   AlertCircleIcon,
   AlertTriangleIcon,
   InfoIcon,
-  ChevronDownIcon,
-  ChevronRightIcon,
+  Loader2Icon,
   MessageSquareIcon,
   MousePointerClickIcon,
+  SparklesIcon,
+  WandSparklesIcon,
 } from "lucide-react";
+import { toast } from "sonner";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { canUseAiAssist } from "@/lib/ai-assist";
+import { useChatLabels } from "@/lib/chat-labels";
+import { useSettingsStore } from "@/stores/settings-store";
 
 export interface DiagnosticItem {
   from: number;
@@ -17,12 +27,32 @@ export interface DiagnosticItem {
   line: number;
 }
 
-interface ProblemsPanelProps {
+interface ProblemsPopoverProps {
   diagnostics: DiagnosticItem[];
   fileName: string;
   onNavigate: (from: number) => void;
   onFixWithChat: (message: string, line: number) => void;
+  onFixWithAi?: (message: string, line: number) => void;
   onFixAllWithChat?: () => void;
+  onFixAllWithAi?: () => void;
+  aiFixAvailable?: boolean;
+  /**
+   * Multi-line "Fix with AI" for a diagnostic that spans more than a single
+   * line. The parent owns the active-file content/offsets, so it builds the
+   * InlineEditSelection across the diagnostic's range and runs the proposed-
+   * changes flow (runInlineEdit). Returns once the change is queued/failed.
+   */
+  onFixSpanWithAi?: (diagnostic: DiagnosticItem) => Promise<void> | void;
+}
+
+/**
+ * A diagnostic covers more than one line when its character range is non-empty
+ * (the source reports a real span, not just a caret/line). We prefer the
+ * multi-line span fix in that case since the single-line lint fix can't repair
+ * cross-line errors (e.g. unbalanced braces / environments).
+ */
+function spansMultipleLines(d: DiagnosticItem): boolean {
+  return d.to > d.from;
 }
 
 function SeverityIcon({ severity }: { severity: string }) {
@@ -38,91 +68,176 @@ function SeverityIcon({ severity }: { severity: string }) {
   }
 }
 
-export function ProblemsPanel({
+// Compact diagnostics surface that lives in the editor toolbar. Renders a small
+// error/warning count badge; clicking it opens the full Problems list as a
+// popover instead of occupying a fixed strip at the bottom of the editor.
+export function ProblemsPopover({
   diagnostics,
   fileName,
   onNavigate,
   onFixWithChat,
+  onFixWithAi,
   onFixAllWithChat,
-}: ProblemsPanelProps) {
-  const [isCollapsed, setIsCollapsed] = useState(false);
+  onFixAllWithAi,
+  aiFixAvailable = false,
+  onFixSpanWithAi,
+}: ProblemsPopoverProps) {
+  const [open, setOpen] = useState(false);
+  const aiLintFix = useSettingsStore((s) => s.aiLintFix);
+  const chatLabels = useChatLabels();
+  // Index of the diagnostic row whose multi-line fix is currently running, plus
+  // a monotonic request id so a stale in-flight fix can't flip the spinner back.
+  const [spanPendingIndex, setSpanPendingIndex] = useState<number | null>(null);
+  const spanRequestIdRef = useRef(0);
+
+  const spanFixEnabled = !!onFixSpanWithAi && aiLintFix && canUseAiAssist();
 
   const errorCount = diagnostics.filter((d) => d.severity === "error").length;
   const warningCount = diagnostics.filter(
     (d) => d.severity === "warning",
   ).length;
 
-  return (
-    <div className="border-border border-t bg-background">
-      {/* Header */}
-      <div className="flex items-center">
-        <button
-          onClick={() => setIsCollapsed(!isCollapsed)}
-          className="flex flex-1 items-center gap-2 px-3 py-1.5 text-xs transition-colors hover:bg-muted/50"
-        >
-          {isCollapsed ? (
-            <ChevronRightIcon className="size-3.5 text-muted-foreground" />
-          ) : (
-            <ChevronDownIcon className="size-3.5 text-muted-foreground" />
-          )}
-          <span className="font-medium text-foreground">Problems</span>
-          <div className="flex items-center gap-2">
-            {errorCount > 0 && (
-              <span className="flex items-center gap-1">
-                <AlertCircleIcon className="size-3 text-red-400" />
-                <span className="text-muted-foreground">{errorCount}</span>
-              </span>
-            )}
-            {warningCount > 0 && (
-              <span className="flex items-center gap-1">
-                <AlertTriangleIcon className="size-3 text-yellow-400" />
-                <span className="text-muted-foreground">{warningCount}</span>
-              </span>
-            )}
-          </div>
-        </button>
-        {diagnostics.length > 0 && onFixAllWithChat && (
-          <button
-            onClick={onFixAllWithChat}
-            className="mx-3 my-2 flex items-center gap-1.5 rounded-md bg-primary px-2.5 py-1 font-medium text-primary-foreground text-xs shadow-sm transition-colors hover:bg-primary/90"
-            title="Fix all problems with AI"
-          >
-            <MousePointerClickIcon className="size-3" />
-            <span>Fix with Chat</span>
-          </button>
-        )}
-      </div>
+  const runSpanFix = async (d: DiagnosticItem, index: number) => {
+    if (!onFixSpanWithAi) return;
+    const id = ++spanRequestIdRef.current;
+    setSpanPendingIndex(index);
+    try {
+      await onFixSpanWithAi(d);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "AI fix failed");
+    } finally {
+      // Only clear if no newer span fix superseded this one.
+      if (id === spanRequestIdRef.current) setSpanPendingIndex(null);
+    }
+  };
 
-      {/* Diagnostic list */}
-      {!isCollapsed && (
-        <div className="max-h-36 overflow-y-auto border-border border-t">
-          {diagnostics.map((d, i) => (
-            <div
-              key={`${d.from}-${d.message}-${i}`}
-              className="group flex cursor-pointer items-center gap-2 px-3 py-1 text-xs transition-colors hover:bg-muted/50"
-              onClick={() => onNavigate(d.from)}
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          title="Problems"
+          aria-label={`Problems: ${errorCount} errors, ${warningCount} warnings`}
+          className="flex h-6 items-center gap-2 rounded-md px-2 text-xs transition-colors hover:bg-muted data-[state=open]:bg-muted"
+        >
+          <span className="flex items-center gap-1">
+            <AlertCircleIcon
+              className={
+                errorCount > 0
+                  ? "size-3.5 text-red-400"
+                  : "size-3.5 text-muted-foreground"
+              }
+            />
+            <span className="text-muted-foreground tabular-nums">
+              {errorCount}
+            </span>
+          </span>
+          <span className="flex items-center gap-1">
+            <AlertTriangleIcon
+              className={
+                warningCount > 0
+                  ? "size-3.5 text-yellow-400"
+                  : "size-3.5 text-muted-foreground"
+              }
+            />
+            <span className="text-muted-foreground tabular-nums">
+              {warningCount}
+            </span>
+          </span>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-96 p-0">
+        {/* Header */}
+        <div className="flex items-center justify-between border-border border-b px-3 py-1.5">
+          <span className="font-medium text-foreground text-xs">Problems</span>
+          {diagnostics.length > 0 && (onFixAllWithAi || onFixAllWithChat) && (
+            <button
+              onClick={() => {
+                if (aiFixAvailable && onFixAllWithAi) onFixAllWithAi();
+                else onFixAllWithChat?.();
+                setOpen(false);
+              }}
+              className="flex items-center gap-1.5 rounded-md bg-primary px-2.5 py-1 font-medium text-primary-foreground text-xs shadow-sm transition-colors hover:bg-primary/90"
+              title={
+                aiFixAvailable
+                  ? "Fix all problems with AI"
+                  : `Fix all problems with ${chatLabels.fixWithChat.toLowerCase().replace(/^fix with /, "")}`
+              }
             >
-              <SeverityIcon severity={d.severity} />
-              <span className="min-w-0 flex-1 truncate text-foreground">
-                {d.message}
+              {aiFixAvailable ? (
+                <SparklesIcon className="size-3" />
+              ) : (
+                <MousePointerClickIcon className="size-3" />
+              )}
+              <span>
+                {aiFixAvailable ? "Fix all with AI" : chatLabels.fixAllWithChat}
               </span>
-              <span className="shrink-0 text-muted-foreground">
-                {fileName}:{d.line}
-              </span>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onFixWithChat(d.message, d.line);
-                }}
-                className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-all hover:bg-muted hover:text-foreground group-hover:opacity-100"
-                title="Fix with chat"
-              >
-                <MessageSquareIcon className="size-3.5" />
-              </button>
-            </div>
-          ))}
+            </button>
+          )}
         </div>
-      )}
-    </div>
+
+        {/* Diagnostic list */}
+        <div className="max-h-72 overflow-y-auto">
+          {diagnostics.length === 0 ? (
+            <div className="px-3 py-4 text-center text-muted-foreground text-xs">
+              No problems detected.
+            </div>
+          ) : (
+            diagnostics.map((d, i) => (
+              <div
+                key={`${d.from}-${d.message}-${i}`}
+                className="group flex cursor-pointer items-center gap-2 px-3 py-1 text-xs transition-colors hover:bg-muted/50"
+                onClick={() => {
+                  onNavigate(d.from);
+                  setOpen(false);
+                }}
+              >
+                <SeverityIcon severity={d.severity} />
+                <span className="min-w-0 flex-1 truncate text-foreground">
+                  {d.message}
+                </span>
+                <span className="shrink-0 text-muted-foreground">
+                  {fileName}:{d.line}
+                </span>
+                {spanFixEnabled && spansMultipleLines(d) && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void runSpanFix(d, i);
+                    }}
+                    disabled={spanPendingIndex !== null}
+                    className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-all hover:bg-muted hover:text-foreground group-hover:opacity-100 disabled:opacity-50 group-hover:disabled:opacity-50"
+                    title="Fix multi-line error with AI"
+                  >
+                    {spanPendingIndex === i ? (
+                      <Loader2Icon className="size-3.5 animate-spin" />
+                    ) : (
+                      <WandSparklesIcon className="size-3.5" />
+                    )}
+                  </button>
+                )}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (aiFixAvailable && onFixWithAi)
+                      onFixWithAi(d.message, d.line);
+                    else onFixWithChat(d.message, d.line);
+                    setOpen(false);
+                  }}
+                  className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-all hover:bg-muted hover:text-foreground group-hover:opacity-100"
+                  title={aiFixAvailable ? "Fix with AI" : chatLabels.fixWithChat}
+                >
+                  {aiFixAvailable ? (
+                    <SparklesIcon className="size-3.5" />
+                  ) : (
+                    <MessageSquareIcon className="size-3.5" />
+                  )}
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }

@@ -117,8 +117,33 @@ CodeMirror 6，支持 LaTeX/BibTeX 语法高亮、实时错误检查、查找和
 
 ## 致谢
 
-本项目基于 [assistant-ui](https://github.com/assistant-ui) 的 [Open Prism](https://github.com/assistant-ui/open-prism) 开发。
+DevPrism 派生自 [delibae](https://github.com/delibae) 的 [claude-prism](https://github.com/delibae/claude-prism)，而 claude-prism 又起源于 [assistant-ui](https://github.com/assistant-ui) 的 [Open Prism](https://github.com/assistant-ui/open-prism)。本项目建立在众多优秀开源项目之上。衷心感谢以下项目的维护者和社区:
+
+**基础（Foundation）**
+- [claude-prism](https://github.com/delibae/claude-prism) — [delibae](https://github.com/delibae)。DevPrism 直接派生的上游项目。
+- [Open Prism](https://github.com/assistant-ui/open-prism) — [assistant-ui](https://github.com/assistant-ui)。claude-prism 所基于的原始项目。
+
+**桌面 & UI**
+- [Tauri](https://tauri.app) — 基于 Rust 的桌面应用框架。
+- [React](https://react.dev) + [Vite](https://vitejs.dev) — 前端运行时与构建工具。
+- [CodeMirror 6](https://codemirror.net) — LaTeX/BibTeX 源代码编辑器。
+- [Radix UI](https://www.radix-ui.com) & [Tailwind CSS](https://tailwindcss.com) — 组件原语与样式。
+
+**科学 & 文档引擎**
+- [Tectonic](https://tectonic-typesetting.github.io) — 内嵌的离线 LaTeX 引擎。
+- [MuPDF](https://mupdf.com) — 支持 SyncTeX 的原生 PDF 渲染。
+- [uv](https://docs.astral.sh/uv/) — [Astral](https://astral.sh)。驱动内置 Python 环境的高速包管理器。
+
+**AI & 技能**
+- [Ollama](https://ollama.com) — 驱动离线、设备端推理的本地 LLM 运行时。
+- [Anthropic Claude](https://www.anthropic.com/claude) — 支撑可选云端代理与斜杠命令的助手。
+- [K-Dense Scientific Skills](https://github.com/K-Dense-AI/claude-scientific-skills) — [K-Dense AI](https://github.com/K-Dense-AI)。100+ 个领域专属的科学技能。
+
+**集成（Integrations）**
+- [Zotero](https://www.zotero.org) — 参考文献管理与引用插入。
+
+也感谢本项目所依赖的更广泛开源生态中的各个库。🙏
 
 ## 许可证
 
-[MIT](./LICENSE)
+[MIT](./LICENSE) © 2026 delibae。部分 © 2025 [assistant-ui](https://github.com/assistant-ui)（Open Prism）。

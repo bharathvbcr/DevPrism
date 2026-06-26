@@ -14,6 +14,7 @@ import {
   clearPdfBytesCache,
   type ProjectFile,
 } from "@/stores/document-store";
+import { setCompileRootPreference } from "@/lib/compile-root-preference";
 import { useProjectStore } from "@/stores/project-store";
 
 // Mock history store
@@ -476,6 +477,44 @@ describe("useDocumentStore", () => {
       expect(state.pdfRevision).toBe(revisionBefore);
       expect(getCurrentPdfRootId()).toBe("main.tex");
       expect(getCurrentPdfBytes()).toEqual(pdfBytes);
+    });
+
+    it("keeps the pinned preview target when switching editor .tex files", () => {
+      const mainPdf = new Uint8Array([1, 2, 3]);
+      const coverPdf = new Uint8Array([4, 5, 6]);
+      useDocumentStore.setState({
+        projectRoot: "/project",
+        files: [
+          makeFile({
+            content:
+              "\\documentclass{article}\\begin{document}\\input{ch1}\\end{document}",
+          }),
+          makeFile({
+            id: "ch1.tex",
+            name: "ch1.tex",
+            relativePath: "ch1.tex",
+            content: "% !TEX root = main.tex\n\\section{One}",
+          }),
+          makeFile({
+            id: "cover.tex",
+            name: "cover.tex",
+            relativePath: "cover.tex",
+            absolutePath: "/project/cover.tex",
+            content: "\\documentclass{letter}\\begin{document}Hi\\end{document}",
+          }),
+        ],
+        activeFileId: "main.tex",
+      });
+      useDocumentStore.getState().setPdfData(mainPdf, "main.tex");
+      useDocumentStore.getState().setPdfData(coverPdf, "cover.tex");
+      setCompileRootPreference("/project", "cover.tex");
+      useDocumentStore.getState().setPreviewRoot("cover.tex");
+
+      useDocumentStore.getState().setActiveFile("ch1.tex");
+
+      expect(useDocumentStore.getState().activeFileId).toBe("ch1.tex");
+      expect(getCurrentPdfRootId()).toBe("cover.tex");
+      expect(getCurrentPdfBytes()).toEqual(coverPdf);
     });
   });
 

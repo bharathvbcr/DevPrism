@@ -18,6 +18,8 @@ import {
   GutterMarker,
 } from "@codemirror/view";
 import type { Comment } from "@/lib/tauri/comments";
+import { getChatLabels } from "@/lib/chat-labels";
+import { useSettingsStore } from "@/stores/settings-store";
 
 export const setCommentsEffect = StateEffect.define<Comment[]>();
 
@@ -132,22 +134,28 @@ function dispatch(name: string, detail: unknown) {
 }
 
 function renderTooltipBody(comments: Comment[]): HTMLElement {
+  const nativeAgentEnabled = useSettingsStore.getState().nativeAgentEnabled;
+  const chatLabels = getChatLabels(nativeAgentEnabled);
   const root = el("div", "cmp-tooltip");
   for (const c of comments) {
+    const isAgent = c.author === "claude";
+    const displayAuthor = isAgent ? chatLabels.agentAuthorLabel : c.author;
     const card = el("div", "cmp-tooltip-card");
     if (c.type === "suggestion") card.classList.add("cmp-tooltip-card-sug");
-    if (c.author === "claude") card.classList.add("cmp-tooltip-card-claude");
+    if (isAgent) card.classList.add("cmp-tooltip-card-claude");
 
     // Header: author chip + type + relative time
     const header = el("div", "cmp-tooltip-header");
     const chip = el(
       "span",
-      `cmp-tooltip-chip cmp-tooltip-chip-${c.author === "claude" ? "claude" : "user"}`,
-      c.author === "claude" ? "C" : c.author.charAt(0).toUpperCase() || "?",
+      `cmp-tooltip-chip cmp-tooltip-chip-${isAgent ? "claude" : "user"}`,
+      isAgent
+        ? chatLabels.agentAuthorInitial
+        : c.author.charAt(0).toUpperCase() || "?",
     );
-    chip.title = c.author;
+    chip.title = displayAuthor;
     header.appendChild(chip);
-    header.appendChild(el("span", "cmp-tooltip-author", c.author));
+    header.appendChild(el("span", "cmp-tooltip-author", displayAuthor));
     header.appendChild(
       el(
         "span",

@@ -17,10 +17,20 @@ import {
   type ProjectFileType,
 } from "@/lib/tauri/fs";
 import { useHistoryStore } from "@/stores/history-store";
+import { useFileMarksStore, projectMarks } from "@/stores/file-marks-store";
 import { useClaudeChatStore } from "@/stores/claude-chat-store";
+import {
+  hasPinnedCompileRoot,
+  resolvePreviewCompileRoot,
+} from "@/lib/compile-root-preference";
 import { clearDocCache } from "@/lib/mupdf/pdf-doc-cache";
 import { clearScrollPositionCache } from "@/components/workspace/preview/pdf-viewer";
 import { clearZoomCache } from "@/components/workspace/preview/pdf-preview";
+import { clearAllHighlights } from "@/stores/annotation-store";
+import {
+  attachHighlights,
+  detachHighlights,
+} from "@/lib/highlight-persistence";
 import { clearEditorStateCache } from "@/components/workspace/editor/latex-editor";
 import { useProjectStore } from "@/stores/project-store";
 import { createLogger } from "@/lib/debug/logger";
@@ -82,6 +92,12 @@ interface DocumentState {
   cursorPosition: number;
   selectionRange: { start: number; end: number } | null;
   jumpToPosition: number | null;
+  /** Request to reveal (select + expand to) a path in the sidebar file tree. */
+  revealRequest: {
+    path: string;
+    type: "file" | "folder";
+    nonce: number;
+  } | null;
   isThreadOpen: boolean;
   /** Bumped whenever PDF bytes change — triggers re-render without storing bytes in state. */
   pdfRevision: number;
@@ -93,15 +109,31 @@ interface DocumentState {
   initialized: boolean;
   /** Incremented on every file content change; used to skip no-op recompiles. */
   contentGeneration: number;
+  /** File id of the most recently edited document (for scoped auto-compile). */
+  lastEditedFileId: string | null;
   /** Per-root-file cache: rootFileId → compile error message. */
   compileErrorCache: Map<string, string>;
   /** Per-root-file: rootFileId → contentGeneration at last successful compile. */
   lastCompiledGenerations: Map<string, number>;
+  /** Per-root-file: rootFileId → page count from last successful PDF load. */
+  compiledPageCounts: Map<string, number>;
+  /** Pulse highlight in the PDF preview after forward SyncTeX. */
+  forwardSyncPulse: {
+    rootFileId: string;
+    page: number;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    nonce: number;
+  } | null;
 
   openProject: (rootPath: string) => Promise<void>;
   renameProject: (newName: string) => Promise<void>;
   closeProject: () => void;
   setActiveFile: (id: string) => void;
+  /** Switch the PDF preview to a compile root without changing the active editor file. */
+  setPreviewRoot: (rootId: string) => void;
   addFile: (file: Omit<ProjectFile, "id" | "isDirty">) => string;
   deleteFile: (id: string) => void;
   deleteFolder: (folderPath: string) => Promise<void>;
@@ -112,8 +144,12 @@ interface DocumentState {
   setSelectionRange: (range: { start: number; end: number } | null) => void;
   requestJumpToPosition: (position: number) => void;
   clearJumpRequest: () => void;
+  requestRevealInTree: (path: string, type: "file" | "folder") => void;
+  clearRevealRequest: () => void;
   setThreadOpen: (open: boolean) => void;
   setPdfData: (data: Uint8Array | null, rootFileId?: string) => void;
+  setCompiledPageCount: (rootFileId: string, pageCount: number) => void;
+  setForwardSyncPulse: (pulse: DocumentState["forwardSyncPulse"]) => void;
   setCompileError: (error: string | null, rootFileId?: string) => void;
   setIsCompiling: (isCompiling: boolean) => void;
   setPendingRecompile: (pending: boolean) => void;
@@ -360,6 +396,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
   cursorPosition: 0,
   selectionRange: null,
   jumpToPosition: null,
+  revealRequest: null,
   isThreadOpen: false,
   pdfRevision: 0,
   compileError: null,
@@ -368,8 +405,11 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
   isSaving: false,
   initialized: false,
   contentGeneration: 0,
+  lastEditedFileId: null,
   compileErrorCache: new Map(),
   lastCompiledGenerations: new Map(),
+  compiledPageCounts: new Map(),
+  forwardSyncPulse: null,
 
   openProject: async (rootPath: string) => {
     log.info(`Opening project: ${rootPath}`);
@@ -430,20 +470,47 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
         (f) => f.name === "main.tex" || f.name === "document.tex",
       ) || projectFiles.find((f) => f.type === "tex");
 
+    // Pinned .tex files open by default: pick the first one (by manual pin
+    // order) as the active file, falling back to main.tex when nothing is pinned.
+    const marks = projectMarks(useFileMarksStore.getState().marks, rootPath);
+    const firstPinnedTex = projectFiles
+      .filter((f) => f.type === "tex" && marks.get(f.relativePath)?.pinned)
+      .sort((a, b) => {
+        const aOrder = marks.get(a.relativePath)?.pinOrder ?? 0;
+        const bOrder = marks.get(b.relativePath)?.pinOrder ?? 0;
+        if (aOrder !== bOrder) return aOrder - bOrder;
+        return a.name.localeCompare(b.name);
+      })[0];
+
     clearPdfBytesCache();
     set({
       projectRoot: rootPath,
       files: projectFiles,
       folders: fsFolders,
-      activeFileId: mainTex?.id || projectFiles[0]?.id || "",
+      activeFileId:
+        firstPinnedTex?.id || mainTex?.id || projectFiles[0]?.id || "",
       pdfRevision: 0,
       compileError: null,
       compileErrorCache: new Map(),
       lastCompiledGenerations: new Map(),
+      compiledPageCounts: new Map(),
+      forwardSyncPulse: null,
       initialized: true,
       cursorPosition: 0,
       selectionRange: null,
+      lastEditedFileId: null,
     });
+
+    const opened = get();
+    if (hasPinnedCompileRoot(rootPath, projectFiles)) {
+      get().setPreviewRoot(
+        resolvePreviewCompileRoot(
+          rootPath,
+          opened.activeFileId,
+          projectFiles,
+        ),
+      );
+    }
 
     // Initialize history system early so snapshots work before the panel is opened
     const historyStore = useHistoryStore.getState();
@@ -453,6 +520,11 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
       .catch((err) => {
         log.error("Failed to initialize history", { error: String(err) });
       });
+
+    // Load saved PDF highlights and begin persisting changes for this project.
+    attachHighlights(rootPath).catch((err) => {
+      log.error("Failed to attach highlights", { error: String(err) });
+    });
   },
 
   renameProject: async (newName: string) => {
@@ -503,6 +575,8 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
       compileError: null,
       compileErrorCache: new Map(),
       lastCompiledGenerations: new Map(),
+      compiledPageCounts: new Map(),
+      forwardSyncPulse: null,
     }));
     await clearDocCache();
     await sleep(150);
@@ -538,6 +612,10 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
     clearZoomCache();
     clearEditorStateCache();
     clearPdfBytesCache();
+    // Flush pending highlight saves and stop persisting before clearing memory,
+    // so the reset below never overwrites the project's highlights.json.
+    detachHighlights();
+    clearAllHighlights();
     set({
       projectRoot: null,
       files: [],
@@ -547,6 +625,8 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
       compileError: null,
       compileErrorCache: new Map(),
       lastCompiledGenerations: new Map(),
+      compiledPageCounts: new Map(),
+      forwardSyncPulse: null,
       initialized: false,
     });
     // Reset chat session so stale messages don't leak into the next project
@@ -557,6 +637,16 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
     const state = get();
     const file = state.files.find((f) => f.id === id);
     if (!file || file.type !== "tex") {
+      set({
+        activeFileId: id,
+        selectionRange: null,
+      });
+      return;
+    }
+
+    // When a compile/preview target is pinned, keep showing that PDF while the
+    // user edits other .tex files (e.g. \\input chapters).
+    if (hasPinnedCompileRoot(state.projectRoot, state.files)) {
       set({
         activeFileId: id,
         selectionRange: null,
@@ -577,9 +667,27 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
     }));
   },
 
+  setPreviewRoot: (rootId) => {
+    const state = get();
+    const newPdfRootId = _pdfBytesCache.has(rootId) ? rootId : null;
+    const pdfRootChanged = newPdfRootId !== _currentPdfRootId;
+    _currentPdfRootId = newPdfRootId;
+    const cachedError = state.compileErrorCache.get(rootId) ?? null;
+    set((s) => ({
+      ...(pdfRootChanged ? { pdfRevision: s.pdfRevision + 1 } : {}),
+      compileError: cachedError,
+    }));
+  },
+
   setSelectionRange: (range) => set({ selectionRange: range }),
 
   requestJumpToPosition: (position) => set({ jumpToPosition: position }),
+
+  requestRevealInTree: (path, type) =>
+    set((s) => ({
+      revealRequest: { path, type, nonce: (s.revealRequest?.nonce ?? 0) + 1 },
+    })),
+  clearRevealRequest: () => set({ revealRequest: null }),
 
   clearJumpRequest: () => set({ jumpToPosition: null }),
 
@@ -608,26 +716,37 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
       state.activeFileId === id ? newFiles[0].id : state.activeFileId;
     const compileErrorCache = new Map(state.compileErrorCache);
     const lastCompiledGenerations = new Map(state.lastCompiledGenerations);
+    const compiledPageCounts = new Map(state.compiledPageCounts);
     _pdfBytesCache.delete(id);
     compileErrorCache.delete(id);
     lastCompiledGenerations.delete(id);
+    compiledPageCounts.delete(id);
     // If the deleted file was active, show the new active file's cached PDF
     const switchingActive = state.activeFileId === id;
-    const newRootId = switchingActive
-      ? resolveTexRoot(newActiveId, newFiles)
-      : undefined;
-    if (switchingActive && newRootId) {
-      _currentPdfRootId = _pdfBytesCache.has(newRootId) ? newRootId : null;
+    const previewRootId = hasPinnedCompileRoot(state.projectRoot, newFiles)
+      ? resolvePreviewCompileRoot(
+          state.projectRoot,
+          newActiveId,
+          newFiles,
+        )
+      : switchingActive
+        ? resolveTexRoot(newActiveId, newFiles)
+        : undefined;
+    if (switchingActive && previewRootId) {
+      _currentPdfRootId = _pdfBytesCache.has(previewRootId)
+        ? previewRootId
+        : null;
     }
     set((s) => ({
       files: newFiles,
       activeFileId: newActiveId,
       compileErrorCache,
       lastCompiledGenerations,
+      compiledPageCounts,
       ...(switchingActive ? { pdfRevision: s.pdfRevision + 1 } : {}),
-      ...(switchingActive && newRootId
+      ...(switchingActive && previewRootId
         ? {
-            compileError: compileErrorCache.get(newRootId) ?? null,
+            compileError: compileErrorCache.get(previewRootId) ?? null,
           }
         : {}),
     }));
@@ -657,10 +776,12 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
     // Clean caches
     const compileErrorCache = new Map(state.compileErrorCache);
     const lastCompiledGenerations = new Map(state.lastCompiledGenerations);
+    const compiledPageCounts = new Map(state.compiledPageCounts);
     for (const f of filesToRemove) {
       _pdfBytesCache.delete(f.id);
       compileErrorCache.delete(f.id);
       lastCompiledGenerations.delete(f.id);
+      compiledPageCounts.delete(f.id);
     }
 
     const removedIds = new Set(filesToRemove.map((f) => f.id));
@@ -686,6 +807,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
       activeFileId: newActiveId,
       compileErrorCache,
       lastCompiledGenerations,
+      compiledPageCounts,
       ...(switchingActive ? { pdfRevision: s.pdfRevision + 1 } : {}),
       ...(switchingActive && newRootId
         ? {
@@ -724,6 +846,11 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
         id,
         newRelativePath,
       );
+      const compiledPageCounts = migrateCacheKey(
+        s.compiledPageCounts,
+        id,
+        newRelativePath,
+      );
       const isActive = s.activeFileId === id;
       return {
         files: s.files.map((f) =>
@@ -740,6 +867,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
         activeFileId: isActive ? newRelativePath : s.activeFileId,
         compileErrorCache,
         lastCompiledGenerations,
+        compiledPageCounts,
       };
     });
   },
@@ -750,6 +878,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
         f.id === id ? { ...f, content, isDirty: true } : f,
       ),
       contentGeneration: state.contentGeneration + 1,
+      lastEditedFileId: id,
     }));
     scheduleAutoSave();
   },
@@ -799,6 +928,14 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
       }));
     }
   },
+
+  setCompiledPageCount: (rootFileId, pageCount) => {
+    const compiledPageCounts = new Map(get().compiledPageCounts);
+    compiledPageCounts.set(rootFileId, pageCount);
+    set({ compiledPageCounts });
+  },
+
+  setForwardSyncPulse: (pulse) => set({ forwardSyncPulse: pulse }),
 
   setCompileError: (error, rootFileId?) => {
     if (rootFileId) {
@@ -1030,6 +1167,11 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
         fileId,
         newRelativePath,
       );
+      const compiledPageCounts = migrateCacheKey(
+        s.compiledPageCounts,
+        fileId,
+        newRelativePath,
+      );
       return {
         files: s.files.map((f) =>
           f.id === fileId
@@ -1046,6 +1188,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
           s.activeFileId === fileId ? newRelativePath : s.activeFileId,
         compileErrorCache,
         lastCompiledGenerations,
+        compiledPageCounts,
       };
     });
   },

@@ -1303,6 +1303,7 @@ fn bundled_skills_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
 pub async fn install_bundled_skills(
     app: tauri::AppHandle,
     project_path: String,
+    only: Option<Vec<String>>,
 ) -> Result<Vec<SkillInfo>, String> {
     let source_root = bundled_skills_dir(&app)
         .ok_or_else(|| "Bundled DevPrism skills were not found in the app resources.".to_string())?;
@@ -1329,6 +1330,14 @@ pub async fn install_bundled_skills(
         let folder = sanitize_skill_folder_name(raw);
         if folder.is_empty() {
             continue;
+        }
+        if let Some(ref filter) = only {
+            let matches = filter.iter().any(|name| {
+                name.eq_ignore_ascii_case(raw) || name.eq_ignore_ascii_case(&folder)
+            });
+            if !matches {
+                continue;
+            }
         }
         let target = target_root.join(&folder);
         let result = (|| -> Result<(), String> {
@@ -1401,6 +1410,123 @@ pub async fn create_custom_skill(
         yaml_desc = yaml_desc,
         name = name.trim(),
         body = body,
+    );
+    std::fs::write(target.join("SKILL.md"), contents)
+        .map_err(|e| format!("Failed to write SKILL.md: {}", e))?;
+
+    parse_skill_md(&target).ok_or_else(|| "Created skill but its SKILL.md is unreadable.".into())
+}
+
+/// Split leading `--- ... ---` YAML frontmatter off a markdown document.
+/// Returns the parsed frontmatter (name, description) plus the body with the
+/// frontmatter block removed, so we never end up writing two frontmatter blocks
+/// when an imported `.md` already had one.
+fn split_markdown_frontmatter(content: &str) -> (Option<String>, Option<String>, String) {
+    let (name, description) = parse_skill_frontmatter(content);
+    let trimmed = content.trim_start();
+
+    if trimmed.starts_with("---") {
+        let mut lines = trimmed.lines();
+        lines.next(); // skip the opening `---`
+        let mut closed = false;
+        let mut body_lines: Vec<&str> = Vec::new();
+        for line in lines {
+            if !closed && line.trim() == "---" {
+                closed = true;
+                continue;
+            }
+            if closed {
+                body_lines.push(line);
+            }
+        }
+        if closed {
+            return (name, description, body_lines.join("\n").trim_start().to_string());
+        }
+    }
+
+    (name, description, trimmed.to_string())
+}
+
+/// Extract the first non-heading paragraph from a markdown body, capped to a
+/// short length. Used as a fallback skill description when the file has neither
+/// a user-supplied description nor frontmatter.
+fn first_markdown_paragraph(body: &str) -> Option<String> {
+    let paragraph = body
+        .lines()
+        .skip_while(|l| l.trim().is_empty() || l.starts_with('#'))
+        .take_while(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let paragraph = paragraph.trim();
+    if paragraph.is_empty() {
+        None
+    } else {
+        Some(paragraph.chars().take(280).collect())
+    }
+}
+
+/// Register an existing Markdown document as a custom skill. The file's contents
+/// become the SKILL.md body; a fresh YAML frontmatter (name + description) is
+/// written on top. The description falls back to the file's own frontmatter or
+/// first paragraph when the caller doesn't supply one, so registering a plain
+/// `.md` file is one click. Installs into the project's `.claude/skills/`.
+#[tauri::command]
+pub async fn create_skill_from_markdown(
+    project_path: String,
+    name: String,
+    description: String,
+    content: String,
+) -> Result<SkillInfo, String> {
+    let folder = sanitize_skill_folder_name(name.trim());
+    if folder.is_empty() {
+        return Err("Skill name must contain letters or numbers.".into());
+    }
+
+    let (_, fm_description, body) = split_markdown_frontmatter(&content);
+    if body.trim().is_empty() {
+        return Err("The selected Markdown file is empty.".into());
+    }
+
+    // Effective description: caller's value wins, then the file's own
+    // frontmatter, then its first paragraph. A skill needs one so the agent
+    // knows when to use it.
+    let description = {
+        let ui = description.trim();
+        if !ui.is_empty() {
+            ui.to_string()
+        } else if let Some(d) = fm_description.filter(|d| !d.trim().is_empty()) {
+            d.trim().to_string()
+        } else if let Some(d) = first_markdown_paragraph(&body) {
+            d
+        } else {
+            return Err(
+                "Please provide a short description so the agent knows when to use this skill."
+                    .into(),
+            );
+        }
+    };
+
+    let target_root = skills_dir(Some(&project_path));
+    let target = target_root.join(&folder);
+    if target.exists() {
+        return Err(format!(
+            "A skill named '{}' already exists in this project.",
+            folder
+        ));
+    }
+    std::fs::create_dir_all(&target)
+        .map_err(|e| format!("Failed to create skill folder {}: {}", target.display(), e))?;
+
+    // Escape the description for the single-line YAML double-quoted scalar.
+    let yaml_desc = description
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace(|c: char| c == '\n' || c == '\r' || c == '\t', " ");
+    let contents = format!(
+        "---\nname: {folder}\ndescription: \"{yaml_desc}\"\n---\n\n{body}\n",
+        folder = folder,
+        yaml_desc = yaml_desc,
+        body = body.trim_end(),
     );
     std::fs::write(target.join("SKILL.md"), contents)
         .map_err(|e| format!("Failed to write SKILL.md: {}", e))?;
@@ -1876,5 +2002,37 @@ mod tests {
         assert!(info.description.contains("RNA-seq"));
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_split_markdown_frontmatter_with_frontmatter() {
+        let content =
+            "---\nname: foo\ndescription: \"Use for foo tasks\"\n---\n\n# Heading\n\nBody text.\n";
+        let (name, description, body) = split_markdown_frontmatter(content);
+        assert_eq!(name.as_deref(), Some("foo"));
+        assert_eq!(description.as_deref(), Some("Use for foo tasks"));
+        // The frontmatter block must be stripped from the body so we never write
+        // two frontmatter blocks into SKILL.md.
+        assert!(body.starts_with("# Heading"));
+        assert!(!body.contains("description:"));
+    }
+
+    #[test]
+    fn test_split_markdown_frontmatter_without_frontmatter() {
+        let content = "# Heading\n\nJust a plain markdown file.\n";
+        let (name, description, body) = split_markdown_frontmatter(content);
+        assert!(name.is_none());
+        assert!(description.is_none());
+        assert_eq!(body, content.trim_start());
+    }
+
+    #[test]
+    fn test_first_markdown_paragraph_skips_heading() {
+        let body = "# Title\n\nThis is the summary paragraph.\n\nMore details follow.";
+        assert_eq!(
+            first_markdown_paragraph(body).as_deref(),
+            Some("This is the summary paragraph.")
+        );
+        assert!(first_markdown_paragraph("# Only a heading\n").is_none());
     }
 }

@@ -1,18 +1,31 @@
 import { type FC, memo, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircleIcon,
+  ArrowDownIcon,
   CheckIcon,
   CopyIcon,
   CornerDownRightIcon,
+  Loader2Icon,
+  PencilIcon,
+  RefreshCwIcon,
+  SendHorizonalIcon,
+  SparklesIcon,
+  XIcon,
 } from "lucide-react";
+import { toast } from "sonner";
 import {
   useClaudeChatStore,
   type ClaudeStreamMessage,
   type ContentBlock,
   type QueuedGuidance,
 } from "@/stores/claude-chat-store";
+import { useSettingsStore } from "@/stores/settings-store";
+import { canUseAiAssist, summarizeSection } from "@/lib/ai-assist";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { useChatLabels } from "@/lib/chat-labels";
+import { NativeOllamaEmptyState } from "./native-ollama-empty-state";
 import { MarkdownRenderer } from "./markdown-renderer";
 import { ThinkingWidget, ToolWidget } from "./tool-widgets";
 
@@ -106,6 +119,117 @@ const MessageActions: FC<{
   );
 };
 
+// Re-runs the conversation from the user message that produced this response.
+const RegenerateButton: FC<{ userIndex: number }> = ({ userIndex }) => {
+  const resendFromMessage = useClaudeChatStore((s) => s.resendFromMessage);
+  if (userIndex < 0) return null;
+  return (
+    <TooltipIconButton
+      tooltip="Regenerate"
+      side="top"
+      variant="ghost"
+      size="icon"
+      className="size-8 rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+      onClick={() => void resendFromMessage(userIndex)}
+    >
+      <RefreshCwIcon className="size-4" />
+    </TooltipIconButton>
+  );
+};
+
+// Assistant messages longer than this expose a one-click TL;DR action.
+const SUMMARIZE_THRESHOLD = 800;
+
+// One-click "Summarize" (TL;DR) for long assistant messages. Holds its own
+// pending/summary state and renders both the trigger button (in the action
+// row) and a dismissable inline callout (above the action row).
+const useSummarize = (text: string) => {
+  const aiSummarize = useSettingsStore((s) => s.aiSummarize);
+  const [summary, setSummary] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+  const requestIdRef = useRef(0);
+
+  const eligible =
+    aiSummarize && canUseAiAssist() && text.trim().length > SUMMARIZE_THRESHOLD;
+
+  const summarize = async () => {
+    if (pending) return;
+    const requestId = ++requestIdRef.current;
+    setPending(true);
+    try {
+      const result = await summarizeSection(text);
+      // Ignore stale responses (cancellation-safe).
+      if (requestId !== requestIdRef.current) return;
+      const trimmed = result.trim();
+      if (trimmed) {
+        setSummary(trimmed);
+      } else {
+        toast.error("Couldn't generate a summary.");
+      }
+    } catch {
+      if (requestId !== requestIdRef.current) return;
+      toast.error("Couldn't generate a summary.");
+    } finally {
+      if (requestId === requestIdRef.current) setPending(false);
+    }
+  };
+
+  const dismiss = () => {
+    requestIdRef.current++;
+    setSummary(null);
+    setPending(false);
+  };
+
+  return { eligible, summary, pending, summarize, dismiss };
+};
+
+const SummarizeButton: FC<{ pending: boolean; onClick: () => void }> = ({
+  pending,
+  onClick,
+}) => (
+  <TooltipIconButton
+    tooltip="Summarize"
+    side="top"
+    variant="ghost"
+    size="icon"
+    className="size-8 rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+    onClick={onClick}
+    disabled={pending}
+  >
+    {pending ? (
+      <Loader2Icon className="size-4 animate-spin" />
+    ) : (
+      <SparklesIcon className="size-4" />
+    )}
+  </TooltipIconButton>
+);
+
+const SummaryCallout: FC<{ summary: string; onDismiss: () => void }> = ({
+  summary,
+  onDismiss,
+}) => (
+  <div className="fade-in slide-in-from-top-1 mx-2 mb-2 animate-in rounded-lg border border-border/60 bg-muted/60 px-3 py-2 duration-150">
+    <div className="mb-1 flex items-center justify-between gap-2">
+      <span className="flex items-center gap-1.5 font-medium text-muted-foreground text-xs">
+        <SparklesIcon className="size-3" />
+        AI summary
+      </span>
+      <button
+        type="button"
+        onClick={onDismiss}
+        className="rounded text-muted-foreground/70 hover:text-foreground"
+        aria-label="Dismiss summary"
+      >
+        <XIcon className="size-3.5" />
+      </button>
+    </div>
+    <MarkdownRenderer
+      content={summary}
+      className="prose prose-sm dark:prose-invert max-w-none text-muted-foreground [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
+    />
+  </div>
+);
+
 // ─── Chat Messages (main component) ───
 
 export const ChatMessages: FC = () => {
@@ -123,6 +247,9 @@ export const ChatMessages: FC = () => {
   const viewportRef = useRef<HTMLDivElement>(null);
   const shouldAutoScrollRef = useRef(true);
   const userHasScrolledRef = useRef(false);
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+  const nativeAgentEnabled = useSettingsStore((s) => s.nativeAgentEnabled);
+  const chatLabels = useChatLabels();
 
   // Build a map of tool_use_id → tool_result for inline display
   const toolResultMap = useMemo(() => {
@@ -199,6 +326,7 @@ export const ChatMessages: FC = () => {
     const el = viewportRef.current;
     const isAtBottom =
       Math.abs(el.scrollHeight - el.scrollTop - el.clientHeight) < 50;
+    setShowScrollToBottom(!isAtBottom);
     if (!isAtBottom) {
       userHasScrolledRef.current = true;
       shouldAutoScrollRef.current = false;
@@ -208,25 +336,64 @@ export const ChatMessages: FC = () => {
     }
   };
 
-  return (
-    <div
-      ref={viewportRef}
-      onScroll={handleScroll}
-      className="absolute inset-0 overflow-y-auto scroll-smooth px-4 pt-4"
-    >
-      {displayMessages.length === 0 &&
-        pendingGuidance.length === 0 &&
-        !isStreaming && (
-          <div className="flex h-full items-center justify-center text-muted-foreground text-sm">
-            Ask Claude about your LaTeX document...
-          </div>
-        )}
+  const scrollToBottom = () => {
+    if (!viewportRef.current) return;
+    shouldAutoScrollRef.current = true;
+    userHasScrolledRef.current = false;
+    viewportRef.current.scrollTo({
+      top: viewportRef.current.scrollHeight,
+      behavior: "smooth",
+    });
+    setShowScrollToBottom(false);
+  };
 
-      {displayMessages.map((msg, idx) => (
-        <div key={idx} className={cn("mx-auto w-full", THREAD_MAX_WIDTH)}>
-          <MessageBubble message={msg} toolResultMap={toolResultMap} />
-        </div>
-      ))}
+  return (
+    <div className="absolute inset-0">
+      <div
+        ref={viewportRef}
+        onScroll={handleScroll}
+        className="absolute inset-0 overflow-y-auto overscroll-contain scroll-smooth px-4 pt-4"
+      >
+        {displayMessages.length === 0 &&
+        pendingGuidance.length === 0 &&
+        !isStreaming &&
+        (nativeAgentEnabled ? (
+          <NativeOllamaEmptyState />
+        ) : (
+          <div className="mx-auto flex h-full max-w-sm flex-col items-center justify-center gap-2 px-6 text-center text-muted-foreground text-sm">
+            <p className="font-medium text-foreground">Ask about your project</p>
+            <p className="text-xs leading-relaxed">
+              {chatLabels.emptyStateHint}
+            </p>
+          </div>
+        ))}
+
+      {displayMessages.map((msg, idx) => {
+        const rawIndex = messages.indexOf(msg);
+        let precedingUserIndex = -1;
+        for (let i = rawIndex; i >= 0; i--) {
+          if (messages[i]?.type === "user") {
+            precedingUserIndex = i;
+            break;
+          }
+        }
+        const isLast = idx === displayMessages.length - 1;
+        return (
+          <div
+            key={idx}
+            className={cn("cv-auto-chat mx-auto w-full", THREAD_MAX_WIDTH)}
+          >
+            <MessageBubble
+              message={msg}
+              toolResultMap={toolResultMap}
+              rawIndex={rawIndex}
+              precedingUserIndex={precedingUserIndex}
+              isStreaming={isStreaming}
+              isLast={isLast}
+            />
+          </div>
+        );
+      })}
 
       {isStreaming && (
         <div className={cn("mx-auto w-full px-2", THREAD_MAX_WIDTH)}>
@@ -242,6 +409,22 @@ export const ChatMessages: FC = () => {
           <PendingGuidanceMessage guidance={guidance} />
         </div>
       ))}
+      </div>
+
+      {showScrollToBottom && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-3 flex justify-center">
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            className="pointer-events-auto h-8 gap-1.5 rounded-full border border-border bg-background/95 px-3 shadow-md backdrop-blur-sm"
+            onClick={scrollToBottom}
+          >
+            <ArrowDownIcon className="size-3.5" />
+            Jump to latest
+          </Button>
+        </div>
+      )}
     </div>
   );
 };
@@ -251,22 +434,61 @@ export const ChatMessages: FC = () => {
 const MessageBubble: FC<{
   message: ClaudeStreamMessage;
   toolResultMap: Map<string, ContentBlock>;
-}> = memo(({ message, toolResultMap }) => {
-  if (message.type === "user") {
-    return <UserMessage message={message} />;
-  }
-  if (message.type === "assistant") {
-    return <AssistantMessage message={message} toolResultMap={toolResultMap} />;
-  }
-  if (message.type === "result") {
-    return <ResultMessage message={message} />;
-  }
-  return null;
-});
+  rawIndex: number;
+  precedingUserIndex: number;
+  isStreaming: boolean;
+  isLast: boolean;
+}> = memo(
+  ({
+    message,
+    toolResultMap,
+    rawIndex,
+    precedingUserIndex,
+    isStreaming,
+    isLast,
+  }) => {
+    if (message.type === "user") {
+      return (
+        <UserMessage
+          message={message}
+          rawIndex={rawIndex}
+          canEdit={!isStreaming}
+        />
+      );
+    }
+    if (message.type === "assistant") {
+      return (
+        <AssistantMessage
+          message={message}
+          toolResultMap={toolResultMap}
+          regenerateIndex={precedingUserIndex}
+          canRegenerate={isLast && !isStreaming}
+        />
+      );
+    }
+    if (message.type === "result") {
+      return (
+        <ResultMessage
+          message={message}
+          regenerateIndex={precedingUserIndex}
+          canRegenerate={isLast && !isStreaming}
+        />
+      );
+    }
+    return null;
+  },
+);
 
 // ─── User Message ───
 
-const UserMessage: FC<{ message: ClaudeStreamMessage }> = ({ message }) => {
+const UserMessage: FC<{
+  message: ClaudeStreamMessage;
+  rawIndex: number;
+  canEdit: boolean;
+}> = ({ message, rawIndex, canEdit }) => {
+  const resendFromMessage = useClaudeChatStore((s) => s.resendFromMessage);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
   const rawContent = message.message?.content;
   const textContent = Array.isArray(rawContent)
     ? rawContent
@@ -379,6 +601,56 @@ const UserMessage: FC<{ message: ClaudeStreamMessage }> = ({ message }) => {
     );
   }
 
+  const submitEdit = () => {
+    const next = draft.trim();
+    setEditing(false);
+    if (next) void resendFromMessage(rawIndex, next);
+  };
+
+  if (editing) {
+    return (
+      <div className="grid w-full auto-rows-auto grid-cols-[minmax(72px,1fr)_auto] content-start gap-y-2 px-2 py-3 [&:where(>*)]:col-start-2">
+        <div className="col-start-2 min-w-0">
+          <textarea
+            autoFocus
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                submitEdit();
+              } else if (e.key === "Escape") {
+                setEditing(false);
+              }
+            }}
+            rows={Math.min(10, Math.max(2, draft.split("\n").length))}
+            className="w-full resize-none rounded-xl border border-border bg-background px-4 py-2 text-foreground text-sm outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          />
+          <div className="mt-1.5 flex justify-end gap-1.5">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 gap-1 px-2 text-xs"
+              onClick={() => setEditing(false)}
+            >
+              <XIcon className="size-3.5" />
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              className="h-7 gap-1 px-2 text-xs"
+              onClick={submitEdit}
+              disabled={!draft.trim()}
+            >
+              <SendHorizonalIcon className="size-3.5" />
+              Send
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="fade-in slide-in-from-bottom-1 grid w-full animate-in auto-rows-auto grid-cols-[minmax(72px,1fr)_auto] content-start gap-y-2 px-2 py-3 duration-150 [&:where(>*)]:col-start-2">
       <div className="relative col-start-2 min-w-0">
@@ -395,7 +667,22 @@ const UserMessage: FC<{ message: ClaudeStreamMessage }> = ({ message }) => {
           />
         </div>
       </div>
-      <div className="col-span-full col-start-1 row-start-2 -mr-1 flex justify-end">
+      <div className="col-span-full col-start-1 row-start-2 -mr-1 flex items-center justify-end gap-1">
+        {canEdit && (
+          <TooltipIconButton
+            tooltip="Edit & resend"
+            side="top"
+            variant="ghost"
+            size="icon"
+            className="size-8 rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+            onClick={() => {
+              setDraft(bodyText);
+              setEditing(true);
+            }}
+          >
+            <PencilIcon className="size-4" />
+          </TooltipIconButton>
+        )}
         <MessageActions text={textContent} align="right" />
       </div>
     </div>
@@ -441,11 +728,24 @@ const PendingGuidanceMessage: FC<{ guidance: QueuedGuidance }> = ({
 const AssistantMessage: FC<{
   message: ClaudeStreamMessage;
   toolResultMap: Map<string, ContentBlock>;
-}> = ({ message, toolResultMap }) => {
+  regenerateIndex: number;
+  canRegenerate: boolean;
+}> = ({ message, toolResultMap, regenerateIndex, canRegenerate }) => {
   const content = message.message?.content;
-  if (!Array.isArray(content) || content.length === 0) return null;
+  const blocks = Array.isArray(content) ? content : [];
 
-  const hasRenderableContent = content.some(
+  const copyText = blocks
+    .filter((block) => block.type === "text" && block.text)
+    .map((block) => block.text)
+    .join("\n\n");
+
+  // Hook must run unconditionally (before any early return).
+  const { eligible, summary, pending, summarize, dismiss } =
+    useSummarize(copyText);
+
+  if (blocks.length === 0) return null;
+
+  const hasRenderableContent = blocks.some(
     (block) =>
       (block.type === "text" && block.text) ||
       (block.type === "thinking" && block.thinking) ||
@@ -454,15 +754,10 @@ const AssistantMessage: FC<{
 
   if (!hasRenderableContent) return null;
 
-  const copyText = content
-    .filter((block) => block.type === "text" && block.text)
-    .map((block) => block.text)
-    .join("\n\n");
-
   return (
     <div className="fade-in slide-in-from-bottom-1 relative mx-auto w-full animate-in py-3 duration-150">
       <div className="wrap-break-word px-2 text-foreground text-sm leading-relaxed">
-        {content.map((block, idx) => {
+        {blocks.map((block, idx) => {
           if (block.type === "text" && block.text) {
             return (
               <MarkdownRenderer
@@ -488,8 +783,13 @@ const AssistantMessage: FC<{
           return null;
         })}
       </div>
-      <div className="-mb-7.5 ml-2 flex min-h-7.5 items-center pt-1.5">
+      {summary && <SummaryCallout summary={summary} onDismiss={dismiss} />}
+      <div className="-mb-7.5 ml-2 flex min-h-7.5 items-center gap-1 pt-1.5">
         <MessageActions text={copyText} />
+        {eligible && !summary && (
+          <SummarizeButton pending={pending} onClick={() => void summarize()} />
+        )}
+        {canRegenerate && <RegenerateButton userIndex={regenerateIndex} />}
       </div>
     </div>
   );
@@ -497,7 +797,11 @@ const AssistantMessage: FC<{
 
 // ─── Result Message ───
 
-const ResultMessage: FC<{ message: ClaudeStreamMessage }> = ({ message }) => {
+const ResultMessage: FC<{
+  message: ClaudeStreamMessage;
+  regenerateIndex: number;
+  canRegenerate: boolean;
+}> = ({ message, regenerateIndex, canRegenerate }) => {
   const isError = message.is_error || message.subtype === "error";
   const resultText = message.result;
 
@@ -517,8 +821,9 @@ const ResultMessage: FC<{ message: ClaudeStreamMessage }> = ({ message }) => {
           />
         )}
       </div>
-      <div className="-mb-7.5 ml-2 flex min-h-7.5 items-center pt-1.5">
+      <div className="-mb-7.5 ml-2 flex min-h-7.5 items-center gap-1 pt-1.5">
         <MessageActions text={resultText} />
+        {canRegenerate && <RegenerateButton userIndex={regenerateIndex} />}
       </div>
       {message.cost_usd != null && (
         <div className="mt-1 px-1 text-right text-muted-foreground text-xs">

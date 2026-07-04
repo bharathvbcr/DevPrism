@@ -168,11 +168,15 @@ jobs:
           echo "CFLAGS=" >> $GITHUB_ENV
 
       - name: Import Apple certificate
-        if: ${{ secrets.APPLE_CERTIFICATE != '' }}
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
+          if [ -z "$APPLE_CERTIFICATE" ]; then
+            echo "No Apple certificate configured; skipping import."
+            exit 0
+          fi
+
           KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
           KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
 
@@ -218,16 +222,17 @@ jobs:
         run: bash scripts/ci-tauri-build.sh aarch64-apple-darwin
 
       - name: Notarize DMG
-        if: >-
-          ${{ secrets.APPLE_CERTIFICATE != '' &&
-          secrets.APPLE_ID != '' &&
-          secrets.APPLE_TEAM_ID != '' &&
-          secrets.APPLE_PASSWORD != '' }}
         env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
         run: |
+          if [ -z "$APPLE_CERTIFICATE" ] || [ -z "$APPLE_ID" ] || [ -z "$APPLE_TEAM_ID" ] || [ -z "$APPLE_PASSWORD" ]; then
+            echo "Apple notarization credentials not configured; skipping."
+            exit 0
+          fi
+
           TARGET="aarch64-apple-darwin"
           BUNDLE="apps/desktop/src-tauri/target/$TARGET/release/bundle"
           DMG_PATH=$(find "$BUNDLE/dmg" -name '*.dmg' | head -1)
@@ -326,11 +331,15 @@ jobs:
           echo "CFLAGS=" >> $GITHUB_ENV
 
       - name: Import Apple certificate
-        if: ${{ secrets.APPLE_CERTIFICATE != '' }}
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
+          if [ -z "$APPLE_CERTIFICATE" ]; then
+            echo "No Apple certificate configured; skipping import."
+            exit 0
+          fi
+
           KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
           KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
 
@@ -376,16 +385,17 @@ jobs:
         run: bash scripts/ci-tauri-build.sh x86_64-apple-darwin
 
       - name: Notarize DMG
-        if: >-
-          ${{ secrets.APPLE_CERTIFICATE != '' &&
-          secrets.APPLE_ID != '' &&
-          secrets.APPLE_TEAM_ID != '' &&
-          secrets.APPLE_PASSWORD != '' }}
         env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
         run: |
+          if [ -z "$APPLE_CERTIFICATE" ] || [ -z "$APPLE_ID" ] || [ -z "$APPLE_TEAM_ID" ] || [ -z "$APPLE_PASSWORD" ]; then
+            echo "Apple notarization credentials not configured; skipping."
+            exit 0
+          fi
+
           TARGET="x86_64-apple-darwin"
           BUNDLE="apps/desktop/src-tauri/target/$TARGET/release/bundle"
           DMG_PATH=$(find "$BUNDLE/dmg" -name '*.dmg' | head -1)

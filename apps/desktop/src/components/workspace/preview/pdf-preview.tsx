@@ -46,6 +46,10 @@ import {
   type InlineEditAction,
 } from "@/lib/inline-edit";
 import { toast } from "sonner";
+import {
+  showWorkspaceError,
+  showWorkspaceWarning,
+} from "@/stores/workspace-banner-store";
 
 function findSourceSpan(
   content: string,
@@ -101,6 +105,11 @@ import {
 } from "@/lib/compile-root-preference";
 import { Button } from "@/components/ui/button";
 import { ToolbarGroup } from "@/components/ui/toolbar-group";
+import {
+  PDF_TOOLBAR_GROUP,
+  PDF_TOOLBAR_HINT,
+  PDF_TOOLBAR_MUTED,
+} from "./pdf-toolbar-styles";
 import { cn } from "@/lib/utils";
 import {
   Select,
@@ -123,6 +132,7 @@ import {
   synctexEdit,
   listCompileRoots,
   formatCompileError,
+  buildCompileFixPrompt,
   type CompileRootOption,
 } from "@/lib/latex-compiler";
 import {
@@ -217,7 +227,9 @@ function CompileRootIcon({
   className?: string;
 }) {
   const Icon = kind === "cover-letter" ? MailIcon : FileTextIcon;
-  return <Icon className={cn("size-3.5 shrink-0 text-muted-foreground", className)} />;
+  return (
+    <Icon className={cn("size-3.5 shrink-0", PDF_TOOLBAR_MUTED, className)} />
+  );
 }
 
 function CompilePreviewTargetTrigger({
@@ -232,8 +244,10 @@ function CompilePreviewTargetTrigger({
     <div className="flex min-w-0 flex-1 items-center gap-2 text-left">
       <CompileRootIcon kind={presentation.kind} />
       <div className="min-w-0 flex-1 truncate text-sm leading-none">
-        <span className="font-medium text-foreground">{presentation.title}</span>
-        <span className="text-muted-foreground"> · {presentation.subtitle}</span>
+        <span className="font-medium text-foreground">
+          {presentation.title}
+        </span>
+        <span className={PDF_TOOLBAR_MUTED}> · {presentation.subtitle}</span>
       </div>
       {hasError && (
         <AlertCircleIcon
@@ -267,7 +281,7 @@ function CompilePreviewTargetItem({
             </span>
           )}
         </div>
-        <div className="truncate text-muted-foreground text-xs">
+        <div className={cn("truncate text-xs", PDF_TOOLBAR_MUTED)}>
           {presentation.subtitle}
         </div>
       </div>
@@ -326,6 +340,7 @@ export function PdfPreview() {
   );
   const [explainingCompile, setExplainingCompile] = useState(false);
   const aiCompileAssist = useSettingsStore((s) => s.aiCompileAssist);
+  const nativeAgentEnabled = useSettingsStore((s) => s.nativeAgentEnabled);
   const aiSummarize = useSettingsStore((s) => s.aiSummarize);
   const aiVisionCaption = useSettingsStore((s) => s.aiVisionCaption);
   const [pageSummary, setPageSummary] = useState<string | null>(null);
@@ -352,7 +367,9 @@ export function PdfPreview() {
   const [pageInputValue, setPageInputValue] = useState<string>("1");
   const [isEditingPage, setIsEditingPage] = useState(false);
   const [previewPillVisible, setPreviewPillVisible] = useState(false);
-  const previewPillTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const previewPillTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
   const scrollToPageRef = useRef<((page: number) => void) | null>(null);
   const [scale, setScale] = useState<number>(1.0);
   const [captureMode, setCaptureMode] = useState(false);
@@ -481,9 +498,11 @@ export function PdfPreview() {
     setPdfSelection(null);
     window.getSelection()?.removeAllRanges();
     if (!currentRootFileId || sel.quads.length === 0) {
-      import("sonner").then(({ toast }) => {
-        toast.error("Couldn't highlight this selection. Try selecting text.");
-      });
+      showWorkspaceWarning(
+        "Could not highlight selection",
+        "Try selecting text in the PDF again.",
+        { dedupeKey: "pdf-highlight-failed" },
+      );
       return;
     }
     const color = getHighlightColor(activeColorId);
@@ -721,14 +740,11 @@ export function PdfPreview() {
       // --- New: PDF-side commenting on selected text ---
       if (actionId === "pdf-comment" || actionId === "pdf-suggest") {
         if (!resolvedSource) {
-          // Synctex couldn't map this region to source. Tell the user.
-          // (The lookup may still be in-flight if the selection was very fresh.)
-          import("sonner").then(({ toast }) => {
-            toast.error(
-              "Couldn't locate the source for this PDF selection. " +
-                "Try again, or use the Navigate button to jump first.",
-            );
-          });
+          showWorkspaceError(
+            "Source not found",
+            "Couldn't locate the source for this PDF selection. Try again, or use Navigate to jump first.",
+            { dedupeKey: "pdf-synctex-selection" },
+          );
           return;
         }
         const normalize = (p: string) =>
@@ -737,9 +753,11 @@ export function PdfPreview() {
           (f) => normalize(f.relativePath) === normalize(resolvedSource.file),
         );
         if (!target) {
-          import("sonner").then(({ toast }) => {
-            toast.error(`Source file not in project: ${resolvedSource.file}`);
-          });
+          showWorkspaceError(
+            "Source not in project",
+            `The PDF selection maps to ${resolvedSource.file}, which is not part of this project.`,
+            { dedupeKey: `missing-source:${resolvedSource.file}` },
+          );
           return;
         }
         const fileContent = target.content ?? "";
@@ -851,8 +869,12 @@ export function PdfPreview() {
                     toast.success(inlineEditSuccessMessage(action));
                   }
                 } catch (err) {
-                  toast.error(
-                    err instanceof Error ? err.message : "PDF AI edit failed",
+                  showWorkspaceError(
+                    "PDF AI edit failed",
+                    err instanceof Error
+                      ? err.message
+                      : "The edit could not be applied.",
+                    { dedupeKey: "pdf-ai-edit" },
                   );
                   runChatFallback();
                 }
@@ -1015,8 +1037,12 @@ export function PdfPreview() {
       await writeFile(filePath, new Uint8Array(annotated));
     } catch (err) {
       log.error("Annotated export failed", { error: String(err) });
-      import("sonner").then(({ toast }) => {
-        toast.error("Failed to export the highlighted PDF.");
+      const message =
+        err instanceof Error
+          ? err.message
+          : "Failed to export the highlighted PDF.";
+      showWorkspaceError("Export failed", message, {
+        dedupeKey: "pdf-highlight-export",
       });
     } finally {
       setIsExporting(false);
@@ -1135,7 +1161,11 @@ export function PdfPreview() {
         if (!text) {
           if (id === summaryRequestRef.current) {
             setSummarizing(false);
-            toast.error("No extractable text found to summarize.");
+            showWorkspaceError(
+              "Nothing to summarize",
+              "No extractable text was found on the selected pages.",
+              { dedupeKey: "pdf-summarize-empty" },
+            );
             setSummaryOpen(false);
           }
           return;
@@ -1147,8 +1177,10 @@ export function PdfPreview() {
       } catch (err) {
         if (id !== summaryRequestRef.current) return;
         log.error("PDF summarize failed", { error: String(err) });
-        toast.error(
-          err instanceof Error ? err.message : "Could not summarize the PDF",
+        showWorkspaceError(
+          "Summarize failed",
+          err instanceof Error ? err.message : "Could not summarize the PDF.",
+          { dedupeKey: "pdf-summarize" },
         );
         setSummaryOpen(false);
       } finally {
@@ -1267,15 +1299,21 @@ export function PdfPreview() {
       if (id !== captionRequestRef.current) return; // cancelled
       const trimmed = result.trim();
       if (!trimmed) {
-        toast.error("No caption was produced for this region.");
+        showWorkspaceError(
+          "Caption failed",
+          "No caption was produced for this region.",
+          { dedupeKey: "pdf-caption-empty" },
+        );
         return;
       }
       setCaption(trimmed);
     } catch (err) {
       if (id !== captionRequestRef.current) return;
       log.error("PDF caption failed", { error: String(err) });
-      toast.error(
-        err instanceof Error ? err.message : "Could not caption the region",
+      showWorkspaceError(
+        "Caption failed",
+        err instanceof Error ? err.message : "Could not caption the region.",
+        { dedupeKey: "pdf-caption" },
       );
     } finally {
       if (id === captionRequestRef.current) setCaptioning(false);
@@ -1386,12 +1424,8 @@ export function PdfPreview() {
       ];
 
       const handleFixWithAi = () => {
-        const errorList = errors.map((e) => `- ${e}`).join("\n");
-        useClaudeChatStore
-          .getState()
-          .sendPrompt(
-            `[Compilation errors]\n${errorList}\n\nFix these LaTeX compilation errors.`,
-          );
+        const prompt = buildCompileFixPrompt();
+        if (prompt) useClaudeChatStore.getState().sendPrompt(prompt);
       };
 
       const handleExplainErrors = async () => {
@@ -1410,11 +1444,13 @@ export function PdfPreview() {
           if (id !== explainRequestRef.current) return; // cancelled
           setCompileExplanation(explanation);
         } catch (err) {
-          import("sonner").then(({ toast }) => {
-            toast.error(
-              err instanceof Error ? err.message : "Could not explain errors",
-            );
-          });
+          showWorkspaceError(
+            "Explain failed",
+            err instanceof Error
+              ? err.message
+              : "Could not explain compile errors.",
+            { dedupeKey: "pdf-explain-compile" },
+          );
         } finally {
           setExplainingCompile(false);
         }
@@ -1460,46 +1496,57 @@ export function PdfPreview() {
               </div>
             )}
             <div className="mt-3 flex flex-wrap items-center gap-2">
-              <button
-                onClick={handleFixWithAi}
-                className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 font-medium text-primary-foreground text-xs shadow-sm transition-colors hover:bg-primary/90"
-              >
-                <SparklesIcon className="size-3.5" />
-                Fix with AI
-              </button>
-              {aiCompileAssist && canUseAiAssist() && (
-                <button
-                  onClick={() => void handleExplainErrors()}
+              {(aiCompileAssist || nativeAgentEnabled) && canUseAiAssist() && (
+                <Button
+                  variant="default"
+                  size="sm"
+                  className="gap-1.5"
+                  onClick={handleFixWithAi}
+                >
+                  <SparklesIcon className="size-3.5" />
+                  Fix with AI
+                </Button>
+              )}
+              {(aiCompileAssist || nativeAgentEnabled) && canUseAiAssist() && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-1.5"
                   disabled={explainingCompile}
-                  className="flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 font-medium text-foreground text-xs transition-colors hover:bg-muted disabled:opacity-50"
+                  onClick={() => void handleExplainErrors()}
                 >
                   {explainingCompile ? (
                     <Loader2Icon className="size-3.5 animate-spin" />
                   ) : (
                     <SparklesIcon className="size-3.5" />
                   )}
-                  Explain with AI
-                </button>
+                  {nativeAgentEnabled ? "Explain (local)" : "Explain with AI"}
+                </Button>
               )}
-              <button
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1.5"
                 onClick={() => handleCompile(true)}
-                className="flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 font-medium text-foreground text-xs transition-colors hover:bg-muted"
               >
                 <RefreshCwIcon className="size-3.5" />
                 Retry
-              </button>
-              <button
-                onClick={handleCopyErrors}
-                className="flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 font-medium text-foreground text-xs transition-colors hover:bg-muted"
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1.5"
                 title="Copy errors to clipboard"
+                aria-label="Copy errors to clipboard"
+                onClick={handleCopyErrors}
               >
                 {copiedError ? (
-                  <CheckIcon className="size-3.5 text-emerald-500" />
+                  <CheckIcon className="size-3.5 text-primary" />
                 ) : (
                   <CopyIcon className="size-3.5" />
                 )}
                 {copiedError ? "Copied" : "Copy"}
-              </button>
+              </Button>
             </div>
           </div>
         </div>
@@ -1637,9 +1684,9 @@ export function PdfPreview() {
       ref={previewContainerRef}
       className="@container/pv relative flex h-full flex-col bg-muted/50"
     >
-      <div className="flex h-[calc(var(--workspace-topbar-height)+var(--titlebar-height))] shrink-0 min-w-0 items-center border-border border-b bg-background">
+      <div className="flex h-[calc(var(--workspace-topbar-height)+var(--titlebar-height))] min-w-0 shrink-0 items-center border-border border-b bg-background">
         <div className="scrollbar-none flex min-w-0 flex-1 flex-nowrap items-center gap-1.5 overflow-x-auto px-2">
-          <ToolbarGroup className="shrink-0 bg-muted/40">
+          <ToolbarGroup className={cn("shrink-0", PDF_TOOLBAR_GROUP)}>
             <Select
               value={compilerBackend}
               onValueChange={(v) =>
@@ -1648,7 +1695,7 @@ export function PdfPreview() {
             >
               <SelectTrigger
                 size="sm"
-                className="h-7! @[44rem]/pv:w-[8rem] w-[6.25rem] border-0 bg-transparent text-xs shadow-none hover:bg-accent"
+                className="h-7! @[44rem]/pv:w-[8rem] w-[6.25rem] border-0 bg-muted/40 text-xs shadow-none hover:bg-accent"
               >
                 <SelectValue />
               </SelectTrigger>
@@ -1659,9 +1706,14 @@ export function PdfPreview() {
             </Select>
           </ToolbarGroup>
           {currentCompileRoot && (
-            <ToolbarGroup className="shrink-0 bg-muted/40">
+            <ToolbarGroup className={cn("shrink-0", PDF_TOOLBAR_GROUP)}>
               <div className="flex items-center gap-1.5 px-1">
-                <span className="hidden @[40rem]/pv:flex items-center gap-1 px-1 text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+                <span
+                  className={cn(
+                    "@[40rem]/pv:flex hidden items-center gap-1 px-1 font-medium uppercase tracking-wide",
+                    PDF_TOOLBAR_HINT,
+                  )}
+                >
                   <TargetIcon className="size-3" />
                   Preview
                 </span>
@@ -1686,7 +1738,7 @@ export function PdfPreview() {
                   >
                     <SelectTrigger
                       size="sm"
-                      className="h-8! @[40rem]/pv:w-[17rem] w-[13rem] max-w-[20rem] border-0 bg-transparent px-2 shadow-none hover:bg-accent"
+                      className="h-8! @[40rem]/pv:w-[17rem] w-[13rem] max-w-[20rem] border-0 bg-muted/40 px-2 shadow-none hover:bg-accent"
                       title="Compile / preview target"
                     >
                       <SelectValue asChild>
@@ -1703,7 +1755,7 @@ export function PdfPreview() {
                                 Follow editor
                               </span>
                               {currentCompileRoot && (
-                                <span className="text-muted-foreground">
+                                <span className={PDF_TOOLBAR_MUTED}>
                                   {" "}
                                   · {currentCompileRoot.label}
                                 </span>
@@ -1728,7 +1780,7 @@ export function PdfPreview() {
                             <span className="font-medium text-sm">
                               Follow active editor
                             </span>
-                            <span className="text-muted-foreground text-xs">
+                            <span className={cn("text-xs", PDF_TOOLBAR_MUTED)}>
                               Preview updates when you switch .tex files
                             </span>
                           </div>
@@ -1767,13 +1819,18 @@ export function PdfPreview() {
               </div>
             </ToolbarGroup>
           )}
-          <ToolbarGroup className="shrink-0 bg-muted/40">
+          <ToolbarGroup className={cn("shrink-0", PDF_TOOLBAR_GROUP)}>
             <Button
               variant={autoCompile ? "default" : "ghost"}
               size="sm"
               className="h-7 gap-1.5 @[42rem]/pv:px-2.5 px-2 text-xs"
               onClick={() => setAutoCompile(!autoCompile)}
               aria-pressed={autoCompile}
+              aria-label={
+                autoCompile
+                  ? "Auto-compile on (recompiles after edits)"
+                  : "Auto-compile off"
+              }
               title={
                 autoCompile
                   ? "Auto-compile on (recompiles after edits)"
@@ -1810,6 +1867,7 @@ export function PdfPreview() {
                 )}
                 onClick={() => handleCompile(true)}
                 disabled={busy || !isTexActive}
+                aria-label={label}
                 title={
                   busy
                     ? label
@@ -1829,14 +1887,17 @@ export function PdfPreview() {
           })()}
 
           <div
-            className="mx-0.5 h-5 w-px shrink-0 bg-border/60 @[48rem]/pv:block hidden"
+            className="mx-0.5 @[48rem]/pv:block hidden h-5 w-px shrink-0 bg-border/60"
             aria-hidden
           />
 
           {pdfData && (
             <>
               <span
-                className="@[52rem]/pv:inline hidden shrink-0 text-[10px] text-muted-foreground"
+                className={cn(
+                  "@[52rem]/pv:inline hidden shrink-0",
+                  PDF_TOOLBAR_HINT,
+                )}
                 title={`${SYNCTEX_HINT} or double-click PDF → source · ${IS_MAC ? "⌘⇧J" : "Ctrl+Shift+J"} source → PDF`}
               >
                 {SYNCTEX_HINT} → source · {IS_MAC ? "⌘⇧J" : "Ctrl+Shift+J"} →
@@ -1849,6 +1910,11 @@ export function PdfPreview() {
                 className="size-7 shrink-0"
                 onClick={() => setPdfDarkMode(!pdfDarkMode)}
                 aria-pressed={pdfDarkMode}
+                aria-label={
+                  pdfDarkMode
+                    ? "Turn off PDF dark mode"
+                    : "Turn on PDF dark mode"
+                }
                 title={
                   pdfDarkMode
                     ? "PDF dark mode on (invert page colors)"
@@ -1865,6 +1931,7 @@ export function PdfPreview() {
                     variant="ghost"
                     size="icon"
                     className="relative size-7 shrink-0"
+                    aria-label="Highlight color"
                     title="Highlight color (select text, then choose Highlight)"
                   >
                     <HighlighterIcon
@@ -1933,6 +2000,7 @@ export function PdfPreview() {
                     : "bg-foreground text-background hover:bg-foreground/90"
                 }`}
                 onClick={() => setCaptureMode(!captureMode)}
+                aria-label={`Capture & Ask (${CAPTURE_HINT})`}
                 title={`Capture & Ask (${CAPTURE_HINT})`}
               >
                 <CrosshairIcon className="size-3.5 shrink-0" />
@@ -1949,6 +2017,13 @@ export function PdfPreview() {
                 className="size-7 shrink-0"
                 onClick={handleExport}
                 disabled={isExporting}
+                aria-label={
+                  highlightCount > 0
+                    ? `Export PDF with ${highlightCount} ${
+                        highlightCount === 1 ? "highlight" : "highlights"
+                      }`
+                    : "Export PDF"
+                }
                 title={
                   highlightCount > 0
                     ? `Export PDF with ${highlightCount} ${
@@ -1987,6 +2062,7 @@ export function PdfPreview() {
                         if (!summaryOpen) void runSummarize("page");
                       }}
                       title="Summarize page or document with AI"
+                      aria-label="Summarize page or document with AI"
                     >
                       {summarizing ? (
                         <Loader2Icon className="size-3.5 animate-spin" />
@@ -2056,6 +2132,7 @@ export function PdfPreview() {
                 size="icon"
                 className="size-7 shrink-0"
                 title="History"
+                aria-label="History"
               >
                 <HistoryIcon className="size-3.5" />
               </Button>
@@ -2074,10 +2151,10 @@ export function PdfPreview() {
       {renderContent()}
       {/* Page + zoom floating pill */}
       {pdfData && !captureMode && (
-        <div className="pointer-events-none absolute inset-x-0 bottom-6 z-20 flex justify-center">
+        <div className="pointer-events-none absolute inset-x-0 bottom-6 z-20 flex justify-center focus-within:pointer-events-auto">
           <div
             className={cn(
-              "flex items-center gap-1.5 rounded-full border border-border/60 bg-background/90 py-1.5 pr-2 pl-1.5 shadow-lg backdrop-blur-sm transition-opacity duration-500 ease-in-out",
+              "flex items-center gap-1.5 rounded-full border border-border/60 bg-background/90 py-1.5 pr-2 pl-1.5 shadow-lg backdrop-blur-sm transition-opacity duration-500 ease-in-out focus-within:pointer-events-auto focus-within:opacity-100",
               previewPillVisible
                 ? "pointer-events-auto opacity-100"
                 : "opacity-0",
@@ -2095,6 +2172,7 @@ export function PdfPreview() {
               }}
               disabled={currentPage <= 1}
               title="Previous page"
+              aria-label="Previous page"
             >
               <ChevronUpIcon className="size-4" />
             </Button>
@@ -2103,6 +2181,7 @@ export function PdfPreview() {
                 <input
                   type="text"
                   inputMode="numeric"
+                  aria-label="Page number"
                   className="h-8 w-10 rounded-full border border-border bg-background text-center text-foreground text-sm outline-none focus:ring-1 focus:ring-ring"
                   value={pageInputValue}
                   onChange={(e) => setPageInputValue(e.target.value)}
@@ -2125,12 +2204,18 @@ export function PdfPreview() {
                     bumpPreviewPill();
                   }}
                   title="Click to jump to page"
+                  aria-label="Jump to page"
                 >
                   {currentPage}
                 </button>
               )}
-              <span className="text-muted-foreground/70">/</span>
-              <span className="flex h-8 min-w-8 items-center justify-center text-muted-foreground">
+              <span className={PDF_TOOLBAR_MUTED}>/</span>
+              <span
+                className={cn(
+                  "flex h-8 min-w-8 items-center justify-center",
+                  PDF_TOOLBAR_MUTED,
+                )}
+              >
                 {numPages}
               </span>
             </div>
@@ -2144,6 +2229,7 @@ export function PdfPreview() {
               }}
               disabled={currentPage >= numPages}
               title="Next page"
+              aria-label="Next page"
             >
               <ChevronDownIcon className="size-4" />
             </Button>
@@ -2157,6 +2243,7 @@ export function PdfPreview() {
               onClick={zoomOut}
               disabled={scale <= 0.25}
               title="Zoom out"
+              aria-label="Zoom out"
             >
               <MinusIcon className="size-4" />
             </Button>
@@ -2174,6 +2261,7 @@ export function PdfPreview() {
             >
               <SelectTrigger
                 size="sm"
+                aria-label="Zoom level"
                 className="h-9! w-[6.25rem] shrink-0 rounded-full border-0 bg-transparent text-sm shadow-none hover:bg-accent"
               >
                 <SelectValue>
@@ -2202,6 +2290,7 @@ export function PdfPreview() {
               onClick={zoomIn}
               disabled={scale >= 4}
               title="Zoom in"
+              aria-label="Zoom in"
             >
               <PlusIcon className="size-4" />
             </Button>
@@ -2245,7 +2334,7 @@ export function PdfPreview() {
             <div className="flex items-center gap-1.5 font-medium text-muted-foreground text-xs uppercase tracking-wide">
               <ImageIcon className="size-3.5" />
               AI caption
-              <span className="ml-1 normal-case tracking-normal text-muted-foreground/70">
+              <span className="ml-1 text-muted-foreground/70 normal-case tracking-normal">
                 page {capturedRegion.pageNumber}
               </span>
               <button
@@ -2271,7 +2360,7 @@ export function PdfPreview() {
                     onClick={() => void handleCopyCaption()}
                   >
                     {captionCopied ? (
-                      <CheckIcon className="size-3.5 text-emerald-500" />
+                      <CheckIcon className="size-3.5 text-primary" />
                     ) : (
                       <CopyIcon className="size-3.5" />
                     )}

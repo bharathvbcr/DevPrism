@@ -93,6 +93,211 @@ fn has_real_errors(log: &str) -> bool {
         .any(|l| l.starts_with('!') || l.contains("Error:"))
 }
 
+/// One structured LaTeX compile diagnostic for agent/UI consumers.
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+pub struct LatexCompileErrorItem {
+    pub file: Option<String>,
+    pub line: Option<u32>,
+    pub message: String,
+}
+
+/// Parse `l.N` line numbers from a log line.
+fn parse_latex_line_number(s: &str) -> Option<u32> {
+    let trimmed = s.trim();
+    let rest = trimmed.strip_prefix("l.")?;
+    let num: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    let n: u32 = num.parse().ok()?;
+    (n > 0).then_some(n)
+}
+
+/// Parse `path.tex:42:` style file+line references (SyncTeX / engine output).
+fn parse_latex_file_line_ref(s: &str) -> Option<(String, u32)> {
+    let s = s.trim().trim_start_matches("./").replace('\\', "/");
+    let (file_part, after) = s.split_once(':')?;
+    if !file_part.ends_with(".tex") {
+        return None;
+    }
+    let line_str: String = after
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    let line: u32 = line_str.parse().ok()?;
+    (line > 0).then_some((file_part.to_string(), line))
+}
+
+/// Extract structured errors (file, line, message) from a LaTeX engine log.
+pub fn parse_structured_latex_errors(log: &str) -> Vec<LatexCompileErrorItem> {
+    if log.is_empty() {
+        return Vec::new();
+    }
+    let lines: Vec<&str> = log.lines().collect();
+    let mut out: Vec<LatexCompileErrorItem> = Vec::new();
+    let mut i = 0usize;
+    while i < lines.len() && out.len() < 20 {
+        let line = lines[i].trim();
+        let is_error =
+            line.starts_with('!') || line.contains("Error:") || line.contains("error:");
+        if !is_error {
+            i += 1;
+            continue;
+        }
+        let message = line.trim_start_matches('!').trim().to_string();
+        let mut file: Option<String> = None;
+        let mut line_no: Option<u32> = None;
+        for j in i..(i + 10).min(lines.len()) {
+            let l = lines[j].trim();
+            if line_no.is_none() {
+                line_no = parse_latex_line_number(l);
+            }
+            if file.is_none() {
+                if let Some((f, ln)) = parse_latex_file_line_ref(l) {
+                    file = Some(f);
+                    if line_no.is_none() {
+                        line_no = Some(ln);
+                    }
+                }
+            }
+        }
+        out.push(LatexCompileErrorItem {
+            file,
+            line: line_no,
+            message,
+        });
+        i += 1;
+    }
+    out
+}
+
+/// Result of a synchronous agent-side compile (no PDF bytes — check success only).
+#[derive(Debug, serde::Serialize)]
+pub struct AgentCompileResult {
+    pub success: bool,
+    pub main_file: String,
+    pub errors: Vec<LatexCompileErrorItem>,
+    pub summary: String,
+}
+
+/// Compile a project TeX root for the native agent `Compile` tool. Uses the same
+/// persistent build dir as the UI compile path but skips the global semaphore.
+pub fn agent_compile_project(
+    project_dir: &Path,
+    main_file: &str,
+    use_texlive: bool,
+) -> AgentCompileResult {
+    let project_str = project_dir.to_string_lossy();
+    let work_dir = persistent_build_dir(&project_str);
+    let main_rel = main_file.trim().replace('\\', "/");
+    let main_tex_path = work_dir.join(&main_rel);
+
+    if let Err(e) = (|| {
+        if work_dir.exists() {
+            sync_source_files(project_dir, &work_dir)
+                .map_err(|e| format!("Failed to sync project: {}", e))
+        } else {
+            std::fs::create_dir_all(&work_dir)
+                .map_err(|e| format!("Failed to create build dir: {}", e))?;
+            copy_dir_recursive(project_dir, &work_dir)
+                .map_err(|e| format!("Failed to copy project: {}", e))
+        }
+    })() {
+        return AgentCompileResult {
+            success: false,
+            main_file: main_rel.clone(),
+            errors: vec![],
+            summary: e,
+        };
+    }
+
+    if !work_dir.join(&main_rel).exists() {
+        return AgentCompileResult {
+            success: false,
+            main_file: main_rel.clone(),
+            errors: vec![],
+            summary: format!("No .tex file found: \"{}\".", main_rel),
+        };
+    }
+
+    let main_file_name = Path::new(&main_rel)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("document")
+        .to_string();
+    let pdf_path = work_dir.join(format!("{}.pdf", main_file_name));
+    let log_path = work_dir.join(format!("{}.log", main_file_name));
+    let _ = std::fs::remove_file(&pdf_path);
+
+    let main_tex_content = std::fs::read_to_string(&main_tex_path).unwrap_or_default();
+    let engine = detect_tex_engine(&main_tex_content);
+
+    let compile_result = if use_texlive {
+        compile_with_texlive(&work_dir, &main_rel, engine, &main_tex_content)
+    } else if matches!(engine, Some(TexEngine::LuaLaTeX)) {
+        Err(
+            "This document requires LuaLaTeX, which Tectonic does not support. \
+             Enable TeX Live in settings or remove the magic comment."
+                .into(),
+        )
+    } else {
+        compile_with_tectonic_subprocess(&work_dir, &main_rel)
+    };
+
+    if pdf_path.exists() {
+        return AgentCompileResult {
+            success: true,
+            main_file: main_rel.clone(),
+            errors: vec![],
+            summary: format!("Compiled `{}` successfully.", main_rel),
+        };
+    }
+
+    let log_content = std::fs::read_to_string(&log_path).unwrap_or_default();
+    let mut errors = parse_structured_latex_errors(&log_content);
+    if errors.is_empty() {
+        let fallback = extract_error_lines(&log_content);
+        if !fallback.trim().is_empty() {
+            for block in fallback.split("\n\n") {
+                let msg = block.lines().next().unwrap_or(block).trim();
+                if !msg.is_empty() {
+                    errors.push(LatexCompileErrorItem {
+                        file: Some(main_rel.clone()),
+                        line: parse_latex_line_number(msg),
+                        message: msg.to_string(),
+                    });
+                }
+            }
+        }
+    }
+    if errors.is_empty() {
+        if let Err(e) = compile_result {
+            errors.push(LatexCompileErrorItem {
+                file: Some(main_rel.clone()),
+                line: None,
+                message: e,
+            });
+        } else {
+            errors.push(LatexCompileErrorItem {
+                file: Some(main_rel.clone()),
+                line: None,
+                message: "Compilation failed: no PDF generated.".into(),
+            });
+        }
+    }
+    let summary = format!(
+        "Compilation of `{}` failed with {} error(s).",
+        main_rel,
+        errors.len()
+    );
+    AgentCompileResult {
+        success: false,
+        main_file: main_rel,
+        errors,
+        summary,
+    }
+}
+
 #[derive(Debug, PartialEq)]
 enum TexEngine {
     Latex,
@@ -1003,12 +1208,59 @@ pub async fn compile_latex(
     main_file: String,
     use_texlive: Option<bool>,
 ) -> Result<tauri::ipc::Response, String> {
+    match compile_latex_inner(&state, project_dir, main_file, use_texlive).await {
+        Ok(bytes) => Ok(tauri::ipc::Response::new(bytes)),
+        Err(fail) => Err(fail.into_user_message()),
+    }
+}
+
+struct CompileFail {
+    backend_label: String,
+    main_file: String,
+    log_content: String,
+    message: String,
+}
+
+impl CompileFail {
+    fn into_user_message(self) -> String {
+        format!(
+            "Compilation failed ({})\n\n{}",
+            self.backend_label, self.message
+        )
+    }
+
+    fn new(
+        backend_label: impl Into<String>,
+        main_file: impl Into<String>,
+        log_content: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            backend_label: backend_label.into(),
+            main_file: main_file.into(),
+            log_content: log_content.into(),
+            message: message.into(),
+        }
+    }
+}
+
+async fn compile_latex_inner(
+    state: &LatexCompilerState,
+    project_dir: String,
+    main_file: String,
+    use_texlive: Option<bool>,
+) -> Result<Vec<u8>, CompileFail> {
     // Acquire semaphore permit (non-blocking)
     let _permit = state
         .semaphore
         .clone()
         .try_acquire_owned()
-        .map_err(|_| "Server busy, too many concurrent compilations".to_string())?;
+        .map_err(|_| CompileFail {
+            backend_label: "n/a".into(),
+            main_file: main_file.clone(),
+            log_content: String::new(),
+            message: "Server busy, too many concurrent compilations".into(),
+        })?;
 
     // Acquire per-project lock to prevent concurrent compilations on the same build dir.
     let project_lock = {
@@ -1053,7 +1305,8 @@ pub async fn compile_latex(
             }
         })
         .await
-        .map_err(|e| format!("File sync task panicked: {}", e))??;
+        .map_err(|e| CompileFail::new("n/a", &main_file, "", format!("File sync task panicked: {e}")))?
+        .map_err(|e| CompileFail::new("n/a", &main_file, "", e))?;
     }
 
     eprintln!(
@@ -1075,9 +1328,13 @@ pub async fn compile_latex(
     // Verify the main TeX file exists before attempting compilation
     let main_tex_path = work_dir.join(&main_file);
     if !main_tex_path.exists() {
-        return Err(format!(
-            "Compilation failed\n\nNo .tex file found: \"{}\". Create a document.tex or main.tex file to compile.",
-            main_file
+        return Err(CompileFail::new(
+            "n/a",
+            &main_file,
+            "",
+            format!(
+                "No .tex file found: \"{main_file}\". Create a document.tex or main.tex file to compile."
+            ),
         ));
     }
 
@@ -1099,12 +1356,14 @@ pub async fn compile_latex(
 
     if !use_texlive {
         if let Some(TexEngine::LuaLaTeX) = engine {
-            return Err(
-                "Compilation failed\n\nThis document requires LuaLaTeX (% !TEX program = lualatex), \
+            return Err(CompileFail::new(
+                &backend_label,
+                &main_file,
+                "",
+                "This document requires LuaLaTeX (% !TEX program = lualatex), \
                  which is not supported. Prism uses a XeTeX-based engine (Tectonic). \
-                 Please switch to XeLaTeX or remove the magic comment."
-                    .to_string(),
-            );
+                 Please switch to XeLaTeX or remove the magic comment.",
+            ));
         }
     }
 
@@ -1116,7 +1375,7 @@ pub async fn compile_latex(
             compile_with_texlive(&work_dir_clone, &main_file_clone, engine, &main_tex_content)
         })
         .await
-        .map_err(|e| format!("Compilation task panicked: {}", e))?;
+        .map_err(|e| CompileFail::new(&backend_label, &main_file, "", format!("Compilation task panicked: {e}")))?;
         eprintln!(
             "[latex] +{:.0}ms texlive done (ok={})",
             t0.elapsed().as_millis(),
@@ -1127,12 +1386,13 @@ pub async fn compile_latex(
         // Run Tectonic in a subprocess to isolate C-level global state (font cache, etc.).
         let work_dir_clone = work_dir.clone();
         let main_file_clone = main_file.clone();
+        let backend = backend_label.clone();
         let result = tokio::task::spawn_blocking(move || {
             lower_thread_priority();
             compile_with_tectonic_subprocess(&work_dir_clone, &main_file_clone)
         })
         .await
-        .map_err(|e| format!("Compilation task panicked: {}", e))?;
+        .map_err(|e| CompileFail::new(&backend, &main_file, "", format!("Compilation task panicked: {e}")))?;
         eprintln!(
             "[latex] +{:.0}ms tectonic done (ok={})",
             t0.elapsed().as_millis(),
@@ -1172,14 +1432,15 @@ pub async fn compile_latex(
             Ok::<bool, String>(false)
         })
         .await
-        .map_err(|e| format!("Retry prep panicked: {}", e))??;
+        .map_err(|e| CompileFail::new(&backend_label, &main_file, "", format!("Retry prep panicked: {e}")))?
+        .map_err(|e| CompileFail::new(&backend_label, &main_file, "", e))?;
 
         if needs_retry {
             let retry_result = tokio::task::spawn_blocking(move || {
                 compile_with_tectonic_subprocess(&work_dir_clone, &main_file_clone)
             })
             .await
-            .map_err(|e| format!("Retry task panicked: {}", e))?;
+            .map_err(|e| CompileFail::new(&backend_label, &main_file, "", format!("Retry task panicked: {e}")))?;
             eprintln!(
                 "[latex] empty-body retry: ok={} pdf_exists={}",
                 retry_result.is_ok(),
@@ -1208,8 +1469,8 @@ pub async fn compile_latex(
         let pdf_path_clone = pdf_path.clone();
         let pdf_bytes = tokio::task::spawn_blocking(move || std::fs::read(&pdf_path_clone))
             .await
-            .map_err(|e| format!("PDF read task panicked: {}", e))?
-            .map_err(|e| format!("Failed to read PDF: {}", e))?;
+            .map_err(|e| CompileFail::new(&backend_label, &main_file, "", format!("PDF read task panicked: {e}")))?
+            .map_err(|e| CompileFail::new(&backend_label, &main_file, "", format!("Failed to read PDF: {e}")))?;
         eprintln!(
             "[latex] +{:.0}ms total (reuse={}, backend={}) pdf_size={}KB",
             t0.elapsed().as_millis(),
@@ -1237,7 +1498,7 @@ pub async fn compile_latex(
             })
             .await;
         }
-        Ok(tauri::ipc::Response::new(pdf_bytes))
+        Ok(pdf_bytes)
     } else {
         let log_content = std::fs::read_to_string(&log_path).unwrap_or_default();
         let details = extract_error_lines(&log_content);
@@ -1249,7 +1510,12 @@ pub async fn compile_latex(
         } else {
             details
         };
-        Err(format!("Compilation failed ({})\n\n{}", backend_label, msg))
+        Err(CompileFail::new(
+            &backend_label,
+            &main_file,
+            log_content,
+            msg,
+        ))
     }
 }
 
@@ -1411,6 +1677,24 @@ mod tests {
     fn test_detect_bib_tool_commented_out() {
         let content = "\\documentclass{article}\n% \\bibliography{refs}\n% \\usepackage{biblatex}\n\\end{document}";
         assert_eq!(detect_bib_tool(content), BibTool::None);
+    }
+
+    #[test]
+    fn parse_structured_errors_extracts_line_and_message() {
+        let log = "! Undefined control sequence.\nl.42 \\foo\n";
+        let errs = parse_structured_latex_errors(log);
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].line, Some(42));
+        assert!(errs[0].message.contains("Undefined control sequence"));
+    }
+
+    #[test]
+    fn parse_structured_errors_extracts_file_reference() {
+        let log = "! LaTeX Error: Something wrong.\n./chapters/intro.tex:15: error\nl.15 \\bad\n";
+        let errs = parse_structured_latex_errors(log);
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].file.as_deref(), Some("chapters/intro.tex"));
+        assert_eq!(errs[0].line, Some(15));
     }
 
     // --- install_glyphtounicode_stub ---

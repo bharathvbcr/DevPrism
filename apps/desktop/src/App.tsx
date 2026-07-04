@@ -6,7 +6,15 @@ import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 
 import { useDocumentStore } from "@/stores/document-store";
 import { useClaudeChatStore } from "@/stores/claude-chat-store";
+import {
+  showWorkspaceInfo,
+  useWorkspaceBannerStore,
+} from "@/stores/workspace-banner-store";
+import { useProjectStore } from "@/stores/project-store";
 import { ProjectPicker } from "@/components/project-picker";
+import { BrowserPreviewBanner } from "@/components/browser-preview-banner";
+import { displayProjectPathLabel } from "@/lib/browser-project/fsa-persistence";
+import { isTauri } from "@/lib/runtime/is-tauri";
 import { WorkspaceLayout } from "@/components/workspace/workspace-layout";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -21,6 +29,8 @@ import {
   scheduleIdentityProfileSync,
 } from "@/lib/personalization";
 import { usePersonalizationStore } from "@/stores/personalization-store";
+import { Skeleton } from "@/components/ui/skeleton";
+import { OllamaPullBanner } from "@/components/ollama-pull-banner";
 
 const log = createLogger("app");
 
@@ -47,6 +57,8 @@ function NativeWindowThemeBridge() {
       const nativeTheme = isDark ? "dark" : "light";
 
       document.documentElement.style.colorScheme = nativeTheme;
+      if (!isTauri()) return;
+
       invoke("set_native_window_theme", { theme: nativeTheme })
         .catch((err) => {
           log.warn("Failed to sync native window theme via Rust command", {
@@ -89,9 +101,15 @@ function WorkspaceWithClaude() {
 
   // Update window title
   useEffect(() => {
-    if (projectRoot) {
-      const name = projectRoot.split(/[/\\]/).pop() || "DevPrism";
-      getCurrentWindow().setTitle(`${name} - DevPrism`);
+    if (!projectRoot) return;
+    const recent = useProjectStore
+      .getState()
+      .recentProjects.find((p) => p.path === projectRoot);
+    const label = displayProjectPathLabel(projectRoot, recent?.name);
+    if (isTauri()) {
+      void getCurrentWindow().setTitle(`${label} - DevPrism`);
+    } else {
+      document.title = `${label} - DevPrism`;
     }
   }, [projectRoot]);
 
@@ -99,7 +117,17 @@ function WorkspaceWithClaude() {
     if (chatProjectRef.current === projectRoot) return;
     chatProjectRef.current = projectRoot;
     useClaudeChatStore.getState().resetForProject(projectRoot ?? null);
+    useWorkspaceBannerStore.getState().clearAll();
   }, [projectRoot]);
+
+  useEffect(() => {
+    if (!initialized || !projectRoot || isTauri()) return;
+    showWorkspaceInfo(
+      "Preview mode",
+      "Editing works in the browser, but PDF compile and native AI require the desktop app.",
+      { dedupeKey: "browser-preview-workspace" },
+    );
+  }, [initialized, projectRoot]);
 
   // Auto-setup Python venv when project opens
   useEffect(() => {
@@ -220,7 +248,11 @@ export function App({ onReady }: { onReady?: () => void }) {
 
   useEffect(() => {
     if (!projectRoot) {
-      getCurrentWindow().setTitle("DevPrism");
+      if (isTauri()) {
+        void getCurrentWindow().setTitle("DevPrism");
+      } else {
+        document.title = "DevPrism";
+      }
     }
   }, [projectRoot]);
 
@@ -236,6 +268,8 @@ export function App({ onReady }: { onReady?: () => void }) {
       <ThemeProvider attribute="class" forcedTheme="dark">
         <TooltipProvider>
           <NativeWindowThemeBridge />
+          <BrowserPreviewBanner />
+          <OllamaPullBanner />
           {/* Global macOS titlebar drag region — sits above all content */}
           <div
             data-tauri-drag-region
@@ -262,8 +296,10 @@ export function App({ onReady }: { onReady?: () => void }) {
                 <div className="h-[calc(60vh-2rem)] overflow-auto">
                   <Suspense
                     fallback={
-                      <div className="p-4 text-muted-foreground text-sm">
-                        Loading...
+                      <div className="space-y-2 p-4">
+                        <Skeleton className="h-4 w-1/3" />
+                        <Skeleton className="h-3 w-full" />
+                        <Skeleton className="h-3 w-[90%]" />
                       </div>
                     }
                   >

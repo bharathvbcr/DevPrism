@@ -8,17 +8,28 @@ import {
 import {
   Panel,
   PanelGroup,
-  PanelResizeHandle,
   type ImperativePanelHandle,
 } from "react-resizable-panels";
 import { Sidebar } from "./sidebar";
 import { LatexEditor } from "./editor/latex-editor";
+import { RichLatexEditor } from "./editor/rich/rich-latex-editor";
 import { PdfPreview } from "./preview/pdf-preview";
+import { WorkspacePanelResizeHandle } from "./panel-resize-handle";
+import { WorkspaceLoadingSkeleton } from "./workspace-loading-skeleton";
+import { WorkspaceBannerBar } from "./workspace-banner-bar";
 import { CommandPalette } from "@/components/command-palette";
 import { useDocumentStore } from "@/stores/document-store";
+import { useEditorViewModeStore } from "@/stores/editor-view-mode-store";
 import { usePreviewStore } from "@/stores/preview-store";
+import { useWorkspaceBannerStore } from "@/stores/workspace-banner-store";
+import { useCompileRequest } from "@/hooks/use-compile-request";
+import { buildCompileFixPrompt } from "@/lib/latex-compiler";
+import { canUseAiAssist } from "@/lib/ai-assist";
+import { useClaudeChatStore } from "@/stores/claude-chat-store";
+import { useSettingsStore } from "@/stores/settings-store";
 
 const SIDEBAR_DEFAULT_SIZE = 15;
+const EDITOR_PREVIEW_DEFAULT_SIZE = 42.5;
 const SIDEBAR_MIN_SIZE = 10;
 const SIDEBAR_COLLAPSED_WIDTH_PX = 48;
 const SIDEBAR_COLLAPSED_SIZE_FALLBACK = 8;
@@ -29,11 +40,25 @@ function easeInOutSmooth(progress: number) {
 }
 
 export function WorkspaceLayout() {
+  useCompileRequest();
   const initialized = useDocumentStore((s) => s.initialized);
+  // Rich (Word-like) editing applies to .tex files only.
+  const activeIsTex = useDocumentStore((s) => {
+    const f = s.files.find((file) => file.id === s.activeFileId);
+    return f?.type === "tex";
+  });
+  const editorViewMode = useEditorViewModeStore((s) => s.mode);
+  const compileError = useDocumentStore((s) => s.compileError);
+  const aiCompileAssist = useSettingsStore((s) => s.aiCompileAssist);
+  const nativeAgentEnabled = useSettingsStore((s) => s.nativeAgentEnabled);
   const previewVisible = usePreviewStore((s) => s.visible);
   const setPreviewVisible = usePreviewStore((s) => s.setVisible);
+  const showWorkspaceBanner = useWorkspaceBannerStore((s) => s.show);
+  const dismissWorkspaceBanner = useWorkspaceBannerStore((s) => s.dismiss);
   const workspaceRef = useRef<HTMLDivElement>(null);
   const sidebarPanelRef = useRef<ImperativePanelHandle>(null);
+  const editorPanelRef = useRef<ImperativePanelHandle>(null);
+  const previewPanelRef = useRef<ImperativePanelHandle>(null);
   const sidebarAnimationFrameRef = useRef<number | null>(null);
   const sidebarAnimatingRef = useRef(false);
   const expandedSidebarSizeRef = useRef(SIDEBAR_DEFAULT_SIZE);
@@ -111,6 +136,19 @@ export function WorkspaceLayout() {
     setSidebarPaneCollapsed(!sidebarCollapsed);
   }, [setSidebarPaneCollapsed, sidebarCollapsed]);
 
+  const resetSidebarSize = useCallback(() => {
+    if (sidebarCollapsed) {
+      setSidebarPaneCollapsed(false);
+    }
+    sidebarPanelRef.current?.resize(SIDEBAR_DEFAULT_SIZE);
+    expandedSidebarSizeRef.current = SIDEBAR_DEFAULT_SIZE;
+  }, [setSidebarPaneCollapsed, sidebarCollapsed]);
+
+  const resetEditorPreviewSplit = useCallback(() => {
+    editorPanelRef.current?.resize(EDITOR_PREVIEW_DEFAULT_SIZE);
+    previewPanelRef.current?.resize(EDITOR_PREVIEW_DEFAULT_SIZE);
+  }, []);
+
   const setCodePaneVisible = useCallback(
     (visible: boolean) => {
       if (!visible && !previewVisible) {
@@ -143,6 +181,54 @@ export function WorkspaceLayout() {
     return () => window.removeEventListener("keydown", handler);
   }, [previewVisible, setPdfPaneVisible]);
 
+  // Surface compile failures in a dismissable banner (persists across panes).
+  useEffect(() => {
+    const dedupeKey = "compile-error";
+    if (compileError) {
+      const firstLine =
+        compileError
+          .split(/\s*!\s*/)
+          .map((s) => s.trim())
+          .find((s) => s.length > 0 && s !== "Compilation failed") ??
+        "Your document failed to compile.";
+      const fixWithAiAvailable =
+        (aiCompileAssist || nativeAgentEnabled) && canUseAiAssist();
+      showWorkspaceBanner({
+        kind: "error",
+        dedupeKey,
+        title: "Compilation failed",
+        message:
+          firstLine.length > 140 ? `${firstLine.slice(0, 137)}…` : firstLine,
+        ...(fixWithAiAvailable
+          ? {
+              secondaryActionLabel: "Fix with AI",
+              onSecondaryAction: () => {
+                const prompt = buildCompileFixPrompt();
+                if (prompt)
+                  void useClaudeChatStore.getState().sendPrompt(prompt);
+              },
+            }
+          : {}),
+        actionLabel: "Show preview",
+        onAction: () => setPreviewVisible(true),
+      });
+      return;
+    }
+
+    const banner = useWorkspaceBannerStore
+      .getState()
+      .banners.find((b) => b.dedupeKey === dedupeKey);
+    if (banner) dismissWorkspaceBanner(banner.id);
+  }, [
+    aiCompileAssist,
+    compileError,
+    dismissWorkspaceBanner,
+    nativeAgentEnabled,
+    previewVisible,
+    setPreviewVisible,
+    showWorkspaceBanner,
+  ]);
+
   useEffect(() => {
     return () => {
       if (sidebarAnimationFrameRef.current !== null) {
@@ -173,17 +259,13 @@ export function WorkspaceLayout() {
   }, [getCollapsedSidebarSize, sidebarCollapsed]);
 
   if (!initialized) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        <div className="text-muted-foreground">Loading project...</div>
-      </div>
-    );
+    return <WorkspaceLoadingSkeleton />;
   }
 
   return (
-    <div ref={workspaceRef} className="h-full">
-      <CommandPalette />
-      <PanelGroup direction="horizontal" className="h-full">
+    <div ref={workspaceRef} className="flex h-full flex-col">
+      <WorkspaceBannerBar />
+      <PanelGroup direction="horizontal" className="min-h-0 flex-1">
         <Panel
           ref={sidebarPanelRef}
           defaultSize={SIDEBAR_DEFAULT_SIZE}
@@ -214,25 +296,31 @@ export function WorkspaceLayout() {
           />
         </Panel>
 
-        <PanelResizeHandle className="w-px bg-border transition-colors hover:bg-ring" />
+        <WorkspacePanelResizeHandle onReset={resetSidebarSize} />
 
         {codeVisible && (
           <Panel
-            defaultSize={previewVisible ? 42.5 : 85}
+            ref={editorPanelRef}
+            defaultSize={previewVisible ? EDITOR_PREVIEW_DEFAULT_SIZE : 85}
             minSize={25}
             className="min-w-0"
           >
-            <LatexEditor />
+            {editorViewMode === "rich" && activeIsTex ? (
+              <RichLatexEditor />
+            ) : (
+              <LatexEditor />
+            )}
           </Panel>
         )}
 
         {codeVisible && previewVisible && (
-          <PanelResizeHandle className="w-px bg-border transition-colors hover:bg-ring" />
+          <WorkspacePanelResizeHandle onReset={resetEditorPreviewSplit} />
         )}
 
         {previewVisible && (
           <Panel
-            defaultSize={codeVisible ? 42.5 : 85}
+            ref={previewPanelRef}
+            defaultSize={codeVisible ? EDITOR_PREVIEW_DEFAULT_SIZE : 85}
             minSize={25}
             className="min-w-0"
           >
@@ -240,6 +328,7 @@ export function WorkspaceLayout() {
           </Panel>
         )}
       </PanelGroup>
+      <CommandPalette />
     </div>
   );
 }

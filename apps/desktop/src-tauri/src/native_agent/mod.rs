@@ -15,6 +15,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -34,18 +35,25 @@ fn is_continue_nudge(m: &Value) -> bool {
 
 const SYSTEM_RULES: &str = concat!(
     "You are DevPrism's writing assistant, working INSIDE the user's project on their machine. ",
-    "You have tools: Read, Write, Edit, LS, Grep, Glob, Bash. To get oriented, run LS with depth 2-3 for a ",
+    "You have tools: Read, Write, Edit, MultiEdit, LS, Grep, Glob, Bash, Compile, AskUser. To get oriented, run LS with depth 2-3 for a ",
     "directory tree, Glob to find files by name (e.g. *.tex), and Grep to find text inside files. Pass Grep a ",
     "context value (e.g. 3) to see the lines around each match, then Read that file with offset/limit to pull ",
     "just that region before editing. Do not ask the user for file contents you can read yourself.\n",
     "Rules:\n",
     "1. PLAN, then act in small steps. Read a file (the relevant slice is enough) before editing it.\n",
-    "2. Prefer Edit (a unique old_string -> new_string) over rewriting whole files with Write.\n",
-    "3. For LaTeX: keep the preamble/structure intact; DevPrism auto-compiles on save.\n",
+    "2. Prefer Edit (a unique old_string -> new_string) over rewriting whole files with Write. For several ",
+    "edits to ONE file, use MultiEdit (a list of edits applied atomically) instead of repeated Edit calls.\n",
+    "3. For LaTeX: keep the preamble/structure intact; use Compile after substantive edits — it returns ",
+    "structured errors (file, line, message). DevPrism also auto-compiles on save.\n",
     "4. Python: a project .venv is auto-activated; use Bash with `uv run python ...`.\n",
     "5. PROJECT CONTEXT & AUTONOMY: first read any instruction/master/profile files listed below ",
     "and consult the project map and installed skills; do not ask for details that are already there. ",
-    "Keep going until the task is complete, then give a short summary."
+    "Keep going until the task is complete, then give a short summary.\n",
+    "6. AskUser: only when you are genuinely blocked on a decision you cannot resolve from the ",
+    "project files or the conversation (the request is ambiguous between materially different ",
+    "outcomes), call AskUser with ONE short question and up to 4 answer options, then continue ",
+    "using the reply. Never ask for anything you can look up with the other tools, and prefer ",
+    "a sensible default over asking."
 );
 
 /// Longest selection echoed into the prompt verbatim; beyond this it's truncated
@@ -231,6 +239,103 @@ fn cancels() -> &'static Mutex<HashMap<String, CancelHandle>> {
     C.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+// ─── Pending AskUser answers (per question) ───
+//
+// Mirrors the cancel registry above: an AskUser tool call parks the agent loop
+// on a Notify until `answer_native_agent_question` fills the slot (or the turn
+// is cancelled / the wait times out). Keys are the tool_use ids already shown
+// to the UI (`native_{tab}_{iter}_{idx}`), so the chat widget's reply resolves
+// exactly the question that was asked.
+
+/// How long an AskUser call waits for the user before giving up gracefully.
+const ASK_USER_TIMEOUT_SECS: u64 = 10 * 60;
+
+struct PendingAnswer {
+    slot: Arc<Mutex<Option<String>>>,
+    notify: Arc<Notify>,
+}
+
+fn pending_answers() -> &'static Mutex<HashMap<String, PendingAnswer>> {
+    static P: OnceLock<Mutex<HashMap<String, PendingAnswer>>> = OnceLock::new();
+    P.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn register_pending_answer(request_id: &str) {
+    if let Ok(mut g) = pending_answers().lock() {
+        g.insert(
+            request_id.to_string(),
+            PendingAnswer {
+                slot: Arc::new(Mutex::new(None)),
+                notify: Arc::new(Notify::new()),
+            },
+        );
+    }
+}
+
+fn remove_pending_answer(request_id: &str) {
+    if let Ok(mut g) = pending_answers().lock() {
+        g.remove(request_id);
+    }
+}
+
+/// Drop any pending-answer entries left over from a tab's turn: cancel and
+/// error paths can exit the tool round before an AskUser wait consumes its
+/// entry, and a leaked entry would let a stale widget "answer" a dead turn.
+fn sweep_pending_answers(tab_id: &str) {
+    let prefix = format!("native_{tab_id}_");
+    if let Ok(mut g) = pending_answers().lock() {
+        g.retain(|k, _| !k.starts_with(&prefix));
+    }
+}
+
+/// Wait for the user's reply to a pending AskUser question. Resolves to
+/// Some(answer) when answered, None on timeout (or a missing entry).
+/// Cancellation is raced by the caller's tokio::select!.
+async fn wait_for_answer(request_id: &str) -> Option<String> {
+    let (slot, notify) = {
+        let guard = pending_answers().lock().ok()?;
+        let p = guard.get(request_id)?;
+        (p.slot.clone(), p.notify.clone())
+    };
+    let answered = async move {
+        loop {
+            if let Some(a) = slot.lock().ok().and_then(|mut s| s.take()) {
+                return a;
+            }
+            // `notify_one` in the answer command stores a permit, so an answer
+            // that lands between the check above and this await is not lost.
+            notify.notified().await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(ASK_USER_TIMEOUT_SECS), answered)
+        .await
+        .ok()
+}
+
+/// Deliver the user's reply to a pending AskUser question (called by the chat
+/// widget). Errors when the question is no longer pending — already answered,
+/// timed out, or the run was stopped.
+#[tauri::command]
+pub fn answer_native_agent_question(request_id: String, answer: String) -> Result<(), String> {
+    let handle = pending_answers()
+        .lock()
+        .ok()
+        .and_then(|g| g.get(&request_id).map(|p| (p.slot.clone(), p.notify.clone())));
+    match handle {
+        Some((slot, notify)) => {
+            if let Ok(mut s) = slot.lock() {
+                *s = Some(answer);
+            }
+            notify.notify_one();
+            Ok(())
+        }
+        None => Err(
+            "No pending question with this id — it may have been answered already, timed out, or the run was stopped."
+                .into(),
+        ),
+    }
+}
+
 /// Drop any trailing, incomplete turn so the persisted history always ends at a
 /// clean boundary (a user message or an assistant reply with no pending tools).
 /// A no-op on normal completion; matters when a turn is cancelled mid tool-loop.
@@ -309,19 +414,28 @@ fn save_history(tab_id: &str, mut history: Vec<Value>) {
     }
 }
 
+struct CompactionResult {
+    total_bytes: usize,
+    dropped: Vec<String>,
+}
+
 /// Keep the in-turn prompt from blowing past the budget by stubbing out the
 /// OLDEST large tool results. Preserves `messages[0]` (the system rules) and the
 /// most recent messages (the tool output the model is currently reasoning about)
-/// so only stale, bulky results are shed. Mutates in place and returns the
-/// resulting serialized byte size; a no-op (but still measured) when under budget.
-fn compact_tool_results(messages: &mut Value, budget_bytes: usize) -> usize {
+/// so only stale, bulky results are shed. Mutates in place and returns what was
+/// shed so the UI can surface it.
+fn compact_tool_results(messages: &mut Value, budget_bytes: usize) -> CompactionResult {
     let arr = match messages.as_array_mut() {
         Some(a) => a,
-        None => return 0,
+        None => return CompactionResult {
+            total_bytes: 0,
+            dropped: Vec::new(),
+        },
     };
+    let mut dropped: Vec<String> = Vec::new();
     let mut total: usize = arr.iter().map(|m| m.to_string().len()).sum();
     if total <= budget_bytes {
-        return total;
+        return CompactionResult { total_bytes: total, dropped };
     }
     let mut over = total - budget_bytes;
     // Walk oldest -> newest, skipping the system message (index 0) and stopping
@@ -344,6 +458,9 @@ fn compact_tool_results(messages: &mut Value, budget_bytes: usize) -> usize {
                 obj.remove("images");
             }
             let saved = before_len.saturating_sub(arr[i].to_string().len());
+            if saved > 0 {
+                dropped.push("image attachment".to_string());
+            }
             over = over.saturating_sub(saved);
             total -= saved.min(total);
             continue;
@@ -363,12 +480,49 @@ fn compact_tool_results(messages: &mut Value, budget_bytes: usize) -> usize {
             if stub.len() < old {
                 arr[i]["content"] = json!(stub);
                 let saved = old - stub.len();
+                dropped.push(format!("{name} result"));
                 over = over.saturating_sub(saved);
                 total -= saved;
             }
         }
     }
-    total
+    CompactionResult {
+        total_bytes: total,
+        dropped,
+    }
+}
+
+fn emit_context_truncation(
+    window: &WebviewWindow,
+    tab_id: &str,
+    dropped: &[String],
+    source: &str,
+) {
+    if dropped.is_empty() {
+        return;
+    }
+    let unique: Vec<String> = dropped
+        .iter()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let list = unique.join(", ");
+    emit_msg(
+        window,
+        tab_id,
+        &json!({
+            "type": "assistant",
+            "subtype": "context_truncation",
+            "contextDropped": unique,
+            "message": { "content": [{
+                "type": "text",
+                "text": format!(
+                    "_Context trimmed ({source}): {list}. Older details may need to be re-read._"
+                ),
+            }]}
+        }),
+    );
 }
 
 /// Drop base64 image payloads from user messages in place. The model already
@@ -464,6 +618,8 @@ pub async fn run_native_agent(
     // Optional Ollama sampling overrides (default num_ctx=8192, temperature=0.4).
     num_ctx: Option<u32>,
     temperature: Option<f32>,
+    // How long Ollama keeps the model resident between turns (default "10m").
+    keep_alive: Option<String>,
     // Project-relative path of the file the user currently has open in the editor,
     // so "fix this paragraph" / "edit this file" resolves without them naming it.
     active_file: Option<String>,
@@ -475,6 +631,10 @@ pub async fn run_native_agent(
     selection_start_line: Option<u32>,
     selection_end_line: Option<u32>,
     personalization_prompt: Option<String>,
+    // Last-compile status block assembled on the frontend (success/failure, target file).
+    compile_state_prompt: Option<String>,
+    // When true (or auto-detected), run without tools — chat-only completion.
+    chat_only: Option<bool>,
 ) -> Result<(), String> {
     let cancel = Arc::new(AtomicBool::new(false));
     let notify = Arc::new(Notify::new());
@@ -489,7 +649,7 @@ pub async fn run_native_agent(
             Some(m) => m,
             None => {
                 let msg = format!(
-                    "No Ollama model is available at {}. Start Ollama and run `ollama pull llama3` (or another model).",
+                    "[E_NO_MODEL] No Ollama model is available at {}. Start Ollama and run `ollama pull llama3` (or another model).",
                     ollama::native_base(&base)
                 );
                 emit_result(&window, &tab_id, false, &msg);
@@ -520,8 +680,8 @@ pub async fn run_native_agent(
         Err(_) => false,
     };
     if already_running {
-        let msg =
-            "A task is already running in this tab. Stop it before starting another.".to_string();
+        let msg = "[E_ALREADY_RUNNING] A task is already running in this tab. Stop it before starting another."
+            .to_string();
         emit_result(&window, &tab_id, false, &msg);
         finish(&window, &tab_id, false);
         return Err(msg);
@@ -534,23 +694,29 @@ pub async fn run_native_agent(
     let _nap = crate::app_nap::NapActivity::begin("Native agent session");
 
     let project = std::path::Path::new(&project_path);
-    let client = ollama::OllamaClient::new(&base, &model, num_ctx, temperature);
+    let client = ollama::OllamaClient::new(&base, &model, num_ctx, temperature)
+        .with_keep_alive(keep_alive.as_deref());
 
-    // Preflight: if the model definitively lacks tool-calling (which the agent
-    // requires), fail now with clear guidance instead of mid-turn after the first
-    // request. `None` (unknown capabilities) proceeds and lets the request decide.
-    if client.supports_tools().await == Some(false) {
-        let msg = format!(
-            "The model '{}' does not support tool-calling, which the agent requires. \
-             Pick a tool-capable model (e.g. llama3.1, qwen2.5, mistral-nemo) in Settings.",
-            model
+    // Preflight: when the model definitively lacks tool-calling, fall back to
+    // chat-only mode instead of failing mid-turn. `None` (unknown) keeps tools
+    // enabled and lets the request decide.
+    let mut chat_only = chat_only.unwrap_or(false);
+    if !chat_only && client.supports_tools().await == Some(false) {
+        chat_only = true;
+        emit_msg(
+            &window,
+            &tab_id,
+            &json!({
+                "type": "assistant",
+                "message": { "content": [{
+                    "type": "text",
+                    "text": format!(
+                        "_Chat-only mode: the model '{}' does not support tool calling, so file edits are unavailable in this tab. Pick a tools-capable model (e.g. llama3.2, qwen2.5, mistral-nemo) for agent edits._",
+                        model
+                    ),
+                }]}
+            }),
         );
-        emit_result(&window, &tab_id, false, &msg);
-        if let Ok(mut g) = cancels().lock() {
-            g.remove(&tab_id);
-        }
-        finish(&window, &tab_id, false);
-        return Err(msg);
     }
 
     // If images were attached but the model definitively can't see them, drop them
@@ -579,10 +745,25 @@ pub async fn run_native_agent(
 
     let mut system = String::from(SYSTEM_RULES);
     system.push_str(&crate::project_context::build_project_context_prompt(project));
+    if system.contains("[context truncated to fit]") {
+        emit_context_truncation(
+            &window,
+            &tab_id,
+            &["project context files".to_string()],
+            "project context",
+        );
+    }
     system.push_str(&crate::personalization::build_personalization_prompt());
     if let Some(ref p) = personalization_prompt {
         system.push_str("\n\n");
         system.push_str(p);
+    }
+    if let Some(ref p) = compile_state_prompt {
+        let block = p.trim();
+        if !block.is_empty() {
+            system.push_str("\n\n");
+            system.push_str(block);
+        }
     }
     if let Some(rel) = normalize_rel(active_file.as_deref()) {
         let sel_lines = selection_start_line.zip(selection_end_line);
@@ -627,7 +808,11 @@ pub async fn run_native_agent(
         }
         arr.push(user_msg);
     }
-    let tools = tools::tool_schemas();
+    let tools = if chat_only {
+        json!([])
+    } else {
+        tools::tool_schemas()
+    };
 
     // Tell the UI a stream started (session id == tab id).
     emit_msg(
@@ -677,7 +862,16 @@ pub async fn run_native_agent(
         // Shed the oldest bulky tool results so a couple of large Reads can't push
         // the prompt past 80% of num_ctx (which would crowd out the system rules).
         // The returned byte size is the actual prompt we send this round.
-        let sent_bytes = compact_tool_results(&mut messages, ctx_budget);
+        let compaction = compact_tool_results(&mut messages, ctx_budget);
+        let sent_bytes = compaction.total_bytes;
+        if !compaction.dropped.is_empty() {
+            emit_context_truncation(
+                &window,
+                &tab_id,
+                &compaction.dropped,
+                "tool results",
+            );
+        }
 
         // Run the request, but abort it immediately if the user hits stop.
         // Text fragments stream straight to the UI as `streaming_delta` blocks
@@ -737,6 +931,14 @@ pub async fn run_native_agent(
                 "input": tc.args,
             }));
         }
+        // Pre-register the answer slot for any AskUser call BEFORE its tool_use
+        // block reaches the UI, so an answer submitted while an earlier tool in
+        // the same round is still running can never miss the registry.
+        for (idx, tc) in turn.tool_calls.iter().enumerate() {
+            if tc.name == "AskUser" {
+                register_pending_answer(&call_ids[idx]);
+            }
+        }
         // Carry the last good prompt-token count; some Ollama versions report 0 on
         // a fully-cached prompt, which would otherwise zero the usage display.
         if turn.prompt_tokens > 0 {
@@ -759,7 +961,7 @@ pub async fn run_native_agent(
                 "type": "assistant",
                 "message": {
                     "content": content_blocks,
-                    "usage": { "input_tokens": 0, "output_tokens": turn.eval_tokens },
+                    "usage": { "input_tokens": turn.prompt_tokens, "output_tokens": turn.eval_tokens },
                 }
             });
             // When text was streamed, finalize as `streaming_final` so the store
@@ -787,6 +989,9 @@ pub async fn run_native_agent(
                 &tab_id,
                 &json!({
                     "type": "assistant",
+                    // Structured marker so the UI can detect compaction without
+                    // pattern-matching the human-readable text below.
+                    "subtype": "context_compaction",
                     "message": { "content": [{
                         "type": "text",
                         "text": format!(
@@ -850,7 +1055,30 @@ pub async fn run_native_agent(
             // (e.g. a flaky Bash) can be retried instead of being told to reuse
             // the earlier (failed) result.
             let sig = format!("{}|{}", tc.name.to_lowercase(), tc.args);
-            let (result, is_error) = if seen_calls.contains(&sig) {
+            let (result, is_error) = if tc.name == "AskUser" {
+                // AskUser executes HERE, not in tools::execute: the question was
+                // already shown to the user as this call's tool_use block, and the
+                // loop now parks until the chat widget replies through the
+                // `answer_native_agent_question` command (or stop / the timeout
+                // ends the wait). Never cached in seen_calls — re-asking the same
+                // question later is a legitimate call.
+                let answer = tokio::select! {
+                    a = wait_for_answer(id) => a,
+                    _ = notify.notified() => {
+                        remove_pending_answer(id);
+                        emit_cancelled_tool_results(&window, &tab_id, &call_ids[idx..]);
+                        success = false;
+                        break 'outer;
+                    }
+                };
+                remove_pending_answer(id);
+                match answer {
+                    Some(a) => (format!("The user answered: {a}"), false),
+                    // Timed out: a graceful non-error result so the model can
+                    // proceed with its best judgment instead of failing the turn.
+                    None => ("The user did not answer.".to_string(), false),
+                }
+            } else if seen_calls.contains(&sig) {
                 (
                     "(skipped: this exact tool call already succeeded with no changes since — use the earlier result)"
                         .to_string(),
@@ -876,7 +1104,7 @@ pub async fn run_native_agent(
             // A successful mutation changes the tree, so we'll allow Read/LS/Grep/
             // Glob to re-run and see fresh state (e.g. Read after Edit, Bash
             // re-build) — but only once the whole round is done (see below).
-            if !is_error && matches!(tc.name.as_str(), "Write" | "Edit" | "Bash") {
+            if !is_error && matches!(tc.name.as_str(), "Write" | "Edit" | "MultiEdit" | "Bash") {
                 mutated = true;
             }
 
@@ -929,6 +1157,9 @@ pub async fn run_native_agent(
         save_history(&tab_id, arr.clone());
     }
 
+    // Drop any answer slots this turn registered but never consumed (cancel or
+    // error paths can exit mid-round), so a stale widget can't answer a dead turn.
+    sweep_pending_answers(&tab_id);
     if let Ok(mut guard) = cancels().lock() {
         guard.remove(&tab_id);
     }
@@ -1019,7 +1250,7 @@ async fn complete_chat_messages(
             Some(m) => m,
             None => {
                 return Err(format!(
-                    "No Ollama model is available at {}. Start Ollama and pull a chat model.",
+                    "[E_NO_MODEL] No Ollama model is available at {}. Start Ollama and pull a chat model.",
                     ollama::native_base(&base)
                 ));
             }
@@ -1237,7 +1468,7 @@ pub async fn ai_complete_stream(
             Some(m) => m,
             None => {
                 return Err(format!(
-                    "No Ollama model is available at {}. Start Ollama and pull a chat model.",
+                    "[E_NO_MODEL] No Ollama model is available at {}. Start Ollama and pull a chat model.",
                     ollama::native_base(&base)
                 ));
             }
@@ -1273,6 +1504,7 @@ pub async fn ai_caption(
     model: Option<String>,
     base_url: Option<String>,
     num_ctx: Option<u32>,
+    temperature: Option<f32>,
 ) -> Result<String, String> {
     let raw = image_base64.trim();
     if raw.is_empty() {
@@ -1280,6 +1512,9 @@ pub async fn ai_caption(
     }
     // Accept either a bare base64 string or a data: URL (keep the part after the comma).
     let b64 = raw.rsplit(',').next().unwrap_or(raw).trim().to_string();
+    // Captioning wants determinism, so default low; but honor an explicit user
+    // temperature when provided rather than ignoring their setting.
+    let caption_temp = temperature.filter(|&t| (0.0..=2.0).contains(&t)).unwrap_or(0.3);
 
     let base = base_url
         .clone()
@@ -1301,7 +1536,7 @@ pub async fn ai_caption(
     // back to an installed vision-capable model rather than failing outright —
     // the chat model (used everywhere else) is often text-only. `None` (unknown
     // capability) proceeds and lets the request decide.
-    let client = ollama::OllamaClient::new(&base, &resolved_model, num_ctx, Some(0.3));
+    let client = ollama::OllamaClient::new(&base, &resolved_model, num_ctx, Some(caption_temp));
     if client.supports_vision().await == Some(false) {
         match ollama::first_vision_model(&base).await {
             Some(vm) => resolved_model = vm,
@@ -1332,7 +1567,7 @@ pub async fn ai_caption(
         Some(resolved_model),
         Some(base),
         num_ctx,
-        Some(0.3),
+        Some(caption_temp),
         None,
         false,
     )
@@ -1368,6 +1603,30 @@ pub async fn list_ollama_models(
 #[tauri::command]
 pub async fn ollama_status(base_url: Option<String>) -> ollama::OllamaStatus {
     ollama::server_status(base_url).await
+}
+
+/// List models currently resident in memory on the Ollama server (`/api/ps`).
+#[tauri::command]
+pub async fn ollama_ps(
+    base_url: Option<String>,
+) -> Result<Vec<ollama::OllamaRunningModel>, String> {
+    ollama::running_models(base_url).await
+}
+
+/// Delete an installed Ollama model (`/api/delete`).
+#[tauri::command]
+pub async fn delete_ollama_model(base_url: Option<String>, model: String) -> Result<(), String> {
+    ollama::delete_model(base_url, model).await
+}
+
+/// Copy an installed Ollama model to a new name (`/api/copy`).
+#[tauri::command]
+pub async fn copy_ollama_model(
+    base_url: Option<String>,
+    source: String,
+    destination: String,
+) -> Result<(), String> {
+    ollama::copy_model(base_url, source, destination).await
 }
 
 /// Tool/vision capabilities for one installed Ollama model.
@@ -1449,7 +1708,7 @@ mod tests {
         ]);
         let before: usize = msgs.as_array().unwrap().iter().map(|m| m.to_string().len()).sum();
 
-        compact_tool_results(&mut msgs, 4 * 1024);
+        let result = compact_tool_results(&mut msgs, 4 * 1024);
         let arr = msgs.as_array().unwrap();
 
         // System rules preserved, oldest bulky tool result elided, recent one kept.
@@ -1458,6 +1717,7 @@ mod tests {
         assert_eq!(arr[5]["content"], json!("recent small result"));
         let after: usize = arr.iter().map(|m| m.to_string().len()).sum();
         assert!(after < before);
+        assert!(result.dropped.contains(&"Read result".to_string()));
     }
 
     #[test]
@@ -1488,7 +1748,7 @@ mod tests {
         ]);
         let before: usize = msgs.as_array().unwrap().iter().map(|m| m.to_string().len()).sum();
 
-        let after_size = compact_tool_results(&mut msgs, 4 * 1024);
+        let result = compact_tool_results(&mut msgs, 4 * 1024);
         let arr = msgs.as_array().unwrap();
 
         // System rules preserved; the oversized base64 image was shed.
@@ -1497,7 +1757,8 @@ mod tests {
         assert_eq!(arr[1]["content"], json!("describe"));
         let after: usize = arr.iter().map(|m| m.to_string().len()).sum();
         assert!(after < before);
-        assert_eq!(after, after_size); // returned size matches the real size
+        assert_eq!(after, result.total_bytes); // returned size matches the real size
+        assert!(result.dropped.contains(&"image attachment".to_string()));
     }
 
     #[test]
@@ -1520,6 +1781,61 @@ mod tests {
         assert!(SYSTEM_RULES.contains("offset"));
         assert!(SYSTEM_RULES.contains("context"));
         assert!(SYSTEM_RULES.contains("depth"));
+        // The atomic multi-edit tool must keep being advertised in the prompt
+        // (weak local models lean on the prompt, not just the tool schemas).
+        assert!(SYSTEM_RULES.contains("MultiEdit"));
+        // AskUser must keep being advertised too, with its "only when blocked"
+        // guardrail (the schema description alone is not enough for weak models).
+        assert!(SYSTEM_RULES.contains("AskUser"));
+        assert!(SYSTEM_RULES.contains("genuinely blocked"));
+    }
+
+    #[test]
+    fn answer_registry_roundtrip_and_sweep() {
+        let id = "native_ask-reg-tab_0_0";
+        register_pending_answer(id);
+
+        // The command resolves a registered question by filling its slot...
+        answer_native_agent_question(id.to_string(), "Option B".to_string()).unwrap();
+        let slot = pending_answers()
+            .lock()
+            .unwrap()
+            .get(id)
+            .map(|p| p.slot.clone())
+            .unwrap();
+        assert_eq!(slot.lock().unwrap().as_deref(), Some("Option B"));
+
+        // ...and rejects an id that is not pending.
+        assert!(answer_native_agent_question("nope".to_string(), "x".to_string()).is_err());
+
+        // The sweep removes only the given tab's entries.
+        register_pending_answer("native_ask-other-tab_0_0");
+        sweep_pending_answers("ask-reg-tab");
+        {
+            let g = pending_answers().lock().unwrap();
+            assert!(!g.contains_key(id));
+            assert!(g.contains_key("native_ask-other-tab_0_0"));
+        }
+        sweep_pending_answers("ask-other-tab");
+        assert!(answer_native_agent_question(id.to_string(), "late".to_string()).is_err());
+    }
+
+    #[tokio::test]
+    async fn wait_for_answer_resolves_answer_sent_before_await() {
+        // notify_one stores a permit / the slot is pre-filled, so an answer that
+        // arrives before the loop starts awaiting is not lost.
+        let id = "native_ask-wait-tab_0_0";
+        register_pending_answer(id);
+        answer_native_agent_question(id.to_string(), "yes".to_string()).unwrap();
+        assert_eq!(wait_for_answer(id).await.as_deref(), Some("yes"));
+        remove_pending_answer(id);
+    }
+
+    #[tokio::test]
+    async fn wait_for_answer_missing_entry_is_none() {
+        // A missing entry resolves immediately to None (graceful "no answer"),
+        // never hangs the agent loop.
+        assert!(wait_for_answer("native_ask-missing-tab_0_0").await.is_none());
     }
 
     #[test]

@@ -8,8 +8,6 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   SparklesIcon,
-  LoaderIcon,
-  ArrowLeftIcon,
   FolderOpenIcon,
   PaperclipIcon,
   XIcon,
@@ -19,6 +17,9 @@ import {
   MapPinIcon,
   Loader2Icon,
 } from "lucide-react";
+import { Skeleton } from "@/components/ui/skeleton";
+import { InlineBanner } from "@/components/ui/inline-banner";
+import { useSetupFlowStore } from "@/stores/setup-flow-store";
 import {
   Dialog,
   DialogContent,
@@ -54,6 +55,7 @@ import {
 import { getProjectNameError, normalizeProjectName } from "@/lib/project-name";
 import { useSettingsStore } from "@/stores/settings-store";
 import { canUseAiAssist, suggestProjectName } from "@/lib/ai-assist";
+import { WizardSetupChecklist } from "@/components/wizard-setup-checklist";
 
 const log = createLogger("template-preview");
 
@@ -61,16 +63,20 @@ const log = createLogger("template-preview");
 
 // ─── Component ───
 
-type ModalStep = "preview" | "details";
-
-export function TemplatePreview() {
+// Single-surface creation dialog: the template preview and the project
+// details form (name, purpose, reference files, location) are shown side by
+// side, so picking a template and creating the project is one continuous
+// step instead of a stacked preview → details sequence.
+export function TemplatePreview({
+  onOpenSettings,
+}: {
+  onOpenSettings?: () => void;
+} = {}) {
   const previewTemplateId = useTemplateStore((s) => s.previewTemplateId);
   const closePreview = useTemplateStore((s) => s.closePreview);
   const template = previewTemplateId
     ? getTemplateById(previewTemplateId)
     : null;
-
-  const [modalStep, setModalStep] = useState<ModalStep>("preview");
 
   // ── PDF preview state ──
   const [numPages, setNumPages] = useState(0);
@@ -91,7 +97,9 @@ export function TemplatePreview() {
   const [projectName, setProjectName] = useState("");
   const [projectNameError, setProjectNameError] = useState("");
   const [isCreating, setIsCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
+  const focusReturnRef = useRef<HTMLElement | null>(null);
   const [refFilesOpen, setRefFilesOpen] = useState(false);
   const [locationOpen, setLocationOpen] = useState(false);
   const projectNameRef = useRef<HTMLInputElement>(null);
@@ -117,7 +125,6 @@ export function TemplatePreview() {
     (open: boolean) => {
       if (!open) {
         closePreview();
-        setModalStep("preview");
         setCurrentPage(1);
         setNumPages(0);
         setIsLandscape(false);
@@ -136,15 +143,17 @@ export function TemplatePreview() {
   // Reset form when a new template is previewed
   useEffect(() => {
     if (previewTemplateId) {
-      setModalStep("preview");
       setPurpose("");
       setAttachments([]);
       setProjectName("");
       setProjectNameError("");
+      setCreateError(null);
       setRefFilesOpen(false);
       setLocationOpen(false);
       nameTouchedRef.current = false;
       setNameSuggesting(false);
+      const el = document.activeElement as HTMLElement | null;
+      if (el && el !== document.body) focusReturnRef.current = el;
     }
   }, [previewTemplateId]);
 
@@ -156,7 +165,7 @@ export function TemplatePreview() {
     }
 
     if (!aiNaming || !canUseAiAssist()) return;
-    if (modalStep !== "details") return;
+    if (!previewTemplateId) return;
     if (nameTouchedRef.current) return;
 
     const goal = purpose.trim();
@@ -188,7 +197,7 @@ export function TemplatePreview() {
         clearTimeout(nameSuggestDebounceRef.current);
       }
     };
-  }, [purpose, aiNaming, modalStep]);
+  }, [purpose, aiNaming, previewTemplateId]);
 
   // Default project folder
   useEffect(() => {
@@ -208,13 +217,13 @@ export function TemplatePreview() {
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Auto-focus textarea in details step
+  // Auto-focus the project name field when the dialog opens
   useEffect(() => {
-    if (modalStep === "details") {
+    if (previewTemplateId) {
       const timer = setTimeout(() => projectNameRef.current?.focus(), 150);
       return () => clearTimeout(timer);
     }
-  }, [modalStep]);
+  }, [previewTemplateId]);
 
   // ── PDF loading ──
   useEffect(() => {
@@ -332,9 +341,19 @@ export function TemplatePreview() {
   );
 
   useEffect(() => {
-    if (!previewTemplateId || modalStep !== "preview") return;
+    if (!previewTemplateId) return;
 
     function handleKeyDown(e: KeyboardEvent) {
+      // Don't hijack arrow keys while the user is typing in the form pane.
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
       if (e.key === "ArrowLeft") {
         e.preventDefault();
         goToPrevPage();
@@ -345,11 +364,11 @@ export function TemplatePreview() {
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [previewTemplateId, modalStep, goToPrevPage, goToNextPage]);
+  }, [previewTemplateId, goToPrevPage, goToNextPage]);
 
   // ── Drag-drop for reference files ──
   useEffect(() => {
-    if (modalStep !== "details") return;
+    if (!previewTemplateId) return;
     let unlisten: (() => void) | undefined;
     let cancelled = false;
 
@@ -383,7 +402,7 @@ export function TemplatePreview() {
       cancelled = true;
       unlisten?.();
     };
-  }, [modalStep]);
+  }, [previewTemplateId]);
 
   // ── File handlers ──
   const handleAddAttachments = useCallback(async () => {
@@ -425,6 +444,7 @@ export function TemplatePreview() {
       return;
     }
     setIsCreating(true);
+    setCreateError(null);
 
     try {
       const projectPath = await join(projectFolder, name);
@@ -481,6 +501,7 @@ export function TemplatePreview() {
       const setup = await setupNewProjectInSpace(projectPath);
       addRecentProject(projectPath);
       await openProject(projectPath);
+      useSetupFlowStore.getState().completeOnboarding();
       const toastMsg = formatNewProjectSetupToast(setup, `Created "${name}"`);
       toast.success(toastMsg);
 
@@ -488,9 +509,9 @@ export function TemplatePreview() {
       closePreview();
     } catch (err) {
       console.error("Failed to create project:", err);
-      toast.error("Failed to create project", {
-        description: err instanceof Error ? err.message : String(err),
-      });
+      setCreateError(
+        err instanceof Error ? err.message : "Could not create the project.",
+      );
     } finally {
       setIsCreating(false);
     }
@@ -502,124 +523,94 @@ export function TemplatePreview() {
 
   if (!template) return null;
 
-  // ── Modal width depends on step ──
-  const modalWidth =
-    modalStep === "preview"
-      ? isLandscape
-        ? "w-[min(72rem,calc(100vw-4rem))]"
-        : "w-[min(48rem,calc(100vw-6rem))]"
-      : "w-[min(32rem,calc(100vw-4rem))]";
+  // ── Modal width: wide two-pane layout (preview beside details form) ──
+  const modalWidth = isLandscape
+    ? "w-[min(80rem,calc(100vw-3rem))]"
+    : "w-[min(66rem,calc(100vw-4rem))]";
 
   return (
     <Dialog open={!!previewTemplateId} onOpenChange={handleOpenChange}>
       <DialogContent
-        showCloseButton={false}
-        className={`flex max-w-none flex-col gap-0 overflow-hidden p-0 transition-[width] duration-300 sm:max-w-none ${modalWidth} ${modalStep === "preview" ? "h-[70vh]" : "max-h-[80vh]"}`}
+        className={`flex h-[min(46rem,85vh)] max-w-none flex-col gap-0 overflow-hidden p-0 transition-[width] duration-300 sm:max-w-none ${modalWidth}`}
+        onCloseAutoFocus={(e) => {
+          e.preventDefault();
+          const el = focusReturnRef.current;
+          if (el?.isConnected) el.focus();
+        }}
       >
-        {modalStep === "preview" ? (
-          /* ═══════════════════ PREVIEW STEP ═══════════════════ */
-          <>
-            <DialogHeader className="shrink-0 border-border border-b px-6 py-3">
-              <div className="flex items-center gap-4">
-                <div className="min-w-0 flex-1">
-                  <DialogTitle className="text-sm">{template.name}</DialogTitle>
-                  <DialogDescription className="mt-0.5 truncate text-xs">
-                    {template.description} — {template.documentClass}
-                    {template.packages.length > 0 &&
-                      ` — ${template.packages.length} packages`}
-                  </DialogDescription>
-                </div>
-                <div className="flex shrink-0 items-center gap-2">
-                  <Button
-                    size="sm"
-                    onClick={() => setModalStep("details")}
-                    className="gap-1.5"
-                  >
-                    <SparklesIcon className="size-3.5" />
-                    Use Template
-                  </Button>
-                </div>
-              </div>
-            </DialogHeader>
-
-            <div className="flex flex-1 overflow-hidden">
-              <div className="relative flex flex-1 flex-col">
-                <div
-                  ref={containerRef}
-                  className="flex flex-1 items-center justify-center overflow-hidden bg-muted/30 p-6"
-                >
-                  {loading && (
-                    <div className="flex flex-col items-center gap-2 text-muted-foreground">
-                      <LoaderIcon className="size-5 animate-spin" />
-                      <span className="text-sm">Loading preview...</span>
-                    </div>
-                  )}
-                  {error && (
-                    <div className="flex flex-col items-center gap-2 text-muted-foreground">
-                      <span className="text-sm">Preview not available</span>
-                      <span className="text-xs opacity-60">
-                        Run `pnpm generate-previews` to generate
-                      </span>
-                    </div>
-                  )}
-                  {!loading && !error && numPages > 0 && (
-                    <canvas ref={canvasRef} className="shadow-xl" />
-                  )}
-                </div>
-
-                {numPages > 0 && (
-                  <div className="flex shrink-0 items-center justify-center gap-3 border-border border-t bg-background py-2.5">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="size-7"
-                      onClick={goToPrevPage}
-                      disabled={currentPage <= 1}
-                    >
-                      <ChevronLeftIcon className="size-4" />
-                    </Button>
-                    <span className="min-w-16 text-center text-muted-foreground text-xs tabular-nums">
-                      {numPages > 1 ? `${currentPage} / ${numPages}` : "1 page"}
-                    </span>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="size-7"
-                      onClick={goToNextPage}
-                      disabled={currentPage >= numPages}
-                    >
-                      <ChevronRightIcon className="size-4" />
-                    </Button>
-                  </div>
-                )}
-              </div>
+        <DialogHeader className="shrink-0 border-border border-b px-6 py-3">
+          <div className="flex items-center gap-4 pr-8">
+            <div className="min-w-0 flex-1">
+              <DialogTitle className="text-sm">{template.name}</DialogTitle>
+              <DialogDescription className="mt-0.5 truncate text-xs">
+                {template.description} — {template.documentClass}
+                {template.packages.length > 0 &&
+                  ` — ${template.packages.length} packages`}
+              </DialogDescription>
             </div>
-          </>
-        ) : (
-          /* ═══════════════════ DETAILS STEP ═══════════════════ */
-          <>
-            {/* Header */}
-            <DialogHeader className="shrink-0 border-border/60 border-b px-5 py-3">
-              <div className="flex items-center gap-3">
+          </div>
+        </DialogHeader>
+
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+          {/* ── Left pane: template preview ── */}
+          <div className="relative flex min-w-0 flex-1 flex-col border-border border-r">
+            <div
+              ref={containerRef}
+              className="flex flex-1 items-center justify-center overflow-hidden bg-muted/30 p-6"
+            >
+              {loading && (
+                <div className="flex w-full max-w-md flex-col gap-3 p-6">
+                  <Skeleton className="aspect-[8.5/11] w-full rounded-md" />
+                  <Skeleton className="h-3 w-2/3" />
+                  <Skeleton className="h-3 w-1/2" />
+                </div>
+              )}
+              {error && (
+                <div className="flex flex-col items-center gap-2 text-muted-foreground">
+                  <span className="text-sm">Preview not available</span>
+                  <span className="text-xs opacity-60">
+                    This template has no preview yet — you can still create a
+                    project from it.
+                  </span>
+                </div>
+              )}
+              {!loading && !error && numPages > 0 && (
+                <canvas ref={canvasRef} className="shadow-xl" />
+              )}
+            </div>
+
+            {numPages > 0 && (
+              <div className="flex shrink-0 items-center justify-center gap-3 border-border border-t bg-background py-2.5">
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="size-7 shrink-0 rounded-lg"
-                  onClick={() => setModalStep("preview")}
+                  className="size-7"
+                  onClick={goToPrevPage}
+                  disabled={currentPage <= 1}
+                  aria-label="Previous page"
                 >
-                  <ArrowLeftIcon className="size-4" />
+                  <ChevronLeftIcon className="size-4" />
                 </Button>
-                <div className="min-w-0 flex-1">
-                  <DialogTitle className="text-sm">{template.name}</DialogTitle>
-                  <DialogDescription className="mt-0.5 truncate text-xs">
-                    {template.description}
-                  </DialogDescription>
-                </div>
+                <span className="min-w-16 text-center text-muted-foreground text-xs tabular-nums">
+                  {numPages > 1 ? `${currentPage} / ${numPages}` : "1 page"}
+                </span>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-7"
+                  onClick={goToNextPage}
+                  disabled={currentPage >= numPages}
+                  aria-label="Next page"
+                >
+                  <ChevronRightIcon className="size-4" />
+                </Button>
               </div>
-            </DialogHeader>
+            )}
+          </div>
 
-            {/* Form content */}
-            <div className="flex-1 overflow-y-auto">
+          {/* ── Right pane: project details form ── */}
+          <div className="flex w-[23rem] shrink-0 flex-col">
+            <div className="min-h-0 flex-1 overflow-y-auto">
               <div className="space-y-4 p-5">
                 <div className="space-y-2">
                   <div>
@@ -647,7 +638,7 @@ export function TemplatePreview() {
                         getProjectNameError(projectName) ?? "",
                       )
                     }
-                    className="rounded-xl border-border/60 bg-card/30 text-sm focus-visible:bg-card/50"
+                    className="text-sm"
                   />
                   {projectNameError && (
                     <p className="text-destructive text-xs">
@@ -672,17 +663,28 @@ export function TemplatePreview() {
                     value={purpose}
                     onChange={(e) => setPurpose(e.target.value)}
                     rows={3}
-                    className="resize-none rounded-xl border-border/60 bg-card/30 text-sm leading-relaxed placeholder:text-muted-foreground/50 focus-visible:bg-card/50"
+                    className="resize-none text-sm leading-relaxed placeholder:text-muted-foreground/50"
                   />
                 </div>
+
+                {purpose.trim() && canUseAiAssist() && (
+                  <WizardSetupChecklist
+                    onOpenSettings={() => {
+                      closePreview();
+                      onOpenSettings?.();
+                    }}
+                  />
+                )}
 
                 {/* Collapsible sections */}
                 <div className="divide-y divide-border/40 overflow-hidden rounded-xl border border-border/60 bg-card/30">
                   {/* Reference files */}
                   <div>
                     <button
+                      type="button"
                       onClick={() => setRefFilesOpen(!refFilesOpen)}
-                      className="flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-muted/30"
+                      aria-expanded={refFilesOpen}
+                      className="flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-muted/30 focus-visible:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
                     >
                       <div className="flex size-6 shrink-0 items-center justify-center rounded-md bg-muted/50">
                         <FileTextIcon className="size-3 text-muted-foreground" />
@@ -716,7 +718,8 @@ export function TemplatePreview() {
                                 </span>
                                 <button
                                   onClick={() => handleRemoveAttachment(path)}
-                                  className="flex size-4 shrink-0 items-center justify-center rounded-md text-muted-foreground/50 transition-colors hover:bg-destructive/10 hover:text-destructive"
+                                  aria-label={`Remove ${path.split(/[/\\]/).pop()}`}
+                                  className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground/50 transition-colors hover:bg-destructive/10 hover:text-destructive"
                                 >
                                   <XIcon className="size-3" />
                                 </button>
@@ -762,8 +765,10 @@ export function TemplatePreview() {
                   {/* Project location */}
                   <div>
                     <button
+                      type="button"
                       onClick={() => setLocationOpen(!locationOpen)}
-                      className="flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-muted/30"
+                      aria-expanded={locationOpen}
+                      className="flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-muted/30 focus-visible:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
                     >
                       <div className="flex size-6 shrink-0 items-center justify-center rounded-md bg-muted/50">
                         <MapPinIcon className="size-3 text-muted-foreground" />
@@ -809,7 +814,15 @@ export function TemplatePreview() {
             </div>
 
             {/* Create button — sticky footer */}
-            <div className="shrink-0 border-border/60 border-t px-5 py-4">
+            <div className="shrink-0 space-y-3 border-border/60 border-t px-5 py-4">
+              {createError && (
+                <InlineBanner
+                  kind="error"
+                  title="Could not create project"
+                  message={createError}
+                  onDismiss={() => setCreateError(null)}
+                />
+              )}
               <Button
                 className="w-full gap-2 rounded-xl font-semibold shadow-sm transition-all hover:shadow-md active:scale-[0.99]"
                 size="lg"
@@ -831,8 +844,8 @@ export function TemplatePreview() {
                 )}
               </Button>
             </div>
-          </>
-        )}
+          </div>
+        </div>
       </DialogContent>
     </Dialog>
   );

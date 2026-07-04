@@ -59,7 +59,7 @@ function resetStores() {
     ],
     activeTabId: "tab-default",
     activeProjectPath: "/project",
-    _cancelledByUser: false,
+    _cancelledTabs: new Set(),
   });
   useProposedChangesStore.setState({ changes: [] });
 }

@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Loader2Icon, SparklesIcon } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AlertCircleIcon, Loader2Icon, SparklesIcon } from "lucide-react";
 import { TrackChangesActions } from "@/components/workspace/track-changes-actions";
-import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
 import { useVariantsStore } from "@/stores/variants-store";
 import {
   diffVariant,
@@ -49,30 +49,39 @@ export function VersionCompare({
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [summary, setSummary] = useState<string | null>(null);
+  const [summaryError, setSummaryError] = useState<string | null>(null);
   const [summarizing, setSummarizing] = useState(false);
   const summaryRequestRef = useRef(0);
+  const loadRequestRef = useRef(0);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     if (!target || !ownerRoot) return;
-    let cancelled = false;
+    const requestId = ++loadRequestRef.current;
+    const isCurrent = () => requestId === loadRequestRef.current;
     setLoading(true);
     setError(null);
     setDiffs([]);
     setSelected(null);
     setSummary(null);
+    setSummaryError(null);
     summaryRequestRef.current += 1;
     diffVariant(ownerRoot, target.id)
       .then((result) => {
-        if (cancelled) return;
+        if (!isCurrent()) return;
         setDiffs(result);
         setSelected(result[0]?.filePath ?? null);
       })
-      .catch((err) => !cancelled && setError(String(err)))
-      .finally(() => !cancelled && setLoading(false));
-    return () => {
-      cancelled = true;
-    };
+      .catch((err) => isCurrent() && setError(String(err)))
+      .finally(() => isCurrent() && setLoading(false));
   }, [target, ownerRoot]);
+
+  useEffect(() => {
+    load();
+    return () => {
+      // Invalidate any in-flight request so its callbacks become no-ops.
+      loadRequestRef.current += 1;
+    };
+  }, [load]);
 
   const current = useMemo(
     () => diffs.find((d) => d.filePath === selected) ?? null,
@@ -117,15 +126,14 @@ export function VersionCompare({
     if (!text) return;
     const id = ++summaryRequestRef.current;
     setSummarizing(true);
+    setSummaryError(null);
     void summarizeDiff(text)
       .then((result) => {
         if (id === summaryRequestRef.current) setSummary(result.trim());
       })
       .catch((err) => {
         if (id === summaryRequestRef.current) {
-          toast.error("Couldn't summarize the changes", {
-            description: String(err),
-          });
+          setSummaryError(String(err));
         }
       })
       .finally(() => {
@@ -146,11 +154,27 @@ export function VersionCompare({
         </DialogHeader>
 
         {loading ? (
-          <div className="flex flex-1 items-center justify-center text-muted-foreground">
-            <Loader2Icon className="size-5 animate-spin" />
+          <div className="flex flex-1 flex-col gap-2 py-2">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div
+                key={i}
+                className="h-8 animate-pulse rounded-md bg-muted/50"
+              />
+            ))}
           </div>
         ) : error ? (
-          <p className="py-6 text-center text-destructive text-sm">{error}</p>
+          <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 py-6 text-center">
+            <AlertCircleIcon className="size-6 text-muted-foreground" />
+            <div className="space-y-1">
+              <p className="font-medium text-sm">
+                Couldn't load the comparison
+              </p>
+              <p className="text-muted-foreground text-xs">{error}</p>
+            </div>
+            <Button variant="outline" size="sm" onClick={load}>
+              Retry
+            </Button>
+          </div>
         ) : diffs.length === 0 ? (
           <p className="flex flex-1 items-center justify-center text-muted-foreground text-sm">
             No differences from {masterLabel}.
@@ -191,6 +215,7 @@ export function VersionCompare({
                     type="button"
                     onClick={handleSummarize}
                     disabled={summarizing || combinedDiffText.length === 0}
+                    aria-label="Summarize version changes with AI"
                     className={cn(
                       "inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-background/80 px-2.5 py-1 text-xs transition-colors",
                       "text-muted-foreground hover:border-primary/40 hover:text-foreground",
@@ -204,6 +229,11 @@ export function VersionCompare({
                     )}
                     Summarize changes
                   </button>
+                )}
+                {summaryError && (
+                  <p className="mt-2 rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-1.5 text-destructive text-xs">
+                    {summaryError}
+                  </p>
                 )}
               </div>
             )}
@@ -220,6 +250,7 @@ export function VersionCompare({
                       key={d.filePath}
                       type="button"
                       onClick={() => setSelected(d.filePath)}
+                      aria-label={`View diff for ${d.filePath}`}
                       className={cn(
                         "flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-xs transition-colors",
                         d.filePath === selected
@@ -238,12 +269,12 @@ export function VersionCompare({
                       </span>
                       <span className="shrink-0 text-[10px] text-muted-foreground">
                         {stats.added > 0 && (
-                          <span className="text-emerald-600">
+                          <span className="text-emerald-400">
                             +{stats.added}
                           </span>
                         )}{" "}
                         {stats.removed > 0 && (
-                          <span className="text-red-600">−{stats.removed}</span>
+                          <span className="text-red-400">−{stats.removed}</span>
                         )}
                       </span>
                     </button>
@@ -262,9 +293,9 @@ export function VersionCompare({
                           "flex px-2",
                           row.kind === "word" && "bg-amber-500/10",
                           row.kind === "add" &&
-                            "bg-emerald-500/15 text-emerald-900 dark:text-emerald-200",
+                            "bg-emerald-500/15 text-emerald-200",
                           row.kind === "del" &&
-                            "bg-red-500/15 text-red-900 line-through dark:text-red-200",
+                            "bg-red-500/15 text-red-200 line-through",
                         )}
                       >
                         <span className="w-4 shrink-0 select-none text-muted-foreground">

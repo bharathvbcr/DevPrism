@@ -96,6 +96,8 @@ export function SelectionToolbar({
   return (
     <div
       ref={toolbarRef}
+      role="dialog"
+      aria-label="Edit selection with AI"
       className={cn(
         "absolute z-30 max-h-[min(24rem,60vh)] overflow-y-auto rounded-lg border border-border bg-background shadow-xl",
         resumeBulletAdjust ? "w-96" : "w-72",

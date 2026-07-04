@@ -29,6 +29,7 @@ import {
   Loader2Icon,
 } from "lucide-react";
 import { toast } from "sonner";
+import { showWorkspaceError } from "@/stores/workspace-banner-store";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -67,7 +68,7 @@ export function CommentsHeader() {
       <Button
         variant="ghost"
         size="icon"
-        className="size-5"
+        className="size-8"
         onClick={() => {
           refresh().catch(() => {});
         }}
@@ -177,8 +178,9 @@ export function CommentsPanel() {
           <button
             key={f.id}
             onClick={() => setStatusFilter(f.id)}
+            aria-pressed={statusFilter === f.id}
             className={cn(
-              "rounded px-1.5 py-0.5 font-medium text-[10px] uppercase tracking-wide",
+              "rounded px-1.5 py-0.5 font-medium text-xs uppercase tracking-wide focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring",
               statusFilter === f.id
                 ? "bg-sidebar-accent text-sidebar-accent-foreground"
                 : "text-muted-foreground hover:bg-sidebar-accent/50",
@@ -190,8 +192,9 @@ export function CommentsPanel() {
         <button
           onClick={() => setCurrentFileOnly((v) => !v)}
           title="Toggle filter: only comments on the current file"
+          aria-pressed={currentFileOnly}
           className={cn(
-            "ml-auto rounded px-1.5 py-0.5 font-medium text-[10px] uppercase tracking-wide",
+            "ml-auto rounded px-1.5 py-0.5 font-medium text-xs uppercase tracking-wide focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring",
             currentFileOnly
               ? "bg-sidebar-accent text-sidebar-accent-foreground"
               : "text-muted-foreground hover:bg-sidebar-accent/50",
@@ -230,8 +233,9 @@ export function CommentsPanel() {
                   : "position",
             )
           }
-          className="flex items-center gap-1 rounded px-1.5 py-1 text-[10px] text-muted-foreground uppercase tracking-wide hover:bg-sidebar-accent/50"
+          className="flex items-center gap-1 rounded px-1.5 py-1 text-muted-foreground text-xs uppercase tracking-wide hover:bg-sidebar-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
           title={`Sort: ${sort} (click to cycle)`}
+          aria-label={`Sort by ${sort}`}
         >
           <ArrowUpDownIcon className="size-2.5" />
           {sort === "position" ? "pos" : sort === "recent" ? "new" : "old"}
@@ -473,8 +477,10 @@ function CommentRow({ comment, isFocused, isActive }: CommentRowProps) {
       }
     } catch (err) {
       if (id !== draftReqRef.current) return;
-      toast.error(
-        err instanceof Error ? err.message : "Could not draft a reply",
+      showWorkspaceError(
+        "Reply draft failed",
+        err instanceof Error ? err.message : "Could not draft a reply.",
+        { dedupeKey: "comment-reply-draft" },
       );
     } finally {
       if (id === draftReqRef.current) setDraftingReply(false);
@@ -490,7 +496,11 @@ function CommentRow({ comment, isFocused, isActive }: CommentRowProps) {
     if (!instruction) return;
     const target = files.find((f) => f.relativePath === comment.file_path);
     if (!target) {
-      toast.error("The commented file is not open.");
+      showWorkspaceError(
+        "Comment not found",
+        "The commented file is not open in this project.",
+        { dedupeKey: "comment-missing-file" },
+      );
       return;
     }
     setAddressing(true);
@@ -501,7 +511,11 @@ function CommentRow({ comment, isFocused, isActive }: CommentRowProps) {
       const to = comment.anchor.char_end;
       const selectedText = content.slice(from, to);
       if (!selectedText.trim()) {
-        toast.error("The commented passage could not be located.");
+        showWorkspaceError(
+          "Comment anchor missing",
+          "The commented passage could not be located in the file.",
+          { dedupeKey: "comment-missing-anchor" },
+        );
         return;
       }
       const selection: InlineEditSelection = {
@@ -522,8 +536,12 @@ function CommentRow({ comment, isFocused, isActive }: CommentRowProps) {
         toast.success(inlineEditSuccessMessage("edit"));
       }
     } catch (err) {
-      toast.error(
-        err instanceof Error ? err.message : "Could not address the comment",
+      showWorkspaceError(
+        "Could not address comment",
+        err instanceof Error
+          ? err.message
+          : "The AI edit could not be applied.",
+        { dedupeKey: "comment-address-ai" },
       );
     } finally {
       setAddressing(false);
@@ -775,8 +793,9 @@ function CommentRow({ comment, isFocused, isActive }: CommentRowProps) {
                     {editingReplyIdx !== i && (
                       <button
                         onClick={() => startReplyEdit(i, r)}
-                        className="ml-auto opacity-0 transition-opacity group-hover:opacity-100"
+                        className="ml-auto p-1 opacity-60 transition-opacity group-hover:opacity-100"
                         title="Edit reply"
+                        aria-label="Edit reply"
                       >
                         <PencilIcon className="size-2.5" />
                       </button>
@@ -903,6 +922,7 @@ function CommentRow({ comment, isFocused, isActive }: CommentRowProps) {
                   )
                 }
                 title="Reject and hide"
+                aria-label="Reject comment"
               >
                 <TrashIcon className="size-3" />
               </Button>
@@ -951,6 +971,11 @@ function CommentRow({ comment, isFocused, isActive }: CommentRowProps) {
                   }
                 }}
               />
+              {!replyText.trim() && (
+                <p className="text-[10px] text-muted-foreground">
+                  ⌘↵ to reply · ⌘⇧↵ to reply &amp; resolve
+                </p>
+              )}
               <div className="flex items-center gap-1">
                 {replyText.trim() && (
                   <>

@@ -12,10 +12,7 @@ import { useHistoryStore } from "@/stores/history-store";
 import { useProposedChangesStore } from "@/stores/proposed-changes-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { readTexFileContent } from "@/lib/tauri/fs";
-import {
-  compileLatex,
-  formatCompileError,
-} from "@/lib/latex-compiler";
+import { compileLatex, formatCompileError } from "@/lib/latex-compiler";
 import { resolveActiveCompileTarget } from "@/lib/compile-root-preference";
 import { createLogger } from "@/lib/debug/logger";
 import { getChatLabels } from "@/lib/chat-labels";
@@ -379,7 +376,7 @@ export function useClaudeEvents() {
         !tab.error &&
         !lastErrorRef.current.get(tabId) &&
         !cancelledForAskRef.current.get(tabId) &&
-        !chatStore._cancelledByUser
+        !chatStore._cancelledTabs.has(tabId)
       ) {
         const isDirectProvider = directProviderTabRef.current.get(tabId);
         const nativeAgentEnabled =
@@ -394,8 +391,8 @@ export function useClaudeEvents() {
               : nativeAgentEnabled
                 ? chatLabels.processFailedStart
                 : isWindows
-                  ? chatLabels.processFailedStartWindows ??
-                    chatLabels.processFailedStart
+                  ? (chatLabels.processFailedStartWindows ??
+                    chatLabels.processFailedStart)
                   : chatLabels.processFailedStart,
           );
         } else {

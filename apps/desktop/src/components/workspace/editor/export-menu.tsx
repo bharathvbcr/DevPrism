@@ -18,12 +18,9 @@ import { useSettingsStore } from "@/stores/settings-store";
 import { resolveActiveCompileTarget } from "@/lib/compile-root-preference";
 import { generateAbstract } from "@/lib/ai-extras";
 import { canUseAiAssist } from "@/lib/ai-assist";
-import {
-  writeTexFileContent,
-  deleteFileFromDisk,
-  join,
-} from "@/lib/tauri/fs";
+import { writeTexFileContent, deleteFileFromDisk, join } from "@/lib/tauri/fs";
 import { cn } from "@/lib/utils";
+import { showWorkspaceError } from "@/stores/workspace-banner-store";
 
 type ExportFormat = "docx" | "html" | "markdown";
 
@@ -74,7 +71,9 @@ export function ExportMenu() {
       state.files,
     );
     if (!target) {
-      toast.error("No .tex file found to export.");
+      showWorkspaceError("Export failed", "No .tex file found to export.", {
+        dedupeKey: "export-no-tex",
+      });
       return;
     }
     const baseName =
@@ -127,7 +126,9 @@ export function ExportMenu() {
             await writeTexFileContent(tempAbsPath, augmented);
             texPath = tempRelPath;
           } else if (!abstract) {
-            toast.message("Couldn't generate an abstract — exporting without it.");
+            toast.message(
+              "Couldn't generate an abstract — exporting without it.",
+            );
           }
         }
       }
@@ -143,7 +144,10 @@ export function ExportMenu() {
       toast.success(`Exported ${baseName}.${ext}`, { id: toastId });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error(message, { id: toastId, duration: 8000 });
+      showWorkspaceError("Export failed", message, {
+        dedupeKey: `export-${format}`,
+      });
+      toast.dismiss(toastId);
     } finally {
       if (tempAbsPath) {
         try {

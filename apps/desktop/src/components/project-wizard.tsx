@@ -1,5 +1,11 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
+import { pickProjectFolder, pickProjectFiles } from "@/lib/platform-dialog";
+import { isTauri } from "@/lib/runtime/is-tauri";
+import {
+  collectBrowserDropFiles,
+  hasBrowserFileDrag,
+} from "@/lib/browser-project/drag-drop";
+import { stageBrowserFile } from "@/lib/browser-project/attachment-staging";
 import { mkdir, writeTextFile } from "@tauri-apps/plugin-fs";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { homeDir } from "@tauri-apps/api/path";
@@ -17,6 +23,8 @@ import {
   Loader2Icon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { InlineBanner } from "@/components/ui/inline-banner";
+import { useSetupFlowStore } from "@/stores/setup-flow-store";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { useProjectStore } from "@/stores/project-store";
@@ -42,21 +50,91 @@ import {
 import { getProjectNameError, normalizeProjectName } from "@/lib/project-name";
 import { useSettingsStore } from "@/stores/settings-store";
 import { canUseAiAssist, suggestProjectName } from "@/lib/ai-assist";
+import { useSpacesStore } from "@/stores/spaces-store";
+import {
+  inferSpaceKind,
+  spaceKindLabel,
+  bundledSkillsForKind,
+} from "@/lib/space-features";
+import { masterFileNameForKind } from "@/lib/space-master";
+import { cn } from "@/lib/utils";
+import { WizardSetupChecklist } from "./wizard-setup-checklist";
+
+function WizardOnboardingStep({ step }: { step: 1 | 2 }) {
+  const launchedFromOnboarding = useSetupFlowStore(
+    (s) => s.launchedFromOnboarding,
+  );
+  if (!launchedFromOnboarding) return null;
+  return (
+    <div
+      className="shrink-0 border-primary/20 border-b bg-primary/5 px-4 py-2 text-center text-muted-foreground text-xs"
+      role="status"
+    >
+      <span className="font-medium text-foreground">Step {step} of 2</span>
+      {" — "}
+      {step === 1 ? "Choose how to start" : "Create your project"}
+    </div>
+  );
+}
 
 // ─── Helpers ───
+
+function NewProjectSpaceHint({ className }: { className?: string }) {
+  const activeSpaceId = useSpacesStore((s) => s.activeSpaceId);
+  const spaces = useSpacesStore((s) => s.spaces);
+  const space = spaces.find((s) => s.id === activeSpaceId) ?? null;
+  if (!space) return null;
+
+  const kind = inferSpaceKind(space);
+  const skills = bundledSkillsForKind(kind);
+  const master = kind !== "general" ? masterFileNameForKind(kind) : null;
+
+  const details: string[] = [`added to ${space.name}`];
+  if (skills?.length) {
+    details.push(`install ${skills.join(", ")} skills`);
+  }
+  if (master) {
+    details.push(`create ${master}`);
+  }
+
+  return (
+    <div
+      className={cn(
+        "rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-muted-foreground text-xs leading-relaxed",
+        className,
+      )}
+    >
+      <span className="font-medium text-foreground">
+        {spaceKindLabel(kind)} space active —{" "}
+      </span>
+      New projects will be {details.join(" · ")}.
+    </div>
+  );
+}
 
 // ─── Wizard Component ───
 
 export type CreationMode = "template" | "scratch";
+export type WizardMode = CreationMode;
 
 interface ProjectWizardProps {
-  mode: CreationMode;
+  mode: WizardMode;
   onBack: () => void;
+  onSelectMode?: (mode: CreationMode) => void;
+  onOpenSettings?: () => void;
 }
 
-export function ProjectWizard({ mode, onBack }: ProjectWizardProps) {
-  // ── Template mode: just show the gallery ──
-  // The TemplatePreview modal inside the gallery handles details + creation.
+export function ProjectWizard({
+  mode,
+  onBack,
+  onSelectMode,
+  onOpenSettings,
+}: ProjectWizardProps) {
+  // ── Template mode: the primary creation surface ──
+  // The gallery is inline; picking a template opens a single TemplatePreview
+  // dialog that hosts preview + name + location together (no extra steps).
+  // "Start blank" keeps the scratch path one click away without an
+  // intermediate chooser screen.
   if (mode === "template") {
     return (
       <div className="flex h-full flex-col bg-background">
@@ -66,31 +144,56 @@ export function ProjectWizard({ mode, onBack }: ProjectWizardProps) {
             size="icon"
             className="size-7 rounded-lg"
             onClick={onBack}
+            aria-label="Back to projects"
           >
             <ArrowLeftIcon className="size-4" />
           </Button>
-          <span className="font-semibold text-sm">Choose a Template</span>
+          <span className="font-semibold text-sm">Create New Project</span>
+          {onSelectMode && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="ml-auto gap-1.5 text-muted-foreground hover:text-foreground"
+              onClick={() => onSelectMode("scratch")}
+            >
+              <FileTextIcon className="size-3.5" />
+              Start blank instead
+            </Button>
+          )}
         </div>
+        <WizardOnboardingStep step={2} />
+        <NewProjectSpaceHint className="mx-4 mt-3 shrink-0" />
+        <WizardSetupChecklist
+          className="mx-4 mt-3 shrink-0"
+          onOpenSettings={onOpenSettings}
+        />
         <div className="flex-1 overflow-hidden">
-          <TemplateGallery />
+          <TemplateGallery onOpenSettings={onOpenSettings} />
         </div>
       </div>
     );
   }
 
   // ── Scratch mode: inline details form ──
-  return <ScratchForm onBack={onBack} />;
+  return <ScratchForm onBack={onBack} onOpenSettings={onOpenSettings} />;
 }
 
 // ─── Scratch mode form (no template preview) ───
 
-function ScratchForm({ onBack }: { onBack: () => void }) {
+function ScratchForm({
+  onBack,
+  onOpenSettings,
+}: {
+  onBack: () => void;
+  onOpenSettings?: () => void;
+}) {
   const [purpose, setPurpose] = useState("");
   const [attachments, setAttachments] = useState<string[]>([]);
   const [projectFolder, setProjectFolder] = useState<string | null>(null);
   const [projectName, setProjectName] = useState("");
   const [projectNameError, setProjectNameError] = useState("");
   const [isCreating, setIsCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const [refFilesOpen, setRefFilesOpen] = useState(false);
   const [locationOpen, setLocationOpen] = useState(false);
@@ -178,9 +281,7 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
   }, [purpose, aiNaming]);
 
   const handleChooseFolder = useCallback(async () => {
-    const selected = await open({
-      directory: true,
-      multiple: false,
+    const selected = await pickProjectFolder({
       title: "Choose Location for New Project",
     });
     if (selected) {
@@ -190,15 +291,14 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
   }, [setLastProjectFolder]);
 
   const handleAddAttachments = useCallback(async () => {
-    const selected = await open({
+    const selected = await pickProjectFiles({
       multiple: true,
       title: "Add Reference Files",
     });
     if (selected) {
-      const paths = Array.isArray(selected) ? selected : [selected];
       setAttachments((prev) => [
         ...prev,
-        ...paths.filter((p) => !prev.includes(p)),
+        ...selected.filter((p) => !prev.includes(p)),
       ]);
     }
   }, []);
@@ -212,35 +312,66 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
     let unlisten: (() => void) | undefined;
     let cancelled = false;
 
-    getCurrentWebview()
-      .onDragDropEvent((event) => {
-        if (cancelled) return;
-        const { type } = event.payload;
-        if (type === "enter") {
-          setIsDragOver(true);
-          setRefFilesOpen(true);
-        } else if (type === "drop") {
-          setIsDragOver(false);
-          const paths = (event.payload as { paths: string[] }).paths;
-          if (paths?.length > 0) {
-            setAttachments((prev) => [
-              ...prev,
-              ...paths.filter((p) => !prev.includes(p)),
-            ]);
+    if (isTauri()) {
+      getCurrentWebview()
+        .onDragDropEvent((event) => {
+          if (cancelled) return;
+          const { type } = event.payload;
+          if (type === "enter") {
+            setIsDragOver(true);
+            setRefFilesOpen(true);
+          } else if (type === "drop") {
+            setIsDragOver(false);
+            const paths = (event.payload as { paths: string[] }).paths;
+            if (paths?.length > 0) {
+              setAttachments((prev) => [
+                ...prev,
+                ...paths.filter((p) => !prev.includes(p)),
+              ]);
+            }
+          } else if (type === "leave") {
+            setIsDragOver(false);
           }
-        } else if (type === "leave") {
-          setIsDragOver(false);
-        }
-      })
-      .then((fn) => {
-        if (cancelled) fn();
-        else unlisten = fn;
-      })
-      .catch(() => {});
+        })
+        .then((fn) => {
+          if (cancelled) fn();
+          else unlisten = fn;
+        })
+        .catch(() => {});
+    }
+
+    const onDragOver = (event: DragEvent) => {
+      if (!hasBrowserFileDrag(event.dataTransfer)) return;
+      event.preventDefault();
+      setIsDragOver(true);
+      setRefFilesOpen(true);
+    };
+    const onDragLeave = () => setIsDragOver(false);
+    const onDrop = (event: DragEvent) => {
+      if (isTauri() || !hasBrowserFileDrag(event.dataTransfer)) return;
+      event.preventDefault();
+      setIsDragOver(false);
+      void collectBrowserDropFiles(event.dataTransfer!).then((items) => {
+        if (items.length === 0) return;
+        setAttachments((prev) => [
+          ...prev,
+          ...items
+            .map((item) => stageBrowserFile(item.file))
+            .filter((p) => !prev.includes(p)),
+        ]);
+      });
+    };
+
+    window.addEventListener("dragover", onDragOver);
+    window.addEventListener("dragleave", onDragLeave);
+    window.addEventListener("drop", onDrop);
 
     return () => {
       cancelled = true;
       unlisten?.();
+      window.removeEventListener("dragover", onDragOver);
+      window.removeEventListener("dragleave", onDragLeave);
+      window.removeEventListener("drop", onDrop);
     };
   }, []);
 
@@ -252,6 +383,7 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
       return;
     }
     setIsCreating(true);
+    setCreateError(null);
 
     try {
       const projectPath = await join(projectFolder, name);
@@ -325,13 +457,14 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
       });
       addRecentProject(projectPath);
       await openProject(projectPath);
+      useSetupFlowStore.getState().completeOnboarding();
       const toastMsg = formatNewProjectSetupToast(setup, "Project created");
       toast.success(toastMsg);
     } catch (err) {
       console.error("Failed to create project:", err);
-      toast.error("Failed to create project", {
-        description: err instanceof Error ? err.message : String(err),
-      });
+      setCreateError(
+        err instanceof Error ? err.message : "Could not create the project.",
+      );
     } finally {
       setIsCreating(false);
     }
@@ -350,15 +483,18 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
           size="icon"
           className="size-7 rounded-lg"
           onClick={onBack}
+          aria-label="Back"
         >
           <ArrowLeftIcon className="size-4" />
         </Button>
         <span className="font-semibold text-sm">New Document</span>
       </div>
+      <WizardOnboardingStep step={2} />
 
       {/* Form */}
       <div className="flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-[520px] space-y-4 px-6 py-10">
+          <WizardSetupChecklist onOpenSettings={onOpenSettings} />
           {/* Project name */}
           <div className="space-y-2.5">
             <div>
@@ -417,8 +553,11 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
             {/* Reference files */}
             <div>
               <button
+                type="button"
+                aria-expanded={refFilesOpen}
+                aria-controls="wizard-reffiles-panel"
                 onClick={() => setRefFilesOpen(!refFilesOpen)}
-                className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/30"
+                className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
               >
                 <div className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-muted/50">
                   <FileTextIcon className="size-3.5 text-muted-foreground" />
@@ -436,7 +575,7 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
                 />
               </button>
               {refFilesOpen && (
-                <div className="space-y-3 px-4 pb-4">
+                <div id="wizard-reffiles-panel" className="space-y-3 px-4 pb-4">
                   {attachments.length > 0 && (
                     <div className="flex flex-wrap gap-1.5">
                       {attachments.map((path) => (
@@ -449,8 +588,10 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
                             {path.split(/[/\\]/).pop()}
                           </span>
                           <button
+                            type="button"
+                            aria-label={`Remove ${path.split(/[/\\]/).pop()}`}
                             onClick={() => handleRemoveAttachment(path)}
-                            className="flex size-4 shrink-0 items-center justify-center rounded-md text-muted-foreground/50 transition-colors hover:bg-destructive/10 hover:text-destructive"
+                            className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground/50 transition-colors hover:bg-destructive/10 hover:text-destructive"
                           >
                             <XIcon className="size-3" />
                           </button>
@@ -458,8 +599,10 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
                       ))}
                     </div>
                   )}
-                  <div
-                    className={`flex flex-col items-center gap-2 rounded-lg border border-dashed p-4 transition-all ${
+                  <button
+                    type="button"
+                    onClick={handleAddAttachments}
+                    className={`flex w-full flex-col items-center gap-2 rounded-lg border border-dashed p-4 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                       isDragOver
                         ? "scale-[1.01] border-primary bg-primary/5"
                         : "border-border/60 hover:border-border hover:bg-muted/20"
@@ -479,19 +622,16 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
                           <span className="text-muted-foreground/70 text-xs">
                             Drag & drop or{" "}
                           </span>
-                          <button
-                            onClick={handleAddAttachments}
-                            className="font-medium text-foreground/70 text-xs underline decoration-border underline-offset-2 transition-colors hover:text-foreground hover:decoration-foreground/50"
-                          >
+                          <span className="font-medium text-foreground/70 underline decoration-border underline-offset-2">
                             browse files
-                          </button>
+                          </span>
                         </div>
                         <span className="text-[10px] text-muted-foreground/40">
                           PDF, TEX, BIB, images, or data files
                         </span>
                       </>
                     )}
-                  </div>
+                  </button>
                 </div>
               )}
             </div>
@@ -499,8 +639,11 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
             {/* Project location */}
             <div>
               <button
+                type="button"
+                aria-expanded={locationOpen}
+                aria-controls="wizard-location-panel"
                 onClick={() => setLocationOpen(!locationOpen)}
-                className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/30"
+                className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
               >
                 <div className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-muted/50">
                   <MapPinIcon className="size-3.5 text-muted-foreground" />
@@ -519,7 +662,10 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
                 />
               </button>
               {locationOpen && (
-                <div className="space-y-2.5 px-4 pb-4">
+                <div
+                  id="wizard-location-panel"
+                  className="space-y-2.5 px-4 pb-4"
+                >
                   <div className="flex items-center gap-2">
                     <p className="min-w-0 flex-1 truncate rounded-md bg-muted/30 px-2.5 py-1.5 font-mono text-[11px] text-muted-foreground/60">
                       {projectFolder
@@ -542,7 +688,15 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
           </div>
 
           {/* Create button */}
-          <div className="pt-1">
+          <div className="space-y-3 pt-1">
+            {createError && (
+              <InlineBanner
+                kind="error"
+                title="Could not create project"
+                message={createError}
+                onDismiss={() => setCreateError(null)}
+              />
+            )}
             <Button
               className="w-full gap-2 rounded-xl font-semibold shadow-sm transition-all hover:shadow-md active:scale-[0.99]"
               size="lg"

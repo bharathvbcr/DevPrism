@@ -98,6 +98,12 @@ interface SettingsState {
   /** Ollama sampling temperature for the native agent. */
   nativeTemperature: number;
   setNativeTemperature: (t: number) => void;
+  /**
+   * How long Ollama keeps the native-agent model resident between turns
+   * (e.g. "10m", "1h", "30s", "0" to unload immediately, "-1" to keep forever).
+   */
+  nativeKeepAlive: string;
+  setNativeKeepAlive: (v: string) => void;
   /** Chat model used by the native Ollama agent (null = auto-pick first installed). */
   nativeOllamaModel: string | null;
   setNativeOllamaModel: (model: string | null) => void;
@@ -189,6 +195,16 @@ export const useSettingsStore = create<SettingsState>()(
             Math.max(0, Number.isFinite(t) ? t : 0.4),
           ),
         }),
+      nativeKeepAlive: "10m",
+      setNativeKeepAlive: (v) =>
+        set({
+          // Accept an Ollama duration ("10m", "1.5h", "30s", "500ms"), a bare
+          // second count, "0" (unload now), or "-1" (keep forever). Anything
+          // else falls back to the default so a bad value can't be persisted.
+          nativeKeepAlive: /^(-1|\d+(\.\d+)?(ms|s|m|h)?)$/.test(v.trim())
+            ? v.trim()
+            : "10m",
+        }),
       nativeOllamaModel: null,
       setNativeOllamaModel: (model) =>
         set({
@@ -210,6 +226,36 @@ export const useSettingsStore = create<SettingsState>()(
     }),
     {
       name: "claude-prism-settings",
+      version: 1,
+      // v1: earlier builds had no migrate, so a hand-edited or pre-validator
+      // nativeNumCtx/nativeTemperature/nativeKeepAlive could rehydrate unclamped
+      // and be forwarded raw to Ollama. Re-apply the same clamps the setters use.
+      migrate: (persisted) => {
+        const s = { ...(persisted as Record<string, unknown>) };
+        if ("nativeNumCtx" in s) {
+          s.nativeNumCtx = Math.min(
+            131072,
+            Math.max(512, Math.round(Number(s.nativeNumCtx)) || 8192),
+          );
+        }
+        if ("nativeTemperature" in s) {
+          const t = Number(s.nativeTemperature);
+          s.nativeTemperature = Math.min(
+            2,
+            Math.max(0, Number.isFinite(t) ? t : 0.4),
+          );
+        }
+        if ("nativeKeepAlive" in s) {
+          const v =
+            typeof s.nativeKeepAlive === "string"
+              ? s.nativeKeepAlive.trim()
+              : "";
+          s.nativeKeepAlive = /^(-1|\d+(\.\d+)?(ms|s|m|h)?)$/.test(v)
+            ? v
+            : "10m";
+        }
+        return s as unknown as SettingsState;
+      },
     },
   ),
 );

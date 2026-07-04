@@ -35,9 +35,6 @@ export function getTemplatePdfUrl(templateId: string): string {
   return `/examples/${templateId}/main.pdf`;
 }
 
-/**
- * Load the static PDF and render page 1 as a thumbnail data URL.
- */
 export async function generateThumbnail(
   templateId: string,
 ): Promise<string | null> {
@@ -83,4 +80,12 @@ export async function generateThumbnail(
 
   pendingRequests.set(templateId, promise);
   return promise;
+}
+
+/** Warm the thumbnail cache for many templates (e.g. when the gallery opens). */
+export function prefetchThumbnails(templateIds: string[]): void {
+  for (const id of templateIds) {
+    if (thumbnailCache.has(id) || failedIds.has(id)) continue;
+    void generateThumbnail(id);
+  }
 }

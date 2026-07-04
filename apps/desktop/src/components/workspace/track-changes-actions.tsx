@@ -14,7 +14,7 @@ import {
   type TrackChangesGranularity,
   type TrackChangesMeta,
 } from "@/lib/track-changes-export";
-import { toast } from "sonner";
+import { showWorkspaceError } from "@/stores/workspace-banner-store";
 import { cn } from "@/lib/utils";
 
 interface TrackChangesActionsProps {
@@ -70,7 +70,9 @@ export function TrackChangesActions({
     } catch (err) {
       if (action === "export") {
         const message = err instanceof Error ? err.message : String(err);
-        toast.error(message);
+        showWorkspaceError("Track changes export failed", message, {
+          dedupeKey: "track-changes-export-inline",
+        });
       }
     } finally {
       setBusy(null);

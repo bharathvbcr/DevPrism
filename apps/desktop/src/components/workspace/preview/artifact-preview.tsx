@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { Loader2Icon, SparklesIcon, XIcon } from "lucide-react";
-import { toast } from "sonner";
+import { showWorkspaceError } from "@/stores/workspace-banner-store";
 import { useDocumentStore } from "@/stores/document-store";
 import { canUseAiAssist, summarizeSection } from "@/lib/ai-assist";
 import { useSettingsStore } from "@/stores/settings-store";
@@ -14,6 +14,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 function ArtifactSummarize({ content }: { content: string }) {
   const aiSummarize = useSettingsStore((s) => s.aiSummarize);
   const [summary, setSummary] = useState<string | null>(null);
+  const [summaryError, setSummaryError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const requestIdRef = useRef(0);
 
@@ -22,18 +23,21 @@ function ArtifactSummarize({ content }: { content: string }) {
   const handleSummarize = () => {
     const text = content.trim();
     if (!text) {
-      toast.error("Nothing to summarize");
+      setSummaryError("Nothing to summarize in this file.");
       return;
     }
     const id = ++requestIdRef.current;
     setLoading(true);
     setSummary(null);
+    setSummaryError(null);
     summarizeSection(text)
       .then((next) => {
         if (id === requestIdRef.current) setSummary(next.trim());
       })
       .catch(() => {
-        if (id === requestIdRef.current) toast.error("Could not summarize");
+        if (id === requestIdRef.current) {
+          setSummaryError("Could not summarize this file.");
+        }
       })
       .finally(() => {
         if (id === requestIdRef.current) setLoading(false);
@@ -43,6 +47,7 @@ function ArtifactSummarize({ content }: { content: string }) {
   const dismiss = () => {
     requestIdRef.current++;
     setSummary(null);
+    setSummaryError(null);
     setLoading(false);
   };
 
@@ -53,6 +58,7 @@ function ArtifactSummarize({ content }: { content: string }) {
         onClick={handleSummarize}
         disabled={loading}
         title="Summarize with AI"
+        aria-label="Summarize with AI"
         className="flex items-center gap-1.5 rounded-md border border-border/60 bg-background/80 px-2 py-1 text-muted-foreground text-xs transition-colors hover:border-primary/40 hover:text-foreground disabled:opacity-60"
       >
         {loading ? (
@@ -62,6 +68,11 @@ function ArtifactSummarize({ content }: { content: string }) {
         )}
         Summarize
       </button>
+      {summaryError && (
+        <p className="absolute top-full right-0 z-20 mt-2 w-80 max-w-[80vw] rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive text-xs">
+          {summaryError}
+        </p>
+      )}
       {summary !== null && (
         <div className="absolute top-full right-0 z-20 mt-2 w-80 max-w-[80vw] rounded-md border bg-popover p-3 text-popover-foreground text-sm shadow-md">
           <div className="mb-1.5 flex items-center justify-between gap-2">

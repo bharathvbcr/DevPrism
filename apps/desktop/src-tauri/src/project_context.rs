@@ -165,11 +165,13 @@ fn build_uncached(project_dir: &Path) -> (String, Vec<(PathBuf, u128)>) {
     let data_files = detect_data_files(project_dir);
     let skills = enumerate_skills(project_dir);
     let map = build_project_map(project_dir);
+    let bib = build_bib_summary(project_dir, &mut watch);
 
     if detected.is_empty()
         && data_files.is_empty()
         && skills.is_empty()
         && map.trim().is_empty()
+        && bib.is_empty()
     {
         return (String::new(), watch);
     }
@@ -218,6 +220,11 @@ fn build_uncached(project_dir: &Path) -> (String, Vec<(PathBuf, u128)>) {
         for f in data_files.iter().take(MAX_DATA_FILES) {
             out.push_str(&format!("- {}\n", f));
         }
+    }
+
+    // ── Bibliography (citation keys) ──
+    if !bib.is_empty() {
+        out.push_str(&bib);
     }
 
     // ── Project map ──
@@ -449,6 +456,95 @@ fn detect_data_files(root: &Path) -> Vec<String> {
     out
 }
 
+// ─── Bibliography summary (citation keys) ───
+
+const MAX_BIB_FILES: usize = 3;
+const MAX_BIB_KEYS: usize = 40;
+
+/// Compact list of citation keys from root-level .bib files, so the model can
+/// `\cite{...}` correctly without a Read round-trip. Keys only (no titles) to
+/// stay cheap in the prompt; the model can Read the .bib for details.
+fn build_bib_summary(root: &Path, watch: &mut Vec<(PathBuf, u128)>) -> String {
+    let rd = match fs::read_dir(root) {
+        Ok(r) => r,
+        Err(_) => return String::new(),
+    };
+    let mut bib_files: Vec<PathBuf> = rd
+        .flatten()
+        .filter(|e| e.file_type().map(|f| f.is_file()).unwrap_or(false))
+        .map(|e| e.path())
+        .filter(|p| {
+            p.extension()
+                .map(|x| x.eq_ignore_ascii_case("bib"))
+                .unwrap_or(false)
+        })
+        .collect();
+    bib_files.sort();
+    bib_files.truncate(MAX_BIB_FILES);
+
+    let mut out = String::new();
+    let mut shown_total = 0usize;
+    for path in &bib_files {
+        let Ok(text) = fs::read_to_string(path) else {
+            continue;
+        };
+        let keys: Vec<&str> = text
+            .lines()
+            .filter_map(|l| {
+                let t = l.trim();
+                if !t.starts_with('@') {
+                    return None;
+                }
+                let open = t.find('{')?;
+                let kind = t[1..open].trim();
+                if kind.eq_ignore_ascii_case("comment")
+                    || kind.eq_ignore_ascii_case("string")
+                    || kind.eq_ignore_ascii_case("preamble")
+                {
+                    return None;
+                }
+                let key = t[open + 1..].trim().trim_end_matches(',').trim();
+                if key.is_empty() { None } else { Some(key) }
+            })
+            .collect();
+        if keys.is_empty() {
+            continue;
+        }
+        // Watch the .bib so added/removed entries invalidate the cached block.
+        watch.push((path.clone(), mtime_ms(path)));
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let remaining = MAX_BIB_KEYS.saturating_sub(shown_total);
+        if remaining == 0 {
+            break;
+        }
+        let shown: Vec<&str> = keys.iter().take(remaining).copied().collect();
+        shown_total += shown.len();
+        if keys.len() > shown.len() {
+            out.push_str(&format!(
+                "- {} ({} entries; first {} keys): {}\n",
+                name,
+                keys.len(),
+                shown.len(),
+                shown.join(", ")
+            ));
+        } else {
+            out.push_str(&format!(
+                "- {} ({} entries): {}\n",
+                name,
+                keys.len(),
+                shown.join(", ")
+            ));
+        }
+    }
+    if out.is_empty() {
+        return String::new();
+    }
+    format!("\n### Bibliography (cite with \\cite{{key}})\n{}", out)
+}
+
 // ─── Installed-skills enumeration (reuses skills.rs) ───
 
 fn enumerate_skills(project: &Path) -> Vec<(String, String)> {
@@ -676,6 +772,26 @@ mod tests {
         let dir = temp_project("empty");
         let block = build_project_context_prompt(&dir);
         assert!(block.trim().is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bib_summary_lists_citation_keys() {
+        let dir = temp_project("bib");
+        fs::write(
+            dir.join("references.bib"),
+            "@article{smith2020,\n  title={X},\n}\n@book{doe2019,\n}\n@comment{not-an-entry}\n@string{jrnl = \"J\"}\n",
+        )
+        .unwrap();
+
+        let block = build_project_context_prompt(&dir);
+        assert!(block.contains("Bibliography"), "bib section present");
+        assert!(block.contains("smith2020"), "article key listed");
+        assert!(block.contains("doe2019"), "book key listed");
+        assert!(!block.contains("not-an-entry"), "@comment skipped");
+        assert!(!block.contains("jrnl"), "@string skipped");
+        assert!(block.contains("2 entries"), "entry count shown");
+
         let _ = fs::remove_dir_all(&dir);
     }
 

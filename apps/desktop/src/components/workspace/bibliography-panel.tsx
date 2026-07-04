@@ -8,6 +8,7 @@ import {
   Trash2Icon,
   ClipboardPasteIcon,
   SparklesIcon,
+  XIcon,
 } from "lucide-react";
 import { canUseAiAssist, completeBibEntryFields } from "@/lib/ai-assist";
 import { useDocumentStore } from "@/stores/document-store";
@@ -42,6 +43,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useSettingsStore } from "@/stores/settings-store";
 import { toast } from "sonner";
+import { showWorkspaceError } from "@/stores/workspace-banner-store";
 
 const ENTRY_TYPES = [
   "article",
@@ -84,6 +86,7 @@ export function BibliographyPanel() {
   const [addOpen, setAddOpen] = useState(false);
   const [pasteOpen, setPasteOpen] = useState(false);
   const [pasteText, setPasteText] = useState("");
+  const [pasteImportError, setPasteImportError] = useState<string | null>(null);
   const [pasteTargetId, setPasteTargetId] = useState("");
   const [busy, setBusy] = useState(false);
   const aiBibAssist = useSettingsStore((s) => s.aiBibAssist);
@@ -131,6 +134,17 @@ export function BibliographyPanel() {
   const writeBib = (fileId: string, content: string) => {
     updateFileContent(fileId, content);
   };
+
+  const existingKeys = useMemo(() => {
+    const fileId = newEntry.bibFileId || bibFiles[0]?.id;
+    const file = files.find((f) => f.id === fileId);
+    if (!file?.content) return [] as string[];
+    return parseBibFile(file.content).map((e) => e.key);
+  }, [files, bibFiles, newEntry.bibFileId]);
+
+  const trimmedKey = newEntry.key.trim();
+  const keyValid = trimmedKey === "" || /^[A-Za-z0-9_:-]+$/.test(trimmedKey);
+  const keyDup = existingKeys.includes(trimmedKey);
 
   const handleSaveEntry = (
     entry: IndexedEntry,
@@ -230,7 +244,11 @@ export function BibliographyPanel() {
       setAiCitation("");
       toast.success("BibTeX generated! Review it below and click Import.");
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "AI generation failed");
+      showWorkspaceError(
+        "BibTeX generation failed",
+        err instanceof Error ? err.message : "AI generation failed.",
+        { dedupeKey: "bib-ai-generate" },
+      );
     } finally {
       setAiLoading(false);
     }
@@ -252,7 +270,11 @@ export function BibliographyPanel() {
       }));
       toast.success("Fields filled — review and save");
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "AI completion failed");
+      showWorkspaceError(
+        "BibTeX completion failed",
+        err instanceof Error ? err.message : "AI completion failed.",
+        { dedupeKey: "bib-ai-complete" },
+      );
     } finally {
       setAddAiLoading(false);
     }
@@ -267,13 +289,14 @@ export function BibliographyPanel() {
       pasteText,
     );
     if (added === 0) {
-      toast.error(
+      setPasteImportError(
         skipped > 0
           ? "All pasted entries already exist in this file."
           : "No BibTeX entries found in the pasted text.",
       );
       return;
     }
+    setPasteImportError(null);
     writeBib(fileId, content);
     setPasteOpen(false);
     setPasteText("");
@@ -310,7 +333,7 @@ export function BibliographyPanel() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex shrink-0 items-center gap-1.5 border-sidebar-border border-b px-2 py-1.5">
+      <div className="flex shrink-0 items-center gap-1.5 rounded-md border-sidebar-border border-b px-2 py-1.5 focus-within:ring-1 focus-within:ring-ring">
         <SearchIcon className="size-3.5 shrink-0 text-muted-foreground" />
         <Input
           value={query}
@@ -318,11 +341,23 @@ export function BibliographyPanel() {
           placeholder="Search citations…"
           className="h-7 border-0 bg-transparent px-1 text-xs shadow-none focus-visible:ring-0"
         />
+        {query && (
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            className="size-6 shrink-0"
+            aria-label="Clear search"
+            onClick={() => setQuery("")}
+          >
+            <XIcon className="size-3.5" />
+          </Button>
+        )}
         <Button
           variant="ghost"
           size="icon"
           className="size-7 shrink-0"
           title="Paste BibTeX entries"
+          aria-label="Paste BibTeX entries"
           onClick={() => {
             setPasteTargetId(bibFiles[0]?.id ?? "");
             setPasteOpen(true);
@@ -335,6 +370,7 @@ export function BibliographyPanel() {
           size="icon"
           className="size-7 shrink-0"
           title="Add entry"
+          aria-label="Add bibliography entry"
           onClick={() => {
             setNewEntry((n) => ({
               ...n,
@@ -349,8 +385,20 @@ export function BibliographyPanel() {
 
       <div className="min-h-0 flex-1 overflow-y-auto p-1">
         {entries.length === 0 ? (
-          <div className="px-3 py-6 text-center text-muted-foreground text-xs">
-            {query ? "No matching entries" : "No bibliography entries yet"}
+          <div className="flex flex-col items-center gap-2 px-3 py-6 text-center text-muted-foreground text-xs">
+            <span>
+              {query ? "No matching entries" : "No bibliography entries yet"}
+            </span>
+            {query && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 text-xs"
+                onClick={() => setQuery("")}
+              >
+                Clear filter
+              </Button>
+            )}
           </div>
         ) : (
           entries.map((entry) => {
@@ -480,11 +528,22 @@ export function BibliographyPanel() {
                 <Input
                   className="h-8 font-mono text-xs"
                   value={newEntry.key}
+                  aria-invalid={!keyValid || keyDup}
                   onChange={(e) =>
                     setNewEntry((n) => ({ ...n, key: e.target.value }))
                   }
                   placeholder="smith2024"
                 />
+                {!keyValid && (
+                  <span className="text-[10px] text-destructive">
+                    Only letters, digits, _ : - allowed
+                  </span>
+                )}
+                {keyValid && keyDup && (
+                  <span className="text-[10px] text-destructive">
+                    Key already exists in this file
+                  </span>
+                )}
               </div>
             </div>
             <Input
@@ -533,14 +592,23 @@ export function BibliographyPanel() {
             <Button variant="outline" onClick={() => setAddOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={handleAddEntry} disabled={!newEntry.key.trim()}>
+            <Button
+              onClick={handleAddEntry}
+              disabled={!trimmedKey || !keyValid || keyDup}
+            >
               Add entry
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      <Dialog open={pasteOpen} onOpenChange={setPasteOpen}>
+      <Dialog
+        open={pasteOpen}
+        onOpenChange={(open) => {
+          setPasteOpen(open);
+          if (!open) setPasteImportError(null);
+        }}
+      >
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>Import BibTeX</DialogTitle>
@@ -601,12 +669,20 @@ export function BibliographyPanel() {
                 "@article{key,\n  title = {…},\n  author = {…},\n  year = {…},\n}"
               }
               value={pasteText}
-              onChange={(e) => setPasteText(e.target.value)}
+              onChange={(e) => {
+                setPasteText(e.target.value);
+                if (pasteImportError) setPasteImportError(null);
+              }}
             />
             <p className="text-[10px] text-muted-foreground">
               Paste one or more @type{"{key, …}"} entries. Duplicate keys in the
               target file are skipped.
             </p>
+            {pasteImportError && (
+              <p className="rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-1.5 text-destructive text-xs">
+                {pasteImportError}
+              </p>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setPasteOpen(false)}>
@@ -636,6 +712,7 @@ function EntryEditor({
   onOpenSource: () => void;
 }) {
   const [draft, setDraft] = useState(fields);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   return (
     <div className="space-y-2 border-sidebar-border border-t px-2 py-2">
@@ -686,14 +763,22 @@ function EntryEditor({
         </Button>
         <Button
           size="sm"
-          variant="ghost"
+          variant={confirmDelete ? "destructive" : "ghost"}
           className={cn(
-            "ml-auto h-7 text-destructive text-xs hover:text-destructive",
+            "ml-auto h-7 text-xs",
+            !confirmDelete && "text-destructive hover:text-destructive",
           )}
-          onClick={onDelete}
+          onClick={() => {
+            if (confirmDelete) {
+              onDelete();
+            } else {
+              setConfirmDelete(true);
+              setTimeout(() => setConfirmDelete(false), 3000);
+            }
+          }}
         >
           <Trash2Icon className="size-3" />
-          Delete
+          {confirmDelete ? "Confirm delete?" : "Delete"}
         </Button>
       </div>
     </div>

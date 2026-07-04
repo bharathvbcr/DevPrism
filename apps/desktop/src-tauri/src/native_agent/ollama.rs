@@ -12,6 +12,10 @@ const CONTEXT_WINDOW: u32 = 8192;
 /// loading a large model into VRAM before the first token; user-driven Stop is
 /// the responsive escape hatch, so this only guards a truly hung server.
 const REQUEST_TIMEOUT_SECS: u64 = 600;
+/// Max gap between streamed tokens before we treat the runner as wedged. A hung
+/// runner that stops emitting without closing the socket would otherwise hang the
+/// turn for the full REQUEST_TIMEOUT_SECS with no error.
+const STREAM_IDLE_TIMEOUT_SECS: u64 = 90;
 /// Connect must be quick — if Ollama isn't listening we want a fast, clear error
 /// rather than waiting out the whole request budget.
 const CONNECT_TIMEOUT_SECS: u64 = 15;
@@ -116,9 +120,26 @@ pub struct OllamaClient {
     client: reqwest::Client,
     num_ctx: u32,
     temperature: f32,
+    /// How long Ollama keeps the model resident between requests (Ollama
+    /// `keep_alive`, e.g. "10m", "1h", "0" to unload immediately). Keeping the
+    /// model warm avoids a multi-second reload on every tool round.
+    keep_alive: String,
     /// Optional response format passed through to Ollama (`"json"` to force a
     /// strict JSON object). `None` leaves the request unconstrained.
     format: Option<Value>,
+}
+
+/// Default `keep_alive` when the caller doesn't override it.
+const DEFAULT_KEEP_ALIVE: &str = "10m";
+
+/// Normalize a user-supplied keep_alive to a value Ollama accepts: a duration
+/// string ("10m", "1h", "30s"), a bare number of seconds, or "0"/"-1". Falls
+/// back to the default for blank/garbage input so a bad setting can't wedge chat.
+fn normalize_keep_alive(raw: Option<&str>) -> String {
+    match raw.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(s) => s.to_string(),
+        None => DEFAULT_KEEP_ALIVE.to_string(),
+    }
 }
 
 /// Normalize a user-entered base URL (which may be the OpenAI-compatible
@@ -261,6 +282,9 @@ pub struct OllamaStatus {
 pub struct OllamaModelCapabilities {
     pub tools: Option<bool>,
     pub vision: Option<bool>,
+    /// Maximum context window the model supports (from `/api/show` model_info).
+    /// `None` when the API is unreachable or the field is missing.
+    pub context_length: Option<u64>,
 }
 
 /// Lightweight health check for a local Ollama instance.
@@ -315,7 +339,7 @@ pub async fn list_models(base_url: Option<String>) -> Result<Vec<OllamaModelInfo
     let models = installed_models(&base).await;
     if models.is_empty() {
         return Err(format!(
-            "Could not reach Ollama at {root}. Start Ollama and install a chat model (e.g. `ollama pull llama3`)."
+            "[E_OLLAMA_UNREACHABLE] Could not reach Ollama at {root}. Start Ollama and install a chat model (e.g. `ollama pull llama3`)."
         ));
     }
     Ok(models
@@ -328,6 +352,120 @@ pub async fn list_models(base_url: Option<String>) -> Result<Vec<OllamaModelInfo
         .collect())
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OllamaRunningModel {
+    pub name: String,
+    pub size_bytes: Option<u64>,
+    /// VRAM portion (`size_vram`), so the UI can show how much is on the GPU.
+    pub size_vram_bytes: Option<u64>,
+}
+
+/// List models currently loaded in memory (`/api/ps`), so the app can show what
+/// is resident instead of telling the user to run `ollama ps` in a terminal.
+pub async fn running_models(base_url: Option<String>) -> Result<Vec<OllamaRunningModel>, String> {
+    let base = base_url.unwrap_or_else(|| "http://localhost:11434".to_string());
+    let root = native_base(&base);
+    let url = format!("{root}/api/ps");
+    let client = build_client();
+    let res = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("[E_OLLAMA_UNREACHABLE] Could not reach Ollama at {root}: {e}"))?;
+    if !res.status().is_success() {
+        return Err(format!("Ollama returned HTTP {} for /api/ps.", res.status()));
+    }
+    let text = res.text().await.map_err(|e| e.to_string())?;
+    let v: Value = serde_json::from_str(&text).map_err(|e| format!("Bad /api/ps response: {e}"))?;
+    Ok(v.get("models")
+        .and_then(|m| m.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|it| {
+                    let name = it
+                        .get("name")
+                        .or_else(|| it.get("model"))
+                        .and_then(|n| n.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())?;
+                    Some(OllamaRunningModel {
+                        name: name.to_string(),
+                        size_bytes: it.get("size").and_then(|s| s.as_u64()),
+                        size_vram_bytes: it.get("size_vram").and_then(|s| s.as_u64()),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// Delete an installed model from the Ollama server (`DELETE /api/delete`). Sends
+/// both `model` (current API) and `name` (older API) keys so it works across
+/// Ollama versions. Returns Ok(()) on success.
+pub async fn delete_model(base_url: Option<String>, model: String) -> Result<(), String> {
+    let base = base_url.unwrap_or_else(|| "http://localhost:11434".to_string());
+    let root = native_base(&base);
+    let name = model.trim();
+    if name.is_empty() {
+        return Err("Model name is required.".into());
+    }
+    let url = format!("{root}/api/delete");
+    let body = json!({ "model": name, "name": name });
+    let client = build_client();
+    let res = client
+        .delete(&url)
+        .header("content-type", "application/json")
+        .body(serde_json::to_string(&body).map_err(|e| e.to_string())?)
+        .send()
+        .await
+        .map_err(|e| format!("[E_OLLAMA_UNREACHABLE] Could not reach Ollama at {root}: {e}"))?;
+    if res.status().is_success() {
+        return Ok(());
+    }
+    let status = res.status();
+    let snippet: String = res.text().await.unwrap_or_default().chars().take(300).collect();
+    if status.as_u16() == 404 {
+        return Err(format!("Model '{name}' is not installed (nothing to delete)."));
+    }
+    Err(format!("Ollama returned HTTP {status} for /api/delete: {snippet}"))
+}
+
+/// Copy an installed model to a new name (`POST /api/copy`), e.g. to fork a model
+/// before customizing it. Returns Ok(()) on success.
+pub async fn copy_model(
+    base_url: Option<String>,
+    source: String,
+    destination: String,
+) -> Result<(), String> {
+    let base = base_url.unwrap_or_else(|| "http://localhost:11434".to_string());
+    let root = native_base(&base);
+    let (source, destination) = (source.trim(), destination.trim());
+    if source.is_empty() || destination.is_empty() {
+        return Err("Both a source and a destination model name are required.".into());
+    }
+    let url = format!("{root}/api/copy");
+    let body = json!({ "source": source, "destination": destination });
+    let client = build_client();
+    let res = client
+        .post(&url)
+        .header("content-type", "application/json")
+        .body(serde_json::to_string(&body).map_err(|e| e.to_string())?)
+        .send()
+        .await
+        .map_err(|e| format!("[E_OLLAMA_UNREACHABLE] Could not reach Ollama at {root}: {e}"))?;
+    if res.status().is_success() {
+        return Ok(());
+    }
+    let status = res.status();
+    let snippet: String = res.text().await.unwrap_or_default().chars().take(300).collect();
+    if status.as_u16() == 404 {
+        return Err(format!("Source model '{source}' is not installed."));
+    }
+    Err(format!("Ollama returned HTTP {status} for /api/copy: {snippet}"))
+}
+
 /// Query `/api/show` capabilities for a single installed model.
 pub async fn model_capabilities(
     base_url: Option<String>,
@@ -335,9 +473,28 @@ pub async fn model_capabilities(
 ) -> Result<OllamaModelCapabilities, String> {
     let base = base_url.unwrap_or_else(|| "http://localhost:11434".to_string());
     let client = OllamaClient::new(&base, model.trim(), None, None);
+    // One /api/show round-trip for everything (capabilities + model_info),
+    // instead of a request per capability.
+    let show = client.show().await;
+    let caps = show
+        .as_ref()
+        .and_then(|v| v.get("capabilities"))
+        .and_then(|c| c.as_array());
+    let has = |cap: &str| caps.map(|arr| arr.iter().any(|c| c.as_str() == Some(cap)));
+    // model_info keys are arch-prefixed (e.g. "llama.context_length").
+    let context_length = show
+        .as_ref()
+        .and_then(|v| v.get("model_info"))
+        .and_then(|mi| mi.as_object())
+        .and_then(|mi| {
+            mi.iter()
+                .find(|(k, _)| k.ends_with(".context_length"))
+                .and_then(|(_, v)| v.as_u64())
+        });
     Ok(OllamaModelCapabilities {
-        tools: client.supports_tools().await,
-        vision: client.supports_vision().await,
+        tools: has("tools"),
+        vision: has("vision"),
+        context_length,
     })
 }
 
@@ -375,7 +532,7 @@ pub async fn pull_model<F: FnMut(OllamaPullProgress)>(
         .body(serde_json::to_string(&body).map_err(|e| e.to_string())?)
         .send()
         .await
-        .map_err(|e| format!("Could not reach Ollama at {root}: {e}"))?;
+        .map_err(|e| format!("[E_OLLAMA_UNREACHABLE] Could not reach Ollama at {root}: {e}"))?;
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -488,6 +645,7 @@ impl OllamaClient {
                 .filter(|&n| (512..=131072).contains(&n))
                 .unwrap_or(CONTEXT_WINDOW),
             temperature: temperature.filter(|&t| (0.0..=2.0).contains(&t)).unwrap_or(0.4),
+            keep_alive: DEFAULT_KEEP_ALIVE.to_string(),
             format: None,
         }
     }
@@ -496,6 +654,12 @@ impl OllamaClient {
     /// Used by one-shot calls whose callers parse the reply as JSON.
     pub fn with_json_format(mut self) -> Self {
         self.format = Some(json!("json"));
+        self
+    }
+
+    /// Override how long Ollama keeps the model loaded between requests.
+    pub fn with_keep_alive(mut self, keep_alive: Option<&str>) -> Self {
+        self.keep_alive = normalize_keep_alive(keep_alive);
         self
     }
 
@@ -511,6 +675,14 @@ impl OllamaClient {
     /// it; `None` when the info is unavailable (older Ollama), so the caller acts
     /// only on a definite `false` and otherwise lets the request decide.
     async fn capability(&self, cap: &str) -> Option<bool> {
+        let v = self.show().await?;
+        let caps = v.get("capabilities").and_then(|c| c.as_array())?;
+        Some(caps.iter().any(|c| c.as_str() == Some(cap)))
+    }
+
+    /// Fetch the raw `/api/show` payload for the selected model. `None` when
+    /// the server is unreachable, errors, or returns unparseable JSON.
+    pub async fn show(&self) -> Option<Value> {
         let url = format!("{}/api/show", self.base);
         let body = json!({ "model": self.model });
         let resp = self
@@ -525,9 +697,7 @@ impl OllamaClient {
             return None;
         }
         let text = resp.text().await.ok()?;
-        let v: Value = serde_json::from_str(&text).ok()?;
-        let caps = v.get("capabilities").and_then(|c| c.as_array())?;
-        Some(caps.iter().any(|c| c.as_str() == Some(cap)))
+        serde_json::from_str(&text).ok()
     }
 
     /// Whether the model advertises tool-calling (the agent requires it).
@@ -550,6 +720,7 @@ impl OllamaClient {
         tools: &Value,
         mut on_delta: F,
     ) -> Result<ChatTurn, String> {
+        let started = std::time::Instant::now();
         let url = format!("{}/api/chat", self.base);
         let mut body = json!({
             "model": self.model,
@@ -564,7 +735,7 @@ impl OllamaClient {
                 "temperature": self.temperature,
             },
             // Keep the model resident between rounds so it isn't reloaded each turn.
-            "keep_alive": "10m",
+            "keep_alive": self.keep_alive,
         });
         if tools.as_array().map(|a| !a.is_empty()).unwrap_or(false) {
             body["tools"] = tools.clone();
@@ -573,14 +744,22 @@ impl OllamaClient {
             body["format"] = fmt.clone();
         }
 
-        let mut resp = self
-            .client
-            .post(&url)
-            .header("content-type", "application/json")
-            .body(serde_json::to_string(&body).map_err(|e| e.to_string())?)
-            .send()
-            .await
-            .map_err(|e| format!("Could not reach Ollama at {}: {}", self.base, e))?;
+        // Retry a transient connect reset (common while Ollama swaps a model in/
+        // out of VRAM) before we start consuming the stream.
+        let body_str = serde_json::to_string(&body).map_err(|e| e.to_string())?;
+        let mut resp = crate::retry::send_with_retry(3, || {
+            self.client
+                .post(&url)
+                .header("content-type", "application/json")
+                .body(body_str.clone())
+        })
+        .await
+        .map_err(|e| {
+            format!(
+                "[E_OLLAMA_UNREACHABLE] Could not reach Ollama at {}: {}",
+                self.base, e
+            )
+        })?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -596,7 +775,7 @@ impl OllamaClient {
                     || lower.contains("tools are not supported"))
             {
                 return Err(format!(
-                    "The model '{}' does not support tool-calling. Pick a tool-capable model \
+                    "[E_NO_TOOLS] The model '{}' does not support tool-calling. Pick a tool-capable model \
                      (e.g. llama3.1, qwen2.5, mistral-nemo) in Settings. [{}]",
                     self.model, snippet
                 ));
@@ -616,10 +795,22 @@ impl OllamaClient {
         // byte, never bisects a multibyte UTF-8 sequence). `chunk()` needs no
         // `StreamExt`/`futures` dependency, so this stays a thin reqwest call.
         loop {
-            let chunk = match resp.chunk().await {
-                Ok(Some(c)) => c,
-                Ok(None) => break,
-                Err(e) => return Err(format!("Ollama stream error: {}", e)),
+            let chunk = match tokio::time::timeout(
+                std::time::Duration::from_secs(STREAM_IDLE_TIMEOUT_SECS),
+                resp.chunk(),
+            )
+            .await
+            {
+                Ok(Ok(Some(c))) => c,
+                Ok(Ok(None)) => break,
+                Ok(Err(e)) => return Err(format!("Ollama stream error: {}", e)),
+                Err(_) => {
+                    return Err(format!(
+                        "[E_OLLAMA_STALLED] Ollama stopped emitting tokens for {}s — the runner may \
+                         have wedged or run out of memory. Check `ollama ps` and the server logs.",
+                        STREAM_IDLE_TIMEOUT_SECS
+                    ));
+                }
             };
             buf.extend_from_slice(&chunk);
             while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
@@ -664,13 +855,28 @@ impl OllamaClient {
         }
 
         if !saw_line {
+            eprintln!(
+                "[ollama] chat empty response: model={} num_ctx={} total_ms={}",
+                self.model,
+                self.num_ctx,
+                started.elapsed().as_millis()
+            );
             return Err(
-                "Ollama returned an empty response (the model may have failed to load — \
-                 check `ollama ps` / the server logs for an out-of-memory or runner error)."
+                "[E_OLLAMA_EMPTY] Ollama returned an empty response (the model may have failed \
+                 to load — check `ollama ps` / the server logs for an out-of-memory or runner \
+                 error)."
                     .to_string(),
             );
         }
 
+        eprintln!(
+            "[ollama] chat done: model={} num_ctx={} prompt_tokens={prompt_tokens} \
+             eval_tokens={eval_tokens} tool_calls={} total_ms={}",
+            self.model,
+            self.num_ctx,
+            tool_calls.len(),
+            started.elapsed().as_millis()
+        );
         Ok(ChatTurn {
             content,
             tool_calls,
@@ -691,7 +897,12 @@ impl OllamaClient {
             .body(serde_json::to_string(&body).map_err(|e| e.to_string())?)
             .send()
             .await
-            .map_err(|e| format!("Could not reach Ollama at {}: {}", self.base, e))?;
+            .map_err(|e| {
+                format!(
+                    "[E_OLLAMA_UNREACHABLE] Could not reach Ollama at {}: {}",
+                    self.base, e
+                )
+            })?;
 
         let status = resp.status();
         let text = resp.text().await.map_err(|e| e.to_string())?;
@@ -802,6 +1013,24 @@ mod tests {
         );
         assert!(err.is_err());
         assert!(err.unwrap_err().contains("model runner crashed"));
+    }
+
+    #[test]
+    fn normalizes_keep_alive_values() {
+        assert_eq!(normalize_keep_alive(Some("1h")), "1h");
+        assert_eq!(normalize_keep_alive(Some("  30s ")), "30s");
+        assert_eq!(normalize_keep_alive(Some("0")), "0");
+        // Blank / absent fall back to the default so a bad setting can't wedge chat.
+        assert_eq!(normalize_keep_alive(Some("   ")), DEFAULT_KEEP_ALIVE);
+        assert_eq!(normalize_keep_alive(None), DEFAULT_KEEP_ALIVE);
+    }
+
+    #[test]
+    fn keep_alive_builder_overrides_default() {
+        let c = OllamaClient::new("http://localhost:11434", "m", None, None);
+        assert_eq!(c.keep_alive, DEFAULT_KEEP_ALIVE);
+        let c = c.with_keep_alive(Some("1h"));
+        assert_eq!(c.keep_alive, "1h");
     }
 
     #[test]

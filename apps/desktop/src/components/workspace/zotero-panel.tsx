@@ -22,6 +22,7 @@ import { useSettingsStore } from "@/stores/settings-store";
 import { canUseAiAssist, aiComplete } from "@/lib/ai-assist";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
 import {
   Dialog,
@@ -121,26 +122,35 @@ export function ZoteroPanel() {
             )}
 
             {isLoadingCollections ? (
-              <div className="flex items-center gap-1 px-2 py-1 text-muted-foreground text-xs">
-                <LoaderIcon className="size-3 animate-spin" />
-                Loading...
+              <div className="space-y-1 px-2 py-0.5">
+                {[0, 1, 2].map((i) => (
+                  <Skeleton key={i} className="h-3.5 w-full rounded-sm" />
+                ))}
               </div>
             ) : (
-              topCollections.map((col) => (
-                <CollectionRow
-                  key={col.key}
-                  collectionKey={col.key}
-                  name={col.name}
-                  icon={<FolderIcon className="size-3.5" />}
-                  itemCount={col.itemCount}
-                  syncInfo={syncedCollections[col.key]}
-                  isSyncing={isSyncing === col.key}
-                  onImport={() => importCollectionToBib(col.key, col.name)}
-                  onSync={() => syncCollectionBib(col.key)}
-                  onRemove={() => removeCollection(col.key)}
-                  disabled={!!isSyncing}
-                />
-              ))
+              <>
+                {topCollections.length === 0 && (
+                  <p className="px-2 py-1 text-muted-foreground text-xs">
+                    No collections in your Zotero account. Create one at
+                    zotero.org.
+                  </p>
+                )}
+                {topCollections.map((col) => (
+                  <CollectionRow
+                    key={col.key}
+                    collectionKey={col.key}
+                    name={col.name}
+                    icon={<FolderIcon className="size-3.5" />}
+                    itemCount={col.itemCount}
+                    syncInfo={syncedCollections[col.key]}
+                    isSyncing={isSyncing === col.key}
+                    onImport={() => importCollectionToBib(col.key, col.name)}
+                    onSync={() => syncCollectionBib(col.key)}
+                    onRemove={() => removeCollection(col.key)}
+                    disabled={!!isSyncing}
+                  />
+                ))}
+              </>
             )}
 
             <SuggestCollection
@@ -177,20 +187,27 @@ export function ZoteroHeader() {
       <span className="font-medium">Zotero</span>
       {isAuthenticated && (
         <div className="absolute right-3 flex items-center gap-1">
-          <button
-            className="rounded p-1 text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
+          <Button
+            variant="ghost"
+            size="icon-xs"
             onClick={loadCollections}
+            disabled={isLoadingCollections}
+            aria-label="Refresh collections"
             title="Refresh"
           >
             <RefreshCwIcon
               className={cn("size-3.5", isLoadingCollections && "animate-spin")}
             />
-          </button>
+          </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <button className="rounded p-1 text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground">
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                aria-label="Zotero settings"
+              >
                 <SettingsIcon className="size-3.5" />
-              </button>
+              </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-44">
               <div className="flex items-center gap-2 px-2 py-1">
@@ -297,6 +314,7 @@ function CollectionRow({
   disabled: boolean;
 }) {
   const isSynced = !!syncInfo;
+  const [confirmRemove, setConfirmRemove] = useState(false);
 
   return (
     <div className="group flex items-center gap-1.5 px-2 py-0.5">
@@ -319,13 +337,15 @@ function CollectionRow({
           </p>
         )}
       </div>
-      <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+      <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
         {isSynced ? (
           <>
-            <button
-              className="rounded p-0.5 text-muted-foreground hover:bg-sidebar-accent hover:text-foreground disabled:opacity-30"
+            <Button
+              variant="ghost"
+              size="icon-sm"
               onClick={onSync}
               disabled={disabled}
+              aria-label="Sync collection"
               title="Sync"
             >
               {isSyncing ? (
@@ -333,25 +353,46 @@ function CollectionRow({
               ) : (
                 <RefreshCwIcon className="size-3" />
               )}
-            </button>
-            <button
-              className="rounded p-0.5 text-muted-foreground hover:bg-sidebar-accent hover:text-foreground disabled:opacity-30"
-              onClick={onRemove}
-              disabled={disabled}
-              title="Remove"
-            >
-              <XIcon className="size-3" />
-            </button>
+            </Button>
+            {confirmRemove ? (
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                onClick={() => {
+                  setConfirmRemove(false);
+                  onRemove();
+                }}
+                disabled={disabled}
+                aria-label="Confirm remove collection"
+                title="Click again to confirm removal"
+                className="text-destructive hover:text-destructive"
+              >
+                <CheckIcon className="size-3" />
+              </Button>
+            ) : (
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                onClick={() => setConfirmRemove(true)}
+                disabled={disabled}
+                aria-label="Remove collection"
+                title="Remove"
+              >
+                <XIcon className="size-3" />
+              </Button>
+            )}
           </>
         ) : (
-          <button
-            className="rounded p-0.5 text-muted-foreground hover:bg-sidebar-accent hover:text-foreground disabled:opacity-30"
+          <Button
+            variant="ghost"
+            size="icon-sm"
             onClick={onImport}
             disabled={disabled}
+            aria-label="Import collection"
             title="Import"
           >
             <DownloadIcon className="size-3" />
-          </button>
+          </Button>
         )}
       </div>
     </div>
@@ -374,6 +415,7 @@ function SuggestCollection({ collectionNames }: { collectionNames: string[] }) {
     collection: string;
     reason: string;
   } | null>(null);
+  const [suggestError, setSuggestError] = useState<string | null>(null);
   const requestIdRef = useRef(0);
   const aiBibAssist = useSettingsStore((s) => s.aiBibAssist);
 
@@ -387,6 +429,7 @@ function SuggestCollection({ collectionNames }: { collectionNames: string[] }) {
     const id = ++requestIdRef.current;
     setLoading(true);
     setSuggestion(null);
+    setSuggestError(null);
     try {
       const raw = await aiComplete({
         system:
@@ -414,13 +457,13 @@ function SuggestCollection({ collectionNames }: { collectionNames: string[] }) {
       }
       const collection = collectionNames.find((n) => n === parsed.collection);
       if (!collection) {
-        toast.error("No matching collection suggested.");
+        setSuggestError("No matching collection was suggested.");
         return;
       }
       setSuggestion({ collection, reason: parsed.reason?.trim() ?? "" });
     } catch (err) {
       if (id !== requestIdRef.current) return;
-      toast.error(`Couldn't suggest a collection: ${String(err)}`);
+      setSuggestError(String(err));
     } finally {
       if (id === requestIdRef.current) setLoading(false);
     }
@@ -463,6 +506,11 @@ function SuggestCollection({ collectionNames }: { collectionNames: string[] }) {
               Suggest
             </Button>
           </div>
+          {suggestError && (
+            <p className="rounded bg-destructive/10 px-2 py-1 text-[11px] text-destructive">
+              {suggestError}
+            </p>
+          )}
           {suggestion && (
             <div className="rounded bg-sidebar-accent/60 px-2 py-1 text-xs">
               <span className="font-medium text-foreground">

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { SparklesIcon, Loader2Icon } from "lucide-react";
+import { SparklesIcon, Loader2Icon, AlertTriangleIcon } from "lucide-react";
 import { toast } from "sonner";
+import { showWorkspaceError } from "@/stores/workspace-banner-store";
 import { useDocumentStore } from "@/stores/document-store";
 import { resolvePreviewCompileRoot } from "@/lib/compile-root-preference";
 import { useSettingsStore } from "@/stores/settings-store";
@@ -17,11 +18,7 @@ import {
   bulletQualityInsights,
   bulletQualityScore,
 } from "@/lib/resume-bullet-suggestions";
-import {
-  aiParseLimits,
-  canUseAiAssist,
-  tightenToLimit,
-} from "@/lib/ai-assist";
+import { aiParseLimits, canUseAiAssist, tightenToLimit } from "@/lib/ai-assist";
 import { proposeSelectionReplacement } from "@/lib/inline-edit";
 import { cn } from "@/lib/utils";
 
@@ -161,7 +158,8 @@ export function EditorStatusBar({ content }: { content: string }) {
   }, [hasSelection, spaceKind, content, cursorPosition]);
 
   const cursorBulletInsights = useMemo(() => {
-    if (!cursorBulletBlock) return { lines: [] as string[], score: null as number | null };
+    if (!cursorBulletBlock)
+      return { lines: [] as string[], score: null as number | null };
     const bulletText = content.slice(
       cursorBulletBlock.start,
       cursorBulletBlock.end,
@@ -285,7 +283,11 @@ export function EditorStatusBar({ content }: { content: string }) {
       );
       toast.success("Tightened text ready — review the change");
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Tighten failed");
+      showWorkspaceError(
+        "Tighten failed",
+        err instanceof Error ? err.message : "Could not tighten the selection.",
+        { dedupeKey: "editor-tighten" },
+      );
     } finally {
       setTightening(false);
     }
@@ -330,6 +332,7 @@ export function EditorStatusBar({ content }: { content: string }) {
       {!selectionStats && <span>{formatNumber(stats.totalChars)} chars</span>}
       {limitStatus && (
         <span
+          aria-live="polite"
           className={cn(
             limitStatus.over && "font-medium text-destructive",
             limitStatus.warn &&
@@ -338,6 +341,9 @@ export function EditorStatusBar({ content }: { content: string }) {
           )}
           title={effectiveGoal?.label}
         >
+          {limitStatus.over && (
+            <AlertTriangleIcon className="mr-0.5 inline size-3" />
+          )}
           {limitStatus.text}
         </span>
       )}

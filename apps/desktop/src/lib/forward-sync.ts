@@ -1,10 +1,13 @@
-import { toast } from "sonner";
 import { useDocumentStore, resolveTexRoot } from "@/stores/document-store";
 import { synctexForward } from "@/lib/latex-compiler";
 import {
   getCompileRootPreference,
   setCompileRootPreference,
 } from "@/lib/compile-root-preference";
+import {
+  showWorkspaceError,
+  showWorkspaceInfo,
+} from "@/stores/workspace-banner-store";
 
 /** Jump from the editor cursor to a highlighted region in the PDF preview. */
 export async function triggerForwardSync(options?: {
@@ -18,7 +21,11 @@ export async function triggerForwardSync(options?: {
 
   const activeFile = files.find((f) => f.id === activeFileId);
   if (!activeFile || activeFile.type !== "tex") {
-    toast.error("Open a .tex file to sync with the PDF.");
+    showWorkspaceError(
+      "SyncTeX unavailable",
+      "Open a .tex file to sync with the PDF.",
+      { dedupeKey: "forward-sync-no-tex" },
+    );
     return false;
   }
 
@@ -26,7 +33,11 @@ export async function triggerForwardSync(options?: {
   const preferredRoot = getCompileRootPreference(projectRoot);
   if (preferredRoot && preferredRoot !== editorRootId) {
     setCompileRootPreference(projectRoot, editorRootId);
-    toast.message("Switched preview to the active document for SyncTeX.");
+    showWorkspaceInfo(
+      "Preview switched",
+      "SyncTeX now follows the active document.",
+      { dedupeKey: "forward-sync-root-switch" },
+    );
   }
 
   const relativePath = options?.relativePath ?? activeFile.relativePath;
@@ -42,9 +53,10 @@ export async function triggerForwardSync(options?: {
 
   const result = await synctexForward(projectRoot, relativePath, line, column);
   if (!result) {
-    toast.error(
+    showWorkspaceError(
+      "SyncTeX failed",
       "Could not locate this line in the PDF. Compile the document first, then try again.",
-      { duration: 6000 },
+      { dedupeKey: "forward-sync-miss" },
     );
     return false;
   }

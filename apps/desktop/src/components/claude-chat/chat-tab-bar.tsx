@@ -129,10 +129,7 @@ function TabButton({
   onClose: (e: React.MouseEvent) => void;
 }) {
   return (
-    <button
-      type="button"
-      data-tab-id={tab.id}
-      onClick={onClick}
+    <div
       className={cn(
         "group relative flex min-w-0 max-w-[160px] items-center gap-1.5 border-b-2 px-3 py-1.5 text-xs transition-colors",
         isActive
@@ -140,26 +137,35 @@ function TabButton({
           : "border-transparent text-muted-foreground hover:bg-muted/30 hover:text-foreground",
       )}
     >
-      {/* Streaming indicator */}
-      {isStreaming && (
-        <span className="relative flex size-2 shrink-0">
-          <span className="absolute inline-flex size-full animate-ping rounded-full bg-primary/60" />
-          <span className="relative inline-flex size-2 rounded-full bg-primary" />
-        </span>
-      )}
-      <span className="truncate">{tab.title}</span>
+      <button
+        type="button"
+        data-tab-id={tab.id}
+        onClick={onClick}
+        className="flex min-w-0 flex-1 items-center gap-1.5"
+      >
+        {/* Streaming indicator */}
+        {isStreaming && (
+          <span className="relative flex size-2 shrink-0">
+            <span className="absolute inline-flex size-full animate-ping rounded-full bg-primary/60" />
+            <span className="relative inline-flex size-2 rounded-full bg-primary" />
+          </span>
+        )}
+        <span className="truncate">{tab.title}</span>
+      </button>
       {/* Close button — hidden for the last remaining tab or when streaming on this tab */}
       {!isLastTab && !isStreaming && (
-        <span
-          role="button"
-          tabIndex={-1}
+        <button
+          type="button"
           aria-label="Close tab"
-          onClick={onClose}
-          className="ml-auto shrink-0 rounded-sm p-0.5 opacity-0 transition-opacity hover:bg-muted-foreground/20 group-hover:opacity-100"
+          onClick={(e) => {
+            e.stopPropagation();
+            onClose(e);
+          }}
+          className="ml-auto flex size-6 shrink-0 items-center justify-center rounded-sm opacity-0 transition-opacity hover:bg-muted-foreground/20 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover:opacity-100"
         >
           <XIcon className="size-3" />
-        </span>
+        </button>
       )}
-    </button>
+    </div>
   );
 }

@@ -14,10 +14,12 @@ mod native_agent;
 mod personalization;
 mod project_context;
 mod project_import;
+mod retry;
 mod skills;
 mod slash_commands;
 mod uv;
 mod variants;
+mod wisdev;
 mod zotero;
 
 use std::path::Path;
@@ -707,11 +709,19 @@ pub fn run() {
             native_agent::ai_complete_stream,
             native_agent::ai_caption,
             native_agent::stop_native_agent,
+            native_agent::answer_native_agent_question,
             native_agent::clear_native_session,
             native_agent::list_ollama_models,
             native_agent::ollama_status,
+            native_agent::ollama_ps,
             native_agent::ollama_model_capabilities,
             native_agent::pull_ollama_model,
+            native_agent::delete_ollama_model,
+            native_agent::copy_ollama_model,
+            wisdev::wisdev_check,
+            wisdev::wisdev_build,
+            wisdev::wisdev_research,
+            wisdev::wisdev_docgen,
             skills::check_skills_installed,
             skills::list_installed_skills,
             skills::delete_installed_skill,

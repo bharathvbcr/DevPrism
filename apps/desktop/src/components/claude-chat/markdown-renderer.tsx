@@ -17,6 +17,7 @@ import { invoke } from "@tauri-apps/api/core";
 import "katex/dist/katex.min.css";
 
 import { useDocumentStore } from "@/stores/document-store";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 // ─── Shell Detection ───
@@ -241,26 +242,31 @@ const CodeBlock: FC<{ language: string; code: string }> = ({
       </pre>
 
       {/* Hover-reveal buttons */}
-      <div className="absolute top-1 right-1 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+      <div className="absolute top-1 right-1 flex gap-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
         {isLatex && (
-          <button
+          <Button
             type="button"
+            size="xs"
             onClick={handleInsert}
-            className="flex items-center gap-0.5 rounded bg-primary px-1.5 py-0.5 text-primary-foreground text-xs"
+            aria-label="Insert into document"
+            className="focus-visible:opacity-100"
           >
             <PlusIcon className="size-3" />
             Insert
-          </button>
+          </Button>
         )}
         {isShell && runState.status === "idle" && (
-          <button
+          <Button
             type="button"
+            size="xs"
+            variant="secondary"
             onClick={handleRun}
-            className="flex items-center gap-0.5 rounded bg-green-600 px-1.5 py-0.5 text-white text-xs"
+            aria-label="Run command"
+            className="focus-visible:opacity-100"
           >
             <PlayIcon className="size-3" />
             Run
-          </button>
+          </Button>
         )}
       </div>
 
@@ -298,7 +304,7 @@ const CodeBlock: FC<{ language: string; code: string }> = ({
 
       {/* Running spinner */}
       {runState.status === "running" && (
-        <div className="mt-1 flex items-center gap-2 rounded-lg border border-border bg-[#1e1e2e] px-3 py-2 text-sm">
+        <div className="mt-1 flex items-center gap-2 rounded-lg border border-border bg-muted/50 px-3 py-2 text-sm">
           <LoaderIcon className="size-3.5 animate-spin text-muted-foreground" />
           <span className="font-mono text-muted-foreground text-xs">
             Running...
@@ -340,7 +346,7 @@ const CommandOutput: FC<{
     output.length > 2000 ? `${output.slice(0, 2000)}\n...` : output;
 
   return (
-    <div className="mt-1 rounded-lg border border-border bg-[#1e1e2e] text-sm">
+    <div className="mt-1 rounded-lg border border-border bg-muted/50 text-sm">
       <button
         type="button"
         className="flex w-full items-center gap-2 px-3 py-2"
@@ -358,15 +364,15 @@ const CommandOutput: FC<{
         </span>
         <span className="ml-auto">
           {expanded ? (
-            <ChevronDownIcon className="size-3.5 text-gray-500" />
+            <ChevronDownIcon className="size-3.5 text-muted-foreground" />
           ) : (
-            <ChevronRightIcon className="size-3.5 text-gray-500" />
+            <ChevronRightIcon className="size-3.5 text-muted-foreground" />
           )}
         </span>
       </button>
       {expanded && truncated && (
         <div className="max-h-40 overflow-auto border-border/50 border-t px-3 py-2">
-          <pre className="whitespace-pre-wrap font-mono text-gray-300 text-xs">
+          <pre className="whitespace-pre-wrap font-mono text-foreground/80 text-xs">
             {truncated}
           </pre>
         </div>

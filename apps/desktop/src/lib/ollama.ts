@@ -20,6 +20,14 @@ export interface OllamaStatus {
 export interface OllamaModelCapabilities {
   tools?: boolean | null;
   vision?: boolean | null;
+  /** Max context window from /api/show model_info; null/undefined when unknown. */
+  contextLength?: number | null;
+}
+
+export interface OllamaRunningModel {
+  name: string;
+  sizeBytes?: number | null;
+  sizeVramBytes?: number | null;
 }
 
 export interface OllamaPullProgress {
@@ -38,6 +46,8 @@ export type OllamaErrorKind =
   | "no_tools"
   | "no_vision"
   | "already_running"
+  | "stalled"
+  | "empty"
   | "generic";
 
 export interface ClassifiedOllamaError {
@@ -55,7 +65,9 @@ export function resolveOllamaCredential(
   credentials: OpenAiCompatibleCredentialInfo[],
   selectedProviderCredentialId: string | null,
 ): OpenAiCompatibleCredentialInfo | null {
-  const selected = credentials.find((c) => c.id === selectedProviderCredentialId);
+  const selected = credentials.find(
+    (c) => c.id === selectedProviderCredentialId,
+  );
   return (
     (selected && isOllamaEndpoint(selected.base_url) ? selected : undefined) ??
     credentials.find((c) => isOllamaEndpoint(c.base_url)) ??
@@ -98,6 +110,36 @@ export async function getOllamaStatus(
   });
 }
 
+export async function getRunningOllamaModels(
+  baseUrl?: string | null,
+): Promise<OllamaRunningModel[]> {
+  return invoke<OllamaRunningModel[]>("ollama_ps", {
+    baseUrl: baseUrl?.trim() || null,
+  });
+}
+
+export async function deleteOllamaModel(
+  model: string,
+  baseUrl?: string | null,
+): Promise<void> {
+  await invoke("delete_ollama_model", {
+    baseUrl: baseUrl?.trim() || null,
+    model: model.trim(),
+  });
+}
+
+export async function copyOllamaModel(
+  source: string,
+  destination: string,
+  baseUrl?: string | null,
+): Promise<void> {
+  await invoke("copy_ollama_model", {
+    baseUrl: baseUrl?.trim() || null,
+    source: source.trim(),
+    destination: destination.trim(),
+  });
+}
+
 export async function getOllamaModelCapabilities(
   model: string,
   baseUrl?: string | null,
@@ -118,9 +160,42 @@ export async function pullOllamaModel(
   });
 }
 
-/** Turn native-agent / Ollama errors into actionable categories for the UI. */
+/** Machine-readable code prefix emitted by the Rust backend, e.g.
+ * "[E_NO_TOOLS] The model ...". Codes are stable; the prose may change. */
+const ERROR_CODE_RE = /^\[(E_[A-Z_]+)\]\s*/;
+
+const ERROR_CODE_TO_KIND: Record<string, OllamaErrorKind> = {
+  E_OLLAMA_UNREACHABLE: "unreachable",
+  E_NO_MODEL: "no_model",
+  E_NO_TOOLS: "no_tools",
+  E_NO_VISION: "no_vision",
+  E_ALREADY_RUNNING: "already_running",
+  E_OLLAMA_STALLED: "stalled",
+  E_OLLAMA_EMPTY: "empty",
+};
+
+/** Turn native-agent / Ollama errors into actionable categories for the UI.
+ * Prefers the structured `[E_*]` code prefix; falls back to string matching
+ * for errors that predate the codes (persisted histories, older backends). */
 export function classifyOllamaError(message: string): ClassifiedOllamaError {
-  const text = message.trim();
+  let text = message.trim();
+
+  const codeMatch = text.match(ERROR_CODE_RE);
+  if (codeMatch) {
+    // Always strip the code from the human-readable message.
+    text = text.slice(codeMatch[0].length).trim();
+    const kind = ERROR_CODE_TO_KIND[codeMatch[1]];
+    if (kind) {
+      return {
+        kind,
+        message: text,
+        model:
+          kind === "no_tools" ? text.match(/model '([^']+)'/i)?.[1] : undefined,
+      };
+    }
+    // Unknown code (newer backend): fall through to sniffing the stripped text.
+  }
+
   const lower = text.toLowerCase();
 
   if (
@@ -135,14 +210,12 @@ export function classifyOllamaError(message: string): ClassifiedOllamaError {
   if (
     lower.includes("no ollama model") ||
     lower.includes("install a chat model") ||
-    lower.includes("could not reach ollama at") && lower.includes("pull")
+    (lower.includes("could not reach ollama at") && lower.includes("pull"))
   ) {
     return { kind: "no_model", message: text };
   }
 
-  const toolsMatch = text.match(
-    /model '([^']+)' does not support tool/i,
-  );
+  const toolsMatch = text.match(/model '([^']+)' does not support tool/i);
   if (toolsMatch || lower.includes("does not support tool")) {
     return {
       kind: "no_tools",
@@ -217,6 +290,13 @@ export const RECOMMENDED_OLLAMA_MODELS = [
     pull: "ollama pull mistral-nemo",
   },
 ] as const;
+
+export const RECOMMENDED_EMBED_MODEL = {
+  id: "nomic-embed-text",
+  label: "nomic-embed-text",
+  description: "Local embeddings for semantic PDF/editor search",
+  pull: "ollama pull nomic-embed-text",
+} as const;
 
 export function formatOllamaModelSize(bytes?: number | null): string | null {
   if (!bytes || bytes <= 0) return null;

@@ -67,6 +67,7 @@ import {
 } from "@/lib/compile-root-preference";
 import { getChatLabels } from "@/lib/chat-labels";
 import { useSettingsStore } from "@/stores/settings-store";
+import { showWorkspaceError } from "@/stores/workspace-banner-store";
 import { EditorToolbar } from "./editor-toolbar";
 import { SelectionToolbar, type ToolbarAction } from "./selection-toolbar";
 import { Button } from "@/components/ui/button";
@@ -84,6 +85,9 @@ import {
   TagIcon,
   CopyIcon,
   XIcon,
+  ChevronUpIcon,
+  ChevronDownIcon,
+  CheckIcon,
   RefreshCwIcon,
   ExpandIcon,
   Minimize2Icon,
@@ -311,6 +315,8 @@ export function LatexEditor() {
   const pendingChangeRef = useRef<ProposedChange | null>(null);
   const handleKeepAllRef = useRef<() => void>(() => {});
   const handleUndoAllRef = useRef<() => void>(() => {});
+  const handleKeepAllFilesRef = useRef<() => void>(() => {});
+  const handleUndoAllFilesRef = useRef<() => void>(() => {});
   const diagnosticsRef = useRef<DiagnosticItem[]>([]);
 
   useEffect(() => {
@@ -381,6 +387,28 @@ export function LatexEditor() {
         docStore.setActiveFile(nextFile.filePath);
       }
     }
+  };
+
+  handleKeepAllFilesRef.current = () => {
+    const view = viewRef.current;
+    if (isMergeActiveRef.current && view) {
+      isMergeActiveRef.current = false;
+      setMergeChunkInfo({ total: 0, current: 0 });
+      view.dispatch({ effects: mergeCompartmentRef.current.reconfigure([]) });
+      pendingChangeRef.current = null;
+    }
+    useProposedChangesStore.getState().keepAll();
+  };
+
+  handleUndoAllFilesRef.current = () => {
+    const view = viewRef.current;
+    if (isMergeActiveRef.current && view) {
+      isMergeActiveRef.current = false;
+      setMergeChunkInfo({ total: 0, current: 0 });
+      view.dispatch({ effects: mergeCompartmentRef.current.reconfigure([]) });
+      pendingChangeRef.current = null;
+    }
+    void useProposedChangesStore.getState().undoAll();
   };
 
   // Navigate to a specific chunk by index
@@ -869,10 +897,12 @@ export function LatexEditor() {
                               ),
                             )
                             .catch((err) => {
-                              toast.error(
+                              showWorkspaceError(
+                                "Lint fix failed",
                                 err instanceof Error
                                   ? err.message
-                                  : "AI lint fix failed",
+                                  : "AI lint fix could not be applied.",
+                                { dedupeKey: "editor-lint-fix" },
                               );
                               const ctx = `[Lint error in ${fileName}:${line.number}]\n[Error: ${d.message}]`;
                               useClaudeChatStore
@@ -957,16 +987,16 @@ export function LatexEditor() {
             paddingRight: "12px",
           },
           ".cm-searchMatch": {
-            backgroundColor: "#facc15 !important",
-            color: "#000 !important",
+            backgroundColor: "var(--warning) !important",
+            color: "var(--warning-foreground) !important",
             borderRadius: "2px",
-            boxShadow: "0 0 0 1px #eab308",
+            boxShadow: "0 0 0 1px var(--ring)",
           },
           ".cm-searchMatch-selected": {
-            backgroundColor: "#f97316 !important",
-            color: "#fff !important",
+            backgroundColor: "var(--primary) !important",
+            color: "var(--primary-foreground) !important",
             borderRadius: "2px",
-            boxShadow: "0 0 0 2px #ea580c",
+            boxShadow: "0 0 0 2px var(--ring)",
           },
           "&.cm-focused .cm-selectionBackground, .cm-selectionBackground": {
             backgroundColor: "rgba(100, 150, 255, 0.3)",
@@ -1231,7 +1261,11 @@ export function LatexEditor() {
             }
           } catch (err) {
             log.error("image drop failed", { error: String(err) });
-            toast.error("Failed to insert image");
+            showWorkspaceError(
+              "Image insert failed",
+              "The dropped image could not be added to the document.",
+              { dedupeKey: "editor-image-drop" },
+            );
           }
         }
       })
@@ -1679,7 +1713,11 @@ export function LatexEditor() {
           toast.success(successMessage ?? inlineEditSuccessMessage(action));
         }
       } catch (err) {
-        toast.error(err instanceof Error ? err.message : "Inline edit failed");
+        showWorkspaceError(
+          "Inline edit failed",
+          err instanceof Error ? err.message : "The edit could not be applied.",
+          { dedupeKey: "editor-inline-edit" },
+        );
       } finally {
         setInlineEditPending(false);
       }
@@ -1699,7 +1737,11 @@ export function LatexEditor() {
     try {
       const summary = (await summarizeSection(selection.selectedText)).trim();
       if (!summary) {
-        toast.error("Could not summarize the selection");
+        showWorkspaceError(
+          "Summarize failed",
+          "Could not summarize the selected text.",
+          { dedupeKey: "editor-summarize-empty" },
+        );
         return;
       }
       const view = viewRef.current;
@@ -1721,7 +1763,13 @@ export function LatexEditor() {
       view.focus();
       toast.success("Summary inserted as a comment");
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Summarize failed");
+      showWorkspaceError(
+        "Summarize failed",
+        err instanceof Error
+          ? err.message
+          : "Could not summarize the selection.",
+        { dedupeKey: "editor-summarize" },
+      );
     } finally {
       setInlineEditPending(false);
     }
@@ -2135,7 +2183,13 @@ export function LatexEditor() {
         });
         toast.success("Lint fix ready — review the change");
       } catch (err) {
-        toast.error(err instanceof Error ? err.message : "AI lint fix failed");
+        showWorkspaceError(
+          "Lint fix failed",
+          err instanceof Error
+            ? err.message
+            : "AI lint fix could not be applied.",
+          { dedupeKey: "editor-lint-fix" },
+        );
         const fileName = file.relativePath;
         const ctx = `[Lint error in ${fileName}:${line}]\n[Error: ${message}]`;
         useClaudeChatStore
@@ -2534,22 +2588,11 @@ export function LatexEditor() {
                         : mergeChunkInfo.current - 2,
                     )
                   }
-                  className="rounded p-0.5 text-muted-foreground transition-colors hover:bg-white/10 hover:text-foreground"
+                  className="rounded p-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                   title="Previous change"
                   aria-label="Previous change"
                 >
-                  <svg
-                    width="14"
-                    height="14"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <polyline points="18 15 12 9 6 15" />
-                  </svg>
+                  <ChevronUpIcon className="size-3.5" />
                 </button>
                 <button
                   onClick={() =>
@@ -2559,62 +2602,28 @@ export function LatexEditor() {
                         : mergeChunkInfo.current,
                     )
                   }
-                  className="rounded p-0.5 text-muted-foreground transition-colors hover:bg-white/10 hover:text-foreground"
+                  className="rounded p-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                   title="Next change"
                   aria-label="Next change"
                 >
-                  <svg
-                    width="14"
-                    height="14"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <polyline points="6 9 12 15 18 9" />
-                  </svg>
+                  <ChevronDownIcon className="size-3.5" />
                 </button>
                 <div className="mx-0.5 h-4 w-px bg-border" />
                 <button
                   onClick={acceptCurrentChunk}
-                  className="rounded p-0.5 text-green-400 transition-colors hover:bg-green-600/20"
+                  className="rounded p-0.5 text-emerald-500 transition-colors hover:bg-emerald-500/10"
                   title="Accept this change"
                   aria-label="Accept this change"
                 >
-                  <svg
-                    width="14"
-                    height="14"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <polyline points="20 6 9 17 4 12" />
-                  </svg>
+                  <CheckIcon className="size-3.5" />
                 </button>
                 <button
                   onClick={rejectCurrentChunk}
-                  className="rounded p-0.5 text-red-400 transition-colors hover:bg-red-600/20"
+                  className="rounded p-0.5 text-destructive transition-colors hover:bg-destructive/10"
                   title="Reject this change"
                   aria-label="Reject this change"
                 >
-                  <svg
-                    width="14"
-                    height="14"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <line x1="18" y1="6" x2="6" y2="18" />
-                    <line x1="6" y1="6" x2="18" y2="18" />
-                  </svg>
+                  <XIcon className="size-3.5" />
                 </button>
               </div>
             )}
@@ -2627,12 +2636,18 @@ export function LatexEditor() {
       {!isPdf && !isImage && !isLargeFileNotLoaded && activeFileChange && (
         <ProposedChangesPanel
           change={activeFileChange}
+          allChanges={proposedChanges}
           changeIndex={proposedChanges.findIndex(
             (c) => c.filePath === activeFile?.relativePath,
           )}
           totalChanges={proposedChanges.length}
           onKeep={() => handleKeepAllRef.current()}
           onUndo={() => handleUndoAllRef.current()}
+          onKeepAllFiles={() => handleKeepAllFilesRef.current()}
+          onUndoAllFiles={() => handleUndoAllFilesRef.current()}
+          onSelectFile={(relativePath) =>
+            useDocumentStore.getState().setActiveFile(relativePath)
+          }
         />
       )}
       {/* Live document statistics */}

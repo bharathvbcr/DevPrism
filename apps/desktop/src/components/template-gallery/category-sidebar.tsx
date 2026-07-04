@@ -53,7 +53,7 @@ export function CategorySidebar() {
       {/* All templates */}
       <button
         onClick={() => setSelectedCategory(null)}
-        className={`flex items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm transition-colors ${
+        className={`flex items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset ${
           selectedCategory === null
             ? "bg-accent font-medium text-accent-foreground"
             : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
@@ -76,7 +76,7 @@ export function CategorySidebar() {
           <button
             key={cat}
             onClick={() => setSelectedCategory(isActive ? null : cat)}
-            className={`flex items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm transition-colors ${
+            className={`flex items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset ${
               isActive
                 ? "bg-accent font-medium text-accent-foreground"
                 : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"

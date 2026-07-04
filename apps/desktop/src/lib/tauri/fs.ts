@@ -2,7 +2,7 @@ import {
   readTextFile,
   writeTextFile,
   readDir,
-  exists,
+  exists as tauriExists,
   mkdir,
   readFile,
   copyFile,
@@ -10,123 +10,48 @@ import {
   rename,
   stat,
 } from "@tauri-apps/plugin-fs";
-import { join } from "@tauri-apps/api/path";
+import { join as tauriJoin } from "@tauri-apps/api/path";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { createLogger } from "@/lib/debug/logger";
+import {
+  browserJoin,
+  isBrowserProjectPath,
+} from "@/lib/browser-project/constants";
+import {
+  getStagedBrowserFile,
+  isStagedBrowserFilePath,
+} from "@/lib/browser-project/attachment-staging";
+import {
+  browserPathExists,
+  getUniqueBrowserTargetName,
+  mkdirBrowserPath,
+  readBrowserFile,
+  readBrowserImageAsDataUrl,
+  readBrowserTextFile,
+  removeBrowserPath,
+  scanBrowserProjectFolder,
+  writeBrowserFile,
+  writeBrowserTextFile,
+} from "@/lib/browser-project/browser-fs";
+import {
+  getProjectFileType,
+  shouldSkipProjectDirectory,
+  LARGE_FILE_THRESHOLD,
+  type FsProjectFile,
+  type ProjectFileType,
+  type ScanResult,
+} from "./fs-shared";
 
 const log = createLogger("fs");
 
-export type ProjectFileType =
-  | "tex"
-  | "image"
-  | "pdf"
-  | "bib"
-  | "style"
-  | "other";
-
-export interface FsProjectFile {
-  relativePath: string;
-  absolutePath: string;
-  type: ProjectFileType;
-  fileSize: number;
-}
-
-/** Files larger than this (1 MB) are not auto-loaded into memory during project open. */
-export const LARGE_FILE_THRESHOLD = 1 * 1024 * 1024;
-
-const IMAGE_EXTENSIONS = new Set([
-  ".png",
-  ".jpg",
-  ".jpeg",
-  ".gif",
-  ".svg",
-  ".bmp",
-  ".webp",
-]);
-
-const STYLE_EXTENSIONS = new Set([
-  ".sty",
-  ".cls",
-  ".bst",
-  ".def",
-  ".cfg",
-  ".fd",
-  ".dtx",
-  ".ins",
-]);
-
-const IGNORED_DIRECTORY_NAMES = new Set([
-  "node_modules",
-  "__pycache__",
-  "venv",
-  "env",
-]);
-
-const IGNORED_EXTENSIONS = new Set([
-  // Ignore LaTeX build artifacts, but keep user-imported reference files visible.
-  ".aux",
-  ".log",
-  ".out",
-  ".toc",
-  ".lof",
-  ".lot",
-  ".fls",
-  ".fdb_latexmk",
-  ".synctex.gz",
-  ".synctex",
-  ".blg",
-  ".bbl",
-  ".nav",
-  ".snm",
-  ".vrb",
-  ".run.xml",
-  ".bcf",
-  // Compiled / build artifacts and native binaries — never user-editable content,
-  // so hide them. (User document/reference formats like .docx, .xlsx, .zip, media,
-  // and data files stay visible as "other" so imported references aren't lost.)
-  ".pyc",
-  ".pyo",
-  ".pyd",
-  ".so",
-  ".dylib",
-  ".o",
-  ".obj",
-  ".dll",
-  ".exe",
-  ".bin",
-]);
-
-export function shouldSkipProjectDirectory(name: string): boolean {
-  return (
-    name.startsWith(".") || IGNORED_DIRECTORY_NAMES.has(name.toLowerCase())
-  );
-}
-
-export function getProjectFileType(name: string): ProjectFileType | null {
-  const lower = name.toLowerCase();
-  // Skip ignored file extensions (build artifacts, binary/non-text files)
-  for (const ext of IGNORED_EXTENSIONS) {
-    if (lower.endsWith(ext)) return null;
-  }
-  if (lower.endsWith(".tex") || lower.endsWith(".ltx")) return "tex";
-  if (lower.endsWith(".bib")) return "bib";
-  if (lower.endsWith(".pdf")) return "pdf";
-  for (const ext of IMAGE_EXTENSIONS) {
-    if (lower.endsWith(ext)) return "image";
-  }
-  for (const ext of STYLE_EXTENSIONS) {
-    if (lower.endsWith(ext)) return "style";
-  }
-  // Show all other files (txt, md, sty downloaded packages, etc.)
-  return "other";
-}
-
-export interface ScanResult {
-  files: FsProjectFile[];
-  folders: string[]; // relative paths of all directories
-}
+export type { ProjectFileType, FsProjectFile, ScanResult };
+export { getProjectFileType, shouldSkipProjectDirectory, LARGE_FILE_THRESHOLD };
 
 export async function scanProjectFolder(rootPath: string): Promise<ScanResult> {
+  if (isBrowserProjectPath(rootPath)) {
+    return scanBrowserProjectFolder(rootPath);
+  }
+
   const files: FsProjectFile[] = [];
   const folders: string[] = [];
 
@@ -137,7 +62,6 @@ export async function scanProjectFolder(rootPath: string): Promise<ScanResult> {
       const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
 
       if (entry.isDirectory) {
-        // Skip hidden directories and common non-project dirs
         if (shouldSkipProjectDirectory(entry.name)) {
           continue;
         }
@@ -146,8 +70,6 @@ export async function scanProjectFolder(rootPath: string): Promise<ScanResult> {
       } else {
         const type = getProjectFileType(entry.name);
         if (type) {
-          // Only stat files that may be skipped by the large-file threshold
-          // (image and other). tex/bib/style are always loaded, pdf is always lazy.
           let fileSize = 0;
           if (type === "image" || type === "other") {
             try {
@@ -176,6 +98,9 @@ export async function scanProjectFolder(rootPath: string): Promise<ScanResult> {
 export async function readTexFileContent(
   absolutePath: string,
 ): Promise<string> {
+  if (isBrowserProjectPath(absolutePath)) {
+    return readBrowserTextFile(absolutePath);
+  }
   return readTextFile(absolutePath);
 }
 
@@ -183,12 +108,18 @@ export async function writeTexFileContent(
   absolutePath: string,
   content: string,
 ): Promise<void> {
+  if (isBrowserProjectPath(absolutePath)) {
+    return writeBrowserTextFile(absolutePath, content);
+  }
   return writeTextFile(absolutePath, content);
 }
 
 export async function readImageAsDataUrl(
   absolutePath: string,
 ): Promise<string> {
+  if (isBrowserProjectPath(absolutePath)) {
+    return readBrowserImageAsDataUrl(absolutePath);
+  }
   const data = await readFile(absolutePath);
   const ext = absolutePath.split(".").pop()?.toLowerCase() || "png";
   const mimeMap: Record<string, string> = {
@@ -204,13 +135,16 @@ export async function readImageAsDataUrl(
 
   let binary = "";
   for (let i = 0; i < data.length; i++) {
-    binary += String.fromCharCode(data[i]);
+    binary += String.fromCharCode(data[i]!);
   }
   const base64 = btoa(binary);
   return `data:${mime};base64,${base64}`;
 }
 
 export function getAssetUrl(absolutePath: string): string {
+  if (isBrowserProjectPath(absolutePath)) {
+    return absolutePath;
+  }
   return convertFileSrc(absolutePath);
 }
 
@@ -220,31 +154,28 @@ export async function createFileOnDisk(
   content: string,
 ): Promise<string> {
   const fullPath = await join(rootPath, name);
-  // Ensure parent directory exists
   const lastSep = Math.max(
     fullPath.lastIndexOf("/"),
     fullPath.lastIndexOf("\\"),
   );
   const parentDir = lastSep > 0 ? fullPath.substring(0, lastSep) : "";
-  if (parentDir && !(await exists(parentDir))) {
-    await mkdir(parentDir, { recursive: true });
+  if (parentDir && !(await pathExists(parentDir))) {
+    await mkdirPath(parentDir);
   }
-  await writeTextFile(fullPath, content);
+  await writeTexFileContent(fullPath, content);
   return fullPath;
 }
 
-/**
- * Generate a unique filename by appending (1), (2), etc. if the target already exists.
- * Returns the deduplicated relative path (e.g., "attachments/paper (1).pdf").
- */
 export async function getUniqueTargetName(
   rootPath: string,
   targetName: string,
 ): Promise<string> {
+  if (isBrowserProjectPath(rootPath)) {
+    return getUniqueBrowserTargetName(rootPath, targetName);
+  }
   const fullPath = await join(rootPath, targetName);
-  if (!(await exists(fullPath))) return targetName;
+  if (!(await pathExists(fullPath))) return targetName;
 
-  // Split into base and extension: "attachments/paper.pdf" → ["attachments/paper", ".pdf"]
   const dotIndex = targetName.lastIndexOf(".");
   const slashIndex = targetName.lastIndexOf("/");
   const hasExt = dotIndex > slashIndex + 1;
@@ -254,9 +185,8 @@ export async function getUniqueTargetName(
   for (let i = 1; i < 100; i++) {
     const candidate = `${baseName} (${i})${ext}`;
     const candidatePath = await join(rootPath, candidate);
-    if (!(await exists(candidatePath))) return candidate;
+    if (!(await pathExists(candidatePath))) return candidate;
   }
-  // Fallback — should never reach here
   return `${baseName} (${Date.now()})${ext}`;
 }
 
@@ -265,19 +195,33 @@ export async function copyFileToProject(
   sourcePath: string,
   targetName: string,
 ): Promise<string> {
-  // Auto-deduplicate filename
   const uniqueName = await getUniqueTargetName(rootPath, targetName);
   const fullPath = await join(rootPath, uniqueName);
-  // Ensure parent directory exists (e.g., attachments/)
   const lastSlash = Math.max(
     fullPath.lastIndexOf("/"),
     fullPath.lastIndexOf("\\"),
   );
   if (lastSlash > 0) {
     const parentDir = fullPath.substring(0, lastSlash);
-    if (!(await exists(parentDir))) {
-      await mkdir(parentDir, { recursive: true });
+    if (!(await pathExists(parentDir))) {
+      await mkdirPath(parentDir);
     }
+  }
+  if (isBrowserProjectPath(rootPath)) {
+    let bytes: Uint8Array;
+    if (isStagedBrowserFilePath(sourcePath)) {
+      const file = getStagedBrowserFile(sourcePath);
+      if (!file) {
+        throw new Error("The selected attachment is no longer available.");
+      }
+      bytes = new Uint8Array(await file.arrayBuffer());
+    } else if (isBrowserProjectPath(sourcePath)) {
+      bytes = await readBrowserFile(sourcePath);
+    } else {
+      bytes = new Uint8Array(await readFile(sourcePath));
+    }
+    await writeBrowserFile(fullPath, bytes);
+    return uniqueName;
   }
   await copyFile(sourcePath, fullPath);
   return uniqueName;
@@ -285,6 +229,9 @@ export async function copyFileToProject(
 
 export async function deleteFileFromDisk(absolutePath: string): Promise<void> {
   log.debug(`Deleting file: ${absolutePath}`);
+  if (isBrowserProjectPath(absolutePath)) {
+    return removeBrowserPath(absolutePath, false);
+  }
   await remove(absolutePath);
 }
 
@@ -292,6 +239,9 @@ export async function deleteFolderFromDisk(
   absolutePath: string,
 ): Promise<void> {
   log.debug(`Deleting folder: ${absolutePath}`);
+  if (isBrowserProjectPath(absolutePath)) {
+    return removeBrowserPath(absolutePath, true);
+  }
   await remove(absolutePath, { recursive: true });
 }
 
@@ -300,11 +250,40 @@ export async function renameFileOnDisk(
   newPath: string,
 ): Promise<void> {
   log.debug(`Renaming: ${oldPath} → ${newPath}`);
+  if (isBrowserProjectPath(oldPath) || isBrowserProjectPath(newPath)) {
+    const bytes = await readBrowserFile(oldPath);
+    await writeBrowserFile(newPath, bytes);
+    await removeBrowserPath(oldPath, false);
+    return;
+  }
   await rename(oldPath, newPath);
 }
 
 export async function createDirectory(absolutePath: string): Promise<void> {
+  await mkdirPath(absolutePath);
+}
+
+async function mkdirPath(absolutePath: string): Promise<void> {
+  if (isBrowserProjectPath(absolutePath)) {
+    return mkdirBrowserPath(absolutePath);
+  }
   await mkdir(absolutePath, { recursive: true });
 }
 
-export { exists, join };
+async function pathExists(absolutePath: string): Promise<boolean> {
+  if (isBrowserProjectPath(absolutePath)) {
+    return browserPathExists(absolutePath);
+  }
+  return tauriExists(absolutePath);
+}
+
+export async function join(...parts: string[]): Promise<string> {
+  if (parts.some(isBrowserProjectPath)) {
+    return browserJoin(...parts);
+  }
+  return tauriJoin(...parts);
+}
+
+export async function exists(absolutePath: string): Promise<boolean> {
+  return pathExists(absolutePath);
+}

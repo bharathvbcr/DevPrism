@@ -41,7 +41,7 @@ function HighlightNoteButton({
         <button
           type="button"
           className={cn(
-            "pointer-events-auto flex size-4 items-center justify-center rounded-full border border-border bg-background shadow-sm transition-all hover:scale-110 hover:bg-accent",
+            "pointer-events-auto flex size-6 items-center justify-center rounded-full border border-border bg-background shadow-sm transition-all hover:scale-110 hover:bg-accent",
             note ? "text-primary" : "text-muted-foreground opacity-60",
           )}
           title={note ? "Edit note" : "Add a note"}
@@ -348,7 +348,7 @@ export const MupdfPage = memo(function MupdfPage({
                 {Number.isFinite(minX) &&
                   (onUpdateNote || onRemoveAnnotation) && (
                     <div
-                      className="absolute flex translate-x-1/2 -translate-y-1/2 items-center gap-1"
+                      className="absolute flex translate-x-1/2 -translate-y-1/2 items-center gap-1.5"
                       style={{
                         left: `${(maxX / pageWidth) * 100}%`,
                         top: `${(minY / pageHeight) * 100}%`,
@@ -363,7 +363,7 @@ export const MupdfPage = memo(function MupdfPage({
                       {onRemoveAnnotation && (
                         <button
                           type="button"
-                          className="pointer-events-auto flex size-4 items-center justify-center rounded-full border border-border bg-background text-muted-foreground opacity-60 shadow-sm transition-all hover:scale-110 hover:bg-destructive hover:text-white hover:opacity-100"
+                          className="pointer-events-auto flex size-6 items-center justify-center rounded-full border border-border bg-background text-muted-foreground opacity-60 shadow-sm transition-all hover:scale-110 hover:bg-destructive hover:text-white hover:opacity-100"
                           title="Remove highlight"
                           aria-label="Remove highlight"
                           onClick={(e) => {
@@ -398,15 +398,18 @@ export const MupdfPage = memo(function MupdfPage({
                 width: `${(h.rect.w / pageWidth) * 100}%`,
                 height: `${(h.rect.h / pageHeight) * 100}%`,
                 backgroundColor: h.pulse
-                  ? "rgba(14, 165, 233, 0.35)"
+                  ? "var(--pdf-synctex-pulse)"
                   : h.active
-                    ? "rgba(249, 115, 22, 0.45)"
-                    : "rgba(250, 204, 21, 0.4)",
+                    ? "var(--pdf-search-active)"
+                    : "var(--pdf-search-match)",
                 outline: h.pulse
-                  ? "2px solid #0ea5e9"
+                  ? "2px solid var(--pdf-synctex-pulse)"
                   : h.active
-                    ? "1.5px solid #ea580c"
+                    ? "2.5px solid var(--pdf-search-active-outline)"
                     : undefined,
+                boxShadow: h.active
+                  ? "0 0 0 1px var(--pdf-search-active-outline)"
+                  : undefined,
                 mixBlendMode: "multiply",
               }}
             />

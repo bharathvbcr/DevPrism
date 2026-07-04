@@ -3,6 +3,7 @@ import { createFileOnDisk } from "@/lib/tauri/fs";
 import { getLatexSnippetInsert } from "@/lib/latex-snippets";
 import { setCompileRootPreference } from "@/lib/compile-root-preference";
 import { useDocumentStore } from "@/stores/document-store";
+import { showWorkspaceError } from "@/stores/workspace-banner-store";
 
 const COVER_LETTER_NAME = "COVER_LETTER.tex";
 
@@ -39,7 +40,11 @@ export async function ensureCoverLetterFile(): Promise<boolean> {
     await state.refreshFiles();
     const created = findCoverLetterFile(useDocumentStore.getState().files);
     if (!created) {
-      toast.error("Could not create COVER_LETTER.tex.");
+      showWorkspaceError(
+        "Cover letter failed",
+        "Could not create COVER_LETTER.tex in this project.",
+        { dedupeKey: "cover-letter-create" },
+      );
       return false;
     }
     state.setActiveFile(created.id);
@@ -47,10 +52,12 @@ export async function ensureCoverLetterFile(): Promise<boolean> {
     toast.success("Created COVER_LETTER.tex");
     return true;
   } catch (err) {
-    toast.error(
+    showWorkspaceError(
+      "Cover letter failed",
       err instanceof Error
         ? err.message
         : "Failed to create cover letter file.",
+      { dedupeKey: "cover-letter-create" },
     );
     return false;
   }

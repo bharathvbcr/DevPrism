@@ -9,6 +9,8 @@ import {
   XIcon,
   FileDownIcon,
   FileTextIcon,
+  Loader2Icon,
+  MoreVerticalIcon,
 } from "lucide-react";
 import { useHistoryStore, type SnapshotInfo } from "@/stores/history-store";
 import { useDocumentStore } from "@/stores/document-store";
@@ -24,7 +26,9 @@ import {
   linearizeSnapshots,
 } from "@/lib/track-changes-meta";
 import { toast } from "sonner";
+import { showWorkspaceError } from "@/stores/workspace-banner-store";
 import { cn } from "@/lib/utils";
+import { HistoryPanelSkeleton } from "./history-panel-skeleton";
 import { Button } from "@/components/ui/button";
 import {
   ContextMenu,
@@ -34,10 +38,18 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
   DialogFooter,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -70,7 +82,7 @@ function snapshotTypeBadgeColor(message: string): string {
 // ─── Panel ───
 
 export function HistoryPanel({ maxHeight }: { maxHeight?: string }) {
-  const nativeAgentEnabled = useSettingsStore((s) => s.nativeAgentEnabled);
+  const _nativeAgentEnabled = useSettingsStore((s) => s.nativeAgentEnabled);
   const projectRoot = useDocumentStore((s) => s.projectRoot);
   const snapshots = useHistoryStore((s) => s.snapshots);
   const isLoading = useHistoryStore((s) => s.isLoading);
@@ -96,6 +108,7 @@ export function HistoryPanel({ maxHeight }: { maxHeight?: string }) {
   const [labelDialogOpen, setLabelDialogOpen] = useState(false);
   const [labelTargetId, setLabelTargetId] = useState<string | null>(null);
   const [labelValue, setLabelValue] = useState("");
+  const [restoreTarget, setRestoreTarget] = useState<string | null>(null);
   const [trackChangesBusyId, setTrackChangesBusyId] = useState<string | null>(
     null,
   );
@@ -110,7 +123,11 @@ export function HistoryPanel({ maxHeight }: { maxHeight?: string }) {
       const idx = linearSnapshots.findIndex((s) => s.id === snap.id);
       const parent = linearSnapshots[idx + 1];
       if (!parent) {
-        toast.error("No previous snapshot to compare against.");
+        showWorkspaceError(
+          "Track changes unavailable",
+          "No previous snapshot to compare against.",
+          { dedupeKey: "history-track-changes-no-parent" },
+        );
         return;
       }
       setTrackChangesBusyId(snap.id);
@@ -123,7 +140,12 @@ export function HistoryPanel({ maxHeight }: { maxHeight?: string }) {
         await loadDiff(projectRoot, parent.id, snap.id);
         const diffResult = useHistoryStore.getState().diffResult;
         if (!diffResult?.length) {
-          toast.error("No changes found in this snapshot.", { id: toastId });
+          toast.dismiss(toastId);
+          showWorkspaceError(
+            "No changes found",
+            "This snapshot has no .tex changes to export or preview.",
+            { dedupeKey: "history-track-changes-empty" },
+          );
           return;
         }
         const meta = buildTrackChangesMeta(parent, snap);
@@ -140,9 +162,14 @@ export function HistoryPanel({ maxHeight }: { maxHeight?: string }) {
         // previewTrackedChangesPdf already surfaced its own error toast; only
         // show one here for prep/export failures that wouldn't otherwise toast.
         if (!handedOff) {
-          toast.error(message, { id: toastId });
+          toast.dismiss(toastId);
+          showWorkspaceError("Track changes failed", message, {
+            dedupeKey: "history-track-changes",
+          });
         } else if (action === "export") {
-          toast.error(message);
+          showWorkspaceError("Export failed", message, {
+            dedupeKey: "history-track-changes-export",
+          });
         }
       } finally {
         setTrackChangesBusyId(null);
@@ -256,7 +283,7 @@ export function HistoryPanel({ maxHeight }: { maxHeight?: string }) {
                 trackChangesBusy={trackChangesBusyId === snap.id}
                 canTrackChanges={hasTexChanges(snap)}
                 onClick={() => handleClick(snap)}
-                onRestore={() => handleRestore(snap.id)}
+                onRestore={() => setRestoreTarget(snap.id)}
                 onAddLabel={() => openLabelDialog(snap.id)}
                 onRemoveLabel={(label) =>
                   projectRoot && removeLabel(projectRoot, label)
@@ -269,7 +296,11 @@ export function HistoryPanel({ maxHeight }: { maxHeight?: string }) {
           </div>
         )}
 
-        {isLoading && (
+        {isLoading && linearSnapshots.length === 0 && (
+          <HistoryPanelSkeleton rows={4} />
+        )}
+
+        {isLoading && linearSnapshots.length > 0 && (
           <div className="flex items-center justify-center py-2">
             <LoaderIcon className="size-3 animate-spin text-muted-foreground" />
           </div>
@@ -294,11 +325,50 @@ export function HistoryPanel({ maxHeight }: { maxHeight?: string }) {
             />
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setLabelDialogOpen(false)}>
+            <Button variant="ghost" onClick={() => setLabelDialogOpen(false)}>
               Cancel
             </Button>
             <Button onClick={handleAddLabel} disabled={!labelValue.trim()}>
               Add
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Restore confirmation dialog */}
+      <Dialog
+        open={restoreTarget !== null}
+        onOpenChange={(open) => {
+          if (!open && !isRestoring) setRestoreTarget(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Restore this version?</DialogTitle>
+            <DialogDescription>
+              This replaces your current working files with this version. Any
+              unsaved changes will be lost.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="ghost"
+              onClick={() => setRestoreTarget(null)}
+              disabled={isRestoring}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={async () => {
+                if (!restoreTarget) return;
+                await handleRestore(restoreTarget);
+                setRestoreTarget(null);
+              }}
+              disabled={isRestoring}
+            >
+              {isRestoring && <Loader2Icon className="size-4 animate-spin" />}
+              Restore
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -342,63 +412,122 @@ function SnapshotRow({
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
-        <button
+        <div
           className={cn(
-            "group flex w-full items-start px-2.5 py-2 text-left transition-colors",
+            "group relative flex w-full items-start transition-colors",
             isSelected ? "bg-accent" : "hover:bg-accent/50",
           )}
-          onClick={onClick}
         >
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-1">
-              <span
-                className={cn(
-                  "rounded px-1.5 py-0.5 font-medium text-xs leading-tight",
-                  snapshotTypeBadgeColor(snapshot.message),
-                )}
-              >
-                {snapshotTypeLabel(snapshot.message, nativeAgentEnabled)}
-              </span>
-              <span className="text-muted-foreground text-xs">
-                {formatRelativeTime(snapshot.timestamp)}
-              </span>
-            </div>
+          <button
+            className="flex min-w-0 flex-1 items-start py-2 pr-9 pl-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+            onClick={onClick}
+          >
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-1">
+                <span
+                  className={cn(
+                    "rounded px-1.5 py-0.5 font-medium text-xs leading-tight",
+                    snapshotTypeBadgeColor(snapshot.message),
+                  )}
+                >
+                  {snapshotTypeLabel(snapshot.message, nativeAgentEnabled)}
+                </span>
+                <span className="text-muted-foreground text-xs">
+                  {formatRelativeTime(snapshot.timestamp)}
+                </span>
+              </div>
 
-            {/* Labels */}
-            {snapshot.labels.length > 0 && (
-              <div className="mt-0.5 flex flex-wrap gap-0.5">
-                {snapshot.labels.map((label) => (
-                  <span
-                    key={label}
-                    className="inline-flex items-center gap-0.5 rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-600 text-xs dark:text-amber-400"
-                  >
-                    <TagIcon className="size-2" />
-                    {label}
-                    <button
-                      aria-label={`Remove label ${label}`}
-                      className="ml-0.5 rounded-sm opacity-0 hover:text-destructive group-hover:opacity-100"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onRemoveLabel(label);
-                      }}
+              {/* Labels */}
+              {snapshot.labels.length > 0 && (
+                <div className="mt-0.5 flex flex-wrap gap-0.5">
+                  {snapshot.labels.map((label) => (
+                    <span
+                      key={label}
+                      className="inline-flex items-center gap-0.5 rounded bg-secondary px-1.5 py-0.5 text-secondary-foreground text-xs"
                     >
-                      <XIcon className="size-2" />
-                    </button>
-                  </span>
-                ))}
-              </div>
-            )}
+                      <TagIcon className="size-2" />
+                      {label}
+                      <button
+                        aria-label={`Remove label ${label}`}
+                        className="ml-0.5 rounded-sm opacity-0 hover:text-destructive group-hover:opacity-100"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onRemoveLabel(label);
+                        }}
+                      >
+                        <XIcon className="size-2" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
 
-            {/* Changed files summary */}
-            {hasFiles && (
-              <div className="mt-0.5 truncate text-muted-foreground text-xs">
-                {snapshot.changed_files
-                  .map((f) => f.split(/[/\\]/).pop())
-                  .join(", ")}
-              </div>
-            )}
-          </div>
-        </button>
+              {/* Changed files summary */}
+              {hasFiles && (
+                <div className="mt-0.5 truncate text-muted-foreground text-xs">
+                  {snapshot.changed_files
+                    .map((f) => f.split(/[/\\]/).pop())
+                    .join(", ")}
+                </div>
+              )}
+            </div>
+          </button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Snapshot actions"
+                onClick={(e) => e.stopPropagation()}
+                className="absolute top-1.5 right-1.5 opacity-0 transition-opacity focus-visible:opacity-100 group-hover:opacity-100 data-[state=open]:opacity-100"
+              >
+                <MoreVerticalIcon className="size-3.5" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-52">
+              <DropdownMenuItem onClick={onRestore} disabled={isRestoring}>
+                <RotateCcwIcon className="mr-2 size-3.5" />
+                Restore this version
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={onAddLabel}>
+                <PlusIcon className="mr-2 size-3.5" />
+                Add label
+              </DropdownMenuItem>
+              {canTrackChanges && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    onClick={onExportTrackedTex}
+                    disabled={trackChangesBusy}
+                  >
+                    {trackChangesBusy ? (
+                      <LoaderIcon className="mr-2 size-3.5 animate-spin" />
+                    ) : (
+                      <FileDownIcon className="mr-2 size-3.5" />
+                    )}
+                    Export tracked .tex
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={onPreviewTrackedPdf}
+                    disabled={trackChangesBusy}
+                  >
+                    {trackChangesBusy ? (
+                      <LoaderIcon className="mr-2 size-3.5 animate-spin" />
+                    ) : (
+                      <FileTextIcon className="mr-2 size-3.5" />
+                    )}
+                    Preview changes PDF
+                  </DropdownMenuItem>
+                </>
+              )}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={onCopySha}>
+                <CopyIcon className="mr-2 size-3.5" />
+                Copy SHA
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </ContextMenuTrigger>
       <ContextMenuContent>
         <ContextMenuItem onClick={onRestore} disabled={isRestoring}>

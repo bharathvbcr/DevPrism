@@ -129,8 +129,8 @@ export function SpaceQuickActions({
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          title="Quick actions"
-          aria-label="Quick actions"
+          title="AI quick actions for this space"
+          aria-label="AI quick actions for this space"
           className={cn(
             "flex shrink-0 items-center gap-0.5 rounded-md px-1.5 py-1 text-xs transition-colors",
             "text-muted-foreground hover:bg-sidebar-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",

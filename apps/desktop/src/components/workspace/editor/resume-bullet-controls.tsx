@@ -122,7 +122,7 @@ export function ResumeBulletControls({
                   "rounded-full bg-muted px-1.5 py-0.5 font-medium text-[10px] tabular-nums",
                   scoreColor(qualityScore),
                 )}
-                title="Local quality score (metrics, verbs, length)"
+                title={`Local quality: ${qualityScore}/100 (${qualityGrade}) — based on metrics, verbs, length`}
               >
                 {qualityScore} · {qualityGrade}
               </span>
@@ -161,6 +161,7 @@ export function ResumeBulletControls({
                 type="button"
                 disabled={pending || !clickable}
                 onClick={() => clickable && onInsightClick?.(insight)}
+                aria-label={clickable ? `Apply fix: ${insight}` : insight}
                 title={clickable ? "Apply suggested fix" : insight}
                 className={cn(
                   "rounded-full px-2 py-0.5 text-[10px] leading-snug",
@@ -236,6 +237,7 @@ export function ResumeBulletControls({
             type="button"
             disabled={!canApply}
             onClick={onApply}
+            aria-label="Apply bullet count change"
             title="Enter"
             className={cn(
               "ml-1 rounded-md px-2 py-0.5 font-medium text-[11px] transition-colors",
@@ -277,6 +279,8 @@ export function ResumeBulletControls({
           <button
             type="button"
             onClick={() => setShowDiagnostics((v) => !v)}
+            aria-label={`Per-bullet issues (${flaggedBullets.length})`}
+            aria-expanded={showDiagnostics}
             className="flex w-full items-center justify-between text-[10px] text-muted-foreground uppercase tracking-wider"
           >
             <span>Per-bullet issues ({flaggedBullets.length})</span>
@@ -319,6 +323,7 @@ export function ResumeBulletControls({
                 type="button"
                 disabled={pending}
                 title={suggestion.title}
+                aria-label={suggestion.title}
                 onClick={() => onAiSuggestion(suggestion)}
                 className={cn(
                   "rounded-full border px-2 py-0.5 text-[10px] transition-colors",

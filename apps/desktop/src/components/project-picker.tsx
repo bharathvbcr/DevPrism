@@ -1,5 +1,4 @@
 import {
-  type ComponentType,
   type DragEvent as ReactDragEvent,
   type ReactNode,
   useCallback,
@@ -10,9 +9,20 @@ import {
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
-import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { open } from "@tauri-apps/plugin-dialog";
+import {
+  importLooseFromFiles,
+  importLooseProjectPaths,
+  importZipFromFile,
+  importZipProject,
+  pickProjectFolder,
+} from "@/lib/project-import-client";
+import { isTauri } from "@/lib/runtime/is-tauri";
+import {
+  classifyBrowserDropFiles,
+  collectBrowserDropFiles,
+  hasBrowserFileDrag,
+} from "@/lib/browser-project/drag-drop";
 import { readFile, readTextFile, stat } from "@tauri-apps/plugin-fs";
 import { toast } from "sonner";
 import {
@@ -20,11 +30,7 @@ import {
   XIcon,
   FileTextIcon,
   SparklesIcon,
-  CheckCircle2Icon,
-  CircleIcon,
-  DownloadIcon,
   Loader2Icon,
-  KeyRoundIcon,
   SearchIcon,
   PanelLeftIcon,
   PlusIcon,
@@ -45,12 +51,9 @@ import {
   HeartIcon,
   CodeIcon,
   LightbulbIcon,
-  ZapIcon,
-  UserIcon,
   WandSparklesIcon,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { PersonalizationSettings } from "./personalization-settings";
 import { useProjectStore } from "@/stores/project-store";
 import {
   useSpacesStore,
@@ -71,26 +74,19 @@ import {
   formatNewProjectSetupToast,
   applySpaceModelForProject,
 } from "@/lib/space-project";
-import { masterFileNameForKind } from "@/lib/space-master";
 import { useDocumentStore } from "@/stores/document-store";
 import { useClaudeSetupStore } from "@/stores/claude-setup-store";
-import {
-  getOllamaBaseUrl,
-  listOllamaModels,
-  resolveOllamaCredential,
-  type OllamaModelInfo,
-} from "@/lib/ollama";
-import { useOllamaStatus } from "@/hooks/use-ollama-status";
-import { OllamaSetupHints } from "@/components/ollama-setup-hints";
-import { useUvSetupStore } from "@/stores/uv-setup-store";
 import {
   useSettingsStore,
   type HomepageDateField,
 } from "@/stores/settings-store";
 import { compileLatex } from "@/lib/latex-compiler";
 import { getMupdfClient } from "@/lib/mupdf/mupdf-client";
+import { FSA_SCHEME } from "@/lib/browser-project/constants";
+import { getPersistedFsaFolderName } from "@/lib/browser-project/fsa-persistence";
 import { exists, join, scanProjectFolder } from "@/lib/tauri/fs";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Dialog,
   DialogContent,
@@ -107,8 +103,15 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
-import { ProjectWizard, type CreationMode } from "./project-wizard";
-import { ClaudeSetup } from "./claude-setup";
+import { ProjectWizard, type WizardMode } from "./project-wizard";
+import { SettingsDialog } from "./settings-dialog";
+import { SetupReminderBanner } from "./setup-reminder-banner";
+import { InlineBanner } from "@/components/ui/inline-banner";
+import { useSetupFlowStore } from "@/stores/setup-flow-store";
+import {
+  OPEN_PROJECT_WIZARD_EVENT,
+  type ProjectWizardLaunchMode,
+} from "@/lib/home-flow-events";
 import { cn } from "@/lib/utils";
 import {
   canUseAiAssist,
@@ -116,6 +119,7 @@ import {
   semanticRank,
 } from "@/lib/ai-assist";
 import { suggestSpaceMeta } from "@/lib/ai-extras";
+import { listOllamaModels } from "@/lib/ollama";
 
 interface DefaultProject {
   path: string;
@@ -125,7 +129,6 @@ interface DefaultProject {
 }
 
 type ProjectPickerSection = "projects" | "settings";
-type SettingsDetailSection = "provider" | "environment" | "editor" | "ai" | "personalization";
 
 type RecentProject = {
   path: string;
@@ -208,37 +211,6 @@ function SpaceGlyph({
   );
 }
 
-function NewProjectSpaceHint() {
-  const activeSpaceId = useSpacesStore((s) => s.activeSpaceId);
-  const spaces = useSpacesStore((s) => s.spaces);
-  const space = useMemo(
-    () => spaces.find((s) => s.id === activeSpaceId) ?? null,
-    [spaces, activeSpaceId],
-  );
-  if (!space) return null;
-
-  const kind = inferSpaceKind(space);
-  const skills = bundledSkillsForKind(kind);
-  const master = kind !== "general" ? masterFileNameForKind(kind) : null;
-
-  const details: string[] = [`added to ${space.name}`];
-  if (skills?.length) {
-    details.push(`install ${skills.join(", ")} skills`);
-  }
-  if (master) {
-    details.push(`create ${master}`);
-  }
-
-  return (
-    <div className="rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-muted-foreground text-xs leading-relaxed">
-      <span className="font-medium text-foreground">
-        {spaceKindLabel(kind)} space active —{" "}
-      </span>
-      New projects will be {details.join(" · ")}.
-    </div>
-  );
-}
-
 const projectPreviewCache = new Map<string, ProjectPreviewData>();
 const projectPreviewRequests = new Map<string, Promise<ProjectPreviewData>>();
 let projectPreviewCompileQueue: Promise<void> = Promise.resolve();
@@ -274,8 +246,51 @@ function releaseBlurbSlot(): void {
 }
 
 export function ProjectPicker() {
-  const [showModeDialog, setShowModeDialog] = useState(false);
-  const [wizardMode, setWizardMode] = useState<CreationMode | null>(null);
+  const [wizardMode, setWizardMode] = useState<WizardMode | null>(null);
+  const setWizardActive = useSetupFlowStore((s) => s.setWizardActive);
+
+  // Installed Ollama models power the "Default model" datalist / validation hint.
+  const [installedModels, setInstalledModels] = useState<string[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    listOllamaModels()
+      .then((models) => {
+        if (!cancelled) setInstalledModels(models.map((m) => m.name));
+      })
+      .catch(() => {
+        if (!cancelled) setInstalledModels([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    setWizardActive(wizardMode !== null);
+    if (wizardMode === null) {
+      useSetupFlowStore.getState().setLaunchedFromOnboarding(false);
+    }
+    return () => setWizardActive(false);
+  }, [wizardMode, setWizardActive]);
+
+  useEffect(() => {
+    const onOpenWizard = (event: Event) => {
+      const detail = (
+        event as CustomEvent<{
+          mode?: ProjectWizardLaunchMode;
+          fromOnboarding?: boolean;
+        }>
+      ).detail;
+      const mode = detail?.mode ?? "template";
+      if (detail?.fromOnboarding) {
+        useSetupFlowStore.getState().setLaunchedFromOnboarding(true);
+      }
+      setWizardMode(mode);
+    };
+    window.addEventListener(OPEN_PROJECT_WIZARD_EVENT, onOpenWizard);
+    return () =>
+      window.removeEventListener(OPEN_PROJECT_WIZARD_EVENT, onOpenWizard);
+  }, []);
   const [appVersion, setAppVersion] = useState("");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [activeSection, setActiveSection] = useState<ProjectPickerSection>(
@@ -289,8 +304,6 @@ export function ProjectPicker() {
       useSpacesStore.getState().setPendingPickerSection(null);
     }
   }, []);
-  const [settingsDetailSection, setSettingsDetailSection] =
-    useState<SettingsDetailSection>("provider");
   const [searchQuery, setSearchQuery] = useState("");
   const [removeProjectTarget, setRemoveProjectTarget] =
     useState<RecentProject | null>(null);
@@ -388,20 +401,27 @@ export function ProjectPicker() {
 
   const handleOpenFolder = async () => {
     try {
-      const selected = await open({
-        directory: true,
-        multiple: false,
+      const selected = await pickProjectFolder({
         title: "Open Project Folder",
       });
-      if (typeof selected === "string" && selected) {
+      if (selected) {
+        let displayName: string | undefined;
+        if (selected.startsWith(FSA_SCHEME)) {
+          const id = selected.slice(FSA_SCHEME.length).split("/")[0];
+          displayName = id
+            ? ((await getPersistedFsaFolderName(id)) ?? undefined)
+            : undefined;
+        }
         await openProject(selected);
-        addRecentProject(selected);
+        addRecentProject(selected, displayName);
         applySpaceModel(selected);
+        useSetupFlowStore.getState().completeOnboarding();
       }
     } catch (err) {
       console.warn("Failed to open selected project folder:", err);
-      toast.error("Failed to open project folder", {
-        description: err instanceof Error ? err.message : String(err),
+      setPickerError({
+        title: "Failed to open project folder",
+        message: err instanceof Error ? err.message : String(err),
       });
     }
   };
@@ -411,21 +431,94 @@ export function ProjectPicker() {
       await openProject(path);
       addRecentProject(path);
       applySpaceModel(path);
+      useSetupFlowStore.getState().completeOnboarding();
     } catch (err) {
       removeRecentProject(path);
       assignProject(path, null);
       console.warn("Failed to open recent project:", { path, error: err });
+      setPickerError({
+        title: "Failed to open project",
+        message: err instanceof Error ? err.message : String(err),
+      });
     }
   };
 
-  const handleSelectMode = (mode: CreationMode) => {
-    setShowModeDialog(false);
+  const handleSelectMode = (mode: WizardMode) => {
     setWizardMode(mode);
   };
 
   // ─── Drag-and-drop import (.zip LaTeX archives / project folders) ───
   const [isDragging, setIsDragging] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
+  const [pickerError, setPickerError] = useState<{
+    title: string;
+    message: string;
+  } | null>(null);
+
+  const importDroppedBrowserFiles = async (
+    dropped: Awaited<ReturnType<typeof collectBrowserDropFiles>>,
+  ) => {
+    const { zips, loose } = classifyBrowserDropFiles(dropped);
+    if (zips.length === 0 && loose.length === 0) {
+      setPickerError({
+        title: "Unsupported drop",
+        message: "Drop a .zip archive, LaTeX files, or a project folder.",
+      });
+      return;
+    }
+
+    setIsImporting(true);
+    let firstPath: string | null = null;
+    try {
+      for (const zip of zips) {
+        try {
+          const imported = await importZipFromFile(zip);
+          const setup = await setupNewProjectInSpace(imported.path);
+          addRecentProject(imported.path, imported.name);
+          applySpaceModel(imported.path);
+          firstPath = firstPath ?? imported.path;
+          toast.success(
+            formatNewProjectSetupToast(setup, `Imported "${imported.name}"`),
+          );
+        } catch (err) {
+          console.warn("Failed to import zip project:", {
+            zip: zip.name,
+            error: err,
+          });
+          setPickerError({
+            title: "Failed to import archive",
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+
+      if (loose.length > 0) {
+        try {
+          const imported = await importLooseFromFiles(loose);
+          const setup = await setupNewProjectInSpace(imported.path);
+          addRecentProject(imported.path, imported.name);
+          applySpaceModel(imported.path);
+          firstPath = firstPath ?? imported.path;
+          toast.success(
+            formatNewProjectSetupToast(setup, `Created "${imported.name}"`),
+          );
+        } catch (err) {
+          console.warn("Failed to create project from files:", { error: err });
+          setPickerError({
+            title: "Failed to create project from files",
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+
+      if (firstPath) {
+        useSetupFlowStore.getState().completeOnboarding();
+        await openProject(firstPath);
+      }
+    } finally {
+      setIsImporting(false);
+    }
+  };
 
   const importDroppedPaths = async (paths: string[]) => {
     const isZipName = (p: string) => p.toLowerCase().endsWith(".zip");
@@ -452,8 +545,9 @@ export function ProjectPicker() {
 
     if (zips.length === 0 && dirs.length === 0 && files.length === 0) {
       if (paths.length > 0) {
-        toast.error("Unsupported drop", {
-          description: "Drop a .zip archive, LaTeX files, or a project folder.",
+        setPickerError({
+          title: "Unsupported drop",
+          message: "Drop a .zip archive, LaTeX files, or a project folder.",
         });
       }
       return;
@@ -465,12 +559,9 @@ export function ProjectPicker() {
       // 1) Each .zip becomes its own extracted project.
       for (const zip of zips) {
         try {
-          const imported = await invoke<{ path: string; name: string }>(
-            "import_zip_project",
-            { zipPath: zip },
-          );
+          const imported = await importZipProject(zip);
           const setup = await setupNewProjectInSpace(imported.path);
-          addRecentProject(imported.path);
+          addRecentProject(imported.path, imported.name);
           applySpaceModel(imported.path);
           firstPath = firstPath ?? imported.path;
           toast.success(
@@ -478,8 +569,9 @@ export function ProjectPicker() {
           );
         } catch (err) {
           console.warn("Failed to import zip project:", { zip, error: err });
-          toast.error("Failed to import archive", {
-            description: err instanceof Error ? err.message : String(err),
+          setPickerError({
+            title: "Failed to import archive",
+            message: err instanceof Error ? err.message : String(err),
           });
         }
       }
@@ -488,12 +580,9 @@ export function ProjectPicker() {
         // 2) Loose files (a bare main.tex + refs.bib + images, plus any figure
         //    folders dropped alongside) are bundled into one new project.
         try {
-          const imported = await invoke<{ path: string; name: string }>(
-            "import_loose_files",
-            { paths: [...files, ...dirs] },
-          );
+          const imported = await importLooseProjectPaths([...files, ...dirs]);
           const setup = await setupNewProjectInSpace(imported.path);
-          addRecentProject(imported.path);
+          addRecentProject(imported.path, imported.name);
           applySpaceModel(imported.path);
           firstPath = firstPath ?? imported.path;
           toast.success(
@@ -501,8 +590,9 @@ export function ProjectPicker() {
           );
         } catch (err) {
           console.warn("Failed to create project from files:", { error: err });
-          toast.error("Failed to create project from files", {
-            description: err instanceof Error ? err.message : String(err),
+          setPickerError({
+            title: "Failed to create project from files",
+            message: err instanceof Error ? err.message : String(err),
           });
         }
       } else {
@@ -516,6 +606,7 @@ export function ProjectPicker() {
 
       // Opening a project unmounts this view, so only open one (the first).
       if (firstPath) {
+        useSetupFlowStore.getState().completeOnboarding();
         await openProject(firstPath);
       }
     } finally {
@@ -531,42 +622,92 @@ export function ProjectPicker() {
   const wizardModeRef = useRef(wizardMode);
   wizardModeRef.current = wizardMode;
 
+  const importDroppedBrowserFilesRef = useRef(importDroppedBrowserFiles);
+  importDroppedBrowserFilesRef.current = importDroppedBrowserFiles;
+
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let cancelled = false;
 
-    getCurrentWebview()
-      .onDragDropEvent((event) => {
-        if (cancelled) return;
-        const { type } = event.payload;
-        // While the wizard is open or an import is running, ignore OS drops so
-        // we never yank the user out of a flow or start a second import.
-        const blocked = wizardModeRef.current !== null || importingRef.current;
-        if (type === "enter" || type === "over") {
-          if (!blocked) setIsDragging(true);
-        } else if (type === "leave") {
-          setIsDragging(false);
-        } else if (type === "drop") {
-          setIsDragging(false);
-          if (blocked) return;
-          const paths = (event.payload as { paths?: string[] }).paths ?? [];
-          importingRef.current = true;
-          void importDroppedPathsRef.current(paths).finally(() => {
-            importingRef.current = false;
-          });
-        }
-      })
-      .then((fn) => {
-        if (cancelled) fn();
-        else unlisten = fn;
-      })
-      .catch(() => {
-        // Not in a Tauri webview (e.g. plain browser dev) — drag-drop is a no-op.
-      });
+    if (isTauri()) {
+      getCurrentWebview()
+        .onDragDropEvent((event) => {
+          if (cancelled) return;
+          const { type } = event.payload;
+          const blocked =
+            wizardModeRef.current !== null || importingRef.current;
+          if (type === "enter" || type === "over") {
+            if (!blocked) setIsDragging(true);
+          } else if (type === "leave") {
+            setIsDragging(false);
+          } else if (type === "drop") {
+            setIsDragging(false);
+            if (blocked) return;
+            const paths = (event.payload as { paths?: string[] }).paths ?? [];
+            importingRef.current = true;
+            void importDroppedPathsRef.current(paths).finally(() => {
+              importingRef.current = false;
+            });
+          }
+        })
+        .then((fn) => {
+          if (cancelled) fn();
+          else unlisten = fn;
+        })
+        .catch(() => {
+          /* fall through to HTML5 handlers below */
+        });
+    }
+
+    const onDragEnter = (event: DragEvent) => {
+      if (wizardModeRef.current !== null || importingRef.current) return;
+      if (!hasBrowserFileDrag(event.dataTransfer)) return;
+      event.preventDefault();
+      setIsDragging(true);
+    };
+
+    const onDragOver = (event: DragEvent) => {
+      if (wizardModeRef.current !== null || importingRef.current) return;
+      if (!hasBrowserFileDrag(event.dataTransfer)) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+      setIsDragging(true);
+    };
+
+    const onDragLeave = (event: DragEvent) => {
+      if (event.relatedTarget && event.currentTarget instanceof Node) {
+        if (event.currentTarget.contains(event.relatedTarget as Node)) return;
+      }
+      setIsDragging(false);
+    };
+
+    const onDrop = (event: DragEvent) => {
+      if (wizardModeRef.current !== null || importingRef.current) return;
+      if (!hasBrowserFileDrag(event.dataTransfer) || !event.dataTransfer)
+        return;
+      event.preventDefault();
+      setIsDragging(false);
+      if (isTauri()) return;
+      importingRef.current = true;
+      void collectBrowserDropFiles(event.dataTransfer)
+        .then((files) => importDroppedBrowserFilesRef.current(files))
+        .finally(() => {
+          importingRef.current = false;
+        });
+    };
+
+    window.addEventListener("dragenter", onDragEnter);
+    window.addEventListener("dragover", onDragOver);
+    window.addEventListener("dragleave", onDragLeave);
+    window.addEventListener("drop", onDrop);
 
     return () => {
       cancelled = true;
       unlisten?.();
+      window.removeEventListener("dragenter", onDragEnter);
+      window.removeEventListener("dragover", onDragOver);
+      window.removeEventListener("dragleave", onDragLeave);
+      window.removeEventListener("drop", onDrop);
     };
   }, []);
 
@@ -580,148 +721,14 @@ export function ProjectPicker() {
   const deleteSpace = useSpacesStore((s) => s.deleteSpace);
   const assignProject = useSpacesStore((s) => s.assignProject);
   const setSpaceDefaults = useSpacesStore((s) => s.setSpaceDefaults);
-  const nativeAgentEnabled = useSettingsStore((s) => s.nativeAgentEnabled);
-  const setNativeAgentEnabled = useSettingsStore(
-    (s) => s.setNativeAgentEnabled,
-  );
-  const aiAssistEnabled = useSettingsStore((s) => s.aiAssistEnabled);
-  const setAiAssistEnabled = useSettingsStore((s) => s.setAiAssistEnabled);
-  const aiGrammarHints = useSettingsStore((s) => s.aiGrammarHints);
-  const setAiGrammarHints = useSettingsStore((s) => s.setAiGrammarHints);
-  const aiPredictiveText = useSettingsStore((s) => s.aiPredictiveText);
-  const setAiPredictiveText = useSettingsStore((s) => s.setAiPredictiveText);
-  const aiContextSuggestions = useSettingsStore((s) => s.aiContextSuggestions);
-  const setAiContextSuggestions = useSettingsStore(
-    (s) => s.setAiContextSuggestions,
-  );
-  const aiLintFix = useSettingsStore((s) => s.aiLintFix);
-  const setAiLintFix = useSettingsStore((s) => s.setAiLintFix);
-  const aiCompileAssist = useSettingsStore((s) => s.aiCompileAssist);
-  const setAiCompileAssist = useSettingsStore((s) => s.setAiCompileAssist);
-  const aiBibAssist = useSettingsStore((s) => s.aiBibAssist);
-  const setAiBibAssist = useSettingsStore((s) => s.setAiBibAssist);
-  const aiChatFollowUps = useSettingsStore((s) => s.aiChatFollowUps);
-  const setAiChatFollowUps = useSettingsStore((s) => s.setAiChatFollowUps);
-  const aiPredictiveActions = useSettingsStore((s) => s.aiPredictiveActions);
-  const setAiPredictiveActions = useSettingsStore(
-    (s) => s.setAiPredictiveActions,
-  );
-  const aiChatGhostText = useSettingsStore((s) => s.aiChatGhostText);
-  const setAiChatGhostText = useSettingsStore((s) => s.setAiChatGhostText);
-  const aiPromptImprove = useSettingsStore((s) => s.aiPromptImprove);
-  const setAiPromptImprove = useSettingsStore((s) => s.setAiPromptImprove);
-  const aiAutoTitles = useSettingsStore((s) => s.aiAutoTitles);
-  const setAiAutoTitles = useSettingsStore((s) => s.setAiAutoTitles);
-  const aiSummarize = useSettingsStore((s) => s.aiSummarize);
-  const setAiSummarize = useSettingsStore((s) => s.setAiSummarize);
   const aiNaming = useSettingsStore((s) => s.aiNaming);
-  const setAiNaming = useSettingsStore((s) => s.setAiNaming);
-  const aiTemplateRecommend = useSettingsStore((s) => s.aiTemplateRecommend);
-  const setAiTemplateRecommend = useSettingsStore(
-    (s) => s.setAiTemplateRecommend,
-  );
-  const aiProjectBlurb = useSettingsStore((s) => s.aiProjectBlurb);
-  const setAiProjectBlurb = useSettingsStore((s) => s.setAiProjectBlurb);
-  const aiCommentAssist = useSettingsStore((s) => s.aiCommentAssist);
-  const setAiCommentAssist = useSettingsStore((s) => s.setAiCommentAssist);
   const aiSemanticSearch = useSettingsStore((s) => s.aiSemanticSearch);
-  const setAiSemanticSearch = useSettingsStore((s) => s.setAiSemanticSearch);
-  const aiCommandAssist = useSettingsStore((s) => s.aiCommandAssist);
-  const setAiCommandAssist = useSettingsStore((s) => s.setAiCommandAssist);
-  const aiSnippetFill = useSettingsStore((s) => s.aiSnippetFill);
-  const setAiSnippetFill = useSettingsStore((s) => s.setAiSnippetFill);
-  const aiVisionCaption = useSettingsStore((s) => s.aiVisionCaption);
-  const setAiVisionCaption = useSettingsStore((s) => s.setAiVisionCaption);
-  const aiCommandPalette = useSettingsStore((s) => s.aiCommandPalette);
-  const setAiCommandPalette = useSettingsStore((s) => s.setAiCommandPalette);
-  const nativeNumCtx = useSettingsStore((s) => s.nativeNumCtx);
-  const setNativeNumCtx = useSettingsStore((s) => s.setNativeNumCtx);
-  const nativeTemperature = useSettingsStore((s) => s.nativeTemperature);
-  const setNativeTemperature = useSettingsStore((s) => s.setNativeTemperature);
-  const nativeOllamaModel = useSettingsStore((s) => s.nativeOllamaModel);
-  const setNativeOllamaModel = useSettingsStore((s) => s.setNativeOllamaModel);
-  const openAiCredentials = useClaudeSetupStore((s) => s.openAiCredentials);
-  const [settingsOllamaModels, setSettingsOllamaModels] = useState<
-    OllamaModelInfo[]
-  >([]);
-  const [settingsOllamaModelsLoading, setSettingsOllamaModelsLoading] =
-    useState(false);
-  const [settingsOllamaModelsError, setSettingsOllamaModelsError] = useState<
-    string | null
-  >(null);
-  const settingsOllamaBaseUrl = useMemo(
-    () => getOllamaBaseUrl(resolveOllamaCredential(openAiCredentials, null)),
-    [openAiCredentials],
-  );
-  const compilerBackend = useSettingsStore((s) => s.compilerBackend);
-  const setCompilerBackend = useSettingsStore((s) => s.setCompilerBackend);
-  const autoCompile = useSettingsStore((s) => s.autoCompile);
-  const setAutoCompile = useSettingsStore((s) => s.setAutoCompile);
-  const pdfDarkMode = useSettingsStore((s) => s.pdfDarkMode);
-  const setPdfDarkMode = useSettingsStore((s) => s.setPdfDarkMode);
   const homepageDateField = useSettingsStore((s) => s.homepageDateField);
   const setHomepageDateField = useSettingsStore((s) => s.setHomepageDateField);
   const activeSpace = useMemo(
     () => spaces.find((s) => s.id === activeSpaceId) ?? null,
     [spaces, activeSpaceId],
   );
-
-  useEffect(() => {
-    if (!nativeAgentEnabled || settingsDetailSection !== "provider") return;
-
-    let cancelled = false;
-    setSettingsOllamaModelsLoading(true);
-    setSettingsOllamaModelsError(null);
-    void listOllamaModels(settingsOllamaBaseUrl)
-      .then((models) => {
-        if (!cancelled) setSettingsOllamaModels(models);
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) {
-          setSettingsOllamaModels([]);
-          setSettingsOllamaModelsError(
-            err instanceof Error ? err.message : String(err),
-          );
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setSettingsOllamaModelsLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    nativeAgentEnabled,
-    settingsDetailSection,
-    settingsOllamaBaseUrl,
-  ]);
-
-  const chatOllamaModels = useMemo(
-    () =>
-      settingsOllamaModels.filter((model) => model.chatCapable),
-    [settingsOllamaModels],
-  );
-  const { status: settingsOllamaStatus, refresh: refreshSettingsOllamaStatus } =
-    useOllamaStatus(
-    settingsOllamaBaseUrl,
-    nativeAgentEnabled && settingsDetailSection === "provider",
-  );
-
-  const reloadSettingsOllamaModels = useCallback(() => {
-    setSettingsOllamaModelsLoading(true);
-    setSettingsOllamaModelsError(null);
-    void listOllamaModels(settingsOllamaBaseUrl)
-      .then((models) => setSettingsOllamaModels(models))
-      .catch((err: unknown) => {
-        setSettingsOllamaModels([]);
-        setSettingsOllamaModelsError(
-          err instanceof Error ? err.message : String(err),
-        );
-      })
-      .finally(() => setSettingsOllamaModelsLoading(false));
-    void refreshSettingsOllamaStatus();
-  }, [refreshSettingsOllamaStatus, settingsOllamaBaseUrl]);
 
   // Track whether the user has hand-edited name/description in the space dialog,
   // so an AI suggestion only fills fields the user left untouched.
@@ -901,7 +908,8 @@ export function ProjectPicker() {
     }, 400);
 
     return () => {
-      if (semanticDebounceRef.current) clearTimeout(semanticDebounceRef.current);
+      if (semanticDebounceRef.current)
+        clearTimeout(semanticDebounceRef.current);
     };
   }, [wantsSemantic, normalizedSearch, spaceScopedProjects]);
 
@@ -962,15 +970,24 @@ export function ProjectPicker() {
         } (${total} skill folders)${failed > 0 ? `; ${failed} failed` : ""}.`,
       );
     } else {
-      toast.error(
-        `Failed to install skills into ${failed} project${failed === 1 ? "" : "s"}.`,
-      );
+      setPickerError({
+        title: "Skills install failed",
+        message: `Failed to install skills into ${failed} project${failed === 1 ? "" : "s"}.`,
+      });
     }
   };
 
   if (wizardMode) {
     return (
-      <ProjectWizard mode={wizardMode} onBack={() => setWizardMode(null)} />
+      <ProjectWizard
+        mode={wizardMode}
+        onBack={() => setWizardMode(null)}
+        onSelectMode={handleSelectMode}
+        onOpenSettings={() => {
+          setWizardMode(null);
+          setActiveSection("settings");
+        }}
+      />
     );
   }
 
@@ -1046,7 +1063,7 @@ export function ProjectPicker() {
                   title="New space"
                   aria-label="New space"
                   onClick={openNewSpaceDialog}
-                  className="flex size-5 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="flex size-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   <PlusIcon className="size-3.5" />
                 </button>
@@ -1194,7 +1211,7 @@ export function ProjectPicker() {
                     className={cn(
                       "h-8 rounded-md px-2.5 font-medium text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                       homepageDateField === option.value
-                        ? "bg-muted text-foreground"
+                        ? "bg-background text-foreground shadow-sm ring-1 ring-border/60"
                         : "text-muted-foreground hover:text-foreground",
                     )}
                   >
@@ -1209,10 +1226,10 @@ export function ProjectPicker() {
                 className="h-9 shrink-0 gap-1.5 rounded-lg px-3.5"
               >
                 <FolderOpenIcon className="size-4" />
-                Import
+                Open Folder
               </Button>
               <Button
-                onClick={() => setShowModeDialog(true)}
+                onClick={() => setWizardMode("template")}
                 className="h-9 shrink-0 gap-1.5 rounded-lg px-4"
               >
                 <PlusIcon className="size-4" />
@@ -1228,18 +1245,41 @@ export function ProjectPicker() {
               {spaceKindLabel(inferSpaceKind(activeSpace))}
             </span>
             <span className="text-muted-foreground text-xs">Default model</span>
-            <input
-              value={activeSpace.defaultModel ?? ""}
-              onChange={(event) =>
-                setSpaceDefaults(activeSpace.id, {
-                  defaultModel: event.target.value,
-                })
-              }
-              placeholder="auto (first installed Ollama model)"
-              aria-label={`Default model for ${activeSpace.name}`}
-              title="Local model used by default for projects in this space"
-              className="h-8 w-56 rounded-md border border-input bg-background px-2.5 text-sm outline-none transition-[color,box-shadow] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
-            />
+            <div className="flex flex-col gap-0.5">
+              <input
+                value={activeSpace.defaultModel ?? ""}
+                onChange={(event) =>
+                  setSpaceDefaults(activeSpace.id, {
+                    defaultModel: event.target.value,
+                  })
+                }
+                placeholder="auto (first installed Ollama model)"
+                aria-label={`Default model for ${activeSpace.name}`}
+                title="Local model used by default for projects in this space"
+                list="space-default-models"
+                className="h-8 w-56 rounded-md border border-input bg-background px-2.5 text-sm outline-none transition-[color,box-shadow] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+              />
+              <datalist id="space-default-models">
+                {installedModels.map((model) => (
+                  <option key={model} value={model} />
+                ))}
+              </datalist>
+              {(() => {
+                const value = activeSpace.defaultModel?.trim() ?? "";
+                if (
+                  value.length === 0 ||
+                  installedModels.length === 0 ||
+                  installedModels.includes(value)
+                ) {
+                  return null;
+                }
+                return (
+                  <span className="text-[11px] text-warning leading-none">
+                    Not installed — this model may not load
+                  </span>
+                );
+              })()}
+            </div>
             <div className="ml-auto flex items-center gap-2">
               <Button
                 variant="ghost"
@@ -1276,838 +1316,23 @@ export function ProjectPicker() {
         )}
 
         <div className="min-h-0 flex-1 overflow-auto">
-          {activeSection === "settings" ? (
-            <div className="mx-auto grid w-full max-w-6xl grid-cols-1 gap-6 px-8 py-7 lg:grid-cols-[13rem_minmax(0,1fr)]">
-              <aside className="space-y-1 lg:border-border/60 lg:border-r lg:pr-4">
-                <SettingsDetailButton
-                  active={settingsDetailSection === "provider"}
-                  icon={KeyRoundIcon}
-                  label="Provider"
-                  meta={isClaudeReady ? "Ready" : "Setup"}
-                  onClick={() => setSettingsDetailSection("provider")}
-                />
-                <SettingsDetailButton
-                  active={settingsDetailSection === "environment"}
-                  icon={CheckCircle2Icon}
-                  label="Environment"
-                  meta="Python / Skills"
-                  onClick={() => setSettingsDetailSection("environment")}
-                />
-                <SettingsDetailButton
-                  active={settingsDetailSection === "ai"}
-                  icon={SparklesIcon}
-                  label="AI Features"
-                  meta="Predictive / Grammar"
-                  onClick={() => setSettingsDetailSection("ai")}
-                />
-                <SettingsDetailButton
-                  active={settingsDetailSection === "personalization"}
-                  icon={UserIcon}
-                  label="Personalization"
-                  meta="User Profile / Tone"
-                  onClick={() => setSettingsDetailSection("personalization")}
-                />
-                <SettingsDetailButton
-                  active={settingsDetailSection === "editor"}
-                  icon={ZapIcon}
-                  label="Compilation"
-                  meta="Engine / Auto-compile / Preview"
-                  onClick={() => setSettingsDetailSection("editor")}
-                />
-              </aside>
-
-              <div className="min-w-0">
-                {settingsDetailSection === "provider" ? (
-                  <SettingsPanel
-                    title="Provider"
-                    icon={KeyRoundIcon}
-                    contentClassName="p-0"
-                  >
-                    <label className="flex cursor-pointer items-start gap-3 border-border/60 border-b p-4">
-                      <input
-                        type="checkbox"
-                        className="mt-0.5 size-4 shrink-0 accent-primary"
-                        checked={nativeAgentEnabled}
-                        onChange={(e) =>
-                          setNativeAgentEnabled(e.target.checked)
-                        }
-                      />
-                      <div className="min-w-0">
-                        <div className="font-medium text-sm">
-                          Native local agent (no Claude CLI)
-                        </div>
-                        <p className="mt-0.5 text-muted-foreground text-xs">
-                          Run the agent fully offline, talking directly to your
-                          local Ollama model — no Claude Code CLI or proxy
-                          required. Make sure Ollama is running with a model
-                          installed (
-                          <code className="rounded bg-muted px-1">
-                            ollama pull llama3
-                          </code>
-                          ). Cloud providers below are used only when this is
-                          off.{" "}
-                          <a
-                            href="https://github.com/bharathvbcr/DevPrism/blob/main/docs/NATIVE_AGENT.md"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            onClick={(e) => e.stopPropagation()}
-                            className="text-foreground underline underline-offset-2 hover:text-primary"
-                          >
-                            Learn more
-                          </a>
-                        </p>
-                      </div>
-                    </label>
-                    {nativeAgentEnabled && (
-                      <div className="flex flex-wrap items-end gap-4 border-border/60 border-b px-4 py-3">
-                        <label className="flex min-w-[12rem] flex-1 flex-col gap-1">
-                          <span className="text-muted-foreground text-xs">
-                            Chat model
-                          </span>
-                          <select
-                            value={nativeOllamaModel ?? ""}
-                            disabled={settingsOllamaModelsLoading}
-                            onChange={(e) =>
-                              setNativeOllamaModel(e.target.value || null)
-                            }
-                            className="h-8 w-full min-w-0 rounded-md border border-input bg-background px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
-                          >
-                            <option value="">Auto (first chat model)</option>
-                            {chatOllamaModels.map((model) => (
-                              <option key={model.name} value={model.name}>
-                                {model.name}
-                              </option>
-                            ))}
-                          </select>
-                          {settingsOllamaModelsLoading && (
-                            <span className="text-[10px] text-muted-foreground">
-                              Loading models from {settingsOllamaBaseUrl}…
-                            </span>
-                          )}
-                          {settingsOllamaModelsError && (
-                            <span className="text-[10px] text-destructive">
-                              {settingsOllamaModelsError}
-                            </span>
-                          )}
-                        </label>
-                        <label className="flex flex-col gap-1">
-                          <span className="text-muted-foreground text-xs">
-                            Context window (num_ctx)
-                          </span>
-                          <input
-                            type="number"
-                            min={512}
-                            step={512}
-                            value={nativeNumCtx}
-                            onChange={(e) =>
-                              setNativeNumCtx(Number(e.target.value))
-                            }
-                            className="h-8 w-28 rounded-md border border-input bg-background px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
-                          />
-                        </label>
-                        <label className="flex flex-col gap-1">
-                          <span className="text-muted-foreground text-xs">
-                            Temperature
-                          </span>
-                          <input
-                            type="number"
-                            min={0}
-                            max={2}
-                            step={0.1}
-                            value={nativeTemperature}
-                            onChange={(e) =>
-                              setNativeTemperature(Number(e.target.value))
-                            }
-                            className="h-8 w-24 rounded-md border border-input bg-background px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
-                          />
-                        </label>
-                        <p className="text-muted-foreground/70 text-xs">
-                          Larger context = more memory/VRAM. Lower temperature =
-                          more deterministic edits.
-                        </p>
-                      </div>
-                    )}
-                    {nativeAgentEnabled &&
-                      settingsDetailSection === "provider" &&
-                      (settingsOllamaModelsError ||
-                        !settingsOllamaStatus?.connected ||
-                        chatOllamaModels.length === 0) && (
-                        <div className="border-border/60 border-b px-4 py-3">
-                          <OllamaSetupHints
-                            baseUrl={settingsOllamaBaseUrl}
-                            onModelsChanged={reloadSettingsOllamaModels}
-                            connected={Boolean(settingsOllamaStatus?.connected)}
-                            chatModels={
-                              settingsOllamaStatus?.chatModels ??
-                              chatOllamaModels.length
-                            }
-                          />
-                        </div>
-                      )}
-                    <div className="space-y-3 border-border/60 border-b p-4">
-                      <div className="font-medium text-sm">
-                        AI writing assist
-                      </div>
-                      <p className="text-muted-foreground text-xs">
-                        Lightweight local AI for grammar hints, predictive text
-                        (Tab to accept), contextual suggestions, and one-click
-                        selection edits — powered by Ollama or your configured
-                        OpenAI-compatible provider.
-                      </p>
-                      <label className="flex cursor-pointer items-start gap-3">
-                        <input
-                          type="checkbox"
-                          className="mt-0.5 size-4 shrink-0 accent-primary"
-                          checked={aiAssistEnabled}
-                          onChange={(e) => setAiAssistEnabled(e.target.checked)}
-                        />
-                        <span className="text-sm">
-                          Enable AI assist everywhere
-                        </span>
-                      </label>
-                      {aiAssistEnabled && (
-                        <div className="ml-7 space-y-2">
-                          <label className="flex cursor-pointer items-center gap-2 text-sm">
-                            <input
-                              type="checkbox"
-                              className="size-4 accent-primary"
-                              checked={aiGrammarHints}
-                              onChange={(e) =>
-                                setAiGrammarHints(e.target.checked)
-                              }
-                            />
-                            Grammar hints on the current line
-                          </label>
-                          <label className="flex cursor-pointer items-center gap-2 text-sm">
-                            <input
-                              type="checkbox"
-                              className="size-4 accent-primary"
-                              checked={aiPredictiveText}
-                              onChange={(e) =>
-                                setAiPredictiveText(e.target.checked)
-                              }
-                            />
-                            Predictive completions while typing
-                          </label>
-                          <label className="flex cursor-pointer items-center gap-2 text-sm">
-                            <input
-                              type="checkbox"
-                              className="size-4 accent-primary"
-                              checked={aiContextSuggestions}
-                              onChange={(e) =>
-                                setAiContextSuggestions(e.target.checked)
-                              }
-                            />
-                            Contextual action chips in the editor
-                          </label>
-                        </div>
-                      )}
-                    </div>
-                    <ClaudeSetup variant="embedded" />
-                  </SettingsPanel>
-                ) : settingsDetailSection === "environment" ? (
-                  <SettingsPanel
-                    title="Environment"
-                    icon={CheckCircle2Icon}
-                    contentClassName="p-0"
-                  >
-                    <EnvironmentStatus appVersion={appVersion} />
-                  </SettingsPanel>
-                ) : settingsDetailSection === "ai" ? (
-                  <SettingsPanel
-                    title="AI Features"
-                    icon={SparklesIcon}
-                    contentClassName="p-0"
-                  >
-                    <label className="flex cursor-pointer items-start gap-3 border-border/60 border-b p-4">
-                      <input
-                        type="checkbox"
-                        className="mt-0.5 size-4 shrink-0 accent-primary"
-                        checked={aiAssistEnabled}
-                        onChange={(e) => setAiAssistEnabled(e.target.checked)}
-                      />
-                      <div className="min-w-0">
-                        <div className="font-medium text-sm">
-                          Enable AI assistant features
-                        </div>
-                        <p className="mt-0.5 text-muted-foreground text-xs">
-                          Master toggle for all lightweight AI assist features
-                          (predictive text, grammar hints, suggestions).
-                        </p>
-                      </div>
-                    </label>
-
-                    <label
-                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
-                    >
-                      <input
-                        type="checkbox"
-                        className="mt-0.5 size-4 shrink-0 accent-primary"
-                        checked={aiPredictiveText}
-                        disabled={!aiAssistEnabled}
-                        onChange={(e) => setAiPredictiveText(e.target.checked)}
-                      />
-                      <div className="min-w-0">
-                        <div className="font-medium text-sm">
-                          Predictive text (ghost text)
-                        </div>
-                        <p className="mt-0.5 text-muted-foreground text-xs">
-                          Show inline gray ghost text as you type. Press{" "}
-                          <kbd className="rounded bg-muted px-1">Tab</kbd> to
-                          accept or{" "}
-                          <kbd className="rounded bg-muted px-1">Esc</kbd> to
-                          dismiss.
-                        </p>
-                      </div>
-                    </label>
-
-                    <label
-                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
-                    >
-                      <input
-                        type="checkbox"
-                        className="mt-0.5 size-4 shrink-0 accent-primary"
-                        checked={aiGrammarHints}
-                        disabled={!aiAssistEnabled}
-                        onChange={(e) => setAiGrammarHints(e.target.checked)}
-                      />
-                      <div className="min-w-0">
-                        <div className="font-medium text-sm">
-                          AI grammar & style checks
-                        </div>
-                        <p className="mt-0.5 text-muted-foreground text-xs">
-                          Scan the paragraph around your cursor after you pause
-                          typing. Highlights grammar, style, or spelling errors
-                          with quick-fix options.
-                        </p>
-                      </div>
-                    </label>
-
-                    <label
-                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
-                    >
-                      <input
-                        type="checkbox"
-                        className="mt-0.5 size-4 shrink-0 accent-primary"
-                        checked={aiContextSuggestions}
-                        disabled={!aiAssistEnabled}
-                        onChange={(e) =>
-                          setAiContextSuggestions(e.target.checked)
-                        }
-                      />
-                      <div className="min-w-0">
-                        <div className="font-medium text-sm">
-                          Contextual prompt suggestions
-                        </div>
-                        <p className="mt-0.5 text-muted-foreground text-xs">
-                          Display context-aware quick action chips above the
-                          status bar based on your active document's contents.
-                        </p>
-                      </div>
-                    </label>
-
-                    <label
-                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
-                    >
-                      <input
-                        type="checkbox"
-                        className="mt-0.5 size-4 shrink-0 accent-primary"
-                        checked={aiLintFix}
-                        disabled={!aiAssistEnabled}
-                        onChange={(e) => setAiLintFix(e.target.checked)}
-                      />
-                      <div className="min-w-0">
-                        <div className="font-medium text-sm">
-                          Direct lint fixes
-                        </div>
-                        <p className="mt-0.5 text-muted-foreground text-xs">
-                          Fix LaTeX lint problems in one click via local AI
-                          instead of opening the full chat.
-                        </p>
-                      </div>
-                    </label>
-
-                    <label
-                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
-                    >
-                      <input
-                        type="checkbox"
-                        className="mt-0.5 size-4 shrink-0 accent-primary"
-                        checked={aiCompileAssist}
-                        disabled={!aiAssistEnabled}
-                        onChange={(e) => setAiCompileAssist(e.target.checked)}
-                      />
-                      <div className="min-w-0">
-                        <div className="font-medium text-sm">
-                          Compile error assist
-                        </div>
-                        <p className="mt-0.5 text-muted-foreground text-xs">
-                          Explain compilation failures and route fixes through
-                          AI from the PDF preview error screen.
-                        </p>
-                      </div>
-                    </label>
-
-                    <label
-                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
-                    >
-                      <input
-                        type="checkbox"
-                        className="mt-0.5 size-4 shrink-0 accent-primary"
-                        checked={aiBibAssist}
-                        disabled={!aiAssistEnabled}
-                        onChange={(e) => setAiBibAssist(e.target.checked)}
-                      />
-                      <div className="min-w-0">
-                        <div className="font-medium text-sm">
-                          Bibliography completion
-                        </div>
-                        <p className="mt-0.5 text-muted-foreground text-xs">
-                          Generate or complete BibTeX entries from a DOI, URL,
-                          or citation hint.
-                        </p>
-                      </div>
-                    </label>
-
-                    <label
-                      className={`flex cursor-pointer items-start gap-3 p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
-                    >
-                      <input
-                        type="checkbox"
-                        className="mt-0.5 size-4 shrink-0 accent-primary"
-                        checked={aiChatFollowUps}
-                        disabled={!aiAssistEnabled}
-                        onChange={(e) => setAiChatFollowUps(e.target.checked)}
-                      />
-                      <div className="min-w-0">
-                        <div className="font-medium text-sm">
-                          Chat follow-up suggestions
-                        </div>
-                        <p className="mt-0.5 text-muted-foreground text-xs">
-                          Show AI-suggested next prompts after the assistant
-                          replies in the chat drawer.
-                        </p>
-                      </div>
-                    </label>
-
-                    <label
-                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
-                    >
-                      <input
-                        type="checkbox"
-                        className="mt-0.5 size-4 shrink-0 accent-primary"
-                        checked={aiContextSuggestions}
-                        disabled={!aiAssistEnabled}
-                        onChange={(e) =>
-                          setAiContextSuggestions(e.target.checked)
-                        }
-                      />
-                      <div className="min-w-0">
-                        <div className="font-medium text-sm">
-                          Contextual prompt suggestions
-                        </div>
-                        <p className="mt-0.5 text-muted-foreground text-xs">
-                          Display context-aware quick action chips above the
-                          status bar based on your active document's contents.
-                        </p>
-                      </div>
-                    </label>
-
-                    <label
-                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
-                    >
-                      <input
-                        type="checkbox"
-                        className="mt-0.5 size-4 shrink-0 accent-primary"
-                        checked={aiPredictiveActions}
-                        disabled={!aiAssistEnabled}
-                        onChange={(e) =>
-                          setAiPredictiveActions(e.target.checked)
-                        }
-                      />
-                      <div className="min-w-0">
-                        <div className="font-medium text-sm">
-                          Predictive next-step actions
-                        </div>
-                        <p className="mt-0.5 text-muted-foreground text-xs">
-                          Suggest the most likely things to do next on the
-                          active document as one-click action chips.
-                        </p>
-                      </div>
-                    </label>
-
-                    <label
-                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
-                    >
-                      <input
-                        type="checkbox"
-                        className="mt-0.5 size-4 shrink-0 accent-primary"
-                        checked={aiChatGhostText}
-                        disabled={!aiAssistEnabled}
-                        onChange={(e) => setAiChatGhostText(e.target.checked)}
-                      />
-                      <div className="min-w-0">
-                        <div className="font-medium text-sm">
-                          Chat ghost-text completion
-                        </div>
-                        <p className="mt-0.5 text-muted-foreground text-xs">
-                          Show inline gray completions as you type in the chat
-                          box. Press{" "}
-                          <kbd className="rounded bg-muted px-1">Tab</kbd> to
-                          accept.
-                        </p>
-                      </div>
-                    </label>
-
-                    <label
-                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
-                    >
-                      <input
-                        type="checkbox"
-                        className="mt-0.5 size-4 shrink-0 accent-primary"
-                        checked={aiPromptImprove}
-                        disabled={!aiAssistEnabled}
-                        onChange={(e) => setAiPromptImprove(e.target.checked)}
-                      />
-                      <div className="min-w-0">
-                        <div className="font-medium text-sm">
-                          Improve my prompt
-                        </div>
-                        <p className="mt-0.5 text-muted-foreground text-xs">
-                          Add a button to rewrite your chat prompt to be clearer
-                          and more specific before sending.
-                        </p>
-                      </div>
-                    </label>
-
-                    <label
-                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
-                    >
-                      <input
-                        type="checkbox"
-                        className="mt-0.5 size-4 shrink-0 accent-primary"
-                        checked={aiAutoTitles}
-                        disabled={!aiAssistEnabled}
-                        onChange={(e) => setAiAutoTitles(e.target.checked)}
-                      />
-                      <div className="min-w-0">
-                        <div className="font-medium text-sm">
-                          AI chat titles
-                        </div>
-                        <p className="mt-0.5 text-muted-foreground text-xs">
-                          Name chat tabs automatically from the conversation
-                          instead of a fixed heuristic.
-                        </p>
-                      </div>
-                    </label>
-
-                    <label
-                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
-                    >
-                      <input
-                        type="checkbox"
-                        className="mt-0.5 size-4 shrink-0 accent-primary"
-                        checked={aiSummarize}
-                        disabled={!aiAssistEnabled}
-                        onChange={(e) => setAiSummarize(e.target.checked)}
-                      />
-                      <div className="min-w-0">
-                        <div className="font-medium text-sm">
-                          One-click summaries
-                        </div>
-                        <p className="mt-0.5 text-muted-foreground text-xs">
-                          Summarize the selected text from the editor toolbar
-                          and condense long assistant replies in chat.
-                        </p>
-                      </div>
-                    </label>
-
-                    <label
-                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
-                    >
-                      <input
-                        type="checkbox"
-                        className="mt-0.5 size-4 shrink-0 accent-primary"
-                        checked={aiNaming}
-                        disabled={!aiAssistEnabled}
-                        onChange={(e) => setAiNaming(e.target.checked)}
-                      />
-                      <div className="min-w-0">
-                        <div className="font-medium text-sm">
-                          AI naming suggestions
-                        </div>
-                        <p className="mt-0.5 text-muted-foreground text-xs">
-                          Propose names for new projects and tailored versions
-                          from your description or target text.
-                        </p>
-                      </div>
-                    </label>
-
-                    <label
-                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
-                    >
-                      <input
-                        type="checkbox"
-                        className="mt-0.5 size-4 shrink-0 accent-primary"
-                        checked={aiTemplateRecommend}
-                        disabled={!aiAssistEnabled}
-                        onChange={(e) =>
-                          setAiTemplateRecommend(e.target.checked)
-                        }
-                      />
-                      <div className="min-w-0">
-                        <div className="font-medium text-sm">
-                          AI template recommendations
-                        </div>
-                        <p className="mt-0.5 text-muted-foreground text-xs">
-                          Rank templates by what you describe you want to write
-                          in the template gallery.
-                        </p>
-                      </div>
-                    </label>
-
-                    <label
-                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
-                    >
-                      <input
-                        type="checkbox"
-                        className="mt-0.5 size-4 shrink-0 accent-primary"
-                        checked={aiProjectBlurb}
-                        disabled={!aiAssistEnabled}
-                        onChange={(e) => setAiProjectBlurb(e.target.checked)}
-                      />
-                      <div className="min-w-0">
-                        <div className="font-medium text-sm">
-                          Project card summaries
-                        </div>
-                        <p className="mt-0.5 text-muted-foreground text-xs">
-                          Show a one-line AI summary of each project on its card
-                          in the home screen.
-                        </p>
-                      </div>
-                    </label>
-
-                    <label
-                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
-                    >
-                      <input
-                        type="checkbox"
-                        className="mt-0.5 size-4 shrink-0 accent-primary"
-                        checked={aiCommentAssist}
-                        disabled={!aiAssistEnabled}
-                        onChange={(e) => setAiCommentAssist(e.target.checked)}
-                      />
-                      <div className="min-w-0">
-                        <div className="font-medium text-sm">
-                          Review &amp; comment assist
-                        </div>
-                        <p className="mt-0.5 text-muted-foreground text-xs">
-                          Draft replies to comments, address feedback, and
-                          summarize what changed between versions.
-                        </p>
-                      </div>
-                    </label>
-
-                    <label
-                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
-                    >
-                      <input
-                        type="checkbox"
-                        className="mt-0.5 size-4 shrink-0 accent-primary"
-                        checked={aiSemanticSearch}
-                        disabled={!aiAssistEnabled}
-                        onChange={(e) => setAiSemanticSearch(e.target.checked)}
-                      />
-                      <div className="min-w-0">
-                        <div className="font-medium text-sm">
-                          Semantic search
-                        </div>
-                        <p className="mt-0.5 text-muted-foreground text-xs">
-                          When an exact match isn't found, use local embeddings
-                          to surface related passages (e.g. PDF find). Needs an
-                          embedding model such as{" "}
-                          <code className="rounded bg-muted px-1">
-                            nomic-embed-text
-                          </code>
-                          .
-                        </p>
-                      </div>
-                    </label>
-
-                    <label
-                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
-                    >
-                      <input
-                        type="checkbox"
-                        className="mt-0.5 size-4 shrink-0 accent-primary"
-                        checked={aiCommandAssist}
-                        disabled={!aiAssistEnabled}
-                        onChange={(e) => setAiCommandAssist(e.target.checked)}
-                      />
-                      <div className="min-w-0">
-                        <div className="font-medium text-sm">
-                          Command &amp; skill assist
-                        </div>
-                        <p className="mt-0.5 text-muted-foreground text-xs">
-                          Summarize undocumented slash commands and rank them by
-                          what you type in the command picker.
-                        </p>
-                      </div>
-                    </label>
-
-                    <label
-                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
-                    >
-                      <input
-                        type="checkbox"
-                        className="mt-0.5 size-4 shrink-0 accent-primary"
-                        checked={aiSnippetFill}
-                        disabled={!aiAssistEnabled}
-                        onChange={(e) => setAiSnippetFill(e.target.checked)}
-                      />
-                      <div className="min-w-0">
-                        <div className="font-medium text-sm">
-                          Insert snippets with AI
-                        </div>
-                        <p className="mt-0.5 text-muted-foreground text-xs">
-                          Fill a LaTeX snippet's placeholders from the
-                          surrounding document instead of inserting a blank
-                          skeleton.
-                        </p>
-                      </div>
-                    </label>
-
-                    <label
-                      className={`flex cursor-pointer items-start gap-3 border-border/60 border-b p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
-                    >
-                      <input
-                        type="checkbox"
-                        className="mt-0.5 size-4 shrink-0 accent-primary"
-                        checked={aiVisionCaption}
-                        disabled={!aiAssistEnabled}
-                        onChange={(e) => setAiVisionCaption(e.target.checked)}
-                      />
-                      <div className="min-w-0">
-                        <div className="font-medium text-sm">
-                          Image captions (vision)
-                        </div>
-                        <p className="mt-0.5 text-muted-foreground text-xs">
-                          Generate figure captions / alt-text from a captured
-                          region using a local vision model (e.g.{" "}
-                          <code className="rounded bg-muted px-1">
-                            llava
-                          </code>
-                          ).
-                        </p>
-                      </div>
-                    </label>
-
-                    <label
-                      className={`flex cursor-pointer items-start gap-3 p-4 ${!aiAssistEnabled ? "pointer-events-none opacity-50" : ""}`}
-                    >
-                      <input
-                        type="checkbox"
-                        className="mt-0.5 size-4 shrink-0 accent-primary"
-                        checked={aiCommandPalette}
-                        disabled={!aiAssistEnabled}
-                        onChange={(e) => setAiCommandPalette(e.target.checked)}
-                      />
-                      <div className="min-w-0">
-                        <div className="font-medium text-sm">
-                          AI command palette
-                        </div>
-                        <p className="mt-0.5 text-muted-foreground text-xs">
-                          Press{" "}
-                          <kbd className="rounded bg-muted px-1">Ctrl/Cmd+K</kbd>{" "}
-                          to run actions by name or describe what you want in
-                          plain language.
-                        </p>
-                      </div>
-                    </label>
-                  </SettingsPanel>
-                ) : settingsDetailSection === "personalization" ? (
-                  <SettingsPanel
-                    title="Personalization"
-                    icon={UserIcon}
-                    contentClassName="p-0"
-                  >
-                    <PersonalizationSettings />
-                  </SettingsPanel>
-                ) : (
-                  <SettingsPanel
-                    title="Compilation"
-                    icon={ZapIcon}
-                    contentClassName="p-0"
-                  >
-                    <div className="flex flex-wrap items-end gap-4 border-border/60 border-b px-4 py-4">
-                      <label className="flex flex-col gap-1">
-                        <span className="text-muted-foreground text-xs">
-                          Engine
-                        </span>
-                        <select
-                          value={compilerBackend}
-                          onChange={(e) =>
-                            setCompilerBackend(
-                              e.target.value as "tectonic" | "texlive",
-                            )
-                          }
-                          className="h-8 w-40 rounded-md border border-input bg-background px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
-                        >
-                          <option value="tectonic">Tectonic</option>
-                          <option value="texlive">TeXLive</option>
-                        </select>
-                      </label>
-                      <p className="max-w-xs text-muted-foreground/70 text-xs">
-                        Tectonic is bundled and works offline. TeXLive uses your
-                        local installation (pdflatex / xelatex / lualatex).
-                      </p>
-                    </div>
-                    <label className="flex cursor-pointer items-start gap-3 border-border/60 border-b p-4">
-                      <input
-                        type="checkbox"
-                        className="mt-0.5 size-4 shrink-0 accent-primary"
-                        checked={autoCompile}
-                        onChange={(e) => setAutoCompile(e.target.checked)}
-                      />
-                      <div className="min-w-0">
-                        <div className="font-medium text-sm">
-                          Auto-compile on edit
-                        </div>
-                        <p className="mt-0.5 text-muted-foreground text-xs">
-                          Automatically recompile the document a short moment
-                          after you stop typing. When off, compile manually with
-                          the toolbar button or{" "}
-                          <kbd className="rounded bg-muted px-1">
-                            Cmd/Ctrl+Enter
-                          </kbd>
-                          .
-                        </p>
-                      </div>
-                    </label>
-                    <label className="flex cursor-pointer items-start gap-3 p-4">
-                      <input
-                        type="checkbox"
-                        className="mt-0.5 size-4 shrink-0 accent-primary"
-                        checked={pdfDarkMode}
-                        onChange={(e) => setPdfDarkMode(e.target.checked)}
-                      />
-                      <div className="min-w-0">
-                        <div className="font-medium text-sm">
-                          Dark PDF preview
-                        </div>
-                        <p className="mt-0.5 text-muted-foreground text-xs">
-                          Invert the rendered PDF for a dark-friendly page (dark
-                          background, light ink). Affects the on-screen preview
-                          only — the exported PDF is unchanged.
-                        </p>
-                      </div>
-                    </label>
-                  </SettingsPanel>
-                )}
-              </div>
-            </div>
-          ) : (
+          <SettingsDialog
+            open={activeSection === "settings"}
+            appVersion={appVersion}
+          />
+          {activeSection === "settings" ? null : (
             <div className="flex w-full flex-col gap-4 px-5 py-5">
+              <SetupReminderBanner
+                onOpenSettings={() => setActiveSection("settings")}
+              />
+              {pickerError && (
+                <InlineBanner
+                  kind="error"
+                  title={pickerError.title}
+                  message={pickerError.message}
+                  onDismiss={() => setPickerError(null)}
+                />
+              )}
               {visibleProjects.length === 0 ? (
                 <div className="flex min-h-80 flex-col items-center justify-center rounded-lg border border-border border-dashed bg-muted/10 px-6 text-center">
                   {normalizedSearch ? (
@@ -2133,9 +1358,8 @@ export function ProjectPicker() {
                         No projects in {activeSpace.name}
                       </h2>
                       <p className="mt-1 max-w-sm text-muted-foreground text-sm">
-                        Open a project, then use its actions menu (top-right of
-                        the card) and choose “Move to space” to add it here — or
-                        assign existing projects from All Projects.
+                        Drag a project onto {activeSpace.name} in the sidebar,
+                        or open a project and use its ⋯ menu → Move to space.
                       </p>
                       <div className="mt-5 flex flex-wrap justify-center gap-3">
                         <Button
@@ -2152,13 +1376,13 @@ export function ProjectPicker() {
                       <FileTextIcon className="mb-4 size-10 text-muted-foreground/70" />
                       <h2 className="font-semibold text-lg">No projects</h2>
                       <div className="mt-5 flex flex-wrap justify-center gap-3">
-                        <Button onClick={() => setShowModeDialog(true)}>
+                        <Button onClick={() => setWizardMode("template")}>
                           <PlusIcon className="mr-2 size-4" />
                           New
                         </Button>
                         <Button onClick={handleOpenFolder} variant="outline">
                           <FolderOpenIcon className="mr-2 size-4" />
-                          Import
+                          Open Folder
                         </Button>
                       </div>
                     </>
@@ -2188,51 +1412,6 @@ export function ProjectPicker() {
           )}
         </div>
       </main>
-
-      {/* New Project mode selection dialog */}
-      <Dialog open={showModeDialog} onOpenChange={setShowModeDialog}>
-        <DialogContent showCloseButton={false} className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Create New Project</DialogTitle>
-            <DialogDescription>How would you like to start?</DialogDescription>
-          </DialogHeader>
-          <NewProjectSpaceHint />
-          <div className="flex gap-3 pt-2">
-            <button
-              onClick={() => handleSelectMode("template")}
-              className="group flex flex-1 flex-col items-center gap-3 rounded-lg border border-border/70 p-4 text-center transition-colors hover:border-border hover:bg-muted/50"
-            >
-              <div className="flex size-10 items-center justify-center rounded-md bg-muted/50 transition-colors group-hover:bg-muted">
-                <SparklesIcon className="size-5 text-muted-foreground transition-colors group-hover:text-foreground" />
-              </div>
-              <div>
-                <div className="font-semibold text-sm">Guided Setup</div>
-                <p className="mt-1 text-muted-foreground text-xs leading-relaxed">
-                  Pick a template and let AI help you get started
-                </p>
-              </div>
-              <span className="rounded-md bg-muted px-2 py-0.5 font-medium text-[10px] text-muted-foreground">
-                Recommended
-              </span>
-            </button>
-
-            <button
-              onClick={() => handleSelectMode("scratch")}
-              className="group flex flex-1 flex-col items-center gap-3 rounded-lg border border-border/70 p-4 text-center transition-colors hover:border-border hover:bg-muted/50"
-            >
-              <div className="flex size-10 items-center justify-center rounded-md bg-muted/50 transition-colors group-hover:bg-muted">
-                <FileTextIcon className="size-5 text-muted-foreground transition-colors group-hover:text-foreground" />
-              </div>
-              <div>
-                <div className="font-semibold text-sm">Blank Document</div>
-                <p className="mt-1 text-muted-foreground text-xs leading-relaxed">
-                  Start with an empty LaTeX file
-                </p>
-              </div>
-            </button>
-          </div>
-        </DialogContent>
-      </Dialog>
 
       {/* Create / edit space dialog */}
       <Dialog
@@ -2391,11 +1570,7 @@ export function ProjectPicker() {
                         "size-6 rounded-full ring-offset-2 ring-offset-background transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                         selected && "ring-2 ring-foreground",
                       )}
-                    >
-                      {selected && (
-                        <CheckIcon className="mx-auto size-3.5 text-white drop-shadow" />
-                      )}
-                    </button>
+                    />
                   );
                 })}
               </div>
@@ -2482,9 +1657,7 @@ export function ProjectPicker() {
                     description: true,
                   }));
                   setSpaceDialog((prev) =>
-                    prev
-                      ? { ...prev, description: event.target.value }
-                      : prev,
+                    prev ? { ...prev, description: event.target.value } : prev,
                   );
                 }}
                 placeholder="What is this space for?"
@@ -2616,14 +1789,6 @@ export function ProjectPicker() {
       )}
     </div>
   );
-}
-
-// ─── Environment Status (shown when Claude is ready) ───
-
-interface SkillsStatus {
-  installed: boolean;
-  skill_count: number;
-  location: string;
 }
 
 function projectPreviewCacheKey(project: RecentProject) {
@@ -3143,16 +2308,20 @@ function ProjectPreviewCard({
       >
         {project.name}
       </button>
-      {aiProjectBlurb && (blurbLoading || blurb) && (
-        <div className="mt-1 flex items-start gap-1 text-left text-muted-foreground text-xs leading-snug">
-          {blurbLoading ? (
-            <Loader2Icon className="mt-px size-3 shrink-0 animate-spin" />
-          ) : (
-            <SparklesIcon className="mt-px size-3 shrink-0 text-primary/70" />
+      {aiProjectBlurb && (
+        <div className="mt-1 flex min-h-8 items-start gap-1 text-left text-muted-foreground text-xs leading-snug">
+          {(blurbLoading || blurb) && (
+            <div className="fade-in flex animate-in items-start gap-1">
+              {blurbLoading ? (
+                <Loader2Icon className="mt-px size-3 shrink-0 animate-spin" />
+              ) : (
+                <SparklesIcon className="mt-px size-3 shrink-0 text-primary/70" />
+              )}
+              <span className="line-clamp-2">
+                {blurbLoading ? "Summarizing…" : blurb}
+              </span>
+            </div>
           )}
-          <span className="line-clamp-2">
-            {blurbLoading ? "Summarizing…" : blurb}
-          </span>
         </div>
       )}
       <div className="mt-1 h-4 truncate text-left text-muted-foreground text-xs">
@@ -3172,8 +2341,13 @@ function ProjectPreviewSurface({
 }) {
   if (preview.status === "loading") {
     return (
-      <div className="flex h-full w-full items-center justify-center bg-muted/10">
-        <Loader2Icon className="size-4 animate-spin text-muted-foreground" />
+      <div className="flex h-full w-full flex-col bg-muted/10 p-3">
+        <Skeleton className="mb-3 h-4 w-2/5" />
+        <Skeleton className="mb-2 h-3 w-full" />
+        <Skeleton className="mb-2 h-3 w-[92%]" />
+        <Skeleton className="mb-2 h-3 w-[88%]" />
+        <Skeleton className="mb-2 h-3 w-[95%]" />
+        <Skeleton className="h-3 w-[70%]" />
       </div>
     );
   }
@@ -3370,261 +2544,5 @@ function ProjectNavButton({
       <Icon className="size-3.5 shrink-0" />
       {!collapsed && <span className="truncate">{children}</span>}
     </button>
-  );
-}
-
-function SettingsDetailButton({
-  active,
-  icon: Icon,
-  label,
-  meta,
-  onClick,
-}: {
-  active: boolean;
-  icon: LucideIcon;
-  label: string;
-  meta: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left outline-none transition-colors focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
-        active
-          ? "bg-muted text-foreground"
-          : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
-      )}
-    >
-      <div
-        className={cn(
-          "flex size-7 shrink-0 items-center justify-center rounded-md border",
-          active
-            ? "border-border/70 bg-background/70"
-            : "border-border/60 bg-muted/20",
-        )}
-      >
-        <Icon className="size-3.5" />
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="truncate font-medium text-sm">{label}</div>
-        <div className="truncate text-muted-foreground text-xs">{meta}</div>
-      </div>
-    </button>
-  );
-}
-
-function SettingsPanel({
-  title,
-  icon: Icon,
-  contentClassName,
-  children,
-}: {
-  title: string;
-  icon: LucideIcon;
-  contentClassName?: string;
-  children: ReactNode;
-}) {
-  return (
-    <section className="overflow-hidden rounded-xl border border-border/60 bg-muted/10">
-      <div className="flex items-center gap-3 border-border/60 border-b px-5 py-4">
-        <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-muted/30 text-muted-foreground">
-          <Icon className="size-4" />
-        </div>
-        <div className="min-w-0">
-          <h2 className="truncate font-semibold text-sm">{title}</h2>
-        </div>
-      </div>
-      <div className={cn("p-4", contentClassName)}>{children}</div>
-    </section>
-  );
-}
-
-function EnvironmentStatus({ appVersion }: { appVersion: string }) {
-  const uvStatus = useUvSetupStore((s) => s.status);
-  const uvVersion = useUvSetupStore((s) => s.version);
-  const uvInstalling = useUvSetupStore((s) => s.isInstalling);
-  const checkUv = useUvSetupStore((s) => s.checkStatus);
-  const installUv = useUvSetupStore((s) => s.install);
-  const _finishUvInstall = useUvSetupStore((s) => s._finishInstall);
-
-  const [skillsStatus, setSkillsStatus] = useState<SkillsStatus | null>(null);
-  const [skillsInstalling, _setSkillsInstalling] = useState(false);
-  const [showSkillsOnboarding, setShowSkillsOnboarding] = useState(false);
-
-  const checkSkills = useCallback(async () => {
-    try {
-      const gs = await invoke<SkillsStatus>("check_skills_installed", {
-        projectPath: null,
-      });
-      setSkillsStatus(gs);
-    } catch {
-      // ignore
-    }
-  }, []);
-
-  useEffect(() => {
-    checkUv();
-    checkSkills();
-  }, [checkUv, checkSkills]);
-
-  // Listen for uv install completion
-  useEffect(() => {
-    const unlisten = listen<boolean>("uv-install-complete", (event) => {
-      _finishUvInstall(event.payload);
-    });
-    return () => {
-      unlisten.then((fn) => fn());
-    };
-  }, [_finishUvInstall]);
-
-  // Lazy load skills onboarding
-  const [OnboardingComponent, setOnboardingComponent] = useState<ComponentType<{
-    onClose: () => void;
-  }> | null>(null);
-
-  useEffect(() => {
-    if (showSkillsOnboarding && !OnboardingComponent) {
-      import(
-        "@/components/scientific-skills/scientific-skills-onboarding"
-      ).then((mod) =>
-        setOnboardingComponent(() => mod.ScientificSkillsOnboarding),
-      );
-    }
-  }, [showSkillsOnboarding, OnboardingComponent]);
-
-  return (
-    <>
-      <div className="divide-y divide-border/60">
-        {/* Python (uv) */}
-        <StatusRow
-          ok={uvStatus === "ready"}
-          label="Python (uv)"
-          detail={
-            uvInstalling
-              ? "Installing..."
-              : uvStatus === "ready"
-                ? (uvVersion ?? "Installed")
-                : uvStatus === "checking"
-                  ? "Checking..."
-                  : "Not installed"
-          }
-          action={
-            uvStatus === "not-installed" && !uvInstalling
-              ? { label: "Install", onClick: installUv }
-              : uvInstalling
-                ? { label: "Installing...", loading: true }
-                : undefined
-          }
-        />
-
-        {/* Scientific Skills */}
-        <StatusRow
-          ok={!!skillsStatus?.installed}
-          label="Scientific Skills"
-          detail={
-            skillsInstalling
-              ? "Installing..."
-              : skillsStatus?.installed
-                ? `${skillsStatus.skill_count} skills`
-                : "Not installed"
-          }
-          action={
-            skillsInstalling
-              ? { label: "Installing...", loading: true }
-              : {
-                  label: skillsStatus?.installed ? "Manage" : "Install",
-                  onClick: () => setShowSkillsOnboarding(true),
-                  icon: skillsStatus?.installed ? "settings" : "download",
-                }
-          }
-        />
-
-        <StatusRow
-          ok={true}
-          label="DevPrism"
-          detail={appVersion ? `v${appVersion}` : "Checking..."}
-        />
-      </div>
-
-      {showSkillsOnboarding && OnboardingComponent && (
-        <OnboardingComponent
-          onClose={() => {
-            setShowSkillsOnboarding(false);
-            checkSkills();
-          }}
-        />
-      )}
-    </>
-  );
-}
-
-function StatusRow({
-  ok,
-  label,
-  detail,
-  action,
-}: {
-  ok: boolean;
-  label: string;
-  detail: string;
-  action?: {
-    label: string;
-    onClick?: () => void;
-    loading?: boolean;
-    icon?: "download" | "key" | "settings";
-  };
-}) {
-  return (
-    <div className="flex min-h-12 min-w-0 items-center gap-3 px-4 py-3">
-      <div
-        className={cn(
-          "flex size-7 shrink-0 items-center justify-center rounded-md border",
-          ok
-            ? "border-green-500/20 bg-green-500/10 text-green-600"
-            : "border-border/70 bg-muted/30 text-muted-foreground",
-        )}
-      >
-        {ok ? (
-          <CheckCircle2Icon className="size-3.5" />
-        ) : (
-          <CircleIcon className="size-3.5" />
-        )}
-      </div>
-      <div className="flex min-w-0 flex-1 items-baseline gap-3">
-        <span
-          className={cn(
-            "w-32 shrink-0 truncate font-medium text-sm",
-            ok ? "text-foreground" : "text-muted-foreground",
-          )}
-        >
-          {label}
-        </span>
-        <span className="min-w-0 flex-1 truncate text-muted-foreground text-xs">
-          {detail}
-        </span>
-      </div>
-      {action && (
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-7 shrink-0 rounded-md px-2.5 text-xs"
-          onClick={action.onClick}
-          disabled={action.loading}
-        >
-          {action.loading ? (
-            <Loader2Icon className="mr-1 size-3 animate-spin" />
-          ) : action.icon === "key" ? (
-            <KeyRoundIcon className="mr-1 size-3" />
-          ) : action.icon === "settings" ? (
-            <SettingsIcon className="mr-1 size-3" />
-          ) : (
-            <DownloadIcon className="mr-1 size-3" />
-          )}
-          {action.label}
-        </Button>
-      )}
-    </div>
   );
 }

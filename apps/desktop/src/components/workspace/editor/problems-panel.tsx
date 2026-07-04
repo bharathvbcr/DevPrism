@@ -10,6 +10,7 @@ import {
   WandSparklesIcon,
 } from "lucide-react";
 import { toast } from "sonner";
+import { showWorkspaceError } from "@/stores/workspace-banner-store";
 import {
   Popover,
   PopoverContent,
@@ -58,13 +59,29 @@ function spansMultipleLines(d: DiagnosticItem): boolean {
 function SeverityIcon({ severity }: { severity: string }) {
   switch (severity) {
     case "error":
-      return <AlertCircleIcon className="size-3.5 shrink-0 text-red-400" />;
+      return (
+        <AlertCircleIcon
+          role="img"
+          aria-label="Error"
+          className="size-3.5 shrink-0 text-red-400"
+        />
+      );
     case "warning":
       return (
-        <AlertTriangleIcon className="size-3.5 shrink-0 text-yellow-400" />
+        <AlertTriangleIcon
+          role="img"
+          aria-label="Warning"
+          className="size-3.5 shrink-0 text-yellow-400"
+        />
       );
     default:
-      return <InfoIcon className="size-3.5 shrink-0 text-blue-400" />;
+      return (
+        <InfoIcon
+          role="img"
+          aria-label="Info"
+          className="size-3.5 shrink-0 text-blue-400"
+        />
+      );
   }
 }
 
@@ -104,7 +121,11 @@ export function ProblemsPopover({
     try {
       await onFixSpanWithAi(d);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "AI fix failed");
+      showWorkspaceError(
+        "AI fix failed",
+        err instanceof Error ? err.message : "Could not apply the fix.",
+        { dedupeKey: "problems-ai-fix" },
+      );
     } finally {
       // Only clear if no newer span fix superseded this one.
       if (id === spanRequestIdRef.current) setSpanPendingIndex(null);
@@ -118,7 +139,7 @@ export function ProblemsPopover({
           type="button"
           title="Problems"
           aria-label={`Problems: ${errorCount} errors, ${warningCount} warnings`}
-          className="flex h-6 items-center gap-2 rounded-md px-2 text-xs transition-colors hover:bg-muted data-[state=open]:bg-muted"
+          className="flex h-7 items-center gap-2 rounded-md px-2 text-xs transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 data-[state=open]:bg-muted"
         >
           <span className="flex items-center gap-1">
             <AlertCircleIcon
@@ -186,10 +207,19 @@ export function ProblemsPopover({
             diagnostics.map((d, i) => (
               <div
                 key={`${d.from}-${d.message}-${i}`}
-                className="group flex cursor-pointer items-center gap-2 px-3 py-1 text-xs transition-colors hover:bg-muted/50"
+                role="button"
+                tabIndex={0}
+                className="group flex cursor-pointer items-center gap-2 px-3 py-1 text-xs transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset"
                 onClick={() => {
                   onNavigate(d.from);
                   setOpen(false);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    onNavigate(d.from);
+                    setOpen(false);
+                  }
                 }}
               >
                 <SeverityIcon severity={d.severity} />
@@ -206,7 +236,7 @@ export function ProblemsPopover({
                       void runSpanFix(d, i);
                     }}
                     disabled={spanPendingIndex !== null}
-                    className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-all hover:bg-muted hover:text-foreground group-hover:opacity-100 disabled:opacity-50 group-hover:disabled:opacity-50"
+                    className="shrink-0 rounded p-0.5 text-muted-foreground opacity-60 transition-all hover:bg-muted hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:opacity-50 group-hover:opacity-100 group-hover:disabled:opacity-50"
                     title="Fix multi-line error with AI"
                   >
                     {spanPendingIndex === i ? (
@@ -224,8 +254,10 @@ export function ProblemsPopover({
                     else onFixWithChat(d.message, d.line);
                     setOpen(false);
                   }}
-                  className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-all hover:bg-muted hover:text-foreground group-hover:opacity-100"
-                  title={aiFixAvailable ? "Fix with AI" : chatLabels.fixWithChat}
+                  className="shrink-0 rounded p-0.5 text-muted-foreground opacity-60 transition-all hover:bg-muted hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 group-hover:opacity-100"
+                  title={
+                    aiFixAvailable ? "Fix with AI" : chatLabels.fixWithChat
+                  }
                 >
                   {aiFixAvailable ? (
                     <SparklesIcon className="size-3.5" />

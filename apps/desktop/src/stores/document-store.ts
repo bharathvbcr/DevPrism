@@ -1,5 +1,8 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
+import { isBrowserProjectPath } from "@/lib/browser-project/constants";
+import { ensureBrowserProjectAccessible } from "@/lib/browser-project/fsa-persistence";
+import { isTauri } from "@/lib/runtime/is-tauri";
 import {
   scanProjectFolder,
   readTexFileContent,
@@ -413,7 +416,11 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
 
   openProject: async (rootPath: string) => {
     log.info(`Opening project: ${rootPath}`);
-    await invoke("allow_project_directory", { rootPath });
+    if (isBrowserProjectPath(rootPath) || !isTauri()) {
+      await ensureBrowserProjectAccessible(rootPath);
+    } else {
+      await invoke("allow_project_directory", { rootPath });
+    }
     const { files: fsFiles, folders: fsFolders } =
       await scanProjectFolder(rootPath);
     const projectFiles: ProjectFile[] = [];
@@ -504,11 +511,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
     const opened = get();
     if (hasPinnedCompileRoot(rootPath, projectFiles)) {
       get().setPreviewRoot(
-        resolvePreviewCompileRoot(
-          rootPath,
-          opened.activeFileId,
-          projectFiles,
-        ),
+        resolvePreviewCompileRoot(rootPath, opened.activeFileId, projectFiles),
       );
     }
 
@@ -724,11 +727,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
     // If the deleted file was active, show the new active file's cached PDF
     const switchingActive = state.activeFileId === id;
     const previewRootId = hasPinnedCompileRoot(state.projectRoot, newFiles)
-      ? resolvePreviewCompileRoot(
-          state.projectRoot,
-          newActiveId,
-          newFiles,
-        )
+      ? resolvePreviewCompileRoot(state.projectRoot, newActiveId, newFiles)
       : switchingActive
         ? resolveTexRoot(newActiveId, newFiles)
         : undefined;

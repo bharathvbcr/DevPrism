@@ -2,11 +2,13 @@ import { type RefObject, useMemo, useState } from "react";
 import { EditorView } from "@codemirror/view";
 import { ListTreeIcon, SparklesIcon, Loader2Icon } from "lucide-react";
 import { toast } from "sonner";
+import { showWorkspaceError } from "@/stores/workspace-banner-store";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { Button } from "@/components/ui/button";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { useDocumentStore } from "@/stores/document-store";
 import { useSettingsStore } from "@/stores/settings-store";
@@ -33,6 +35,8 @@ interface OutlineItem {
   level: number;
   /** Character offset of the command in the document. */
   pos: number;
+  /** 1-based line number of the section command, shown for disambiguation. */
+  line: number;
 }
 
 /** Read the brace-balanced argument starting at `open` (index of `{`). */
@@ -74,20 +78,24 @@ function parseOutline(content: string): OutlineItem[] {
     const bracePos = m.index + m[0].length - 1;
     const { value } = readBraceArg(content, bracePos);
     const title = cleanTitle(value) || `(untitled ${m[1]})`;
-    items.push({ title, level: level < 0 ? 0 : level, pos: m.index });
+    const line = content.slice(0, m.index).split("\n").length;
+    items.push({ title, level: level < 0 ? 0 : level, pos: m.index, line });
   }
   return items;
 }
 
 export function DocumentOutline({
   editorView,
+  onBeforeJump,
 }: {
   editorView: RefObject<EditorView | null>;
+  /** Called before jumping when there is no CodeMirror view (e.g. rich editor). */
+  onBeforeJump?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [summary, setSummary] = useState<string | null>(null);
   const [summarizing, setSummarizing] = useState(false);
-  const aiAssistEnabled = useSettingsStore((s) => s.aiAssistEnabled);
+  const aiSummarize = useSettingsStore((s) => s.aiSummarize);
   const activeContent = useDocumentStore((s) => {
     const f = s.files.find((file) => file.id === s.activeFileId);
     return f?.type === "tex" ? (f.content ?? "") : null;
@@ -117,6 +125,7 @@ export function DocumentOutline({
       });
       view.focus();
     } else {
+      onBeforeJump?.();
       useDocumentStore.getState().requestJumpToPosition(pos);
     }
   };
@@ -128,7 +137,13 @@ export function DocumentOutline({
       const text = await summarizeSection(activeContent);
       setSummary(text);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Summary failed");
+      showWorkspaceError(
+        "Summary failed",
+        err instanceof Error
+          ? err.message
+          : "Could not summarize the document.",
+        { dedupeKey: "outline-summarize" },
+      );
     } finally {
       setSummarizing(false);
     }
@@ -150,12 +165,15 @@ export function DocumentOutline({
           <span className="font-medium text-muted-foreground text-xs">
             Outline
           </span>
-          {aiAssistEnabled && canUseAiAssist() && outline.length > 0 && (
-            <button
+          {aiSummarize && canUseAiAssist() && outline.length > 0 && (
+            <Button
               type="button"
+              variant="ghost"
+              size="sm"
               onClick={() => void handleSummarize()}
               disabled={summarizing}
-              className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              aria-label="Summarize document with AI"
+              className="h-6 gap-1 px-1.5 text-xs"
               title="Summarize document with AI"
             >
               {summarizing ? (
@@ -164,7 +182,7 @@ export function DocumentOutline({
                 <SparklesIcon className="size-3" />
               )}
               Summary
-            </button>
+            </Button>
           )}
         </div>
         {summary && (
@@ -173,8 +191,15 @@ export function DocumentOutline({
           </div>
         )}
         {outline.length === 0 ? (
-          <div className="px-2 py-3 text-center text-muted-foreground text-xs">
-            No sections found
+          <div className="flex flex-col items-center gap-1.5 px-3 py-6 text-center">
+            <ListTreeIcon className="size-5 text-muted-foreground/60" />
+            <p className="text-muted-foreground text-xs leading-relaxed">
+              No sections yet — add{" "}
+              <code className="rounded bg-muted px-1 py-0.5 text-[11px]">
+                {"\\section{…}"}
+              </code>{" "}
+              to build an outline.
+            </p>
           </div>
         ) : (
           <div className="max-h-[60vh] overflow-y-auto pb-1">
@@ -183,11 +208,14 @@ export function DocumentOutline({
                 key={`${item.pos}-${idx}`}
                 type="button"
                 onClick={() => jumpTo(item.pos)}
-                className="block w-full truncate rounded px-2 py-1 text-left text-sm outline-none transition-colors hover:bg-accent focus-visible:bg-accent"
+                className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm outline-none transition-colors hover:bg-accent focus-visible:bg-accent"
                 style={{ paddingLeft: `${(item.level - minLevel) * 12 + 8}px` }}
-                title={item.title}
+                title={`${item.title} · line ${item.line}`}
               >
-                {item.title}
+                <span className="min-w-0 flex-1 truncate">{item.title}</span>
+                <span className="shrink-0 text-[10px] text-muted-foreground/70 tabular-nums">
+                  {item.line}
+                </span>
               </button>
             ))}
           </div>

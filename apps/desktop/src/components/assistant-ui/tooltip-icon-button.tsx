@@ -18,6 +18,9 @@ export const TooltipIconButton = forwardRef<
   HTMLButtonElement,
   TooltipIconButtonProps
 >(({ children, tooltip, side = "bottom", className, ...rest }, ref) => {
+  const ariaLabel =
+    typeof rest["aria-label"] === "string" ? rest["aria-label"] : tooltip;
+
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -25,11 +28,11 @@ export const TooltipIconButton = forwardRef<
           variant="ghost"
           size="icon"
           {...rest}
+          aria-label={ariaLabel}
           className={cn("size-6 p-1", className)}
           ref={ref}
         >
           <Slottable>{children}</Slottable>
-          <span className="sr-only">{tooltip}</span>
         </Button>
       </TooltipTrigger>
       <TooltipContent side={side}>{tooltip}</TooltipContent>

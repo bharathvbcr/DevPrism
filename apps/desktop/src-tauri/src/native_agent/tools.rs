@@ -1,5 +1,5 @@
 //! Rust-native agent tools (no external CLI). Tool names mirror the Claude tool
-//! names (Read/Write/Edit/LS/Bash/Grep) so the existing chat UI's file-change /
+//! names (Read/Write/Edit/LS/Bash/Grep/Compile) so the existing chat UI's file-change /
 //! proposed-change detection works unchanged. All file access is confined to the
 //! project directory.
 
@@ -14,7 +14,15 @@ const MAX_READ_BYTES: usize = 60 * 1024;
 /// paging through a large file stays bounded but high offsets remain reachable.
 const MAX_RANGE_SCAN_BYTES: usize = 1024 * 1024;
 const MAX_OUTPUT_BYTES: usize = 16 * 1024;
+/// Bash gets a larger output budget than Grep/LS: command logs (e.g. a LaTeX
+/// compile via latexmk/tectonic, or a script run) are routinely bigger than
+/// prose tool output, and truncating mid-error-list would hide the diagnostic
+/// the model needs to act on.
+const BASH_MAX_OUTPUT_BYTES: usize = 48 * 1024;
 const GREP_MAX_HITS: usize = 80;
+/// Per-file hit cap so one match-dense (often alphabetically-early) file can't
+/// consume the whole GREP_MAX_HITS budget and hide matches in other files.
+const GREP_MAX_HITS_PER_FILE: usize = 12;
 const GREP_MAX_FILES: usize = 2000;
 const GREP_MAX_FILE_BYTES: usize = 512 * 1024;
 /// Upper bound on Grep's before/after context lines, so a large `context=` can't
@@ -56,6 +64,24 @@ pub fn tool_schemas() -> Value {
                 "replace_all": {"type": "boolean", "description": "Replace all occurrences (default false)"}
             }),
             &["file_path", "old_string", "new_string"]),
+        schema("MultiEdit", "Apply several edits to ONE file atomically (all-or-nothing). Edits run in order on the in-memory buffer; if any fails to match, the file is left untouched. Prefer this over repeated Edit calls on the same file.",
+            json!({
+                "file_path": {"type": "string", "description": "Path relative to the project root"},
+                "edits": {
+                    "type": "array",
+                    "description": "Edits applied in sequence; each later edit sees the result of the earlier ones.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "old_string": {"type": "string", "description": "Exact text to replace (must be unique unless replace_all)"},
+                            "new_string": {"type": "string", "description": "Replacement text"},
+                            "replace_all": {"type": "boolean", "description": "Replace all occurrences (default false)"}
+                        },
+                        "required": ["old_string", "new_string"]
+                    }
+                }
+            }),
+            &["file_path", "edits"]),
         schema("LS", "List the entries of a directory in the project. Pass depth>1 for an indented recursive tree (good for getting oriented).",
             json!({
                 "path": {"type": "string", "description": "Directory path relative to the project root (default: root)"},
@@ -80,6 +106,18 @@ pub fn tool_schemas() -> Value {
                 "path": {"type": "string", "description": "Optional sub-directory to search under"}
             }),
             &["pattern"]),
+        schema("Compile", "Compile a LaTeX root file and return structured errors (file, line, message). Use after edits to verify the project builds. Defaults to main.tex; pass use_texlive=true when the project needs TeX Live.",
+            json!({
+                "main_file": {"type": "string", "description": "Project-relative .tex root to compile (default: main.tex)"},
+                "use_texlive": {"type": "boolean", "description": "Use TeX Live instead of Tectonic (default false)"}
+            }),
+            &[]),
+        schema("AskUser", "Ask the user ONE clarifying question and wait for their reply before continuing. Use ONLY when you are genuinely blocked on a decision you cannot resolve from the project files or the conversation (e.g. the request is ambiguous between materially different outcomes). Never use it for anything you can find with Read/Grep/LS/Glob, and prefer a sensible default over asking.",
+            json!({
+                "question": {"type": "string", "description": "The single, specific question to ask the user"},
+                "options": {"type": "array", "items": {"type": "string"}, "description": "Up to 4 short answer choices to offer (optional); the user can always type a free-form reply instead"}
+            }),
+            &["question"]),
     ])
 }
 
@@ -138,16 +176,19 @@ fn resolve(project_dir: &Path, rel: &str) -> Result<PathBuf, String> {
     let joined = project_dir.join(rel_path);
     // Defense-in-depth: resolve symlinks of the existing ancestors and require the
     // real path to stay inside the canonicalized project root, so an in-project
-    // symlink can't be used to read/write outside the project. Fail-open when the
-    // project root can't be canonicalized (don't break legitimate use).
-    if let Some(real_root) = canonicalize_existing(project_dir) {
-        let real_target = canonicalize_existing(&joined).unwrap_or_else(|| joined.clone());
-        if !real_target.starts_with(&real_root) {
-            return Err(
-                "Path escapes the project (it resolves through a symlink to outside the project root)."
-                    .into(),
-            );
-        }
+    // symlink can't be used to read/write outside the project. Fail CLOSED if the
+    // project root can't be canonicalized rather than returning the unchecked path
+    // (canonicalize_existing walks up to a real ancestor, so this is unreachable
+    // for a live project — it just guarantees we never skip the escape check).
+    let Some(real_root) = canonicalize_existing(project_dir) else {
+        return Err("Path could not be validated (project root is unavailable).".into());
+    };
+    let real_target = canonicalize_existing(&joined).unwrap_or_else(|| joined.clone());
+    if !real_target.starts_with(&real_root) {
+        return Err(
+            "Path escapes the project (it resolves through a symlink to outside the project root)."
+                .into(),
+        );
     }
     Ok(joined)
 }
@@ -211,54 +252,41 @@ fn arg<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
         .filter(|s| !s.trim().is_empty())
 }
 
-/// Apply an Edit: exact unique match (or replace_all), with a fallback that
-/// retries after normalizing CRLF -> LF so trivial line-ending mismatches don't
-/// fail the edit.
-fn apply_edit(
-    path: &Path,
-    rel: &str,
-    content: &str,
-    old: &str,
-    new: &str,
-    replace_all: bool,
-) -> (String, bool) {
+/// Apply one replacement to `content` IN MEMORY: exact unique match (or
+/// replace_all), with a fallback that retries after normalizing CRLF -> LF so
+/// trivial line-ending mismatches don't fail. Returns the updated buffer on
+/// success or a human-readable reason on failure (no disk I/O). Shared by Edit
+/// and MultiEdit so both get identical matching semantics.
+fn replace_in_content(content: &str, old: &str, new: &str, replace_all: bool) -> Result<String, String> {
     // An empty old_string matches at every character boundary: with replace_all
     // it would splice new_string between every char (total corruption), and
     // without it reports a misleading "occurs N times". Forbid it outright.
     if old.is_empty() {
-        return (
-            "Edit failed: old_string must not be empty. Use Write to create or overwrite a file."
-                .into(),
-            true,
+        return Err(
+            "old_string must not be empty. Use Write to create or overwrite a file.".into(),
         );
     }
     // A no-op edit wastes a disk write and (because it would report success)
     // wrongly clears the caller's duplicate-call cache. Reject it as an error.
     if old == new {
-        return (
-            "Edit made no change: old_string and new_string are identical. \
-             Provide different replacement text or pick a different target."
+        return Err(
+            "old_string and new_string are identical. Provide different replacement text or pick a different target."
                 .into(),
-            true,
         );
     }
     let count = content.matches(old).count();
     if count == 1 || (count > 1 && replace_all) {
-        let updated = if replace_all {
+        return Ok(if replace_all {
             content.replace(old, new)
         } else {
             content.replacen(old, new, 1)
-        };
-        return write_edit(path, rel, &updated, "");
+        });
     }
     if count > 1 {
-        return (
-            format!(
-                "Edit failed: old_string occurs {} times; make it unique or pass replace_all=true.",
-                count
-            ),
-            true,
-        );
+        return Err(format!(
+            "old_string occurs {} times; make it unique or pass replace_all=true.",
+            count
+        ));
     }
     // No exact match — retry tolerantly on LF-normalized buffers so a trivial
     // CRLF/LF mismatch in old_string doesn't fail the edit.
@@ -266,23 +294,17 @@ fn apply_edit(
     let norm_old = old.replace("\r\n", "\n");
     let ncount = norm_content.matches(&norm_old).count();
     if ncount == 0 {
-        return (
-            format!(
-                "Edit failed: old_string was not found (even after normalizing line endings). \
-                 Read the file and copy the exact text to replace.{}",
-                edit_not_found_hint(content, old)
-            ),
-            true,
-        );
+        return Err(format!(
+            "old_string was not found (even after normalizing line endings). \
+             Read the file and copy the exact text to replace.{}",
+            edit_not_found_hint(content, old)
+        ));
     }
     if ncount > 1 && !replace_all {
-        return (
-            format!(
-                "Edit failed: old_string occurs {} times; make it unique or pass replace_all=true.",
-                ncount
-            ),
-            true,
-        );
+        return Err(format!(
+            "old_string occurs {} times; make it unique or pass replace_all=true.",
+            ncount
+        ));
     }
     // The mismatch was only line endings. Reconstruct old/new with the file's
     // own convention and splice into the ORIGINAL content, so untouched lines
@@ -291,30 +313,75 @@ fn apply_edit(
         let old_crlf = norm_old.replace('\n', "\r\n");
         let new_crlf = new.replace("\r\n", "\n").replace('\n', "\r\n");
         if content.matches(&old_crlf).count() >= 1 {
-            let updated = if replace_all {
+            return Ok(if replace_all {
                 content.replace(&old_crlf, &new_crlf)
             } else {
                 content.replacen(&old_crlf, &new_crlf, 1)
-            };
-            return write_edit(path, rel, &updated, "");
+            });
         }
         // The matched region's endings are mixed; fail clearly rather than
         // rewrite every line ending in the file.
-        return (
-            format!(
-                "Edit failed: old_string was not found with consistent line endings.{}",
-                edit_not_found_hint(content, old)
-            ),
-            true,
-        );
+        return Err(format!(
+            "old_string was not found with consistent line endings.{}",
+            edit_not_found_hint(content, old)
+        ));
     }
     // File is LF-only: the normalized replacement is already correct.
-    let updated = if replace_all {
+    Ok(if replace_all {
         norm_content.replace(&norm_old, new)
     } else {
         norm_content.replacen(&norm_old, new, 1)
-    };
-    write_edit(path, rel, &updated, "")
+    })
+}
+
+/// Apply a single Edit and write it to disk.
+fn apply_edit(
+    path: &Path,
+    rel: &str,
+    content: &str,
+    old: &str,
+    new: &str,
+    replace_all: bool,
+) -> (String, bool) {
+    match replace_in_content(content, old, new, replace_all) {
+        Ok(updated) => write_edit(path, rel, &updated, ""),
+        Err(reason) => (format!("Edit failed: {reason}"), true),
+    }
+}
+
+/// Apply a sequence of edits to one file atomically: each edit runs on the
+/// result of the previous one, and the file is written only if EVERY edit
+/// matches. On any failure nothing is written and the failing edit's index and
+/// reason are reported, so a partial mutation can never corrupt the file.
+fn apply_multi_edit(path: &Path, rel: &str, content: &str, edits: &[Value]) -> (String, bool) {
+    if edits.is_empty() {
+        return ("MultiEdit failed: 'edits' is empty — provide at least one edit.".into(), true);
+    }
+    let mut buf = content.to_string();
+    for (i, e) in edits.iter().enumerate() {
+        let old = e.get("old_string").and_then(|v| v.as_str());
+        let new = e.get("new_string").and_then(|v| v.as_str());
+        let (old, new) = match (old, new) {
+            (Some(o), Some(n)) => (o, n),
+            _ => {
+                return (
+                    format!("MultiEdit failed: edit #{} is missing 'old_string' or 'new_string'.", i + 1),
+                    true,
+                )
+            }
+        };
+        let replace_all = e.get("replace_all").and_then(|v| v.as_bool()).unwrap_or(false);
+        match replace_in_content(&buf, old, new, replace_all) {
+            Ok(updated) => buf = updated,
+            Err(reason) => {
+                return (
+                    format!("MultiEdit failed at edit #{} (no changes written): {}", i + 1, reason),
+                    true,
+                )
+            }
+        }
+    }
+    write_edit(path, rel, &buf, &format!(" ({} edits)", edits.len()))
 }
 
 /// Best-effort hint when an Edit's old_string isn't found: list up to three
@@ -731,8 +798,52 @@ fn cap(mut s: String, max: usize) -> String {
     s
 }
 
+fn format_compile_result(result: &crate::latex::AgentCompileResult) -> String {
+    let mut payload = json!({
+        "success": result.success,
+        "main_file": result.main_file,
+        "summary": result.summary,
+        "errors": result.errors,
+    });
+    if result.success {
+        return payload.to_string();
+    }
+    let mut text = format!("{}\n", result.summary);
+    for (i, err) in result.errors.iter().enumerate() {
+        let loc = match (&err.file, err.line) {
+            (Some(f), Some(l)) => format!("{}:{}", f, l),
+            (Some(f), None) => f.clone(),
+            (None, Some(l)) => format!("line {}", l),
+            (None, None) => result.main_file.clone(),
+        };
+        text.push_str(&format!("{}. [{}] {}\n", i + 1, loc, err.message));
+        if let Some(obj) = payload["errors"].get_mut(i) {
+            obj["location"] = json!(loc);
+        }
+    }
+    text.push_str(&format!("\nStructured:\n{}", payload));
+    text
+}
+
 /// Execute one tool call. Returns (result_text, is_error).
 pub async fn execute(project_dir: &Path, name: &str, args: &Value) -> (String, bool) {
+    let started = std::time::Instant::now();
+    let (output, is_error) = execute_inner(project_dir, name, args).await;
+    // Log names/shape only (never argument values or output) so a failing tool
+    // call leaves a server-side timeline without leaking file or prompt content.
+    let arg_keys: Vec<&str> = args
+        .as_object()
+        .map(|o| o.keys().map(String::as_str).collect())
+        .unwrap_or_default();
+    eprintln!(
+        "[native-agent] tool={name} args={arg_keys:?} elapsed_ms={} is_error={is_error} out_bytes={}",
+        started.elapsed().as_millis(),
+        output.len()
+    );
+    (output, is_error)
+}
+
+async fn execute_inner(project_dir: &Path, name: &str, args: &Value) -> (String, bool) {
     match name {
         "Read" => match arg(args, "file_path") {
             Some(fp) => match resolve(project_dir, fp) {
@@ -798,6 +909,20 @@ pub async fn execute(project_dir: &Path, name: &str, args: &Value) -> (String, b
                 _ => ("Edit requires 'file_path', 'old_string', 'new_string'.".into(), true),
             }
         }
+        "MultiEdit" => {
+            let fp = arg(args, "file_path");
+            let edits = args.get("edits").and_then(|v| v.as_array());
+            match (fp, edits) {
+                (Some(fp), Some(edits)) => match resolve(project_dir, fp) {
+                    Ok(path) => match std::fs::read_to_string(&path) {
+                        Ok(content) => apply_multi_edit(&path, fp, &content, edits),
+                        Err(e) => (format!("Could not read {}: {}", fp, e), true),
+                    },
+                    Err(e) => (e, true),
+                },
+                _ => ("MultiEdit requires 'file_path' and a non-empty 'edits' array.".into(), true),
+            }
+        }
         "LS" => {
             let sub = arg(args, "path").unwrap_or("");
             let depth = args
@@ -854,9 +979,35 @@ pub async fn execute(project_dir: &Path, name: &str, args: &Value) -> (String, b
             }
             None => ("Glob requires 'pattern'.".into(), true),
         },
+        "Compile" => {
+            let main_file = arg(args, "main_file").unwrap_or("main.tex");
+            let use_texlive = args
+                .get("use_texlive")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            match resolve(project_dir, main_file) {
+                Ok(path) if path.is_file() => {
+                    let project = project_dir.to_path_buf();
+                    let main = main_file.to_string();
+                    match tokio::task::spawn_blocking(move || {
+                        crate::latex::agent_compile_project(&project, &main, use_texlive)
+                    })
+                    .await
+                    {
+                        Ok(result) => (format_compile_result(&result), !result.success),
+                        Err(e) => (format!("Compile task failed: {}", e), true),
+                    }
+                }
+                Ok(_) => (
+                    format!("Compile target `{}` is not a file.", main_file),
+                    true,
+                ),
+                Err(e) => (e, true),
+            }
+        }
         other => (
             format!(
-                "Unknown tool \"{}\". Available tools: Read, Write, Edit, LS, Grep, Bash, Glob. \
+                "Unknown tool \"{}\". Available tools: Read, Write, Edit, MultiEdit, LS, Grep, Bash, Glob, Compile, AskUser. \
                  Call one of these instead.",
                 other
             ),
@@ -944,6 +1095,7 @@ fn grep(
     };
     let mut out: Vec<String> = Vec::new();
     let mut matches = 0usize;
+    let mut files_matched = 0usize;
     let mut files_scanned = 0usize;
     grep_walk(
         root,
@@ -955,6 +1107,7 @@ fn grep(
         0,
         &mut out,
         &mut matches,
+        &mut files_matched,
         &mut files_scanned,
     );
     if matches == 0 {
@@ -962,7 +1115,11 @@ fn grep(
     } else {
         let hit_cap = matches >= GREP_MAX_HITS;
         let file_cap = files_scanned >= GREP_MAX_FILES;
-        let mut s = cap(out.join("\n"), MAX_OUTPUT_BYTES);
+        let files_word = if files_matched == 1 { "file" } else { "files" };
+        let mut s = format!(
+            "[matched in {files_matched} {files_word}; {matches} match line(s) shown]\n{}",
+            cap(out.join("\n"), MAX_OUTPUT_BYTES)
+        );
         if hit_cap {
             s.push_str(&format!(
                 "\n…[showing first {} matches; more may exist — narrow with path= or glob=]",
@@ -1037,6 +1194,7 @@ fn grep_walk(
     depth: usize,
     out: &mut Vec<String>,
     matches: &mut usize,
+    files_matched: &mut usize,
     files_scanned: &mut usize,
 ) {
     if depth > MAX_WALK_DEPTH || *matches >= GREP_MAX_HITS || *files_scanned >= GREP_MAX_FILES {
@@ -1078,6 +1236,7 @@ fn grep_walk(
                 depth + 1,
                 out,
                 matches,
+                files_matched,
                 files_scanned,
             );
         } else if ft.is_file() {
@@ -1103,6 +1262,9 @@ fn grep_walk(
                 let lines: Vec<&str> = content.lines().collect();
                 // Collect match line indices, bounded by the remaining hit budget.
                 let remaining = GREP_MAX_HITS.saturating_sub(*matches);
+                // Cap this file's contribution so it can't starve other files of
+                // the global budget (still bounded by whatever budget is left).
+                let per_file_budget = remaining.min(GREP_MAX_HITS_PER_FILE);
                 let mut match_idxs: Vec<usize> = Vec::new();
                 for (i, line) in lines.iter().enumerate() {
                     let matched = if case_sensitive {
@@ -1112,7 +1274,7 @@ fn grep_walk(
                     };
                     if matched {
                         match_idxs.push(i);
-                        if match_idxs.len() >= remaining {
+                        if match_idxs.len() >= per_file_budget {
                             break;
                         }
                     }
@@ -1120,6 +1282,7 @@ fn grep_walk(
                 if !match_idxs.is_empty() {
                     append_file_matches(out, &rel, &lines, &match_idxs, context);
                     *matches += match_idxs.len();
+                    *files_matched += 1;
                     if *matches >= GREP_MAX_HITS {
                         return;
                     }
@@ -1327,6 +1490,37 @@ where
     }
 }
 
+/// Whether an environment variable name looks like it carries a credential, so
+/// it should be stripped from the child before running a (possibly
+/// injection-influenced) shell command. Deny-list by name keeps everything dev
+/// tools need (PATH/HOME/proxies/ssh-agent) while removing secrets.
+fn is_secret_env_key(key: &str) -> bool {
+    let k = key.to_ascii_uppercase();
+    const EXACT: &[&str] = &[
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "GITHUB_TOKEN",
+        "GH_TOKEN",
+        "NPM_TOKEN",
+        "HF_TOKEN",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+    ];
+    if EXACT.contains(&k.as_str()) {
+        return true;
+    }
+    k.ends_with("_KEY")
+        || k.ends_with("_TOKEN")
+        || k.ends_with("_SECRET")
+        || k.ends_with("_PASSWORD")
+        || k.ends_with("_CREDENTIALS")
+        || k.contains("API_KEY")
+        || k.contains("APIKEY")
+        || k.contains("SECRET")
+        || k.contains("PASSWORD")
+}
+
 async fn run_bash(project_dir: &Path, command: &str) -> (String, bool) {
     // Defense-in-depth: refuse a few unambiguously catastrophic commands.
     if is_catastrophic(command) {
@@ -1374,6 +1568,15 @@ async fn run_bash(project_dir: &Path, command: &str) -> (String, bool) {
         cmd.env("PATH", format!("{}{}{}", bin.display(), sep, existing));
     }
 
+    // Strip credential-bearing environment variables so an injected command
+    // can't exfiltrate the parent process's secrets (provider API keys, cloud
+    // tokens) through the output we feed back to the model.
+    for (key, _) in std::env::vars() {
+        if is_secret_env_key(&key) {
+            cmd.env_remove(&key);
+        }
+    }
+
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => return (format!("Command failed to start: {}", e), true),
@@ -1388,13 +1591,13 @@ async fn run_bash(project_dir: &Path, command: &str) -> (String, bool) {
     // timeout instead of returning promptly at the cap.
     let mut out_task = tokio::spawn(async move {
         match so {
-            Some(mut r) => read_capped(&mut r, MAX_OUTPUT_BYTES).await,
+            Some(mut r) => read_capped(&mut r, BASH_MAX_OUTPUT_BYTES).await,
             None => (Vec::new(), false),
         }
     });
     let mut err_task = tokio::spawn(async move {
         match se {
-            Some(mut r) => read_capped(&mut r, MAX_OUTPUT_BYTES).await,
+            Some(mut r) => read_capped(&mut r, BASH_MAX_OUTPUT_BYTES).await,
             None => (Vec::new(), false),
         }
     });
@@ -1461,11 +1664,11 @@ async fn run_bash(project_dir: &Path, command: &str) -> (String, bool) {
     } else {
         status.map(|s| !s.success()).unwrap_or(true)
     };
-    let mut result = cap(combined, MAX_OUTPUT_BYTES);
+    let mut result = cap(combined, BASH_MAX_OUTPUT_BYTES);
     if truncated {
         result.push_str(&format!(
             "\n…[output truncated at {} KB; redirect to a file and inspect a slice]",
-            MAX_OUTPUT_BYTES / 1024
+            BASH_MAX_OUTPUT_BYTES / 1024
         ));
     }
     (result, is_error)
@@ -1487,11 +1690,34 @@ mod tests {
     fn schemas_are_well_formed() {
         let s = tool_schemas();
         let arr = s.as_array().unwrap();
-        assert_eq!(arr.len(), 7);
+        assert_eq!(arr.len(), 10);
         for t in arr {
             assert_eq!(t["type"], "function");
             assert!(t["function"]["name"].is_string());
         }
+    }
+
+    #[test]
+    fn ask_user_schema_shape() {
+        // The UI and the mod.rs answer round-trip depend on this exact shape:
+        // required `question` (string) plus optional `options` (string array).
+        let s = tool_schemas();
+        let ask = s
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["function"]["name"] == "AskUser")
+            .expect("AskUser schema present");
+        let f = &ask["function"];
+        assert_eq!(f["parameters"]["required"], json!(["question"]));
+        assert_eq!(f["parameters"]["properties"]["question"]["type"], "string");
+        assert_eq!(f["parameters"]["properties"]["options"]["type"], "array");
+        assert_eq!(
+            f["parameters"]["properties"]["options"]["items"]["type"],
+            "string"
+        );
+        // The description must keep steering the model away from casual use.
+        assert!(f["description"].as_str().unwrap().contains("ONLY"));
     }
 
     #[test]
@@ -1533,7 +1759,7 @@ mod tests {
         // old == new is a no-op and reported as an error so the dedup cache holds.
         let (msg, err) = apply_edit(Path::new("/nope"), "f.txt", "abc", "a", "a", false);
         assert!(err);
-        assert!(msg.contains("no change"));
+        assert!(msg.contains("identical"));
     }
 
     #[tokio::test]
@@ -1611,6 +1837,72 @@ mod tests {
         // The untouched lone LF after BETA is preserved (old code forced CRLF).
         assert!(after.contains("BETA\ngamma"), "got: {:?}", after);
         assert!(after.contains("gamma\r\n"));
+    }
+
+    #[test]
+    fn secret_env_keys_are_detected() {
+        for k in [
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "AWS_SECRET_ACCESS_KEY",
+            "GITHUB_TOKEN",
+            "MY_SERVICE_TOKEN",
+            "db_password",
+            "SomeApiKey",
+        ] {
+            assert!(is_secret_env_key(k), "{k} should be treated as secret");
+        }
+        for k in ["PATH", "HOME", "SHELL", "LANG", "SSH_AUTH_SOCK", "VIRTUAL_ENV", "TERM"] {
+            assert!(!is_secret_env_key(k), "{k} must be preserved");
+        }
+    }
+
+    #[tokio::test]
+    async fn multi_edit_applies_edits_in_sequence() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("code.rs"), "let a = 1;\nlet b = 2;\nlet c = 3;\n").unwrap();
+        let (msg, err) = execute(
+            root,
+            "MultiEdit",
+            &json!({
+                "file_path": "code.rs",
+                "edits": [
+                    { "old_string": "let a = 1;", "new_string": "let a = 10;" },
+                    { "old_string": "let c = 3;", "new_string": "let c = 30;" }
+                ]
+            }),
+        )
+        .await;
+        assert!(!err, "got: {msg}");
+        assert!(msg.contains("2 edits"));
+        let after = std::fs::read_to_string(root.join("code.rs")).unwrap();
+        assert_eq!(after, "let a = 10;\nlet b = 2;\nlet c = 30;\n");
+    }
+
+    #[tokio::test]
+    async fn multi_edit_is_atomic_on_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let original = "x = 1;\ny = 2;\n";
+        std::fs::write(root.join("a.rs"), original).unwrap();
+        // First edit matches; second doesn't — nothing should be written.
+        let (msg, err) = execute(
+            root,
+            "MultiEdit",
+            &json!({
+                "file_path": "a.rs",
+                "edits": [
+                    { "old_string": "x = 1;", "new_string": "x = 11;" },
+                    { "old_string": "NOPE", "new_string": "ignored" }
+                ]
+            }),
+        )
+        .await;
+        assert!(err, "should fail");
+        assert!(msg.contains("edit #2"), "got: {msg}");
+        // The file is untouched (no partial mutation from edit #1).
+        assert_eq!(std::fs::read_to_string(root.join("a.rs")).unwrap(), original);
     }
 
     #[test]
@@ -1746,6 +2038,31 @@ mod tests {
         let (out3, err3) = execute(root, "Grep", &json!({ "pattern": "zzz" })).await;
         assert!(!err3);
         assert!(out3.contains("No matches"));
+    }
+
+    #[tokio::test]
+    async fn grep_per_file_cap_keeps_budget_for_other_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // A match-dense file with more matches than the whole global budget: without
+        // a per-file cap it would starve every later file of the budget.
+        let dense = std::iter::repeat("FOO").take(100).collect::<Vec<_>>().join("\n");
+        std::fs::write(root.join("a_dense.txt"), dense).unwrap();
+        // A second (alphabetically-later) file that also matches.
+        std::fs::write(root.join("z_other.txt"), "nope\nFOO here\n").unwrap();
+
+        let (out, err) = execute(root, "Grep", &json!({ "pattern": "FOO" })).await;
+        assert!(!err);
+        // The dense file is capped, so the second file's match still appears.
+        assert!(out.contains("z_other.txt"), "second file must appear:\n{out}");
+        // The summary reports the number of files matched, not just line count.
+        assert!(out.contains("matched in 2 files"), "summary line missing:\n{out}");
+        // The dense file contributes at most the per-file cap.
+        let dense_hits = out.matches("a_dense.txt:").count();
+        assert!(
+            dense_hits <= GREP_MAX_HITS_PER_FILE,
+            "dense file contributed {dense_hits} > cap {GREP_MAX_HITS_PER_FILE}"
+        );
     }
 
     #[tokio::test]

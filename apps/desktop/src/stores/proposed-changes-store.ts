@@ -21,9 +21,9 @@ interface ProposedChangesState {
   // Actions
   addChange: (change: Omit<ProposedChange, "timestamp">) => void;
   resolveChange: (id: string) => void;
-  keepChange: (id: string) => void;
+  keepChange: (id: string) => Promise<void>;
   undoChange: (id: string) => Promise<void>;
-  keepAll: () => void;
+  keepAll: () => Promise<void>;
   undoAll: () => Promise<void>;
   getChangeForFile: (relativePath: string) => ProposedChange | undefined;
 }
@@ -63,7 +63,7 @@ export const useProposedChangesStore = create<ProposedChangesState>()(
       }));
     },
 
-    keepChange: (id) => {
+    keepChange: async (id) => {
       const change = get().changes.find((c) => c.id === id);
       if (!change) return;
 
@@ -74,12 +74,19 @@ export const useProposedChangesStore = create<ProposedChangesState>()(
         .getState()
         .files.find((f) => f.relativePath === change.filePath);
       if (file?.content != null) {
-        writeTexFileContent(change.absolutePath, file.content).catch((err) =>
-          log.error("Failed to write kept change", { error: String(err) }),
-        );
+        try {
+          await writeTexFileContent(change.absolutePath, file.content);
+        } catch (err) {
+          // Keep the change pending so the UI and disk don't silently diverge.
+          log.error("Failed to write kept change; leaving it pending", {
+            error: String(err),
+            file: change.filePath,
+          });
+          return;
+        }
       }
 
-      // Remove from pending
+      // Remove from pending only after the write succeeds.
       set((state) => ({
         changes: state.changes.filter((c) => c.id !== id),
       }));
@@ -90,34 +97,88 @@ export const useProposedChangesStore = create<ProposedChangesState>()(
       if (!change) return;
 
       log.info(`Undoing change on ${change.filePath}`);
-      // Restore oldContent to disk
-      await writeTexFileContent(change.absolutePath, change.oldContent);
+      // Drift check: if the file diverged from what Claude wrote, an intervening
+      // (inline) edit is about to be discarded — surface it rather than clobber
+      // silently.
+      const file = useDocumentStore
+        .getState()
+        .files.find((f) => f.relativePath === change.filePath);
+      if (file?.content != null && file.content !== change.newContent) {
+        log.warn(
+          "Undoing a change whose file was edited since; that edit will be discarded",
+          {
+            file: change.filePath,
+          },
+        );
+      }
 
-      // Reload the file in document store (will pick up oldContent from disk)
+      // Restore oldContent to disk; keep the change pending if the write fails.
+      try {
+        await writeTexFileContent(change.absolutePath, change.oldContent);
+      } catch (err) {
+        log.error("Failed to undo change; leaving it pending", {
+          error: String(err),
+          file: change.filePath,
+        });
+        return;
+      }
+
+      // Reload the file in document store (will pick up oldContent from disk).
       await useDocumentStore.getState().reloadFile(change.filePath);
 
-      // Remove from pending
       set((state) => ({
         changes: state.changes.filter((c) => c.id !== id),
       }));
     },
 
-    keepAll: () => {
+    keepAll: async () => {
       const { changes } = get();
+      const files = useDocumentStore.getState().files;
+      // Persist each file's current content (which includes any accepted inline
+      // edits) to disk — the old implementation only reloaded from disk, silently
+      // reverting inline edits that were never written. Keep failed writes pending.
+      const failed = new Set<string>();
       for (const change of changes) {
-        useDocumentStore.getState().reloadFile(change.filePath);
+        const file = files.find((f) => f.relativePath === change.filePath);
+        if (file?.content != null) {
+          try {
+            await writeTexFileContent(change.absolutePath, file.content);
+          } catch (err) {
+            failed.add(change.id);
+            log.error(
+              "Failed to write kept change in keepAll; leaving it pending",
+              {
+                error: String(err),
+                file: change.filePath,
+              },
+            );
+          }
+        }
       }
-      set({ changes: [] });
+      set((state) => ({
+        changes: state.changes.filter((c) => failed.has(c.id)),
+      }));
     },
 
     undoAll: async () => {
       const { changes } = get();
       log.info(`Undoing all ${changes.length} changes`);
+      const failed = new Set<string>();
       for (const change of changes) {
-        await writeTexFileContent(change.absolutePath, change.oldContent);
-        await useDocumentStore.getState().reloadFile(change.filePath);
+        try {
+          await writeTexFileContent(change.absolutePath, change.oldContent);
+          await useDocumentStore.getState().reloadFile(change.filePath);
+        } catch (err) {
+          failed.add(change.id);
+          log.error("Failed to undo change in undoAll; leaving it pending", {
+            error: String(err),
+            file: change.filePath,
+          });
+        }
       }
-      set({ changes: [] });
+      set((state) => ({
+        changes: state.changes.filter((c) => failed.has(c.id)),
+      }));
     },
 
     getChangeForFile: (relativePath) => {

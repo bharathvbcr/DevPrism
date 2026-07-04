@@ -28,6 +28,7 @@ import { VersionOverview } from "@/components/workspace/version-overview";
 import { VersionCompare } from "@/components/workspace/version-compare";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import { InlineBanner } from "@/components/ui/inline-banner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -126,7 +127,8 @@ function StatusDot({
     <span
       className="size-2 shrink-0 rounded-full"
       style={{ backgroundColor: meta.color }}
-      aria-hidden
+      role="img"
+      aria-label={meta.label}
     />
   );
 }
@@ -200,6 +202,7 @@ export function VersionSwitcher({
               switching && "opacity-60",
             )}
             title={labels.switchTitle}
+            aria-label={labels.switchTitle}
           >
             {switching ? (
               <Loader2Icon className="size-3.5 shrink-0 animate-spin" />
@@ -320,6 +323,7 @@ export function VersionSwitcher({
           disabled={switching}
           onClick={() => tailorWithAi(active.id)}
           title={labels.tailorButtonTitle}
+          aria-label={labels.tailorButtonTitle}
           className={cn(
             "flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-xs transition-colors",
             "text-muted-foreground hover:bg-sidebar-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
@@ -386,6 +390,7 @@ function TailorDialog({
   const [jd, setJd] = useState("");
   const [status, setStatus] = useState("draft");
   const [busy, setBusy] = useState(false);
+  const [dialogError, setDialogError] = useState<string | null>(null);
   // Once the user edits the name, stop auto-filling it from the target text.
   const [nameTouched, setNameTouched] = useState(false);
   // Pending AI name suggestion (refines the synchronous heuristic default).
@@ -403,6 +408,7 @@ function TailorDialog({
       setJd("");
       setStatus("draft");
       setBusy(false);
+      setDialogError(null);
       setNameTouched(false);
       setAiNameLoading(false);
     }
@@ -450,12 +456,13 @@ function TailorDialog({
   const submit = async () => {
     if (!name.trim() || busy) return;
     setBusy(true);
+    setDialogError(null);
     try {
       await onCreate(name.trim(), jd, status);
       toast.success(`Tailored version "${name.trim()}" created`);
       onOpenChange(false);
     } catch (err) {
-      toast.error(`Couldn't create version: ${String(err)}`);
+      setDialogError(String(err));
       setBusy(false);
     }
   };
@@ -536,10 +543,7 @@ function TailorDialog({
                 />
               </div>
               <div className="flex flex-col gap-1.5">
-                <span
-                  className="font-medium text-sm"
-                  id="variant-status-label"
-                >
+                <span className="font-medium text-sm" id="variant-status-label">
                   Status
                 </span>
                 <div
@@ -573,6 +577,14 @@ function TailorDialog({
               </div>
             </div>
           </div>
+          {dialogError && (
+            <InlineBanner
+              kind="error"
+              title="Could not create version"
+              message={dialogError}
+              onDismiss={() => setDialogError(null)}
+            />
+          )}
           <DialogFooter className={SCROLLABLE_DIALOG_FOOTER}>
             <Button
               type="button"
@@ -604,22 +616,25 @@ function RenameDialog({
 }) {
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
+  const [dialogError, setDialogError] = useState<string | null>(null);
 
   useEffect(() => {
     if (target) {
       setName(target.name);
       setBusy(false);
+      setDialogError(null);
     }
   }, [target]);
 
   const submit = async () => {
     if (!target || !name.trim() || busy) return;
     setBusy(true);
+    setDialogError(null);
     try {
       await onRename(target.id, name.trim());
       onClose();
     } catch (err) {
-      toast.error(`Couldn't rename: ${String(err)}`);
+      setDialogError(String(err));
       setBusy(false);
     }
   };
@@ -638,6 +653,14 @@ function RenameDialog({
             if (e.key === "Enter") void submit();
           }}
         />
+        {dialogError && (
+          <InlineBanner
+            kind="error"
+            title="Could not rename"
+            message={dialogError}
+            onDismiss={() => setDialogError(null)}
+          />
+        )}
         <DialogFooter>
           <Button variant="ghost" onClick={onClose} disabled={busy}>
             Cancel
@@ -665,22 +688,25 @@ function JdDialog({
 }) {
   const [jd, setJd] = useState("");
   const [busy, setBusy] = useState(false);
+  const [dialogError, setDialogError] = useState<string | null>(null);
 
   useEffect(() => {
     if (target) {
       setJd(target.jd);
       setBusy(false);
+      setDialogError(null);
     }
   }, [target]);
 
   const submit = async () => {
     if (!target || busy) return;
     setBusy(true);
+    setDialogError(null);
     try {
       await onSave(target.id, jd);
       onClose();
     } catch (err) {
-      toast.error(`Couldn't save: ${String(err)}`);
+      setDialogError(String(err));
       setBusy(false);
     }
   };
@@ -724,8 +750,21 @@ function JdDialog({
               }}
             />
           </div>
+          {dialogError && (
+            <InlineBanner
+              kind="error"
+              title="Could not save"
+              message={dialogError}
+              onDismiss={() => setDialogError(null)}
+            />
+          )}
           <DialogFooter className={SCROLLABLE_DIALOG_FOOTER}>
-            <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={onClose}
+              disabled={busy}
+            >
               Cancel
             </Button>
             <Button type="submit" disabled={busy}>
@@ -749,20 +788,25 @@ function DeleteDialog({
   onConfirm: (variantId: string) => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
+  const [dialogError, setDialogError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (target) setBusy(false);
+    if (target) {
+      setBusy(false);
+      setDialogError(null);
+    }
   }, [target]);
 
   const submit = async () => {
     if (!target || busy) return;
     setBusy(true);
+    setDialogError(null);
     try {
       await onConfirm(target.id);
       toast.success(`Deleted "${target.name}"`);
       onClose();
     } catch (err) {
-      toast.error(`Couldn't delete: ${String(err)}`);
+      setDialogError(String(err));
       setBusy(false);
     }
   };
@@ -777,6 +821,14 @@ function DeleteDialog({
             Your master document is not affected.
           </DialogDescription>
         </DialogHeader>
+        {dialogError && (
+          <InlineBanner
+            kind="error"
+            title="Could not delete"
+            message={dialogError}
+            onDismiss={() => setDialogError(null)}
+          />
+        )}
         <DialogFooter>
           <Button variant="ghost" onClick={onClose} disabled={busy}>
             Cancel

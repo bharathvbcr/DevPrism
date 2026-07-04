@@ -19,6 +19,52 @@ import { useSettingsStore } from "@/stores/settings-store";
 // All project data is read on demand from the document store so completions
 // always reflect the latest in-memory file contents (including unsaved edits).
 
+// ── Parse cache ────────────────────────────────────────────────────────────
+// Re-parsing every .bib/.tex file on each completion popup is wasteful on large
+// projects. We memoize the collected bib entries and labels behind a cheap
+// content signature so repeated popups reuse the parsed result, while still
+// reflecting unsaved edits the instant any relevant file changes (the signature
+// folds in each file's id, type, and a fast content hash, so any edit busts it).
+function fnv1a(str: string, seed: number): number {
+  let h = seed ^ 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+/** Cheap signature over the files that feed cite/label completions. */
+function parseSignature(files: ProjectFile[]): string {
+  let h = 0x811c9dc5;
+  for (const f of files) {
+    if (f.type !== "bib" && f.type !== "tex") continue;
+    if (!f.content) continue;
+    // Fold id+type+content into a single rolling hash; length guards against
+    // hash collisions between same-length-but-different edits being missed.
+    h = fnv1a(`${f.id} ${f.type} ${f.content.length}`, h);
+    h = fnv1a(f.content, h);
+  }
+  return h.toString(36);
+}
+
+let parseCache: {
+  sig: string;
+  entries: ReturnType<typeof collectBibEntries>;
+  labels: LabelEntry[];
+} | null = null;
+
+function getParsed(files: ProjectFile[]) {
+  const sig = parseSignature(files);
+  if (parseCache && parseCache.sig === sig) return parseCache;
+  parseCache = {
+    sig,
+    entries: collectBibEntries(files),
+    labels: collectLabels(files),
+  };
+  return parseCache;
+}
+
 /** Collect BibTeX keys from every .bib file plus inline \bibitem{…} keys. */
 function collectBibEntries(files: ProjectFile[]) {
   const entries: ReturnType<typeof parseBibFile> = [];
@@ -103,12 +149,13 @@ function latexCompletionSource(
   context: CompletionContext,
 ): CompletionResult | Promise<CompletionResult | null> | null {
   const files = useDocumentStore.getState().files;
+  const parsed = getParsed(files);
 
   // ── Citation keys ──────────────────────────────────────────────────────
   if (context.matchBefore(CITE_RE)) {
     const token = context.matchBefore(/[\w:.-]*$/);
     const from = token ? token.from : context.pos;
-    const entries = collectBibEntries(files);
+    const entries = parsed.entries;
     if (entries.length === 0 && !context.explicit) return null;
     const options = buildCiteOptions(entries);
     const lexical: CompletionResult = { from, options, validFor: /^[\w:.-]*$/ };
@@ -151,7 +198,11 @@ function latexCompletionSource(
           }
           if (boosted.length === 0) return lexical;
           const rest = options.filter((o) => !seen.has(o.label));
-          return { from, options: [...boosted, ...rest], validFor: /^[\w:.-]*$/ };
+          return {
+            from,
+            options: [...boosted, ...rest],
+            validFor: /^[\w:.-]*$/,
+          };
         })
         .catch(() => lexical);
     }
@@ -163,7 +214,7 @@ function latexCompletionSource(
   if (context.matchBefore(REF_RE)) {
     const token = context.matchBefore(/[\w:.-]*$/);
     const from = token ? token.from : context.pos;
-    const labels = collectLabels(files);
+    const labels = parsed.labels;
     if (labels.length === 0 && !context.explicit) return null;
     const options: Completion[] = labels.map((l) => ({
       label: l.label,

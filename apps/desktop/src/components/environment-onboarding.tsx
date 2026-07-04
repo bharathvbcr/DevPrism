@@ -20,6 +20,7 @@ import {
   Loader2Icon,
   RefreshCwIcon,
   TerminalIcon,
+  FolderPlusIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -32,6 +33,9 @@ import {
 import { ClaudeSetup } from "@/components/claude-setup";
 import { useClaudeSetupStore } from "@/stores/claude-setup-store";
 import { useUvSetupStore } from "@/stores/uv-setup-store";
+import { useSettingsStore } from "@/stores/settings-store";
+import { useSetupFlowStore } from "@/stores/setup-flow-store";
+import { dispatchOpenProjectWizard } from "@/lib/home-flow-events";
 import { cn } from "@/lib/utils";
 
 type SetupItemState = "ready" | "loading" | "blocked" | "error";
@@ -47,6 +51,13 @@ export function EnvironmentOnboarding() {
   const keepOpenDuringCheckRef = useRef(false);
   const [hasOpenedForSetup, setHasOpenedForSetup] = useState(false);
   const [completedDismissed, setCompletedDismissed] = useState(false);
+  const focusReturnRef = useRef<HTMLElement | null>(null);
+  const wizardActive = useSetupFlowStore((s) => s.wizardActive);
+  const onboardingDeferred = useSetupFlowStore((s) => s.onboardingDeferred);
+  const onboardingComplete = useSetupFlowStore((s) => s.onboardingComplete);
+  const deferOnboarding = useSetupFlowStore((s) => s.deferOnboarding);
+  const completeOnboarding = useSetupFlowStore((s) => s.completeOnboarding);
+  const hydrateSetupFlow = useSetupFlowStore((s) => s.hydrateFromSession);
   const [providerDialogOpen, setProviderDialogOpen] = useState(false);
   const [skillsStatus, setSkillsStatus] = useState<SkillsStatus | null>(null);
   const [skillsChecking, setSkillsChecking] = useState(true);
@@ -74,6 +85,7 @@ export function EnvironmentOnboarding() {
   const checkUvStatus = useUvSetupStore((s) => s.checkStatus);
   const installUv = useUvSetupStore((s) => s.install);
   const finishUvInstall = useUvSetupStore((s) => s._finishInstall);
+  const nativeAgentEnabled = useSettingsStore((s) => s.nativeAgentEnabled);
 
   const checkSkillsStatus = useCallback(async () => {
     setSkillsChecking(true);
@@ -90,6 +102,10 @@ export function EnvironmentOnboarding() {
       setSkillsChecking(false);
     }
   }, []);
+
+  useEffect(() => {
+    hydrateSetupFlow();
+  }, [hydrateSetupFlow]);
 
   useEffect(() => {
     let cancelled = false;
@@ -124,24 +140,65 @@ export function EnvironmentOnboarding() {
   const isClaudeReady = claudeStatus === "ready";
   const isUvReady = uvStatus === "ready";
   const isSkillsReady = !!skillsStatus?.installed;
-  const claudeNeedsAttention =
-    isClaudeInstalling || (claudeStatus !== "checking" && !isClaudeReady);
+  const claudeNeedsAttention = nativeAgentEnabled
+    ? false
+    : isClaudeInstalling || (claudeStatus !== "checking" && !isClaudeReady);
   const uvNeedsAttention =
     isUvInstalling || (uvStatus !== "checking" && !isUvReady);
-  const skillsNeedsAttention =
-    !skillsChecking && (!isSkillsReady || !!skillsError);
+  const skillsNeedsAttention = !skillsChecking && !!skillsError;
   const needsAttention =
     claudeNeedsAttention || uvNeedsAttention || skillsNeedsAttention;
   const isCheckingSetup =
     claudeStatus === "checking" || uvStatus === "checking" || skillsChecking;
+
+  const setupSteps = [
+    {
+      id: "claude",
+      ready: isClaudeReady || nativeAgentEnabled,
+      optional: nativeAgentEnabled,
+      label: nativeAgentEnabled ? "Claude Code (optional)" : "Claude Code",
+    },
+    { id: "uv", ready: isUvReady, optional: false, label: "Python (uv)" },
+    {
+      id: "provider",
+      ready: isClaudeReady || nativeAgentEnabled,
+      optional: nativeAgentEnabled,
+      label: nativeAgentEnabled ? "Cloud provider (optional)" : "AI Provider",
+    },
+    {
+      id: "skills",
+      ready: isSkillsReady,
+      optional: true,
+      label: "Scientific Skills (optional)",
+    },
+  ];
+  const _readyStepCount = setupSteps.filter((s) => s.ready).length;
+  const requiredStepCount = setupSteps.filter((s) => !s.optional).length;
+  const readyRequiredCount = setupSteps.filter(
+    (s) => !s.optional && s.ready,
+  ).length;
+
   const setupComplete =
-    initialCheckComplete && !needsAttention && !isCheckingSetup;
+    initialCheckComplete &&
+    !needsAttention &&
+    !isCheckingSetup &&
+    (nativeAgentEnabled ? isUvReady : readyRequiredCount >= requiredStepCount);
   const shouldShow =
     initialCheckComplete &&
+    !wizardActive &&
+    !onboardingComplete &&
     !completedDismissed &&
+    !onboardingDeferred &&
     (needsAttention ||
       (isCheckingSetup && keepOpenDuringCheckRef.current) ||
       hasOpenedForSetup);
+
+  // Save focus when the onboarding dialog opens (restore via onCloseAutoFocus).
+  useEffect(() => {
+    if (!shouldShow) return;
+    const el = document.activeElement as HTMLElement | null;
+    if (el && el !== document.body) focusReturnRef.current = el;
+  }, [shouldShow]);
 
   useEffect(() => {
     if (needsAttention) {
@@ -161,6 +218,20 @@ export function EnvironmentOnboarding() {
     keepOpenDuringCheckRef.current = false;
     setHasOpenedForSetup(false);
     setCompletedDismissed(true);
+    completeOnboarding();
+  };
+
+  const handleDefer = () => {
+    keepOpenDuringCheckRef.current = false;
+    deferOnboarding();
+  };
+
+  const handleCreateProject = () => {
+    keepOpenDuringCheckRef.current = false;
+    setHasOpenedForSetup(false);
+    setCompletedDismissed(true);
+    deferOnboarding();
+    dispatchOpenProjectWizard("template", { fromOnboarding: true });
   };
 
   const openSkillsDialog = () => {
@@ -199,12 +270,22 @@ export function EnvironmentOnboarding() {
 
   return (
     <>
-      <Dialog open={shouldShow} onOpenChange={() => undefined}>
+      <Dialog
+        open={shouldShow}
+        onOpenChange={(open) => {
+          if (open) return;
+          if (setupComplete) handleDone();
+          else handleDefer();
+        }}
+      >
         <DialogContent
-          showCloseButton={false}
-          onEscapeKeyDown={(event) => event.preventDefault()}
-          onInteractOutside={(event) => event.preventDefault()}
           className="w-[min(29rem,calc(100vw-2rem))] gap-0 overflow-hidden rounded-2xl border-border/70 p-0 shadow-xl sm:max-w-none"
+          onCloseAutoFocus={(e) => {
+            e.preventDefault();
+            const el = focusReturnRef.current;
+            focusReturnRef.current = null;
+            if (el?.isConnected) el.focus({ preventScroll: true });
+          }}
         >
           <div className="flex flex-col items-center px-6 pt-6 pb-4 text-center">
             <img
@@ -217,10 +298,32 @@ export function EnvironmentOnboarding() {
                 DevPrism
               </DialogTitle>
               <DialogDescription className="max-w-sm text-sm leading-relaxed">
-                Set up the local tools and model provider required before
-                entering the workspace.
+                {nativeAgentEnabled
+                  ? "Configure Python and optional cloud tools — or create a project to start writing right away."
+                  : "Set up local tools and your model provider — or create a project and finish setup later from Settings."}
               </DialogDescription>
             </DialogHeader>
+            {!setupComplete && (
+              <div className="mt-4 w-full max-w-xs space-y-1.5 text-left">
+                <div className="flex items-center justify-between text-muted-foreground text-xs">
+                  <span>
+                    {readyRequiredCount}/{requiredStepCount} ready
+                  </span>
+                  <span>
+                    {Math.round((readyRequiredCount / requiredStepCount) * 100)}
+                    %
+                  </span>
+                </div>
+                <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+                  <div
+                    className="h-full rounded-full bg-primary transition-[width] duration-500"
+                    style={{
+                      width: `${(readyRequiredCount / requiredStepCount) * 100}%`,
+                    }}
+                  />
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="px-4.5 pb-3">
@@ -238,19 +341,21 @@ export function EnvironmentOnboarding() {
                 icon={TerminalIcon}
                 title="Claude Code"
                 detail={
-                  isClaudeInstalling
-                    ? "Installing..."
-                    : claudeStatus === "checking"
-                      ? "Checking..."
-                      : claudeStatus === "missing-git"
-                        ? "Git for Windows is required first"
-                        : claudeStatus === "not-installed"
-                          ? "Required for AI writing"
-                          : claudeStatus === "error"
-                            ? claudeError || "Installation needs attention"
-                            : claudeVersion
-                              ? `Installed ${claudeVersion}`
-                              : "Installed"
+                  nativeAgentEnabled
+                    ? "Optional when using the native Ollama agent"
+                    : isClaudeInstalling
+                      ? "Installing..."
+                      : claudeStatus === "checking"
+                        ? "Checking..."
+                        : claudeStatus === "missing-git"
+                          ? "Git for Windows is required first"
+                          : claudeStatus === "not-installed"
+                            ? "Required for cloud AI writing"
+                            : claudeStatus === "error"
+                              ? claudeError || "Installation needs attention"
+                              : claudeVersion
+                                ? `Installed ${claudeVersion}`
+                                : "Installed"
                 }
                 action={
                   claudeStatus === "missing-git"
@@ -337,7 +442,7 @@ export function EnvironmentOnboarding() {
                         onClick: () => setProviderDialogOpen(true),
                       }
                     : {
-                        label: "Locked",
+                        label: "Requires Claude",
                         icon: KeyRoundIcon,
                         disabled: true,
                       }
@@ -363,7 +468,7 @@ export function EnvironmentOnboarding() {
                       ? "Couldn't check skills — click Check to retry"
                       : isSkillsReady
                         ? `${skillsStatus?.skill_count ?? 0} skills installed`
-                        : "Required for scientific writing"
+                        : "Optional — enhances scientific workflows"
                 }
                 action={
                   skillsError
@@ -384,17 +489,46 @@ export function EnvironmentOnboarding() {
           </div>
 
           <div className="flex flex-col items-center gap-2 px-6 pt-1 pb-4">
-            <Button
-              disabled={!setupComplete}
-              className="h-10 min-w-28 justify-center rounded-full px-7"
-              onClick={handleDone}
-            >
-              Done
-            </Button>
-            {!setupComplete && (
-              <p className="text-muted-foreground text-xs">
-                Finish the steps above to continue.
-              </p>
+            {setupComplete ? (
+              <>
+                <Button
+                  className="h-10 min-w-28 justify-center rounded-full px-7"
+                  onClick={handleDone}
+                >
+                  Done
+                </Button>
+                <Button
+                  variant="outline"
+                  className="h-10 min-w-28 justify-center gap-2 rounded-full px-7"
+                  onClick={handleCreateProject}
+                >
+                  <FolderPlusIcon className="size-4" />
+                  Create a project
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button
+                  variant="default"
+                  className="h-10 min-w-28 justify-center gap-2 rounded-full px-7"
+                  onClick={handleCreateProject}
+                >
+                  <FolderPlusIcon className="size-4" />
+                  Create a project
+                </Button>
+                <Button
+                  variant="outline"
+                  className="h-10 min-w-28 justify-center rounded-full px-7"
+                  onClick={handleDefer}
+                >
+                  Set up later
+                </Button>
+                <p className="text-muted-foreground text-xs">
+                  {nativeAgentEnabled
+                    ? "You can write and compile without finishing setup."
+                    : "Cloud AI features stay limited until setup is finished."}
+                </p>
+              </>
             )}
           </div>
         </DialogContent>

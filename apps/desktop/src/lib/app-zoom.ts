@@ -1,4 +1,5 @@
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { isTauri } from "@/lib/runtime/is-tauri";
 
 export const APP_ZOOM_STORAGE_KEY = "claude-prism-app-zoom";
 export const LOCAL_ZOOM_SHORTCUTS_ATTR = "data-local-zoom-shortcuts";
@@ -36,7 +37,9 @@ export function readStoredAppZoom(): number {
 
 async function applyAppZoom(value: number): Promise<number> {
   const zoom = clampAppZoom(value);
-  await getCurrentWebview().setZoom(zoom);
+  if (isTauri()) {
+    await getCurrentWebview().setZoom(zoom);
+  }
   return zoom;
 }
 

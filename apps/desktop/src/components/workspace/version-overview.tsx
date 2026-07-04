@@ -1,11 +1,13 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   FileTextIcon,
   GitCompareIcon,
+  Loader2Icon,
   PlusIcon,
   Trash2Icon,
   WandSparklesIcon,
 } from "lucide-react";
+import { toast } from "sonner";
 import { useVariantsStore } from "@/stores/variants-store";
 import { useClaudeChatStore } from "@/stores/claude-chat-store";
 import type { VariantInfo } from "@/lib/tauri/variants";
@@ -17,10 +19,12 @@ import {
 } from "@/lib/space-features";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { InlineBanner } from "@/components/ui/inline-banner";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -248,13 +252,14 @@ export function VersionOverview({
                             )}
                           </td>
                           <td className="py-1.5 align-middle">
-                            <div className="flex items-center justify-end gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+                            <div className="flex items-center justify-end gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
                               {v.jd.trim() && (
                                 <Button
                                   variant="ghost"
                                   size="icon"
                                   className="size-7"
                                   title={labels.tailorWithAi}
+                                  aria-label={labels.tailorWithAi}
                                   onClick={() => tailorWithAi(v.id)}
                                 >
                                   <WandSparklesIcon className="size-3.5" />
@@ -265,6 +270,7 @@ export function VersionOverview({
                                 size="icon"
                                 className="size-7"
                                 title={`Compare with ${labels.masterLabel}`}
+                                aria-label={`Compare with ${labels.masterLabel}`}
                                 onClick={() => setCompareTarget(v)}
                               >
                                 <GitCompareIcon className="size-3.5" />
@@ -274,6 +280,7 @@ export function VersionOverview({
                                 size="icon"
                                 className="size-7"
                                 title="Open"
+                                aria-label="Open version"
                                 onClick={() => open_(v.id)}
                               >
                                 <FileTextIcon className="size-3.5" />
@@ -283,6 +290,7 @@ export function VersionOverview({
                                 size="icon"
                                 className="size-7 text-destructive hover:text-destructive"
                                 title="Delete"
+                                aria-label="Delete version"
                                 onClick={() => setConfirmDelete(v)}
                               >
                                 <Trash2Icon className="size-3.5" />
@@ -300,34 +308,11 @@ export function VersionOverview({
         )}
       </DialogContent>
 
-      <Dialog
-        open={confirmDelete !== null}
-        onOpenChange={(o) => !o && setConfirmDelete(null)}
-      >
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Delete this version?</DialogTitle>
-            <DialogDescription>
-              "{confirmDelete?.name}" and its tailored files will be permanently
-              removed. Your master document is not affected.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="flex justify-end gap-2">
-            <Button variant="ghost" onClick={() => setConfirmDelete(null)}>
-              Cancel
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={() => {
-                if (confirmDelete) void remove(confirmDelete.id);
-                setConfirmDelete(null);
-              }}
-            >
-              Delete
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
+      <DeleteDialog
+        target={confirmDelete}
+        onClose={() => setConfirmDelete(null)}
+        onConfirm={remove}
+      />
 
       <VersionCompare
         target={compareTarget}
@@ -370,5 +355,79 @@ function FilterChip({
       {label}
       <span className="text-muted-foreground">{count}</span>
     </button>
+  );
+}
+
+/**
+ * Delete-confirmation dialog with a busy spinner, error banner, and success
+ * toast. Mirrors the DeleteDialog in version-switcher.tsx so both entry points
+ * to the delete action share identical copy and behavior.
+ */
+function DeleteDialog({
+  target,
+  onClose,
+  onConfirm,
+}: {
+  target: VariantInfo | null;
+  onClose: () => void;
+  onConfirm: (variantId: string) => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [dialogError, setDialogError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (target) {
+      setBusy(false);
+      setDialogError(null);
+    }
+  }, [target]);
+
+  const submit = async () => {
+    if (!target || busy) return;
+    setBusy(true);
+    setDialogError(null);
+    try {
+      await onConfirm(target.id);
+      toast.success(`Deleted "${target.name}"`);
+      onClose();
+    } catch (err) {
+      setDialogError(String(err));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Dialog open={target !== null} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Delete this version?</DialogTitle>
+          <DialogDescription>
+            "{target?.name}" and its tailored files will be permanently removed.
+            Your master document is not affected.
+          </DialogDescription>
+        </DialogHeader>
+        {dialogError && (
+          <InlineBanner
+            kind="error"
+            title="Could not delete"
+            message={dialogError}
+            onDismiss={() => setDialogError(null)}
+          />
+        )}
+        <DialogFooter>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button
+            variant="destructive"
+            onClick={() => void submit()}
+            disabled={busy}
+          >
+            {busy && <Loader2Icon className="size-4 animate-spin" />}
+            Delete
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

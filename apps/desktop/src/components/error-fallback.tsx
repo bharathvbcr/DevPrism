@@ -1,5 +1,7 @@
 import type { FallbackProps } from "react-error-boundary";
 
+import { Button } from "@/components/ui/button";
+
 export function ErrorFallback({ error, resetErrorBoundary }: FallbackProps) {
   return (
     <div className="flex h-screen w-screen items-center justify-center bg-background p-8">
@@ -18,20 +20,10 @@ export function ErrorFallback({ error, resetErrorBoundary }: FallbackProps) {
         </pre>
 
         <div className="flex gap-2">
-          <button
-            type="button"
-            onClick={resetErrorBoundary}
-            className="rounded-md bg-primary px-4 py-2 font-medium text-primary-foreground text-sm hover:bg-primary/90"
-          >
-            Try again
-          </button>
-          <button
-            type="button"
-            onClick={() => window.location.reload()}
-            className="rounded-md border px-4 py-2 font-medium text-sm hover:bg-accent"
-          >
+          <Button onClick={resetErrorBoundary}>Try again</Button>
+          <Button variant="outline" onClick={() => window.location.reload()}>
             Reload
-          </button>
+          </Button>
         </div>
       </div>
     </div>

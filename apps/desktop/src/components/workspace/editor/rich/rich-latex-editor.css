@@ -1,0 +1,154 @@
+/* ScholarDoc rich editor — page typography and atomic-node styling. */
+
+.rich-editor-content {
+  outline: none;
+  min-height: 60vh;
+  font-size: 0.95rem;
+  line-height: 1.7;
+  color: var(--foreground);
+}
+
+.rich-editor-content > * + * {
+  margin-top: 0.75em;
+}
+
+.rich-editor-content h1,
+.rich-editor-content h2,
+.rich-editor-content h3,
+.rich-editor-content h4 {
+  font-weight: 600;
+  line-height: 1.3;
+  margin-top: 1.4em;
+}
+
+.rich-editor-content h1 {
+  font-size: 1.5rem;
+}
+
+.rich-editor-content h2 {
+  font-size: 1.25rem;
+}
+
+.rich-editor-content h3 {
+  font-size: 1.1rem;
+}
+
+.rich-editor-content h4 {
+  font-size: 1rem;
+  font-style: italic;
+}
+
+.rich-editor-content ul,
+.rich-editor-content ol {
+  padding-left: 1.5rem;
+}
+
+.rich-editor-content ul {
+  list-style: disc;
+}
+
+.rich-editor-content ol {
+  list-style: decimal;
+}
+
+.rich-editor-content code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.875em;
+  background: color-mix(in srgb, var(--muted) 60%, transparent);
+  border-radius: 0.25rem;
+  padding: 0.1em 0.3em;
+}
+
+.rich-editor-content table {
+  border-collapse: collapse;
+  width: 100%;
+  table-layout: fixed;
+  margin: 0.75em 0;
+}
+
+.rich-editor-content th,
+.rich-editor-content td {
+  border: 1px solid var(--border);
+  padding: 0.35rem 0.6rem;
+  vertical-align: top;
+  text-align: left;
+}
+
+.rich-editor-content th {
+  background: color-mix(in srgb, var(--muted) 50%, transparent);
+  font-weight: 600;
+}
+
+.rich-editor-content .selectedCell {
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+}
+
+/* Placeholder (TipTap placeholder extension) */
+.rich-editor-content p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  color: var(--muted-foreground);
+  pointer-events: none;
+  height: 0;
+}
+
+/* Atomic LaTeX nodes */
+.rich-math {
+  cursor: pointer;
+  border-radius: 0.25rem;
+  transition: background-color 120ms ease;
+}
+
+.rich-math:hover {
+  background: color-mix(in srgb, var(--primary) 8%, transparent);
+}
+
+.rich-math-inline {
+  display: inline-block;
+  padding: 0 0.15em;
+}
+
+.rich-math-display {
+  display: block;
+  text-align: center;
+  padding: 0.5em 0;
+  margin: 0.5em 0;
+}
+
+.rich-latex-chip {
+  display: inline-block;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.8em;
+  background: color-mix(in srgb, var(--muted) 70%, transparent);
+  color: var(--muted-foreground);
+  border: 1px solid var(--border);
+  border-radius: 0.3rem;
+  padding: 0 0.35em;
+  cursor: pointer;
+  white-space: nowrap;
+  max-width: 18rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: baseline;
+}
+
+.rich-latex-raw {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  background: color-mix(in srgb, var(--muted) 45%, transparent);
+  border: 1px dashed var(--border);
+  border-radius: 0.4rem;
+  padding: 0.6rem 0.8rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+/* Selected atomic nodes */
+.rich-editor-content .ProseMirror-selectednode {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+  border-radius: 0.25rem;
+}

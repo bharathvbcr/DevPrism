@@ -17,6 +17,7 @@ struct OpenAiStreamState {
     tool_blocks: HashMap<i64, StreamToolBlock>,
     stop_reason: Option<String>,
     output_tokens: u64,
+    input_tokens: u64,
 }
 
 #[derive(Default)]
@@ -39,6 +40,12 @@ pub(super) async fn stream_openai_sse_to_anthropic(
 
     let mut state = OpenAiStreamState::default();
     let mut buffer = String::new();
+    // Raw byte carry-over: a multi-byte UTF-8 codepoint (CJK, emoji, accented,
+    // math) can be split across two chunks. Decoding each chunk independently
+    // with from_utf8_lossy would replace the split codepoint with U+FFFD, so we
+    // accumulate bytes and only decode complete codepoints (keeping any partial
+    // trailing sequence for the next chunk).
+    let mut byte_buf: Vec<u8> = Vec::new();
     while let Some(chunk) = match response.chunk().await {
         Ok(chunk) => chunk,
         Err(err) => {
@@ -48,7 +55,8 @@ pub(super) async fn stream_openai_sse_to_anthropic(
             return Ok(());
         }
     } {
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        byte_buf.extend_from_slice(&chunk);
+        decode_utf8_prefix(&mut byte_buf, &mut buffer);
         while let Some((event, rest)) = take_next_sse_event(&buffer) {
             buffer = rest;
             let rendered =
@@ -57,6 +65,11 @@ pub(super) async fn stream_openai_sse_to_anthropic(
                 return Ok(());
             }
         }
+    }
+
+    // Flush any trailing bytes left incomplete at end-of-stream.
+    if !byte_buf.is_empty() {
+        buffer.push_str(&String::from_utf8_lossy(&byte_buf));
     }
 
     if !buffer.trim().is_empty() {
@@ -70,6 +83,40 @@ pub(super) async fn stream_openai_sse_to_anthropic(
     let rendered = finish_anthropic_stream(&mut state);
     let _ = write_stream_body(stream, &rendered, "proxy stream completion").await;
     Ok(())
+}
+
+/// Move every complete UTF-8 codepoint from `bytes` into `out`, leaving only a
+/// trailing partial multi-byte sequence (if any) in `bytes` for the next chunk.
+/// A genuinely invalid byte is replaced with U+FFFD so decoding never stalls.
+fn decode_utf8_prefix(bytes: &mut Vec<u8>, out: &mut String) {
+    loop {
+        match std::str::from_utf8(bytes) {
+            Ok(s) => {
+                out.push_str(s);
+                bytes.clear();
+                return;
+            }
+            Err(e) => {
+                let valid = e.valid_up_to();
+                if valid > 0 {
+                    // valid_up_to() bytes are valid UTF-8 by definition.
+                    out.push_str(std::str::from_utf8(&bytes[..valid]).unwrap());
+                }
+                match e.error_len() {
+                    // Incomplete trailing sequence: keep it for the next chunk.
+                    None => {
+                        bytes.drain(..valid);
+                        return;
+                    }
+                    // Invalid byte(s): emit a replacement and continue past them.
+                    Some(bad) => {
+                        out.push('\u{FFFD}');
+                        bytes.drain(..valid + bad);
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn streaming_http_headers() -> String {
@@ -171,6 +218,13 @@ fn openai_stream_chunk_to_anthropic(
                 "completion_token_count",
             ],
         );
+        // OpenAI reports prompt usage only at end-of-stream, so message_start
+        // couldn't carry it. Capture it here and emit it in the final
+        // message_delta so cost/quota accounting isn't silently zero.
+        let input = usage_token(usage, &["prompt_tokens", "input_tokens", "prompt_token_count"]);
+        if input > 0 {
+            state.input_tokens = input;
+        }
     }
 
     let Some(choice) = chunk
@@ -499,6 +553,7 @@ fn finish_anthropic_stream(state: &mut OpenAiStreamState) -> String {
                 "stop_sequence": Value::Null,
             },
             "usage": {
+                "input_tokens": state.input_tokens,
                 "output_tokens": state.output_tokens,
             },
         }),
@@ -744,6 +799,32 @@ fn usage_token(usage: &Value, keys: &[&str]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decode_utf8_prefix_handles_split_codepoints() {
+        // "café☕" contains multi-byte 'é' (2 bytes) and '☕' (3 bytes). Feeding
+        // one byte at a time (the worst-case chunk split) must reassemble the
+        // exact string with no U+FFFD replacement characters.
+        let full = "café☕".as_bytes().to_vec();
+        let mut bytes: Vec<u8> = Vec::new();
+        let mut out = String::new();
+        for &b in &full {
+            bytes.push(b);
+            decode_utf8_prefix(&mut bytes, &mut out);
+        }
+        assert_eq!(out, "café☕");
+        assert!(bytes.is_empty());
+        assert!(!out.contains('\u{FFFD}'));
+    }
+
+    #[test]
+    fn decode_utf8_prefix_replaces_truly_invalid_bytes() {
+        let mut bytes = vec![b'a', 0xFF, b'b'];
+        let mut out = String::new();
+        decode_utf8_prefix(&mut bytes, &mut out);
+        assert_eq!(out, "a\u{FFFD}b");
+        assert!(bytes.is_empty());
+    }
 
     fn credential() -> OpenAiProxyCredential {
         OpenAiProxyCredential {

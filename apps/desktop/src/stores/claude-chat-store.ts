@@ -8,6 +8,10 @@ import { aiComplete, canUseAiAssist } from "@/lib/ai-assist";
 import { getChatLabels } from "@/lib/chat-labels";
 import { createLogger } from "@/lib/debug/logger";
 import { recordPersonalizationEvent } from "@/lib/personalization";
+import { buildCompileStateContext } from "@/lib/latex-compiler";
+import { buildBibliographyContext } from "@/lib/bibliography-context";
+import { resolveNativeChatOnlyFlag } from "@/lib/native-chat-mode";
+import { openChatDrawer } from "@/lib/chat-drawer-events";
 import {
   usePersonalizationStore,
   buildPersonalizationContext,
@@ -76,18 +80,29 @@ export interface ContentBlock {
   signature?: string;
 }
 
+export interface ClaudeUsage {
+  input_tokens: number;
+  output_tokens: number;
+  /** Present on the Claude path when prompt caching is active; these count
+   * toward the context window even though input_tokens excludes them. */
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+}
+
 export interface ClaudeStreamMessage {
   type: "system" | "assistant" | "user" | "result";
   subtype?: string;
+  /** Native-agent context compaction: tool results / attachments removed. */
+  contextDropped?: string[];
   session_id?: string;
   model?: string;
   cwd?: string;
   tools?: string[];
   message?: {
     content?: ContentBlock[];
-    usage?: { input_tokens: number; output_tokens: number };
+    usage?: ClaudeUsage;
   };
-  usage?: { input_tokens: number; output_tokens: number };
+  usage?: ClaudeUsage;
   cost_usd?: number;
   duration_ms?: number;
   duration_api_ms?: number;
@@ -775,10 +790,20 @@ interface ClaudeChatState {
   _setSessionTitle: (sessionId: string, title: string) => void;
   _setStreaming: (tabId: string, streaming: boolean) => void;
   _setError: (tabId: string, error: string | null) => void;
-  _cancelledByUser: boolean;
+  /** Tabs the user explicitly stopped, so an unexpected stream end on THAT tab
+   * isn't misclassified as a crash. Keyed per-tab because multiple tabs stream
+   * concurrently (a store-level boolean cross-contaminated them). */
+  _cancelledTabs: Set<string>;
 }
 
 // ─── Store ───
+
+const cancelledWith = (tabs: Set<string>, id: string) => new Set(tabs).add(id);
+const cancelledWithout = (tabs: Set<string>, id: string) => {
+  const next = new Set(tabs);
+  next.delete(id);
+  return next;
+};
 
 export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
   // Projected fields (initialized from default tab)
@@ -787,7 +812,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
   isStreaming: false,
   streamingStartedAt: null,
   error: null,
-  _cancelledByUser: false,
+  _cancelledTabs: new Set(),
   totalInputTokens: 0,
   totalOutputTokens: 0,
 
@@ -952,6 +977,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
 
     const sendStart = performance.now();
     const streamingStartedAt = Date.now();
+    openChatDrawer();
     log.info("sendPrompt start", {
       sessionId: !!sessionId,
       providerChanged,
@@ -1029,7 +1055,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       return {
         ...applyTabUpdate(s, activeTabId, tabUpdates),
         activeProjectPath: projectPath,
-        _cancelledByUser: false,
+        _cancelledTabs: cancelledWithout(s._cancelledTabs, activeTabId),
       };
     });
 
@@ -1041,7 +1067,9 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     }
 
     // Trigger automatic personalization extraction in the background
-    const activeDoc = docState.files.find((f) => f.id === docState.activeFileId);
+    const activeDoc = docState.files.find(
+      (f) => f.id === docState.activeFileId,
+    );
     if (activeDoc && activeDoc.content) {
       usePersonalizationStore
         .getState()
@@ -1098,6 +1126,15 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         prompt = `${priorContext}\n\n${prompt}`;
       }
     }
+
+    const compileStatePrompt =
+      [buildCompileStateContext(), buildBibliographyContext()]
+        .filter(Boolean)
+        .join("\n\n") || null;
+    if (compileStatePrompt) {
+      prompt = `${compileStatePrompt}\n\n${prompt}`;
+    }
+
     log.info("invoking CLI", {
       promptLength: prompt.length,
       mode: resumeSessionId ? "resume" : "new",
@@ -1190,11 +1227,14 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
           images: nativeImages.length ? nativeImages : null,
           numCtx: ns.nativeNumCtx ?? null,
           temperature: ns.nativeTemperature ?? null,
+          keepAlive: ns.nativeKeepAlive || null,
           activeFile,
           selection,
           selectionStartLine,
           selectionEndLine,
           personalizationPrompt: null,
+          compileStatePrompt,
+          chatOnly: resolveNativeChatOnlyFlag(),
         });
       } else if (resumeSessionId) {
         // Resume existing session
@@ -1379,7 +1419,9 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     try {
       if (useSettingsStore.getState().nativeAgentEnabled) {
         await invoke("stop_native_agent", { tabId });
-        set({ _cancelledByUser: true });
+        set((s) => ({
+          _cancelledTabs: cancelledWith(s._cancelledTabs, tabId),
+        }));
       } else {
         const interrupted = await invoke<boolean>(
           "interrupt_claude_execution",
@@ -1388,7 +1430,9 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
           },
         );
         if (interrupted) {
-          set({ _cancelledByUser: true });
+          set((s) => ({
+            _cancelledTabs: cancelledWith(s._cancelledTabs, tabId),
+          }));
         }
       }
     } catch (err: any) {
@@ -1417,7 +1461,9 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     const activeTabId = tabId ?? get().activeTabId;
     const tab = get().tabs.find((t) => t.id === activeTabId);
     if (!tab?.isStreaming) return;
-    set({ _cancelledByUser: true });
+    set((s) => ({
+      _cancelledTabs: cancelledWith(s._cancelledTabs, activeTabId),
+    }));
     // Surface a "Stopped." marker while the tab is still streaming, so it isn't
     // dropped by the handleStreamMessage isStreaming guard. subtype "cancelled"
     // is treated as non-error (use-claude-events) and renders as a plain result,
@@ -1542,7 +1588,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       pendingComposerInput: null,
       pendingPinnedContextRemovalLabels: [],
       selectedProviderCredentialId: nextSelectedProviderCredentialId,
-      _cancelledByUser: false,
+      _cancelledTabs: new Set(),
     });
   },
 

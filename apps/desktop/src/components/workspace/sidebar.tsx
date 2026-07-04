@@ -54,7 +54,7 @@ import {
 } from "@dnd-kit/core";
 import { useDocumentStore, type ProjectFile } from "@/stores/document-store";
 import { useVariantsStore } from "@/stores/variants-store";
-import { useSpacesStore } from "@/stores/spaces-store";
+import { dispatchOpenSettings } from "@/lib/home-flow-events";
 import { useHistoryStore } from "@/stores/history-store";
 import {
   useFileMarksStore,
@@ -76,8 +76,14 @@ import {
   CommentsPanel,
   CommentsHeader,
 } from "@/components/workspace/comments-panel";
+import {
+  ScholarLMPanel,
+  ScholarLMHeader,
+} from "@/components/scholarlm/scholarlm-research-panel";
+import { OPEN_SIDEBAR_SECTION_EVENT } from "@/components/command-palette";
 import { useCommentsStore } from "@/stores/comments-store";
 import { Button } from "@/components/ui/button";
+import { InlineBanner } from "@/components/ui/inline-banner";
 import {
   Dialog,
   DialogContent,
@@ -103,11 +109,6 @@ import {
   ContextMenuSubTrigger,
   ContextMenuSubContent,
 } from "@/components/ui/context-menu";
-import {
-  HoverCard,
-  HoverCardContent,
-  HoverCardTrigger,
-} from "@/components/ui/hover-card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Card } from "@/components/ui/card";
@@ -144,6 +145,7 @@ type SidebarSection =
   | "outline"
   | "bibliography"
   | "zotero"
+  | "research"
   | "comments"
   | "environment";
 
@@ -156,6 +158,7 @@ const SIDEBAR_SECTIONS: {
   { id: "outline", label: "Outline", icon: ListIcon },
   { id: "bibliography", label: "BibTeX", icon: BookOpenIcon },
   { id: "zotero", label: "Zotero", icon: FileTextIcon },
+  { id: "research", label: "ScholarLM", icon: FlaskConicalIcon },
   { id: "comments", label: "Comments", icon: MessageSquareIcon },
   { id: "environment", label: "Environment", icon: AppWindowIcon },
 ];
@@ -435,13 +438,14 @@ function useAppVersion() {
 function LayoutPaneSwitcher({
   controls,
   collapsed = false,
-  onQuickToggleSidebar,
   side = "bottom",
   align = "end",
   buttonClassName,
 }: {
   controls?: LayoutControls;
   collapsed?: boolean;
+  // Retained for API compatibility; the layout trigger now opens the menu
+  // (Enter/Space reachable) rather than acting as a quick collapse toggle.
   onQuickToggleSidebar?: () => void;
   side?: "top" | "right" | "bottom" | "left";
   align?: "start" | "center" | "end";
@@ -455,7 +459,6 @@ function LayoutPaneSwitcher({
         "transition-transform duration-300 ease-in-out hover:scale-105",
         buttonClassName,
       )}
-      onClick={onQuickToggleSidebar}
       title="Layout"
       aria-label="Layout"
     >
@@ -471,9 +474,9 @@ function LayoutPaneSwitcher({
   if (!controls) return trigger;
 
   return (
-    <HoverCard openDelay={80} closeDelay={140}>
-      <HoverCardTrigger asChild>{trigger}</HoverCardTrigger>
-      <HoverCardContent
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
+      <DropdownMenuContent
         side={side}
         align={align}
         sideOffset={8}
@@ -499,8 +502,8 @@ function LayoutPaneSwitcher({
             onCheckedChange={controls.setSidebarVisible}
           />
         </div>
-      </HoverCardContent>
-    </HoverCard>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -721,6 +724,22 @@ export function Sidebar({
     },
     [collapsed, onToggleCollapsed],
   );
+
+  // Open a sidebar section on request (e.g. from the command palette).
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent).detail as
+        | { section?: string }
+        | undefined;
+      const section = detail?.section;
+      if (section && SIDEBAR_SECTIONS.some((s) => s.id === section)) {
+        openSection(section as SidebarSection);
+      }
+    };
+    window.addEventListener(OPEN_SIDEBAR_SECTION_EVENT, handler);
+    return () =>
+      window.removeEventListener(OPEN_SIDEBAR_SECTION_EVENT, handler);
+  }, [openSection]);
 
   // Press "/" anywhere outside a text field to jump straight to the file filter.
   useEffect(() => {
@@ -1660,7 +1679,12 @@ export function Sidebar({
             >
               <Icon className="size-3.5" />
               {section.id === "comments" && openCommentCount > 0 && (
-                <span className="absolute top-1 right-1 size-1.5 rounded-full bg-amber-500" />
+                <>
+                  <span className="absolute top-1 right-1 size-1.5 rounded-full bg-warning" />
+                  <span className="sr-only">
+                    {openCommentCount} open comments
+                  </span>
+                </>
               )}
             </Button>
           );
@@ -1779,12 +1803,17 @@ export function Sidebar({
                   onClick={() => setActiveSection(section.id)}
                   className={cn(
                     "relative flex h-9 flex-1 items-center justify-center text-muted-foreground outline-none transition-colors hover:bg-sidebar-accent/50 hover:text-foreground focus-visible:bg-sidebar-accent/50 focus-visible:text-foreground",
-                    isActive && "text-foreground",
+                    isActive && "bg-sidebar-accent/60 text-foreground",
                   )}
                 >
                   <Icon className="size-4" />
                   {section.id === "comments" && openCommentCount > 0 && (
-                    <span className="absolute top-1.5 right-2 size-1.5 rounded-full bg-amber-500" />
+                    <>
+                      <span className="absolute top-1.5 right-2 size-1.5 rounded-full bg-warning" />
+                      <span className="sr-only">
+                        {openCommentCount} open comments
+                      </span>
+                    </>
                   )}
                   {isActive && (
                     <span className="absolute inset-x-2.5 bottom-0 h-0.5 rounded-full bg-foreground" />
@@ -1821,8 +1850,7 @@ export function Sidebar({
                 <div className="flex shrink-0 items-center gap-0.5">
                   <Button
                     variant="ghost"
-                    size="icon"
-                    className="size-5"
+                    size="icon-xs"
                     title="Reveal active file"
                     aria-label="Reveal active file"
                     disabled={!activeFileId}
@@ -1830,13 +1858,12 @@ export function Sidebar({
                       activeFileId && requestRevealInTree(activeFileId, "file")
                     }
                   >
-                    <LocateFixedIcon className="size-3" />
+                    <LocateFixedIcon className="size-3.5" />
                   </Button>
                   {folders.length > 0 && (
                     <Button
                       variant="ghost"
-                      size="icon"
-                      className="size-5"
+                      size="icon-xs"
                       title="Collapse all folders"
                       aria-label="Collapse all folders"
                       disabled={
@@ -1844,13 +1871,12 @@ export function Sidebar({
                       }
                       onClick={() => setExpandedFolders(new Set())}
                     >
-                      <ChevronsDownUpIcon className="size-3" />
+                      <ChevronsDownUpIcon className="size-3.5" />
                     </Button>
                   )}
                   <Button
                     variant="ghost"
-                    size="icon"
-                    className="size-5"
+                    size="icon-xs"
                     title="Refresh"
                     aria-label="Refresh files"
                     aria-busy={isRefreshingFiles}
@@ -1859,7 +1885,7 @@ export function Sidebar({
                   >
                     <RefreshCwIcon
                       className={cn(
-                        "size-3",
+                        "size-3.5",
                         isRefreshingFiles && "animate-spin",
                       )}
                     />
@@ -1868,12 +1894,11 @@ export function Sidebar({
                     <DropdownMenuTrigger asChild>
                       <Button
                         variant="ghost"
-                        size="icon"
-                        className="size-5"
+                        size="icon-xs"
                         title="Add"
                         aria-label="Add file or folder"
                       >
-                        <PlusIcon className="size-3" />
+                        <PlusIcon className="size-3.5" />
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
@@ -1914,7 +1939,7 @@ export function Sidebar({
                       aria-label="Filter files"
                       className={cn(
                         "h-7 w-full rounded-md border border-sidebar-border bg-background pl-7 text-xs outline-none transition-colors focus-visible:border-ring focus-visible:ring-1 focus-visible:ring-ring",
-                        normalizedFileFilter ? "pr-20" : "pr-7",
+                        normalizedFileFilter ? "pr-24" : "pr-7",
                       )}
                     />
                     {normalizedFileFilter && (
@@ -1928,7 +1953,7 @@ export function Sidebar({
                         onClick={() => setFileFilter("")}
                         title="Clear filter"
                         aria-label="Clear filter"
-                        className="absolute top-1/2 right-1.5 flex size-4 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
+                        className="absolute top-1/2 right-1.5 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       >
                         <XIcon className="size-3" />
                       </button>
@@ -2135,6 +2160,24 @@ export function Sidebar({
               </div>
             </div>
 
+            {/* ScholarLM Research (WisDev ARC) */}
+            <div
+              id="sidebar-panel-research"
+              role="tabpanel"
+              aria-labelledby="sidebar-tab-research"
+              className={cn(
+                "flex min-h-0 flex-1 flex-col",
+                activeSection !== "research" && "hidden",
+              )}
+            >
+              <div className="flex h-8 shrink-0 items-center border-sidebar-border border-b">
+                <ScholarLMHeader />
+              </div>
+              <div className="min-h-0 flex-1 overflow-hidden">
+                <ScholarLMPanel />
+              </div>
+            </div>
+
             {/* Comments */}
             <div
               id="sidebar-panel-comments"
@@ -2177,12 +2220,7 @@ export function Sidebar({
                 className="size-6"
                 title="Settings"
                 aria-label="Settings"
-                onClick={() => {
-                  // Settings lives in the project picker; close the project and
-                  // ask the picker to open straight on its Settings section.
-                  useSpacesStore.getState().setPendingPickerSection("settings");
-                  closeProject();
-                }}
+                onClick={() => dispatchOpenSettings()}
               >
                 <SettingsIcon className="size-3.5" />
               </Button>
@@ -2192,6 +2230,7 @@ export function Sidebar({
                   target="_blank"
                   rel="noopener noreferrer"
                   title="GitHub"
+                  aria-label="Open DevPrism on GitHub"
                 >
                   <GithubIcon className="size-3.5" />
                 </a>
@@ -2553,7 +2592,7 @@ function RowActions({
           e.stopPropagation();
           onRename();
         }}
-        className="flex size-5 items-center justify-center rounded text-muted-foreground outline-none transition-colors hover:bg-background/70 hover:text-foreground focus-visible:bg-background/70 focus-visible:text-foreground focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40 group-focus-within:pointer-events-auto group-hover:pointer-events-auto"
+        className="flex size-5 items-center justify-center rounded text-muted-foreground outline-none transition-colors hover:bg-background/70 hover:text-foreground focus-visible:bg-background/70 focus-visible:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-40 group-focus-within:pointer-events-auto group-hover:pointer-events-auto"
       >
         <PencilIcon className="size-3.5" />
       </button>
@@ -2567,7 +2606,7 @@ function RowActions({
           e.stopPropagation();
           onDelete();
         }}
-        className="flex size-5 items-center justify-center rounded text-muted-foreground outline-none transition-colors hover:bg-background/70 hover:text-destructive focus-visible:bg-background/70 focus-visible:text-destructive focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40 group-focus-within:pointer-events-auto group-hover:pointer-events-auto"
+        className="flex size-5 items-center justify-center rounded text-muted-foreground outline-none transition-colors hover:bg-background/70 hover:text-destructive focus-visible:bg-background/70 focus-visible:text-destructive focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-40 group-focus-within:pointer-events-auto group-hover:pointer-events-auto"
       >
         <Trash2Icon className="size-3.5" />
       </button>
@@ -2823,10 +2862,13 @@ function FileTreeNode({
       )}
       <FileCommentBadge filePath={file.relativePath} />
       {file.isDirty && (
-        <span
-          className="size-2 shrink-0 rounded-full bg-primary"
-          title="Modified"
-        />
+        <>
+          <span
+            className="size-2 shrink-0 rounded-full bg-primary"
+            title="Modified"
+          />
+          <span className="sr-only">Modified</span>
+        </>
       )}
     </>
   );
@@ -2998,10 +3040,10 @@ function FileCommentBadge({ filePath }: { filePath: string }) {
   return (
     <span
       className={cn(
-        "flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 font-bold text-[9px] text-white leading-none",
+        "flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 font-bold text-[9px] leading-none",
         hasClaude
-          ? "bg-violet-600 dark:bg-violet-500"
-          : "bg-amber-600 dark:bg-amber-500",
+          ? "bg-primary text-primary-foreground"
+          : "bg-warning text-warning-foreground",
       )}
       title={`${count} open comment${count === 1 ? "" : "s"}`}
     >
@@ -3213,6 +3255,9 @@ function DevPrismSkillsDialog({
 }) {
   const [installing, setInstalling] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [skillsDialogError, setSkillsDialogError] = useState<string | null>(
+    null,
+  );
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [instructions, setInstructions] = useState("");
@@ -3256,6 +3301,7 @@ function DevPrismSkillsDialog({
   useEffect(() => {
     if (!open) {
       setName("");
+      setSkillsDialogError(null);
       setDescription("");
       setInstructions("");
       setMdDescription("");
@@ -3286,10 +3332,11 @@ function DevPrismSkillsDialog({
 
   const handleInstallBundled = async () => {
     if (!projectPath) {
-      toast.error("Open a project first.");
+      setSkillsDialogError("Open a project first.");
       return;
     }
     setInstalling(true);
+    setSkillsDialogError(null);
     try {
       const installed = await invoke<unknown[]>("install_bundled_skills", {
         projectPath,
@@ -3299,7 +3346,7 @@ function DevPrismSkillsDialog({
         `Installed ${count} DevPrism skill${count === 1 ? "" : "s"}.`,
       );
     } catch (err) {
-      toast.error(`Failed to install skills: ${String(err)}`);
+      setSkillsDialogError(`Failed to install skills: ${String(err)}`);
     } finally {
       setInstalling(false);
     }
@@ -3307,11 +3354,12 @@ function DevPrismSkillsDialog({
 
   const handleCreate = async () => {
     if (!projectPath) {
-      toast.error("Open a project first.");
+      setSkillsDialogError("Open a project first.");
       return;
     }
     if (!skillSlug || !description.trim()) return;
     setCreating(true);
+    setSkillsDialogError(null);
     try {
       await invoke("create_custom_skill", {
         projectPath,
@@ -3324,7 +3372,7 @@ function DevPrismSkillsDialog({
       setDescription("");
       setInstructions("");
     } catch (err) {
-      toast.error(`Failed to create skill: ${String(err)}`);
+      setSkillsDialogError(`Failed to create skill: ${String(err)}`);
     } finally {
       setCreating(false);
     }
@@ -3332,12 +3380,13 @@ function DevPrismSkillsDialog({
 
   const handleAddFromMarkdown = async () => {
     if (!projectPath) {
-      toast.error("Open a project first.");
+      setSkillsDialogError("Open a project first.");
       return;
     }
     const file = mdFiles.find((f) => f.id === mdFileId);
     if (!file || !mdSlug) return;
     setAddingMd(true);
+    setSkillsDialogError(null);
     try {
       // Prefer the in-memory content (reflects unsaved edits); fall back to disk
       // for large files whose content wasn't auto-loaded.
@@ -3352,7 +3401,7 @@ function DevPrismSkillsDialog({
       toast.success(`Added "${mdName.trim()}" as a skill.`);
       setMdDescription("");
     } catch (err) {
-      toast.error(`Failed to add skill: ${String(err)}`);
+      setSkillsDialogError(`Failed to add skill: ${String(err)}`);
     } finally {
       setAddingMd(false);
     }
@@ -3373,6 +3422,15 @@ function DevPrismSkillsDialog({
           <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-amber-600 text-xs dark:text-amber-400">
             Open a project to manage its skills.
           </p>
+        )}
+
+        {skillsDialogError && (
+          <InlineBanner
+            kind="error"
+            title="Skills action failed"
+            message={skillsDialogError}
+            onDismiss={() => setSkillsDialogError(null)}
+          />
         )}
 
         <Card className="flex items-center justify-between gap-3 p-3">

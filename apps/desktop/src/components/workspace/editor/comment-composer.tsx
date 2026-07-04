@@ -17,6 +17,7 @@ import { canUseAiAssist, draftCommentSuggestion } from "@/lib/ai-assist";
 import { useChatLabels } from "@/lib/chat-labels";
 import { useSettingsStore } from "@/stores/settings-store";
 import { toast } from "sonner";
+import { showWorkspaceError } from "@/stores/workspace-banner-store";
 
 export interface CommentComposerProps {
   open: boolean;
@@ -124,7 +125,11 @@ export function CommentComposer({
         setReplacement(draft.replacement);
       }
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "AI draft failed");
+      showWorkspaceError(
+        "AI draft failed",
+        err instanceof Error ? err.message : "Could not draft the comment.",
+        { dedupeKey: "comment-ai-draft" },
+      );
     } finally {
       setAiDrafting(false);
     }
@@ -138,8 +143,8 @@ export function CommentComposer({
             {mode === "comment" ? "Add comment" : "Suggest change"}
           </DialogTitle>
           <DialogDescription>
-            Anchored to the selected passage. Visible to {chatLabels.commentForAgent}{" "}
-            via{" "}
+            Anchored to the selected passage. Visible to{" "}
+            {chatLabels.commentForAgent} via{" "}
             <code className="rounded bg-muted px-1 text-xs">
               .claudeprism/comments.json
             </code>

@@ -9,11 +9,16 @@ const { mockDocumentState, getDocumentState, createSnapshotMock } = vi.hoisted(
   }),
 );
 
-vi.mock("@/stores/document-store", () => ({
-  useDocumentStore: {
-    getState: getDocumentState,
-  },
-}));
+vi.mock("@/stores/document-store", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/stores/document-store")>();
+  return {
+    ...actual,
+    useDocumentStore: {
+      getState: getDocumentState,
+    },
+  };
+});
 
 vi.mock("@/stores/history-store", () => ({
   useHistoryStore: {
@@ -64,7 +69,7 @@ function resetClaudeChatStore() {
     selectedProviderCredentialId: CLAUDE_CODE_PROVIDER_ID,
     selectedProviderModels: {},
     effortLevel: "medium",
-    _cancelledByUser: false,
+    _cancelledTabs: new Set(),
   });
 }
 
@@ -93,6 +98,12 @@ function setMockDocumentState(overrides: Partial<any> = {}) {
     ],
     activeFileId: "main.tex",
     selectionRange: null,
+    compileError: null,
+    compileErrorCache: new Map(),
+    lastCompiledGenerations: new Map(),
+    compiledPageCounts: new Map(),
+    contentGeneration: 0,
+    isCompiling: false,
     saveAllFiles: vi.fn(() => Promise.resolve()),
     refreshFiles: vi.fn(() => Promise.resolve()),
     reloadFile: vi.fn(() => Promise.resolve()),

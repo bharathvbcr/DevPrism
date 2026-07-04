@@ -25,9 +25,10 @@ used only when it's off.
 
 - Runs an agentic loop in Rust: it reads/edits your files with built-in tools and
   keeps going until the task is done — same chat UI, diffs, and "Keep/Undo" flow.
-- **Tools:** `Read`, `Write`, `Edit` (with `replace_all`), `LS`, `Grep` (with
-  `glob`/`case_sensitive` scoping), `Glob`, `Bash` (runs in the project, activates
-  `.venv`). All file access is confined to the project directory.
+- **Tools:** `Read`, `Write`, `Edit` (with `replace_all`), `MultiEdit` (several
+  edits to one file applied atomically — handy for multi-spot `.tex`/`.bib` edits),
+  `LS`, `Grep` (with `glob`/`case_sensitive` scoping), `Glob`, `Bash` (runs in the
+  project, activates `.venv`). All file access is confined to the project directory.
 - **Project context:** auto-discovers your master/instruction files, a project
   map, and installed skills (see [CONTEXT_FILES.md](CONTEXT_FILES.md)).
 - **Memory:** remembers the conversation per chat tab.
@@ -40,6 +41,9 @@ used only when it's off.
   Larger = more memory/VRAM. Lower it on small machines; raise it for long
   documents/conversations.
 - **Temperature** — default 0.4 (low = more deterministic edits).
+- **`keep_alive`** — how long Ollama keeps the model resident between turns
+  (default `10m`); the runtime accepts an override so a warm model isn't reloaded
+  each round.
 
 ## Notes & limitations
 
@@ -47,5 +51,5 @@ used only when it's off.
   `mistral-nemo` over tiny non-tool models.
 - Conversation memory is in-process (cleared on "new chat"/closing a tab; not yet
   persisted across app restarts).
-- Output is per-response (not token-by-token streaming), matching the chat UI's
-  message model.
+- Assistant text is streamed token-by-token to the chat as it is generated; tool
+  calls are reconciled per round.

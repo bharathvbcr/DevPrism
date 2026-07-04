@@ -57,6 +57,16 @@ export function useOllamaModelCapabilities(
   return { capabilities, loading, refresh };
 }
 
+/** Synchronous read of cached capabilities (for sendPrompt chat-only flag). */
+export function peekCachedOllamaModelCapabilities(
+  baseUrl: string,
+  model: string | null | undefined,
+): OllamaModelCapabilities | null {
+  const trimmed = model?.trim();
+  if (!trimmed) return null;
+  return capabilityCache.get(cacheKey(baseUrl, trimmed)) ?? null;
+}
+
 export function useOllamaModelsCapabilities(
   models: string[],
   baseUrl: string,

@@ -772,7 +772,10 @@ export function ClaudeSetup({
                       <span className="block truncate font-medium text-xs">
                         {card.label}
                       </span>
-                      <span className="block truncate text-muted-foreground text-xs">
+                      <span
+                        className="line-clamp-2 block text-muted-foreground text-xs"
+                        title={card.note}
+                      >
                         {card.note}
                       </span>
                     </span>
@@ -910,6 +913,11 @@ export function ClaudeSetup({
                   Fetch Models
                 </Button>
               </div>
+              {apiKeyRequired && !apiKey.trim() && (
+                <p className="text-muted-foreground text-xs">
+                  Add an API key to fetch models.
+                </p>
+              )}
               {modelOptions.length > 0 ? (
                 <Select
                   value={model}
@@ -981,7 +989,7 @@ export function ClaudeSetup({
                 !isFetchingModels &&
                 !modelFetchError &&
                 modelOptions.length === 0 && (
-                  <p className="text-[11px] text-amber-600 dark:text-amber-400">
+                  <p className="text-[11px] text-warning">
                     Connected to Ollama, but no models are installed yet. Run{" "}
                     <code className="rounded bg-muted px-1 text-[11px] text-foreground">
                       ollama pull llama3

@@ -25,6 +25,7 @@ export function EditorAiSuggestions({ content }: { content: string }) {
 
   const [suggestions, setSuggestions] = useState<ContextSuggestion[]>([]);
   const [loading, setLoading] = useState(false);
+  const [errored, setErrored] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const requestIdRef = useRef(0);
 
@@ -44,6 +45,7 @@ export function EditorAiSuggestions({ content }: { content: string }) {
 
       const id = ++requestIdRef.current;
       setLoading(true);
+      setErrored(false);
       void fetchContextSuggestions({
         spaceKind,
         excerpt,
@@ -53,7 +55,10 @@ export function EditorAiSuggestions({ content }: { content: string }) {
           if (id === requestIdRef.current) setSuggestions(next);
         })
         .catch(() => {
-          if (id === requestIdRef.current) setSuggestions([]);
+          if (id === requestIdRef.current) {
+            setSuggestions([]);
+            setErrored(true);
+          }
         })
         .finally(() => {
           if (id === requestIdRef.current) setLoading(false);
@@ -66,7 +71,8 @@ export function EditorAiSuggestions({ content }: { content: string }) {
   }, [content, spaceKind, activeFileName, aiContextSuggestions]);
 
   if (!aiContextSuggestions || !canUseAiAssist()) return null;
-  if (!loading && suggestions.length === 0) return null;
+  const showErrorHint = errored && !loading && suggestions.length === 0;
+  if (!loading && suggestions.length === 0 && !showErrorHint) return null;
 
   return (
     <div className="flex shrink-0 items-center gap-1.5 border-border border-t bg-muted/20 px-2 py-1">
@@ -78,13 +84,20 @@ export function EditorAiSuggestions({ content }: { content: string }) {
         )}
         AI
       </span>
+      {showErrorHint && (
+        <span className="text-[11px] text-muted-foreground">
+          Suggestions unavailable
+        </span>
+      )}
       {suggestions.map((s) => (
         <button
           key={`${s.label}-${s.prompt.slice(0, 24)}`}
           type="button"
-          title={s.prompt}
+          title={`${s.prompt}\n\nRight-click to edit before sending`}
           onClick={() => {
-            recordPersonalizationEvent("suggestion_clicked", { label: s.label });
+            recordPersonalizationEvent("suggestion_clicked", {
+              label: s.label,
+            });
             void sendPrompt(s.prompt);
           }}
           onContextMenu={(e) => {

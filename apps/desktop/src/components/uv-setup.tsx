@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   CheckCircle2Icon,
@@ -40,6 +40,7 @@ export function UvSetupDialog({ open, onClose }: UvSetupDialogProps) {
 
   const projectRoot = useDocumentStore((s) => s.projectRoot);
   const hasCheckedRef = useRef(false);
+  const [isSettingUpVenv, setIsSettingUpVenv] = useState(false);
 
   // Check status when dialog opens
   useEffect(() => {
@@ -65,7 +66,12 @@ export function UvSetupDialog({ open, onClose }: UvSetupDialogProps) {
 
   const handleSetupVenv = async () => {
     if (projectRoot) {
-      await setupVenv(projectRoot);
+      setIsSettingUpVenv(true);
+      try {
+        await setupVenv(projectRoot);
+      } finally {
+        setIsSettingUpVenv(false);
+      }
     }
   };
 
@@ -158,8 +164,20 @@ export function UvSetupDialog({ open, onClose }: UvSetupDialogProps) {
                 )}
               </div>
               {!venvReady && projectRoot && (
-                <Button size="sm" variant="outline" onClick={handleSetupVenv}>
-                  Setup .venv
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleSetupVenv}
+                  disabled={isSettingUpVenv}
+                >
+                  {isSettingUpVenv ? (
+                    <>
+                      <Loader2Icon className="mr-1.5 size-3.5 animate-spin" />
+                      Setting up…
+                    </>
+                  ) : (
+                    "Setup .venv"
+                  )}
                 </Button>
               )}
             </div>

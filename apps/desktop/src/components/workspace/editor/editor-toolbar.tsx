@@ -28,12 +28,14 @@ import {
   ChevronRightIcon,
   ListTreeIcon,
   Loader2Icon,
+  PilcrowIcon,
   SpellCheckIcon,
   CrosshairIcon,
   SparklesIcon,
   type LucideIcon,
 } from "lucide-react";
 import { toast } from "sonner";
+import { showWorkspaceError } from "@/stores/workspace-banner-store";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
 import { ToolbarGroup } from "@/components/ui/toolbar-group";
@@ -55,6 +57,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useDocumentStore, resolveTexRoot } from "@/stores/document-store";
+import { useEditorViewModeStore } from "@/stores/editor-view-mode-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useSpaceFeatures } from "@/hooks/use-space-features";
 import { snippetsForKind } from "@/lib/latex-snippets";
@@ -162,6 +165,7 @@ function FileBreadcrumb({
         type="button"
         onClick={() => onReveal?.(fullPath, type)}
         title={`Reveal ${fullPath} in sidebar`}
+        aria-label={`Reveal ${label} in sidebar`}
         className={`max-w-[8rem] shrink truncate rounded px-1 outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring ${emphasis}`}
       >
         {label}
@@ -214,8 +218,10 @@ function SaveStatus({
       <span
         className="flex shrink-0 items-center text-muted-foreground"
         title="Saving…"
+        aria-label="Saving"
+        role="status"
       >
-        <Loader2Icon className="size-3 animate-spin" />
+        <Loader2Icon className="size-3 animate-spin" aria-hidden />
       </span>
     );
   }
@@ -223,7 +229,7 @@ function SaveStatus({
     return (
       <span
         role="status"
-        className="size-1.5 shrink-0 rounded-full bg-amber-500"
+        className="size-2 shrink-0 rounded-full bg-amber-500 ring-1 ring-amber-500/30"
         title="Unsaved changes"
         aria-label="Unsaved changes"
       />
@@ -257,6 +263,8 @@ export function EditorToolbar({
   const spellCheck = useSettingsStore((s) => s.spellCheck);
   const setSpellCheck = useSettingsStore((s) => s.setSpellCheck);
   const aiSnippetFill = useSettingsStore((s) => s.aiSnippetFill);
+  const editorViewMode = useEditorViewModeStore((s) => s.mode);
+  const setEditorViewMode = useEditorViewModeStore((s) => s.setMode);
 
   const fileName = useDocumentStore((s) => {
     const activeFile = s.files.find((f) => f.id === s.activeFileId);
@@ -321,7 +329,14 @@ export function EditorToolbar({
         projectPath: projectRoot,
         filePath: activeFilePath,
         line,
-      }).catch((err) => console.error("open_in_editor failed:", err));
+      }).catch((err) => {
+        console.error("open_in_editor failed:", err);
+        showWorkspaceError(
+          "Couldn't open external editor",
+          err instanceof Error ? err.message : String(err),
+          { dedupeKey: "editor-open-external" },
+        );
+      });
     },
     [projectRoot, activeFilePath, editorView],
   );
@@ -387,7 +402,11 @@ export function EditorToolbar({
     } catch (err) {
       console.error("fillSnippet failed:", err);
       if (id !== aiFillRequestId.current) return;
-      toast.error("AI fill failed — inserted blank snippet instead.");
+      showWorkspaceError(
+        "AI fill failed",
+        "Inserted a blank snippet instead.",
+        { dedupeKey: "editor-ai-fill" },
+      );
       insertSnippet(text);
     } finally {
       if (id === aiFillRequestId.current) setAiFillingId(null);
@@ -579,7 +598,7 @@ export function EditorToolbar({
         {activeFilePath && (
           <TooltipIconButton
             tooltip="Reveal in sidebar"
-            className="size-6"
+            className="size-7 text-muted-foreground"
             onClick={() => requestRevealInTree(activeFilePath, "file")}
           >
             <ListTreeIcon className="size-3.5" />
@@ -592,18 +611,21 @@ export function EditorToolbar({
         <ToolbarGroup>
           <TooltipIconButton
             tooltip={`Bold  ${MOD}B`}
+            className="size-7"
             onClick={() => insertText("\\textbf{", "}")}
           >
             <BoldIcon className="size-4" />
           </TooltipIconButton>
           <TooltipIconButton
             tooltip={`Italic  ${MOD}I`}
+            className="size-7"
             onClick={() => insertText("\\textit{", "}")}
           >
             <ItalicIcon className="size-4" />
           </TooltipIconButton>
           <TooltipIconButton
             tooltip="Inline code (\\texttt)"
+            className="size-7"
             onClick={() => insertText("\\texttt{", "}")}
           >
             <CodeIcon className="size-4" />
@@ -613,14 +635,24 @@ export function EditorToolbar({
         {/* Wide layout: structure + insert shown inline */}
         <ToolbarGroup className="@[46rem]/tb:flex hidden">
           {structureActions.map((a) => (
-            <TooltipIconButton key={a.label} tooltip={a.label} onClick={a.run}>
+            <TooltipIconButton
+              key={a.label}
+              tooltip={a.label}
+              className="size-7"
+              onClick={a.run}
+            >
               {a.icon}
             </TooltipIconButton>
           ))}
         </ToolbarGroup>
         <ToolbarGroup className="@[46rem]/tb:flex hidden">
           {insertActions.map((a) => (
-            <TooltipIconButton key={a.label} tooltip={a.label} onClick={a.run}>
+            <TooltipIconButton
+              key={a.label}
+              tooltip={a.label}
+              className="size-7"
+              onClick={a.run}
+            >
               {a.icon}
             </TooltipIconButton>
           ))}
@@ -660,33 +692,30 @@ export function EditorToolbar({
                 <DropdownMenuSeparator />
                 <DropdownMenuLabel>Snippets</DropdownMenuLabel>
                 {snippets.map((s) => (
-                  <DropdownMenuItem
-                    key={s.id}
-                    onClick={() => insertSnippet(s.insert)}
-                    title={s.description}
-                  >
-                    {s.label}
+                  <Fragment key={s.id}>
+                    <DropdownMenuItem
+                      onClick={() => insertSnippet(s.insert)}
+                      title={s.description}
+                    >
+                      {s.label}
+                    </DropdownMenuItem>
                     {aiFillEnabled && (
-                      <button
-                        type="button"
+                      <DropdownMenuItem
                         title="Insert with AI (fill from surrounding context)"
                         aria-label={`Insert ${s.label} with AI`}
                         disabled={aiFillingId !== null}
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          void insertSnippetWithAI(s.id, s.insert);
-                        }}
-                        className="ml-auto shrink-0 rounded p-0.5 text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
+                        onClick={() => void insertSnippetWithAI(s.id, s.insert)}
+                        className="text-muted-foreground"
                       >
                         {aiFillingId === s.id ? (
                           <Loader2Icon className="size-3.5 animate-spin" />
                         ) : (
                           <SparklesIcon className="size-3.5" />
                         )}
-                      </button>
+                        Insert {s.label} with AI
+                      </DropdownMenuItem>
                     )}
-                  </DropdownMenuItem>
+                  </Fragment>
                 ))}
               </>
             )}
@@ -712,38 +741,33 @@ export function EditorToolbar({
             <DropdownMenuLabel>Insert snippet</DropdownMenuLabel>
             <DropdownMenuSeparator />
             {snippets.map((s) => (
-              <DropdownMenuItem
-                key={s.id}
-                onClick={() => insertSnippet(s.insert)}
-                title={s.description}
-              >
-                <span className="font-medium">{s.label}</span>
-                <span className="ml-auto truncate pl-2 text-muted-foreground text-xs">
-                  {s.description}
-                </span>
+              <Fragment key={s.id}>
+                <DropdownMenuItem
+                  onClick={() => insertSnippet(s.insert)}
+                  title={s.description}
+                >
+                  <span className="font-medium">{s.label}</span>
+                  <span className="ml-auto truncate pl-2 text-muted-foreground text-xs">
+                    {s.description}
+                  </span>
+                </DropdownMenuItem>
                 {aiFillEnabled && (
-                  <button
-                    type="button"
+                  <DropdownMenuItem
                     title="Insert with AI (fill from surrounding context)"
                     aria-label={`Insert ${s.label} with AI`}
                     disabled={aiFillingId !== null}
-                    onClick={(e) => {
-                      // Run AI fill instead of the plain insert; keep the menu
-                      // from also firing its own onClick insert.
-                      e.preventDefault();
-                      e.stopPropagation();
-                      void insertSnippetWithAI(s.id, s.insert);
-                    }}
-                    className="ml-1.5 shrink-0 rounded p-0.5 text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
+                    onClick={() => void insertSnippetWithAI(s.id, s.insert)}
+                    className="text-muted-foreground"
                   >
                     {aiFillingId === s.id ? (
                       <Loader2Icon className="size-3.5 animate-spin" />
                     ) : (
                       <SparklesIcon className="size-3.5" />
                     )}
-                  </button>
+                    Insert {s.label} with AI
+                  </DropdownMenuItem>
                 )}
-              </DropdownMenuItem>
+              </Fragment>
             ))}
           </DropdownMenuContent>
         </DropdownMenu>
@@ -780,6 +804,21 @@ export function EditorToolbar({
       <div className="flex shrink-0 items-center gap-1.5">
         {problemsSlot}
         <DocumentOutline editorView={editorView} />
+        {fileType === "tex" && (
+          <TooltipIconButton
+            tooltip="Rich editor (Word-like view)"
+            className={cn(
+              "size-7",
+              editorViewMode === "rich"
+                ? "bg-primary text-primary-foreground hover:bg-primary/90"
+                : "text-muted-foreground",
+            )}
+            aria-pressed={editorViewMode === "rich"}
+            onClick={() => setEditorViewMode("rich")}
+          >
+            <PilcrowIcon className="size-4" />
+          </TooltipIconButton>
+        )}
         {fileType === "tex" && (
           <TooltipIconButton
             tooltip={`Show cursor in PDF (${MOD === "⌘" ? "⌘⇧J" : "Ctrl+Shift+J"})`}

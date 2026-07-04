@@ -494,7 +494,9 @@ export const SlashCommandPicker: FC<SlashCommandPickerProps> = ({
       void semanticRank(q, candidates)
         .then((ranked) => {
           if (id !== semanticReqId.current) return;
-          setSemanticOrder(ranked.map((r) => list[r.index]?.id).filter(Boolean));
+          setSemanticOrder(
+            ranked.map((r) => list[r.index]?.id).filter(Boolean),
+          );
         })
         .catch(() => {
           if (id === semanticReqId.current) setSemanticOrder([]);
@@ -656,6 +658,9 @@ export const SlashCommandPicker: FC<SlashCommandPickerProps> = ({
       <button
         key={cmd.id}
         data-index={index}
+        role="option"
+        aria-selected={isSelected}
+        id={`slash-opt-${index}`}
         className={cn(
           "flex w-full items-center gap-2.5 rounded-md px-3 py-1.5 text-left transition-colors",
           isSelected ? "bg-accent text-accent-foreground" : "hover:bg-muted",
@@ -736,7 +741,12 @@ export const SlashCommandPicker: FC<SlashCommandPickerProps> = ({
   };
 
   const renderList = () => (
-    <div className="flex-1 overflow-y-auto" ref={listRef}>
+    <div
+      className="flex-1 overflow-y-auto"
+      ref={listRef}
+      role="listbox"
+      id="slash-command-listbox"
+    >
       {isLoading && (
         <div className="flex items-center justify-center py-8">
           <span className="text-muted-foreground text-sm">Loading...</span>

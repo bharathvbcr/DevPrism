@@ -1,6 +1,15 @@
-import { type FC, memo, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type FC,
+  memo,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import {
   AlertCircleIcon,
+  AlertTriangleIcon,
   ArrowDownIcon,
   CheckIcon,
   CopyIcon,
@@ -14,6 +23,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import {
+  messageContentText,
   useClaudeChatStore,
   type ClaudeStreamMessage,
   type ContentBlock,
@@ -26,8 +36,16 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useChatLabels } from "@/lib/chat-labels";
 import { NativeOllamaEmptyState } from "./native-ollama-empty-state";
+import { ChatStarterChips } from "./chat-starter-chips";
+import { buildChatStarterPromptsFromStore } from "@/lib/chat-starter-prompts";
+import { useDocumentStore } from "@/stores/document-store";
 import { MarkdownRenderer } from "./markdown-renderer";
-import { ThinkingWidget, ToolWidget } from "./tool-widgets";
+import {
+  ThinkingWidget,
+  ToolWidget,
+  ToolGroupWidget,
+  groupAssistantToolBlocks,
+} from "./tool-widgets";
 
 // ─── Streaming Indicator (isolated to prevent re-render storms) ───
 
@@ -63,8 +81,8 @@ const StreamingIndicator: FC<{ startedAt: number | null }> = memo(
           />
         </div>
         <span className="text-sm">
-          Thinking...
-          {elapsed >= 3 && (
+          {elapsed >= 15 ? "Still working…" : "Thinking…"}
+          {elapsed >= 1 && (
             <span className="ml-1 text-muted-foreground/60 text-xs">
               {elapsed}s
             </span>
@@ -78,6 +96,70 @@ const StreamingIndicator: FC<{ startedAt: number | null }> = memo(
 const EMPTY_PENDING_GUIDANCE: QueuedGuidance[] = [];
 const THREAD_MAX_WIDTH = "max-w-[44rem]";
 
+function latestContextTruncation(messages: ClaudeStreamMessage[]): {
+  dropped: string[];
+  source?: string;
+} | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.subtype !== "context_truncation") continue;
+    const dropped = msg.contextDropped?.filter(Boolean) ?? [];
+    if (dropped.length > 0) {
+      return { dropped, source: messageContentText(msg) || undefined };
+    }
+    const text = messageContentText(msg);
+    const match = text.match(/Context trimmed \(([^)]+)\):\s*(.+?)\./i);
+    if (match) {
+      return {
+        dropped: match[2]
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean),
+        source: match[1],
+      };
+    }
+  }
+  return null;
+}
+
+/** Inline notice when the native agent drops context to fit the window. */
+function ContextTruncationNotice({
+  messages,
+}: {
+  messages: ClaudeStreamMessage[];
+}) {
+  const truncation = useMemo(
+    () => latestContextTruncation(messages),
+    [messages],
+  );
+  if (!truncation) return null;
+
+  const detail = truncation.dropped.join(", ");
+  const title = truncation.source
+    ? `Context trimmed (${truncation.source})`
+    : "Context trimmed";
+
+  return (
+    <div className={cn("mx-auto mb-3 w-full", THREAD_MAX_WIDTH)}>
+      <div
+        role="status"
+        aria-live="polite"
+        className="flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-warning-foreground text-xs"
+      >
+        <AlertTriangleIcon className="mt-0.5 size-3.5 shrink-0 text-warning" />
+        <div className="min-w-0">
+          <p className="font-medium text-foreground">{title}</p>
+          <p className="mt-0.5 text-muted-foreground leading-snug">
+            Dropped from context:{" "}
+            <span className="text-foreground/90">{detail}</span>. Ask the agent
+            to re-read files or earlier turns if answers seem incomplete.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const MessageActions: FC<{
   text: string;
   align?: "left" | "right";
@@ -87,9 +169,13 @@ const MessageActions: FC<{
 
   const handleCopy = async () => {
     if (!canCopy) return;
-    await navigator.clipboard.writeText(text);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1200);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    } catch {
+      toast.error("Couldn't copy to clipboard");
+    }
   };
 
   if (!canCopy) return null;
@@ -146,6 +232,7 @@ const SUMMARIZE_THRESHOLD = 800;
 const useSummarize = (text: string) => {
   const aiSummarize = useSettingsStore((s) => s.aiSummarize);
   const [summary, setSummary] = useState<string | null>(null);
+  const [summaryError, setSummaryError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const requestIdRef = useRef(0);
 
@@ -156,6 +243,7 @@ const useSummarize = (text: string) => {
     if (pending) return;
     const requestId = ++requestIdRef.current;
     setPending(true);
+    setSummaryError(null);
     try {
       const result = await summarizeSection(text);
       // Ignore stale responses (cancellation-safe).
@@ -164,11 +252,11 @@ const useSummarize = (text: string) => {
       if (trimmed) {
         setSummary(trimmed);
       } else {
-        toast.error("Couldn't generate a summary.");
+        setSummaryError("Couldn't generate a summary.");
       }
     } catch {
       if (requestId !== requestIdRef.current) return;
-      toast.error("Couldn't generate a summary.");
+      setSummaryError("Couldn't generate a summary.");
     } finally {
       if (requestId === requestIdRef.current) setPending(false);
     }
@@ -177,10 +265,11 @@ const useSummarize = (text: string) => {
   const dismiss = () => {
     requestIdRef.current++;
     setSummary(null);
+    setSummaryError(null);
     setPending(false);
   };
 
-  return { eligible, summary, pending, summarize, dismiss };
+  return { eligible, summary, summaryError, pending, summarize, dismiss };
 };
 
 const SummarizeButton: FC<{ pending: boolean; onClick: () => void }> = ({
@@ -230,6 +319,25 @@ const SummaryCallout: FC<{ summary: string; onDismiss: () => void }> = ({
   </div>
 );
 
+const SummaryErrorCallout: FC<{ message: string; onDismiss: () => void }> = ({
+  message,
+  onDismiss,
+}) => (
+  <div className="fade-in slide-in-from-top-1 mx-2 mb-2 animate-in rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 duration-150">
+    <div className="flex items-center justify-between gap-2">
+      <p className="text-destructive text-xs">{message}</p>
+      <button
+        type="button"
+        onClick={onDismiss}
+        className="rounded text-destructive/70 hover:text-destructive"
+        aria-label="Dismiss error"
+      >
+        <XIcon className="size-3.5" />
+      </button>
+    </div>
+  </div>
+);
+
 // ─── Chat Messages (main component) ───
 
 export const ChatMessages: FC = () => {
@@ -250,6 +358,17 @@ export const ChatMessages: FC = () => {
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const nativeAgentEnabled = useSettingsStore((s) => s.nativeAgentEnabled);
   const chatLabels = useChatLabels();
+  const activeTabId = useClaudeChatStore((s) => s.activeTabId);
+  const saveDraft = useClaudeChatStore((s) => s.saveDraft);
+  const starterPrompts = useSyncExternalStore(
+    useDocumentStore.subscribe,
+    buildChatStarterPromptsFromStore,
+    buildChatStarterPromptsFromStore,
+  );
+
+  const applyStarterPrompt = (prompt: string) => {
+    saveDraft(activeTabId, { input: prompt, pinnedContexts: [] });
+  };
 
   // Build a map of tool_use_id → tool_result for inline display
   const toolResultMap = useMemo(() => {
@@ -282,6 +401,13 @@ export const ChatMessages: FC = () => {
 
     return messages.filter((msg) => {
       if (msg.type === "system" && msg.subtype === "init") return false;
+      if (
+        msg.type === "assistant" &&
+        (msg.subtype === "context_truncation" ||
+          msg.subtype === "context_compaction")
+      ) {
+        return false;
+      }
       if (
         msg.type !== "user" &&
         msg.type !== "assistant" &&
@@ -355,60 +481,68 @@ export const ChatMessages: FC = () => {
         className="absolute inset-0 overflow-y-auto overscroll-contain scroll-smooth px-4 pt-4"
       >
         {displayMessages.length === 0 &&
-        pendingGuidance.length === 0 &&
-        !isStreaming &&
-        (nativeAgentEnabled ? (
-          <NativeOllamaEmptyState />
-        ) : (
-          <div className="mx-auto flex h-full max-w-sm flex-col items-center justify-center gap-2 px-6 text-center text-muted-foreground text-sm">
-            <p className="font-medium text-foreground">Ask about your project</p>
-            <p className="text-xs leading-relaxed">
-              {chatLabels.emptyStateHint}
-            </p>
+          pendingGuidance.length === 0 &&
+          !isStreaming &&
+          (nativeAgentEnabled ? (
+            <NativeOllamaEmptyState />
+          ) : (
+            <div className="mx-auto flex h-full max-w-md flex-col items-center justify-center gap-3 px-6 text-center">
+              <p className="font-medium text-foreground text-sm">
+                Ask about your project
+              </p>
+              <p className="text-muted-foreground text-xs leading-relaxed">
+                {chatLabels.emptyStateHint}
+              </p>
+              <ChatStarterChips
+                prompts={starterPrompts}
+                onSelect={applyStarterPrompt}
+              />
+            </div>
+          ))}
+
+        <ContextTruncationNotice messages={messages} />
+
+        {displayMessages.map((msg, idx) => {
+          const rawIndex = messages.indexOf(msg);
+          let precedingUserIndex = -1;
+          for (let i = rawIndex; i >= 0; i--) {
+            if (messages[i]?.type === "user") {
+              precedingUserIndex = i;
+              break;
+            }
+          }
+          const isLast = idx === displayMessages.length - 1;
+          return (
+            <div
+              key={idx}
+              className={cn("cv-auto-chat mx-auto w-full", THREAD_MAX_WIDTH)}
+            >
+              <MessageBubble
+                message={msg}
+                toolResultMap={toolResultMap}
+                rawIndex={rawIndex}
+                precedingUserIndex={precedingUserIndex}
+                isStreaming={isStreaming}
+                isLast={isLast}
+              />
+            </div>
+          );
+        })}
+
+        {isStreaming && (
+          <div className={cn("mx-auto w-full px-2", THREAD_MAX_WIDTH)}>
+            <StreamingIndicator startedAt={streamingStartedAt} />
+          </div>
+        )}
+
+        {pendingGuidance.map((guidance) => (
+          <div
+            key={guidance.id}
+            className={cn("mx-auto w-full", THREAD_MAX_WIDTH)}
+          >
+            <PendingGuidanceMessage guidance={guidance} />
           </div>
         ))}
-
-      {displayMessages.map((msg, idx) => {
-        const rawIndex = messages.indexOf(msg);
-        let precedingUserIndex = -1;
-        for (let i = rawIndex; i >= 0; i--) {
-          if (messages[i]?.type === "user") {
-            precedingUserIndex = i;
-            break;
-          }
-        }
-        const isLast = idx === displayMessages.length - 1;
-        return (
-          <div
-            key={idx}
-            className={cn("cv-auto-chat mx-auto w-full", THREAD_MAX_WIDTH)}
-          >
-            <MessageBubble
-              message={msg}
-              toolResultMap={toolResultMap}
-              rawIndex={rawIndex}
-              precedingUserIndex={precedingUserIndex}
-              isStreaming={isStreaming}
-              isLast={isLast}
-            />
-          </div>
-        );
-      })}
-
-      {isStreaming && (
-        <div className={cn("mx-auto w-full px-2", THREAD_MAX_WIDTH)}>
-          <StreamingIndicator startedAt={streamingStartedAt} />
-        </div>
-      )}
-
-      {pendingGuidance.map((guidance) => (
-        <div
-          key={guidance.id}
-          className={cn("mx-auto w-full", THREAD_MAX_WIDTH)}
-        >
-          <PendingGuidanceMessage guidance={guidance} />
-        </div>
-      ))}
       </div>
 
       {showScrollToBottom && (
@@ -522,7 +656,7 @@ const UserMessage: FC<{
     /^\[Lint errors in ([^\]]+)\]\n((?:- .+\n?)+)\n([\s\S]*)$/,
   );
   const compileErrorMatch = bodyText.match(
-    /^\[Compilation errors\]\n((?:- .+\n?)+)\n([\s\S]*)$/,
+    /^\[Compilation errors(?: in ([^\]]+))?\]\n((?:- .+\n?)+)\n([\s\S]*)$/,
   );
 
   // Shared error block renderer
@@ -587,18 +721,28 @@ const UserMessage: FC<{
   }
 
   if (compileErrorMatch) {
-    const [, errorLines, prompt] = compileErrorMatch;
+    const [, fileName, errorLines, prompt] = compileErrorMatch;
     const errors = errorLines
       .trim()
       .split("\n")
-      .map((line) => ({
-        message: line.replace(/^- /, ""),
-      }));
-    return renderErrorBlock(
-      `Compilation ${errors.length === 1 ? "Error" : "Errors"}`,
-      errors,
-      prompt,
-    );
+      .map((line) => {
+        const located = line.match(/^- (.+?):(\d+) — (.+)$/);
+        if (located) {
+          return {
+            message: located[3],
+            location: `${located[1]}:${located[2]}`,
+          };
+        }
+        const lineOnly = line.match(/^- line (\d+) — (.+)$/);
+        if (lineOnly) {
+          return { message: lineOnly[2], location: `line ${lineOnly[1]}` };
+        }
+        return { message: line.replace(/^- /, "") };
+      });
+    const title = fileName
+      ? `Compilation Errors — ${fileName}`
+      : `Compilation ${errors.length === 1 ? "Error" : "Errors"}`;
+    return renderErrorBlock(title, errors, prompt);
   }
 
   const submitEdit = () => {
@@ -612,7 +756,6 @@ const UserMessage: FC<{
       <div className="grid w-full auto-rows-auto grid-cols-[minmax(72px,1fr)_auto] content-start gap-y-2 px-2 py-3 [&:where(>*)]:col-start-2">
         <div className="col-start-2 min-w-0">
           <textarea
-            autoFocus
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
@@ -740,7 +883,7 @@ const AssistantMessage: FC<{
     .join("\n\n");
 
   // Hook must run unconditionally (before any early return).
-  const { eligible, summary, pending, summarize, dismiss } =
+  const { eligible, summary, summaryError, pending, summarize, dismiss } =
     useSummarize(copyText);
 
   if (blocks.length === 0) return null;
@@ -754,10 +897,24 @@ const AssistantMessage: FC<{
 
   if (!hasRenderableContent) return null;
 
+  const renderItems = groupAssistantToolBlocks(blocks);
+
   return (
     <div className="fade-in slide-in-from-bottom-1 relative mx-auto w-full animate-in py-3 duration-150">
       <div className="wrap-break-word px-2 text-foreground text-sm leading-relaxed">
-        {blocks.map((block, idx) => {
+        {renderItems.map((item) => {
+          if (item.kind === "group") {
+            return (
+              <ToolGroupWidget
+                key={`group-${item.index}`}
+                name={item.name}
+                tools={item.tools}
+                toolResultMap={toolResultMap}
+              />
+            );
+          }
+          const block = item.block;
+          const idx = item.index;
           if (block.type === "text" && block.text) {
             return (
               <MarkdownRenderer
@@ -784,9 +941,12 @@ const AssistantMessage: FC<{
         })}
       </div>
       {summary && <SummaryCallout summary={summary} onDismiss={dismiss} />}
-      <div className="-mb-7.5 ml-2 flex min-h-7.5 items-center gap-1 pt-1.5">
+      {summaryError && (
+        <SummaryErrorCallout message={summaryError} onDismiss={dismiss} />
+      )}
+      <div className="mt-1 ml-2 flex items-center gap-1">
         <MessageActions text={copyText} />
-        {eligible && !summary && (
+        {eligible && !summary && !summaryError && (
           <SummarizeButton pending={pending} onClick={() => void summarize()} />
         )}
         {canRegenerate && <RegenerateButton userIndex={regenerateIndex} />}
@@ -821,7 +981,7 @@ const ResultMessage: FC<{
           />
         )}
       </div>
-      <div className="-mb-7.5 ml-2 flex min-h-7.5 items-center gap-1 pt-1.5">
+      <div className="mt-1 ml-2 flex items-center gap-1">
         <MessageActions text={resultText} />
         {canRegenerate && <RegenerateButton userIndex={regenerateIndex} />}
       </div>

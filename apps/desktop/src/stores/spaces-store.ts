@@ -61,6 +61,27 @@ interface SpacesState {
    */
   pendingPickerSection: "projects" | "settings" | null;
   setPendingPickerSection: (section: "projects" | "settings" | null) => void;
+  /** Detail pane within Settings to focus when the picker opens Settings. */
+  pendingSettingsDetailSection:
+    | "provider"
+    | "environment"
+    | "editor"
+    | "compilation"
+    | "appearance"
+    | "ai"
+    | "personalization"
+    | null;
+  setPendingSettingsDetailSection: (
+    section:
+      | "provider"
+      | "environment"
+      | "editor"
+      | "compilation"
+      | "appearance"
+      | "ai"
+      | "personalization"
+      | null,
+  ) => void;
 
   createSpace: (
     name: string,
@@ -103,6 +124,7 @@ export const useSpacesStore = create<SpacesState>()(
       projectSpace: {},
       activeSpaceId: null,
       pendingPickerSection: null,
+      pendingSettingsDetailSection: null,
 
       createSpace: (name, init) => {
         const trimmed = name.trim() || "New Space";
@@ -185,6 +207,9 @@ export const useSpacesStore = create<SpacesState>()(
 
       setPendingPickerSection: (section) =>
         set({ pendingPickerSection: section }),
+
+      setPendingSettingsDetailSection: (section) =>
+        set({ pendingSettingsDetailSection: section }),
     }),
     {
       name: "devprism-spaces",
@@ -234,6 +259,7 @@ export const useSpacesStore = create<SpacesState>()(
       partialize: (state) => ({
         spaces: state.spaces,
         projectSpace: state.projectSpace,
+        activeSpaceId: state.activeSpaceId,
       }),
     },
   ),

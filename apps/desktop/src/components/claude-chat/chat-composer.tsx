@@ -1,7 +1,6 @@
 import {
   type CSSProperties,
   type FC,
-  type KeyboardEvent,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -85,8 +84,10 @@ import { recordPersonalizationEvent } from "@/lib/personalization";
 import { SlashCommandPicker, type SlashCommand } from "./slash-command-picker";
 import { ChatSpaceSuggestions } from "./chat-space-suggestions";
 import { ChatFollowUpSuggestions } from "./chat-follow-up-suggestions";
+import { ContextUsageIndicator } from "./context-usage-indicator";
 import { createLogger } from "@/lib/debug/logger";
 import { CHAT_DRAWER_FOCUS_COMPOSER_EVENT } from "@/lib/chat-drawer-events";
+import { OLLAMA_REFRESH_EVENT } from "@/lib/ollama-events";
 import {
   formatOllamaModelSize,
   getOllamaBaseUrl,
@@ -103,6 +104,7 @@ import {
 } from "@/hooks/use-ollama-model-capabilities";
 import { OllamaModelBadges } from "@/components/ollama-model-badges";
 import { OllamaSetupHints } from "@/components/ollama-setup-hints";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   canUseAiAssist,
   fetchPredictiveContinuation,
@@ -394,7 +396,18 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
     loading: ollamaStatusLoading,
     error: ollamaStatusError,
     refresh: refreshOllamaStatus,
-  } = useOllamaStatus(ollamaBaseUrl, nativeAgentEnabled);
+  } = useOllamaStatus(
+    ollamaBaseUrl,
+    nativeAgentEnabled,
+    isStreaming ? 8_000 : 30_000,
+  );
+
+  useEffect(() => {
+    if (!nativeAgentEnabled) return;
+    const onRefresh = () => void refreshOllamaStatus();
+    window.addEventListener(OLLAMA_REFRESH_EVENT, onRefresh);
+    return () => window.removeEventListener(OLLAMA_REFRESH_EVENT, onRefresh);
+  }, [nativeAgentEnabled, refreshOllamaStatus]);
   const { capabilities: selectedModelCapabilities } =
     useOllamaModelCapabilities(
       effectiveOllamaModel,
@@ -404,15 +417,17 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
   const selectedResolvedCaps = effectiveOllamaModel
     ? resolveOllamaCapabilities(effectiveOllamaModel, selectedModelCapabilities)
     : null;
-  const ollamaToolsWarning =
+  const chatOnlyMode = Boolean(
     nativeAgentEnabled &&
-    effectiveOllamaModel &&
-    selectedResolvedCaps &&
-    !selectedResolvedCaps.tools
-      ? selectedResolvedCaps.source === "api"
-        ? `${effectiveOllamaModel} does not support tool calling — switch to a tools-capable model like llama3.2, qwen2.5, or mistral-nemo.`
-        : `${effectiveOllamaModel} may not support tool calling — the native agent works best with models like llama3.2, qwen2.5, or mistral-nemo.`
-      : null;
+      effectiveOllamaModel &&
+      selectedResolvedCaps &&
+      !selectedResolvedCaps.tools,
+  );
+  const ollamaToolsWarning = chatOnlyMode
+    ? selectedResolvedCaps?.source === "api"
+      ? `Chat-only mode — ${effectiveOllamaModel} cannot run file tools. Switch to llama3.2, qwen2.5, or mistral-nemo for agent edits.`
+      : `${effectiveOllamaModel} may not support tools — running in chat-only mode until you pick a tools-capable model.`
+    : null;
   const ollamaIconSrc = getProviderIconSrc({
     label: "Ollama",
     baseUrl: ollamaBaseUrl,
@@ -497,6 +512,9 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
 
   // "Improve my prompt" state
   const [improvingPrompt, setImprovingPrompt] = useState(false);
+  const [promptImproveError, setPromptImproveError] = useState<string | null>(
+    null,
+  );
 
   // Model picker state
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
@@ -535,6 +553,9 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
       left: rect.left,
       bottom: window.innerHeight - rect.top + 4,
     });
+    // Move focus into the menu on open so keyboard/AT users land inside it and
+    // Escape can restore focus to the trigger.
+    modelPickerRef.current?.focus();
   }, [modelPickerOpen]);
 
   useEffect(() => {
@@ -1219,6 +1240,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
     if (!draft || improvingPrompt) return;
     dismissGhostText();
     setImprovingPrompt(true);
+    setPromptImproveError(null);
     recordPersonalizationEvent("feature_used", { feature: "prompt_improve" });
     try {
       const improved = await improvePrompt(draft);
@@ -1236,7 +1258,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
       }
     } catch (err) {
       log.warn("Improve prompt failed", { error: String(err) });
-      toast.error("Couldn't improve the prompt. Please try again.");
+      setPromptImproveError("Couldn't improve the prompt. Please try again.");
     } finally {
       setImprovingPrompt(false);
     }
@@ -1605,7 +1627,14 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
         }
         if (hasInput) {
           e.preventDefault();
+          const clearedDraft = input;
           clearComposerInput();
+          toast("Draft cleared", {
+            action: {
+              label: "Undo",
+              onClick: () => setInput(clearedDraft),
+            },
+          });
           return;
         }
       }
@@ -1724,7 +1753,8 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
     }
   }, [mentionIndex]);
 
-  // Close model picker on click outside
+  // Close model picker on click outside or Escape (Escape restores focus to the
+  // trigger for keyboard/AT users).
   useEffect(() => {
     if (!modelPickerOpen) return;
     const handleClickOutside = (e: MouseEvent) => {
@@ -1738,8 +1768,19 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
         setModelPickerOpen(false);
       }
     };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setModelPickerOpen(false);
+        modelButtonRef.current?.focus();
+      }
+    };
     document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
   }, [modelPickerOpen]);
 
   const claudeModelOptions = [
@@ -1856,7 +1897,37 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
         createPortal(
           <div
             ref={modelPickerRef}
-            className="fixed w-[28rem] max-w-[calc(100vw-1rem)] overflow-hidden rounded-xl border border-border bg-popover/95 p-1.5 text-popover-foreground shadow-lg backdrop-blur-sm"
+            role="menu"
+            aria-label="Select provider and model"
+            tabIndex={-1}
+            onKeyDown={(e) => {
+              if (
+                e.key !== "ArrowDown" &&
+                e.key !== "ArrowUp" &&
+                e.key !== "Home" &&
+                e.key !== "End"
+              ) {
+                return;
+              }
+              const items = Array.from(
+                modelPickerRef.current?.querySelectorAll<HTMLButtonElement>(
+                  "button:not([disabled])",
+                ) ?? [],
+              );
+              if (items.length === 0) return;
+              e.preventDefault();
+              const current = items.indexOf(
+                document.activeElement as HTMLButtonElement,
+              );
+              let next: number;
+              if (e.key === "Home") next = 0;
+              else if (e.key === "End") next = items.length - 1;
+              else if (e.key === "ArrowDown")
+                next = current < 0 ? 0 : (current + 1) % items.length;
+              else next = current <= 0 ? items.length - 1 : current - 1;
+              items[next]?.focus();
+            }}
+            className="fixed w-[28rem] max-w-[calc(100vw-1rem)] overflow-hidden rounded-xl border border-border bg-popover/95 p-1.5 text-popover-foreground shadow-lg backdrop-blur-sm focus:outline-none [&_button:focus-visible]:relative [&_button:focus-visible]:z-10 [&_button:focus-visible]:outline-none [&_button:focus-visible]:ring-2 [&_button:focus-visible]:ring-ring [&_button:focus-visible]:ring-inset"
             style={{
               left: pickerPos.left,
               bottom: pickerPos.bottom,
@@ -1940,62 +2011,57 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                     return (
                       <div
                         key={credential.id}
-                        role="button"
-                        tabIndex={0}
                         className={cn(
-                          "group/provider flex w-full cursor-pointer items-center gap-2 rounded-lg py-2 pr-1 pl-3 text-left text-sm transition-colors",
+                          "group/provider flex items-center gap-1 rounded-lg pr-1 transition-colors",
                           active
                             ? "bg-accent text-accent-foreground"
                             : "hover:bg-muted",
                           isDeleting && "pointer-events-none opacity-70",
                         )}
-                        onClick={selectCredential}
-                        onKeyDown={(event: KeyboardEvent<HTMLDivElement>) => {
-                          if (event.key === "Enter" || event.key === " ") {
-                            event.preventDefault();
-                            selectCredential();
-                          }
-                        }}
                       >
-                        {iconSrc ? (
-                          <img
-                            src={iconSrc}
-                            alt=""
-                            className="size-4 shrink-0 object-contain"
-                          />
-                        ) : (
-                          <SparklesIcon className="size-3.5 shrink-0" />
-                        )}
-                        <div className="min-w-0 flex-1">
-                          <div className="truncate font-medium text-xs">
-                            {displayName}
+                        <button
+                          type="button"
+                          className="flex min-w-0 flex-1 items-center gap-2 rounded-lg py-2 pl-3 text-left text-sm"
+                          onClick={selectCredential}
+                        >
+                          {iconSrc ? (
+                            <img
+                              src={iconSrc}
+                              alt=""
+                              className="size-4 shrink-0 object-contain"
+                            />
+                          ) : (
+                            <SparklesIcon className="size-3.5 shrink-0" />
+                          )}
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate font-medium text-xs">
+                              {displayName}
+                            </div>
+                            <div className="truncate text-muted-foreground text-xs">
+                              {currentModel}
+                            </div>
                           </div>
-                          <div className="truncate text-muted-foreground text-xs">
-                            {currentModel}
-                          </div>
-                        </div>
-                        <div className="flex shrink-0 items-center gap-1">
                           {active && <CheckIcon className="size-3 shrink-0" />}
-                          <button
-                            type="button"
-                            className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                            aria-label={`Delete ${displayName}`}
-                            title="Delete provider"
-                            disabled={!!deletingProviderId}
-                            onClick={(event) => {
-                              event.preventDefault();
-                              event.stopPropagation();
-                              setProviderDeleteError(null);
-                              setProviderDeleteTarget(credential);
-                            }}
-                          >
-                            {isDeleting ? (
-                              <Loader2Icon className="size-3.5 animate-spin" />
-                            ) : (
-                              <Trash2Icon className="size-3.5" />
-                            )}
-                          </button>
-                        </div>
+                        </button>
+                        <button
+                          type="button"
+                          className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          aria-label={`Delete ${displayName}`}
+                          title="Delete provider"
+                          disabled={!!deletingProviderId}
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            setProviderDeleteError(null);
+                            setProviderDeleteTarget(credential);
+                          }}
+                        >
+                          {isDeleting ? (
+                            <Loader2Icon className="size-3.5 animate-spin" />
+                          ) : (
+                            <Trash2Icon className="size-3.5" />
+                          )}
+                        </button>
                       </div>
                     );
                   })}
@@ -2054,6 +2120,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                       type="button"
                       className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                       title="Refresh Ollama models"
+                      aria-label="Refresh Ollama models"
                       disabled={ollamaModelsLoading || ollamaStatusLoading}
                       onClick={(event) => {
                         event.stopPropagation();
@@ -2118,9 +2185,10 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                   {nativeAgentEnabled ? (
                     <>
                       {ollamaModelsLoading && (
-                        <div className="flex items-center gap-2 px-3 py-2 text-muted-foreground text-xs">
-                          <Loader2Icon className="size-3.5 animate-spin" />
-                          Loading installed models…
+                        <div className="space-y-2 px-3 py-2">
+                          <Skeleton className="h-7 w-full" />
+                          <Skeleton className="h-7 w-4/5" />
+                          <Skeleton className="h-7 w-3/5" />
                         </div>
                       )}
                       {ollamaModelsError && (
@@ -2214,6 +2282,8 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                                         <OllamaModelBadges
                                           tools={caps.tools}
                                           vision={caps.vision}
+                                          source={caps.source}
+                                          chatOnly={!caps.tools}
                                         />
                                       )}
                                     </div>
@@ -2598,6 +2668,8 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
             {hiddenPinnedCount > 0 && (
               <button
                 type="button"
+                aria-label={`Show ${hiddenPinnedCount} more attached files`}
+                aria-expanded={pinnedExpanded}
                 onClick={() => setPinnedExpanded(true)}
                 className="rounded-full border border-border/60 bg-background/80 px-2 py-0.5 text-muted-foreground text-xs transition-colors hover:bg-muted hover:text-foreground"
               >
@@ -2608,6 +2680,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
               pinnedContexts.length > PINNED_CONTEXT_COLLAPSE_LIMIT && (
                 <button
                   type="button"
+                  aria-expanded={pinnedExpanded}
                   onClick={() => setPinnedExpanded(false)}
                   className="rounded-full border border-border/60 bg-background/80 px-2 py-0.5 text-muted-foreground text-xs transition-colors hover:bg-muted hover:text-foreground"
                 >
@@ -2617,6 +2690,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
             {pinnedContexts.length > 1 && (
               <button
                 type="button"
+                aria-label="Remove all attached context"
                 onClick={() => {
                   for (const ctx of pinnedContexts) {
                     cleanupTemporaryPinnedContext(ctx);
@@ -2624,7 +2698,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                   setPinnedContexts([]);
                   setPinnedExpanded(false);
                 }}
-                className="rounded-full px-2 py-0.5 text-[10px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                className="rounded-full px-2 py-0.5 text-muted-foreground text-xs transition-colors hover:bg-muted hover:text-foreground"
               >
                 Clear all
               </button>
@@ -2644,15 +2718,29 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
             </span>
             <button
               type="button"
-              className="shrink-0 underline underline-offset-2 hover:text-destructive/80"
+              aria-label="Retry loading Ollama models"
+              className="inline-flex shrink-0 items-center gap-1 underline underline-offset-2 hover:text-destructive/80"
               onClick={() => refreshOllamaModels()}
             >
+              <RefreshCwIcon className="size-3" aria-hidden />
               Retry
             </button>
           </div>
         )}
         {ollamaToolsWarning && (
-          <div className="mx-1 mb-1 rounded-lg border border-amber-500/30 bg-amber-500/8 px-2.5 py-1.5 text-amber-800 text-xs leading-relaxed dark:text-amber-200">
+          <div
+            className={cn(
+              "mx-1 mb-1 rounded-lg border px-2.5 py-1.5 text-xs leading-relaxed",
+              chatOnlyMode
+                ? "border-sky-500/30 bg-sky-500/8 text-sky-900 dark:text-sky-100"
+                : "border-amber-500/30 bg-amber-500/8 text-amber-800 dark:text-amber-200",
+            )}
+          >
+            {chatOnlyMode && (
+              <span className="mr-1.5 rounded bg-sky-500/15 px-1.5 py-px font-medium text-[10px] uppercase tracking-wide">
+                Chat-only
+              </span>
+            )}
             {ollamaToolsWarning}
           </div>
         )}
@@ -2663,6 +2751,12 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
         <ChatFollowUpSuggestions
           visible={!isStreaming && !input.trim() && !isDragOver}
         />
+
+        {promptImproveError && (
+          <p className="mx-2 mb-1 rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-1.5 text-destructive text-xs">
+            {promptImproveError}
+          </p>
+        )}
 
         {isDragOver ? (
           <div className="flex min-h-[3.25rem] items-center justify-center gap-2 px-3 py-2 text-muted-foreground text-sm">
@@ -2692,6 +2786,11 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                 onPaste={handlePaste}
                 onFocus={() => setComposerFocused(true)}
                 onBlur={() => setComposerFocused(false)}
+                aria-label={
+                  isStreaming
+                    ? "Add guidance for the next turn"
+                    : "Message DevPrism"
+                }
                 placeholder={
                   isStreaming
                     ? "Add guidance for the next turn…"
@@ -2832,6 +2931,12 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                   ? `Ollama model · ${chatModelLabel}`
                   : `Switch provider or model · ${effortFullLabel(effortLevel)} effort`
               }
+              aria-label={
+                nativeAgentEnabled
+                  ? `Ollama model, ${chatModelLabel}`
+                  : `Switch provider or model, ${effortFullLabel(effortLevel)} effort`
+              }
+              aria-haspopup="menu"
               aria-expanded={modelPickerOpen}
               className={cn(
                 "flex h-8 min-w-0 max-w-[min(100%,14rem)] items-center gap-1.5 rounded-full border border-transparent px-2.5 text-muted-foreground text-xs transition-colors hover:border-border/60 hover:bg-muted/60 hover:text-foreground",
@@ -2850,10 +2955,29 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                   ) : (
                     <SparklesIcon className="size-3.5 shrink-0" />
                   )}
-                  <span className="truncate font-medium">Ollama</span>
-                  <span className="hidden truncate text-muted-foreground/70 sm:inline">
+                  <span className="shrink-0 truncate font-medium">Ollama</span>
+                  <span className="truncate text-muted-foreground/70">
                     · {chatModelLabel}
                   </span>
+                  {selectedResolvedCaps && (
+                    <span
+                      className="hidden rounded bg-muted px-1 py-px font-medium text-[10px] text-muted-foreground sm:inline"
+                      title={
+                        selectedResolvedCaps.source === "api"
+                          ? "Capabilities from Ollama /api/show"
+                          : "Capabilities guessed from model name"
+                      }
+                    >
+                      {selectedResolvedCaps.source === "api"
+                        ? "detected"
+                        : "guessed"}
+                    </span>
+                  )}
+                  {chatOnlyMode && (
+                    <span className="rounded bg-sky-500/15 px-1 py-px font-medium text-[10px] text-sky-800 uppercase tracking-wide dark:text-sky-200">
+                      Chat-only
+                    </span>
+                  )}
                   <ChevronDownIcon className="size-3 shrink-0 opacity-60" />
                 </>
               ) : selectedProviderCredential ? (
@@ -2867,10 +2991,10 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                   ) : (
                     <SparklesIcon className="size-3.5 shrink-0" />
                   )}
-                  <span className="truncate font-medium">
+                  <span className="shrink truncate font-medium">
                     {selectedProviderDisplayName}
                   </span>
-                  <span className="hidden truncate text-muted-foreground/70 sm:inline">
+                  <span className="truncate text-muted-foreground/70">
                     · {directProviderModel}
                   </span>
                   <span
@@ -2892,8 +3016,10 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                   ) : (
                     <SparklesIcon className="size-3.5 shrink-0" />
                   )}
-                  <span className="truncate font-medium">Claude Code</span>
-                  <span className="hidden truncate text-muted-foreground/70 sm:inline">
+                  <span className="shrink-0 truncate font-medium">
+                    Claude Code
+                  </span>
+                  <span className="truncate text-muted-foreground/70">
                     · {claudeModelDisplayName(selectedModel)}
                   </span>
                   <span
@@ -2924,6 +3050,9 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                 Responding
               </span>
             )}
+            <ContextUsageIndicator
+              modelContextLength={selectedModelCapabilities?.contextLength}
+            />
           </div>
 
           <span className="hidden shrink-0 text-[10px] text-muted-foreground/55 lg:inline">

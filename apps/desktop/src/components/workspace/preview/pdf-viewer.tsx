@@ -15,7 +15,6 @@ import {
   XIcon,
 } from "lucide-react";
 import { open as shellOpen } from "@tauri-apps/plugin-shell";
-import { ask } from "@tauri-apps/plugin-dialog";
 import {
   getCachedDocument,
   getOrOpenDocument,
@@ -24,9 +23,11 @@ import { getMupdfClient } from "@/lib/mupdf/mupdf-client";
 import { expandSearchTerms, canUseAiAssist } from "@/lib/ai-assist";
 import { useSettingsStore } from "@/stores/settings-store";
 import { LOCAL_ZOOM_SHORTCUTS_ATTR } from "@/lib/app-zoom";
+import { Skeleton } from "@/components/ui/skeleton";
 import { MupdfPage, type PageAnnotation } from "./mupdf-page";
 import {
   useAnnotationStore,
+  getHighlightsForRoot,
   type PdfHighlight,
 } from "@/stores/annotation-store";
 import { createLogger } from "@/lib/debug/logger";
@@ -190,6 +191,14 @@ function findPageZoomAnchor(
 }
 /** Module-level scroll position cache: rootFileId → page number */
 const scrollPositionCache = new Map<string, number>();
+
+/**
+ * Module-level first-page-size cache: rootFileId → first page dimensions.
+ * Lets the loading skeleton reserve the real page footprint on a subsequent
+ * load of the same document, avoiding a first-render layout shift. Scoped per
+ * root so a differently-sized doc never inherits a stale aspect ratio.
+ */
+const firstPageSizeCache = new Map<string, { width: number; height: number }>();
 
 /** Clear all cached scroll positions (e.g., on project close). */
 export function clearScrollPositionCache(): void {
@@ -396,7 +405,21 @@ export function PdfViewer({
   const setHighlightNote = useAnnotationStore((s) => s.setHighlightNote);
   const handleRemoveAnnotation = useCallback(
     (id: string) => {
-      if (rootFileId) removeHighlight(rootFileId, id);
+      if (!rootFileId) return;
+      const removed = getHighlightsForRoot(rootFileId).find((h) => h.id === id);
+      removeHighlight(rootFileId, id);
+      if (!removed) return;
+      void import("sonner").then(({ toast }) =>
+        toast("Highlight removed", {
+          action: {
+            label: "Undo",
+            onClick: () => {
+              const { id: _i, createdAt: _c, ...rest } = removed;
+              useAnnotationStore.getState().addHighlight(rootFileId, rest);
+            },
+          },
+        }),
+      );
     },
     [rootFileId, removeHighlight],
   );
@@ -438,6 +461,9 @@ export function PdfViewer({
   const [semanticAltTerm, setSemanticAltTerm] = useState<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const searchGenRef = useRef(0);
+  // Session-scoped: once the user chooses "Always open", external links open
+  // without further confirmation for the lifetime of this viewer instance.
+  const trustLinksRef = useRef(false);
 
   // Read once per render; non-component guards use getState() instead.
   const aiSemanticSearch = useSettingsStore((s) => s.aiSemanticSearch);
@@ -556,7 +582,14 @@ export function PdfViewer({
       setActiveMatch(-1);
     }, 250);
     return () => clearTimeout(handle);
-  }, [searchQuery, searchOpen, numPages, loadGen, scrollToMatch, aiSemanticSearch]);
+  }, [
+    searchQuery,
+    searchOpen,
+    numPages,
+    loadGen,
+    scrollToMatch,
+    aiSemanticSearch,
+  ]);
 
   // Ctrl/Cmd+F opens the in-PDF search; Escape closes it.
   useEffect(() => {
@@ -748,6 +781,12 @@ export function PdfViewer({
       setLoadGen((g) => g + 1);
       setLoading(false);
 
+      if (rootFileId && syncResult.pageSizes.length > 0) {
+        firstPageSizeCache.set(rootFileId, {
+          width: syncResult.pageSizes[0].width,
+          height: syncResult.pageSizes[0].height,
+        });
+      }
       if (isFirstLoad.current && syncResult.pageSizes.length > 0) {
         onFirstPageSize?.(
           syncResult.pageSizes[0].width,
@@ -777,6 +816,12 @@ export function PdfViewer({
         setLoadGen((g) => g + 1);
         setLoading(false);
 
+        if (rootFileId && sizes.length > 0) {
+          firstPageSizeCache.set(rootFileId, {
+            width: sizes[0].width,
+            height: sizes[0].height,
+          });
+        }
         if (isFirstLoad.current && sizes.length > 0) {
           onFirstPageSize?.(sizes[0].width, sizes[0].height);
         }
@@ -1329,13 +1374,25 @@ export function PdfViewer({
         href.startsWith("https://") ||
         href.startsWith("mailto:")
       ) {
-        ask(`Open in browser?\n${href}`, {
-          title: "External Link",
-          kind: "info",
-          okLabel: "Open",
-          cancelLabel: "Cancel",
-        }).then((confirmed) => {
-          if (confirmed) shellOpen(href);
+        if (trustLinksRef.current) {
+          shellOpen(href);
+          return;
+        }
+        void import("sonner").then(({ toast }) => {
+          toast("Open external link?", {
+            description: href,
+            action: {
+              label: "Open",
+              onClick: () => shellOpen(href),
+            },
+            cancel: {
+              label: "Always open",
+              onClick: () => {
+                trustLinksRef.current = true;
+                shellOpen(href);
+              },
+            },
+          });
         });
       }
     };
@@ -1509,7 +1566,7 @@ export function PdfViewer({
               : searchMatches.length > 0
                 ? `${activeMatch + 1}/${searchMatches.length}`
                 : searchQuery.trim()
-                  ? "0/0"
+                  ? "No matches"
                   : ""}
           </span>
           {!searching && semanticAltTerm && searchMatches.length > 0 && (
@@ -1573,12 +1630,39 @@ export function PdfViewer({
           className="flex min-w-fit flex-col items-center gap-4 p-4"
           onClick={handleTextLayerClick}
         >
-          {loading && numPages === 0 && (
-            <div className="flex items-center gap-2 text-muted-foreground">
-              <LoaderIcon className="size-4 animate-spin" />
-              Loading PDF...
-            </div>
-          )}
+          {loading &&
+            numPages === 0 &&
+            (() => {
+              // Reserve the real page footprint when we've seen this document
+              // before, so the first render doesn't shift. For a never-seen
+              // doc, fall back to a neutral box centered in the min-w-fit
+              // column to minimize horizontal jump when pages arrive.
+              const cached = rootFileId
+                ? firstPageSizeCache.get(rootFileId)
+                : undefined;
+              if (cached) {
+                return (
+                  <div
+                    className="flex flex-col gap-4"
+                    style={{ width: cached.width * scale }}
+                  >
+                    <Skeleton
+                      className="w-full rounded-md"
+                      style={{
+                        aspectRatio: `${cached.width} / ${cached.height}`,
+                      }}
+                    />
+                    <Skeleton className="h-4 w-1/3" />
+                  </div>
+                );
+              }
+              return (
+                <div className="flex w-full max-w-2xl flex-col gap-4">
+                  <Skeleton className="aspect-[8.5/11] w-full rounded-md" />
+                  <Skeleton className="h-4 w-1/3" />
+                </div>
+              );
+            })()}
           {pageSizes.map((size, i) => (
             <MupdfPage
               key={i}

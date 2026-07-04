@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { useProposedChangesStore } from "@/stores/proposed-changes-store";
+import { useDocumentStore } from "@/stores/document-store";
+import { writeTexFileContent } from "@/lib/tauri/fs";
+import { invoke } from "@tauri-apps/api/core";
 
 // Mock the document store (used by keepChange/undoChange)
 vi.mock("@/stores/document-store", () => ({
@@ -16,9 +19,27 @@ vi.mock("@/lib/tauri/fs", () => ({
   writeTexFileContent: vi.fn(() => Promise.resolve()),
 }));
 
+type DocFile = { relativePath: string; content: string | null };
+
+function setDocFiles(
+  files: DocFile[],
+  reloadFile = vi.fn(() => Promise.resolve()),
+) {
+  vi.mocked(useDocumentStore.getState).mockReturnValue({
+    files,
+    reloadFile,
+  } as never);
+  return reloadFile;
+}
+
 describe("useProposedChangesStore", () => {
   beforeEach(() => {
     useProposedChangesStore.setState({ changes: [] });
+    vi.mocked(writeTexFileContent).mockReset();
+    vi.mocked(writeTexFileContent).mockResolvedValue(undefined);
+    // The logger routes error/warn to invoke("js_log"); keep it a resolved promise.
+    vi.mocked(invoke).mockResolvedValue(undefined);
+    setDocFiles([]);
   });
 
   describe("addChange", () => {
@@ -123,6 +144,111 @@ describe("useProposedChangesStore", () => {
         .getState()
         .getChangeForFile("nonexistent.tex");
       expect(change).toBeUndefined();
+    });
+  });
+
+  const seed = (
+    over: Partial<
+      Parameters<
+        ReturnType<typeof useProposedChangesStore.getState>["addChange"]
+      >[0]
+    > = {},
+  ) =>
+    useProposedChangesStore.getState().addChange({
+      id: "t1",
+      filePath: "main.tex",
+      absolutePath: "/project/main.tex",
+      oldContent: "old",
+      newContent: "new",
+      toolName: "Edit",
+      ...over,
+    });
+
+  describe("keepChange", () => {
+    it("writes the document-store content (incl. inline edits) to disk, then clears", async () => {
+      setDocFiles([{ relativePath: "main.tex", content: "inline-edited" }]);
+      seed();
+      await useProposedChangesStore.getState().keepChange("t1");
+      expect(writeTexFileContent).toHaveBeenCalledWith(
+        "/project/main.tex",
+        "inline-edited",
+      );
+      expect(useProposedChangesStore.getState().changes).toHaveLength(0);
+    });
+
+    it("leaves the change pending when the write fails", async () => {
+      setDocFiles([{ relativePath: "main.tex", content: "x" }]);
+      vi.mocked(writeTexFileContent).mockRejectedValueOnce(
+        new Error("disk full"),
+      );
+      seed();
+      await useProposedChangesStore.getState().keepChange("t1");
+      expect(useProposedChangesStore.getState().changes).toHaveLength(1);
+    });
+  });
+
+  describe("keepAll", () => {
+    it("persists each file's content and does NOT revert via reloadFile", async () => {
+      const reloadFile = setDocFiles([
+        { relativePath: "a.tex", content: "A-inline" },
+        { relativePath: "b.tex", content: "B-inline" },
+      ]);
+      seed({ id: "a", filePath: "a.tex", absolutePath: "/project/a.tex" });
+      seed({ id: "b", filePath: "b.tex", absolutePath: "/project/b.tex" });
+      await useProposedChangesStore.getState().keepAll();
+      expect(writeTexFileContent).toHaveBeenCalledWith(
+        "/project/a.tex",
+        "A-inline",
+      );
+      expect(writeTexFileContent).toHaveBeenCalledWith(
+        "/project/b.tex",
+        "B-inline",
+      );
+      // The old bug reloaded from disk (reverting inline edits) instead of writing.
+      expect(reloadFile).not.toHaveBeenCalled();
+      expect(useProposedChangesStore.getState().changes).toHaveLength(0);
+    });
+
+    it("keeps only the file whose write failed pending", async () => {
+      setDocFiles([
+        { relativePath: "a.tex", content: "A" },
+        { relativePath: "b.tex", content: "B" },
+      ]);
+      vi.mocked(writeTexFileContent)
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error("readonly"));
+      seed({ id: "a", filePath: "a.tex", absolutePath: "/project/a.tex" });
+      seed({ id: "b", filePath: "b.tex", absolutePath: "/project/b.tex" });
+      await useProposedChangesStore.getState().keepAll();
+      const remaining = useProposedChangesStore.getState().changes;
+      expect(remaining).toHaveLength(1);
+      expect(remaining[0].filePath).toBe("b.tex");
+    });
+  });
+
+  describe("undoChange", () => {
+    it("restores oldContent, reloads, and clears on success", async () => {
+      const reloadFile = setDocFiles([
+        { relativePath: "main.tex", content: "new" },
+      ]);
+      seed();
+      await useProposedChangesStore.getState().undoChange("t1");
+      expect(writeTexFileContent).toHaveBeenCalledWith(
+        "/project/main.tex",
+        "old",
+      );
+      expect(reloadFile).toHaveBeenCalledWith("main.tex");
+      expect(useProposedChangesStore.getState().changes).toHaveLength(0);
+    });
+
+    it("leaves the change pending when the undo write fails", async () => {
+      setDocFiles([{ relativePath: "main.tex", content: "new" }]);
+      vi.mocked(writeTexFileContent).mockRejectedValueOnce(
+        new Error("readonly"),
+      );
+      seed();
+      await useProposedChangesStore.getState().undoChange("t1");
+      expect(useProposedChangesStore.getState().changes).toHaveLength(1);
     });
   });
 });

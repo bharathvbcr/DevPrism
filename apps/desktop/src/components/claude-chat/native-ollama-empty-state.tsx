@@ -1,7 +1,15 @@
-import { type FC } from "react";
-import { Loader2Icon, SparklesIcon } from "lucide-react";
+import { type FC, useSyncExternalStore } from "react";
+import {
+  AlertTriangleIcon,
+  CheckIcon,
+  Loader2Icon,
+  RefreshCwIcon,
+  SparklesIcon,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { useClaudeSetupStore } from "@/stores/claude-setup-store";
 import { useClaudeChatStore } from "@/stores/claude-chat-store";
+import { buildChatStarterPromptsFromStore } from "@/lib/chat-starter-prompts";
 import { useSettingsStore } from "@/stores/settings-store";
 import { OllamaSetupHints } from "@/components/ollama-setup-hints";
 import {
@@ -10,19 +18,17 @@ import {
   resolveOllamaCredential,
 } from "@/lib/ollama";
 import { useOllamaStatus } from "@/hooks/use-ollama-status";
+import { useDocumentStore } from "@/stores/document-store";
+import { ChatStarterChips } from "./chat-starter-chips";
 import { cn } from "@/lib/utils";
-
-const STARTER_PROMPTS = [
-  "Summarize the open document",
-  "Fix grammar in the current selection",
-  "List files in this project",
-] as const;
 
 export const NativeOllamaEmptyState: FC = () => {
   const openAiCredentials = useClaudeSetupStore((s) => s.openAiCredentials);
   const nativeOllamaModel = useSettingsStore((s) => s.nativeOllamaModel);
   const activeTabId = useClaudeChatStore((s) => s.activeTabId);
-  const selectedProviderModels = useClaudeChatStore((s) => s.selectedProviderModels);
+  const selectedProviderModels = useClaudeChatStore(
+    (s) => s.selectedProviderModels,
+  );
   const saveDraft = useClaudeChatStore((s) => s.saveDraft);
   const ollamaCredential = resolveOllamaCredential(openAiCredentials, null);
   const ollamaBaseUrl = getOllamaBaseUrl(ollamaCredential);
@@ -39,6 +45,12 @@ export const NativeOllamaEmptyState: FC = () => {
   const connected = Boolean(status?.connected) && !error;
   const chatModels = status?.chatModels ?? 0;
   const ready = connected && chatModels > 0;
+
+  const starterPrompts = useSyncExternalStore(
+    useDocumentStore.subscribe,
+    buildChatStarterPromptsFromStore,
+    buildChatStarterPromptsFromStore,
+  );
 
   const applyStarterPrompt = (prompt: string) => {
     saveDraft(activeTabId, { input: prompt, pinnedContexts: [] });
@@ -71,7 +83,7 @@ export const NativeOllamaEmptyState: FC = () => {
               loading
                 ? "text-muted-foreground"
                 : connected
-                  ? "text-emerald-600 dark:text-emerald-400"
+                  ? "text-success"
                   : "text-destructive",
             )}
           >
@@ -82,27 +94,35 @@ export const NativeOllamaEmptyState: FC = () => {
               </>
             ) : connected ? (
               <>
-                <span className="size-1.5 rounded-full bg-current" />
+                <CheckIcon className="size-3 text-success" />
                 {chatModels} chat model{chatModels === 1 ? "" : "s"}
               </>
             ) : (
-              "Unreachable"
+              <>
+                <AlertTriangleIcon className="size-3 text-destructive" />
+                Unreachable
+              </>
             )}
           </span>
         </div>
         {effectiveModel && (
-          <p className="mt-1 text-muted-foreground text-[10px]">
-            Model: <span className="font-medium text-foreground">{effectiveModel}</span>
+          <p className="mt-1 text-[10px] text-muted-foreground">
+            Model:{" "}
+            <span className="font-medium text-foreground">
+              {effectiveModel}
+            </span>
           </p>
         )}
         {!loading && !connected && (
-          <button
-            type="button"
-            className="mt-2 text-foreground text-[10px] underline underline-offset-2 hover:text-primary"
+          <Button
+            variant="outline"
+            size="sm"
+            className="mt-2"
             onClick={() => void refresh()}
           >
+            <RefreshCwIcon className="size-3.5" />
             Retry connection
-          </button>
+          </Button>
         )}
       </div>
 
@@ -117,18 +137,10 @@ export const NativeOllamaEmptyState: FC = () => {
       )}
 
       {ready && (
-        <div className="flex w-full flex-wrap justify-center gap-2">
-          {STARTER_PROMPTS.map((prompt) => (
-            <button
-              key={prompt}
-              type="button"
-              className="rounded-full border border-border/60 bg-background px-3 py-1.5 text-foreground text-xs transition-colors hover:bg-muted"
-              onClick={() => applyStarterPrompt(prompt)}
-            >
-              {prompt}
-            </button>
-          ))}
-        </div>
+        <ChatStarterChips
+          prompts={starterPrompts}
+          onSelect={applyStarterPrompt}
+        />
       )}
     </div>
   );

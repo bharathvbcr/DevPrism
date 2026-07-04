@@ -1,10 +1,17 @@
 import { copyFileToProject } from "@/lib/tauri/fs";
+import {
+  isStagedBrowserFilePath,
+  stagedBrowserFileName,
+} from "@/lib/browser-project/attachment-staging";
 
 export interface ImportedReferenceFile {
   relativePath: string;
 }
 
 function baseName(path: string): string {
+  if (isStagedBrowserFilePath(path)) {
+    return stagedBrowserFileName(path);
+  }
   return path.split(/[/\\]/).pop() || path;
 }
 
@@ -26,8 +33,7 @@ export async function importReferenceFiles(
       sourcePath,
       targetName,
     );
-    const reference: ImportedReferenceFile = { relativePath };
-    imported.push(reference);
+    imported.push({ relativePath });
   }
 
   return imported;

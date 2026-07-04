@@ -80,3 +80,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn(),
   save: vi.fn(),
 }));
+
+vi.mock("@/lib/runtime/is-tauri", () => ({
+  isTauri: vi.fn(() => true),
+}));

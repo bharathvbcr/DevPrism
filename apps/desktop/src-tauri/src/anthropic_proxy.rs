@@ -51,19 +51,35 @@ pub(crate) async fn start_openai_anthropic_proxy(
     Ok(format!("http://{}", addr))
 }
 
+/// Monotonic per-request id so a "Claude Code randomly errored" report can be
+/// correlated with a specific proxy request in the logs.
+static PROXY_REQUEST_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 async fn handle_connection(
     mut stream: TcpStream,
     credential: Arc<OpenAiProxyCredential>,
 ) -> Result<(), String> {
+    let request_id = PROXY_REQUEST_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let started = std::time::Instant::now();
     let request = read_http_request(&mut stream).await?;
     let path = request_path_without_query(&request.path);
     if request.method == "POST" && is_messages_path(path) {
         match handle_messages_to_stream(&request, &credential, &mut stream).await {
             Ok(()) => {
+                eprintln!(
+                    "[anthropic-proxy] req#{request_id} ok: model={} elapsed_ms={}",
+                    credential.model,
+                    started.elapsed().as_millis()
+                );
                 let _ = stream.shutdown().await;
                 return Ok(());
             }
             Err(err) => {
+                eprintln!(
+                    "[anthropic-proxy] req#{request_id} failed: model={} elapsed_ms={} err={err}",
+                    credential.model,
+                    started.elapsed().as_millis()
+                );
                 let response = json_response(
                     502,
                     &json!({
@@ -139,6 +155,16 @@ async fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, String
         .find(|(key, _)| key.eq_ignore_ascii_case("content-length"))
         .and_then(|(_, value)| value.trim().parse::<usize>().ok())
         .unwrap_or(0);
+
+    // Cap the declared body size so a crafted `Content-Length` can't drive the
+    // read loop into unbounded memory. 64 MiB is far above any real Claude Code
+    // request (large context + tool schemas are a few MiB at most).
+    const MAX_PROXY_BODY_BYTES: usize = 64 * 1024 * 1024;
+    if content_length > MAX_PROXY_BODY_BYTES {
+        return Err(format!(
+            "Proxy request body too large: {content_length} bytes (limit {MAX_PROXY_BODY_BYTES})"
+        ));
+    }
 
     let body_start = header_end + 4;
     let mut body = buffer.get(body_start..).unwrap_or_default().to_vec();
@@ -245,26 +271,50 @@ async fn handle_messages_to_stream(
         .timeout(std::time::Duration::from_secs(300))
         .build()
         .map_err(|err| format!("Failed to create provider client: {}", err))?;
-    let request = client
-        .post(openai_chat_completions_url(&credential.base_url))
-        .header("Content-Type", "application/json")
-        .body(openai_request.to_string());
-    let response = with_optional_bearer_auth(request, &credential.api_key)
-        .send()
-        .await
-        .map_err(|err| format!("Provider request failed: {}", err))?;
+    let url = openai_chat_completions_url(&credential.base_url);
+    let body = openai_request.to_string();
+    // Retry transient 429/5xx (honoring Retry-After) and connect errors before we
+    // begin streaming — safe because the response body isn't consumed until then.
+    let response = crate::retry::send_with_retry(3, || {
+        with_optional_bearer_auth(
+            client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .body(body.clone()),
+            &credential.api_key,
+        )
+    })
+    .await
+    .map_err(|err| format!("Provider request failed: {}", err))?;
 
     let status = response.status();
     if !status.is_success() {
+        // Capture Retry-After before consuming the body.
+        let retry_after = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .map(|s| s.to_string());
         let response_text = response
             .text()
             .await
             .map_err(|err| format!("Failed to read provider error response: {}", err))?;
-        return Err(format!(
+        // Map to the real Anthropic status/type (and forward Retry-After) so the
+        // client's retry/backoff works, instead of collapsing to a generic 502.
+        // The error occurs before any stream headers are written, so a plain JSON
+        // error response is correct even for a streaming request.
+        let (code, err_type) = map_provider_error_status(status.as_u16());
+        let message = format!(
             "Provider returned HTTP {}: {}",
             status,
             compact_error_text(&response_text)
-        ));
+        );
+        let resp = provider_error_response(code, err_type, &message, retry_after.as_deref());
+        stream
+            .write_all(resp.as_bytes())
+            .await
+            .map_err(|err| format!("Failed to write provider error response: {}", err))?;
+        return Ok(());
     }
 
     if wants_stream {
@@ -374,26 +424,139 @@ fn json_response(status: u16, value: &Value) -> String {
     )
 }
 
-fn http_response(status: u16, content_type: &str, body: &str) -> String {
-    let reason = match status {
+fn http_reason(status: u16) -> &'static str {
+    match status {
         200 => "OK",
         400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
         404 => "Not Found",
+        413 => "Payload Too Large",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
         502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        529 => "Site Overloaded",
         _ => "Internal Server Error",
-    };
+    }
+}
+
+fn http_response(status: u16, content_type: &str, body: &str) -> String {
     format!(
         "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         status,
-        reason,
+        http_reason(status),
         content_type,
         body.as_bytes().len(),
         body
     )
 }
 
+/// Map an upstream provider HTTP status to the Anthropic status + error `type`
+/// Claude Code expects, so its status-driven retry/backoff works (it retries
+/// 429/5xx, backs off on 429, and does NOT retry 400/401) instead of every
+/// upstream error collapsing to a generic 502.
+fn map_provider_error_status(upstream: u16) -> (u16, &'static str) {
+    match upstream {
+        400 => (400, "invalid_request_error"),
+        401 => (401, "authentication_error"),
+        403 => (403, "permission_error"),
+        404 => (404, "not_found_error"),
+        413 => (413, "request_too_large"),
+        429 => (429, "rate_limit_error"),
+        529 => (529, "overloaded_error"),
+        500..=599 => (upstream, "api_error"),
+        _ => (502, "api_error"),
+    }
+}
+
+/// Build an Anthropic-shaped error response with the mapped status and an
+/// optional `Retry-After` forwarded from the upstream (so the client backs off
+/// for the interval the provider asked for).
+fn provider_error_response(
+    status: u16,
+    err_type: &str,
+    message: &str,
+    retry_after: Option<&str>,
+) -> String {
+    let body = json!({
+        "type": "error",
+        "error": { "type": err_type, "message": message },
+    })
+    .to_string();
+    let retry = retry_after
+        .map(|ra| format!("Retry-After: {ra}\r\n"))
+        .unwrap_or_default();
+    format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n{}\r\n{}",
+        status,
+        http_reason(status),
+        body.as_bytes().len(),
+        retry,
+        body
+    )
+}
+
+/// Best-effort redaction of credentials a misbehaving upstream might echo back
+/// into an error body: `Authorization: Bearer <token>` values and `sk-…`/`sk_…`
+/// style API keys. Not a security boundary on its own — defense in depth so a
+/// 4xx body can't leak the key into logs, the transcript, or the SSE error frame.
+fn redact_secrets(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let is_tok = |c: u8| c.is_ascii_alphanumeric() || c == b'-' || c == b'_';
+    let mut i = 0;
+    while i < bytes.len() {
+        let rest = &text[i..];
+        // `sk-…` / `sk_…` keys with a real-looking tail (>= 8 token chars).
+        let is_sk = rest
+            .get(..3)
+            .map(|h| {
+                let b = h.as_bytes();
+                b[0].eq_ignore_ascii_case(&b's')
+                    && b[1].eq_ignore_ascii_case(&b'k')
+                    && (b[2] == b'-' || b[2] == b'_')
+            })
+            .unwrap_or(false);
+        if is_sk {
+            let mut j = 3;
+            while i + j < bytes.len() && is_tok(bytes[i + j]) {
+                j += 1;
+            }
+            if j - 3 >= 8 {
+                out.push_str("sk-***");
+                i += j;
+                continue;
+            }
+        }
+        // `Bearer <token>` (case-insensitive marker, original case preserved).
+        if rest
+            .get(..7)
+            .map(|h| h.eq_ignore_ascii_case("bearer "))
+            .unwrap_or(false)
+        {
+            let start = i + 7;
+            let mut k = start;
+            while k < bytes.len() && is_tok(bytes[k]) {
+                k += 1;
+            }
+            if k > start {
+                out.push_str(&text[i..start]);
+                out.push_str("***");
+                i = k;
+                continue;
+            }
+        }
+        let ch = rest.chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
 fn compact_error_text(text: &str) -> String {
-    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let redacted = redact_secrets(text);
+    let compact = redacted.split_whitespace().collect::<Vec<_>>().join(" ");
     if compact.chars().count() <= 1000 {
         compact
     } else {
@@ -415,6 +578,53 @@ mod tests {
         assert_eq!(path, "/v1/messages");
         assert!(is_messages_path(path));
         assert!(is_count_tokens_path("/v1/messages/count_tokens"));
+    }
+
+    #[test]
+    fn redacts_api_keys_from_error_text() {
+        assert_eq!(
+            redact_secrets("bad key sk-ant-api03-abcDEF123456 rejected"),
+            "bad key sk-*** rejected"
+        );
+        assert_eq!(
+            redact_secrets("sent Authorization: Bearer sk-proj-XYZ987654 upstream"),
+            "sent Authorization: Bearer *** upstream"
+        );
+    }
+
+    #[test]
+    fn redaction_leaves_ordinary_text_and_short_tokens_intact() {
+        // "sk-" with too short a tail is not a key; unicode is preserved.
+        assert_eq!(redact_secrets("use sk-1 flag — café ☕"), "use sk-1 flag — café ☕");
+        assert_eq!(redact_secrets("no secrets here"), "no secrets here");
+    }
+
+    #[test]
+    fn compact_error_text_redacts_before_truncating() {
+        let out = compact_error_text("upstream said Bearer sk-ant-supersecret000 was invalid");
+        assert!(!out.contains("supersecret"));
+        assert!(out.contains("***"));
+    }
+
+    #[test]
+    fn provider_error_status_maps_to_anthropic_types() {
+        assert_eq!(map_provider_error_status(400), (400, "invalid_request_error"));
+        assert_eq!(map_provider_error_status(401), (401, "authentication_error"));
+        assert_eq!(map_provider_error_status(429), (429, "rate_limit_error"));
+        assert_eq!(map_provider_error_status(503), (503, "api_error"));
+        assert_eq!(map_provider_error_status(529), (529, "overloaded_error"));
+        // A non-standard status collapses to 502.
+        assert_eq!(map_provider_error_status(418), (502, "api_error"));
+    }
+
+    #[test]
+    fn provider_error_response_forwards_retry_after() {
+        let with = provider_error_response(429, "rate_limit_error", "slow down", Some("30"));
+        assert!(with.contains("HTTP/1.1 429 Too Many Requests"));
+        assert!(with.contains("Retry-After: 30"));
+        assert!(with.contains("rate_limit_error"));
+        let without = provider_error_response(400, "invalid_request_error", "bad", None);
+        assert!(!without.contains("Retry-After"));
     }
 
     #[test]

@@ -87,6 +87,7 @@ export function ScientificSkillsOnboarding({
   const installBackendLogSeenRef = useRef(false);
 
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
       mountedRef.current = false;
     };
@@ -241,9 +242,7 @@ export function ScientificSkillsOnboarding({
       toast.success("All skills uninstalled");
     } catch (e) {
       console.error("Failed to uninstall:", e);
-      toast.error("Failed to uninstall skills", {
-        description: String(e),
-      });
+      setError(String(e));
     } finally {
       setIsUninstalling(false);
     }
@@ -274,9 +273,7 @@ export function ScientificSkillsOnboarding({
             : `${skills.length} skills imported`,
       });
     } catch (e) {
-      toast.error("Failed to import skill", {
-        description: String(e),
-      });
+      setError(String(e));
     } finally {
       setIsImporting(false);
     }
@@ -295,9 +292,7 @@ export function ScientificSkillsOnboarding({
       setDeleteTarget(null);
       await checkStatus();
     } catch (e) {
-      toast.error("Failed to delete skill", {
-        description: String(e),
-      });
+      setError(String(e));
     } finally {
       setDeletingSkillFolder(null);
     }
@@ -491,6 +486,7 @@ export function ScientificSkillsOnboarding({
                       <button
                         key={cat.id}
                         onClick={() => setSelectedId(cat.id)}
+                        aria-current={isActive ? "true" : undefined}
                         className={cn(
                           "box-border grid w-full min-w-0 max-w-full grid-cols-[1rem_minmax(0,1fr)] items-center gap-2.5 overflow-hidden rounded-lg px-3 py-2 text-left text-sm transition-colors",
                           isActive
@@ -824,7 +820,7 @@ function CategoryDetail({
                       event.stopPropagation();
                       onDeleteSkill(skill);
                     }}
-                    className="mr-1 flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-70 transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-50 group-hover:opacity-100"
+                    className="mr-1 flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-60 transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
                   >
                     {isDeleting ? (
                       <Loader2Icon className="size-3.5 animate-spin" />

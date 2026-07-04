@@ -6,7 +6,9 @@ import {
   Loader2Icon,
   WandSparklesIcon,
 } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
 import { useTemplateStore } from "@/stores/template-store";
 import { useSpacesStore } from "@/stores/spaces-store";
 import { useSettingsStore } from "@/stores/settings-store";
@@ -29,8 +31,13 @@ import {
 import { TemplateCard } from "./template-card";
 import { CategorySidebar } from "./category-sidebar";
 import { TemplatePreview } from "./template-preview";
+import { prefetchThumbnails } from "@/lib/template-preview-cache";
 
-export function TemplateGallery() {
+export function TemplateGallery({
+  onOpenSettings,
+}: {
+  onOpenSettings?: () => void;
+} = {}) {
   const searchQuery = useTemplateStore((s) => s.searchQuery);
   const setSearchQuery = useTemplateStore((s) => s.setSearchQuery);
   const selectedCategory = useTemplateStore((s) => s.selectedCategory);
@@ -108,7 +115,10 @@ export function TemplateGallery() {
       .map((id) => getTemplateById(id))
       .filter((t): t is TemplateDefinition => !!t);
   }, [aiPickIds]);
-  const aiPickIdSet = useMemo(() => new Set(aiPicks.map((t) => t.id)), [aiPicks]);
+  const aiPickIdSet = useMemo(
+    () => new Set(aiPicks.map((t) => t.id)),
+    [aiPicks],
+  );
 
   const aiEnabled = aiTemplateRecommend && canUseAiAssist();
   const showAiPicks = aiPicks.length > 0;
@@ -118,6 +128,7 @@ export function TemplateGallery() {
   // Reset store when gallery mounts
   useEffect(() => {
     reset();
+    prefetchThumbnails(getAllTemplates().map((t) => t.id));
   }, [reset]);
 
   // Focus search on Cmd/Ctrl+K
@@ -168,18 +179,27 @@ export function TemplateGallery() {
           <SearchIcon className="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             ref={searchRef}
-            placeholder="Search templates...  ⌘K"
+            aria-label="Search templates"
+            placeholder="Search templates…"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="pr-8 pl-9"
           />
+          {!searchQuery && (
+            <kbd className="pointer-events-none absolute top-1/2 right-2.5 -translate-y-1/2 rounded border border-border bg-muted/50 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+              ⌘K
+            </kbd>
+          )}
           {searchQuery && (
-            <button
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              aria-label="Clear search"
               onClick={() => setSearchQuery("")}
-              className="absolute top-1/2 right-2.5 -translate-y-1/2 rounded-sm p-0.5 text-muted-foreground hover:text-foreground"
+              className="absolute top-1/2 right-2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
             >
-              <XIcon className="size-3.5" />
-            </button>
+              <XIcon />
+            </Button>
           )}
         </div>
 
@@ -192,18 +212,22 @@ export function TemplateGallery() {
               <WandSparklesIcon className="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-primary" />
             )}
             <Input
+              aria-label="Describe what you want to write"
               placeholder="Describe what you want to write — AI picks templates"
               value={aiGoal}
               onChange={(e) => setAiGoal(e.target.value)}
               className="pr-8 pl-9"
             />
             {aiGoal && (
-              <button
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                aria-label="Clear"
                 onClick={() => setAiGoal("")}
-                className="absolute top-1/2 right-2.5 -translate-y-1/2 rounded-sm p-0.5 text-muted-foreground hover:text-foreground"
+                className="absolute top-1/2 right-2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
               >
-                <XIcon className="size-3.5" />
-              </button>
+                <XIcon />
+              </Button>
             )}
           </div>
         )}
@@ -218,7 +242,7 @@ export function TemplateGallery() {
 
         {/* Template grid */}
         <div className="flex-1 overflow-y-auto px-6 py-4">
-          {showAiPicks && (
+          {aiEnabled && (aiLoading || showAiPicks) && (
             <div className="mb-8">
               <div className="mb-3 flex items-center gap-2">
                 <WandSparklesIcon className="size-3.5 text-primary" />
@@ -228,19 +252,31 @@ export function TemplateGallery() {
                 </span>
               </div>
               <div className="grid grid-cols-2 gap-5 sm:grid-cols-3 lg:grid-cols-4">
-                {aiPicks.map((t) => (
-                  <TemplateCard key={`ai-${t.id}`} template={t} recommended />
-                ))}
+                {aiPicks.length > 0
+                  ? aiPicks.map((t) => (
+                      <TemplateCard
+                        key={`ai-${t.id}`}
+                        template={t}
+                        recommended
+                      />
+                    ))
+                  : Array.from({ length: 4 }).map((_, i) => (
+                      <div key={i} className="flex flex-col">
+                        <div className="flex aspect-3/4 items-center justify-center">
+                          <Skeleton className="h-full w-full rounded-xl" />
+                        </div>
+                      </div>
+                    ))}
               </div>
             </div>
           )}
           {filteredTemplates.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 text-center">
-              <SearchIcon className="mb-3 size-8 text-muted-foreground/40" />
+              <SearchIcon className="mb-3 size-8 text-muted-foreground/60" />
               <p className="font-medium text-muted-foreground text-sm">
                 No templates found
               </p>
-              <p className="mt-1 text-muted-foreground/70 text-xs">
+              <p className="mt-1 text-muted-foreground text-xs">
                 Try a different search term or category
               </p>
             </div>
@@ -273,7 +309,7 @@ export function TemplateGallery() {
       </div>
 
       {/* Preview modal — handles template selection + project creation */}
-      <TemplatePreview />
+      <TemplatePreview onOpenSettings={onOpenSettings} />
     </div>
   );
 }

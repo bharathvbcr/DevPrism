@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import { toast } from "sonner";
+import { showWorkspaceError } from "@/stores/workspace-banner-store";
 import { compileLatex } from "@/lib/latex-compiler";
 import {
   buildTrackedTexFile,
@@ -142,10 +143,9 @@ export async function previewTrackedChangesPdf(
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    toast.error("Couldn't compile tracked changes PDF", {
-      id: toastId,
-      description: message,
-      duration: 10000,
+    toast.dismiss(toastId);
+    showWorkspaceError("Tracked changes preview failed", message, {
+      dedupeKey: "track-changes-preview",
     });
     throw err;
   } finally {

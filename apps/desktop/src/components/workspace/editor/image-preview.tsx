@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { CheckIcon, XIcon } from "lucide-react";
 import { writeFile } from "@tauri-apps/plugin-fs";
 import { toast } from "sonner";
+import { showWorkspaceError } from "@/stores/workspace-banner-store";
 import { useDocumentStore, type ProjectFile } from "@/stores/document-store";
 import { LOCAL_ZOOM_SHORTCUTS_ATTR } from "@/lib/app-zoom";
 import { getAssetUrl } from "@/lib/tauri/fs";
@@ -338,7 +339,11 @@ export function ImagePreview({
       onCropModeChange?.(false);
       toast.success("Image cropped and saved");
     } catch (err) {
-      toast.error("Failed to crop image");
+      showWorkspaceError(
+        "Crop failed",
+        "The image could not be cropped and saved.",
+        { dedupeKey: "image-crop" },
+      );
       console.error("Crop error:", err);
     } finally {
       setIsSaving(false);
@@ -455,24 +460,26 @@ export function ImagePreview({
               {HANDLES.map((h) => (
                 <div
                   key={h.id}
-                  className="absolute z-20 size-2.5 rounded-sm border border-gray-400 bg-white shadow-sm"
+                  className="absolute z-20 flex size-5 items-center justify-center"
                   style={{
                     left:
                       h.x === 0
-                        ? -5
+                        ? -10
                         : h.x === 0.5
-                          ? "calc(50% - 5px)"
-                          : "calc(100% - 5px)",
+                          ? "calc(50% - 10px)"
+                          : "calc(100% - 10px)",
                     top:
                       h.y === 0
-                        ? -5
+                        ? -10
                         : h.y === 0.5
-                          ? "calc(50% - 5px)"
-                          : "calc(100% - 5px)",
+                          ? "calc(50% - 10px)"
+                          : "calc(100% - 10px)",
                     cursor: h.cursor,
                   }}
                   onMouseDown={(e) => handleHandleMouseDown(e, h.id)}
-                />
+                >
+                  <div className="pointer-events-none size-2.5 rounded-sm border border-border bg-foreground shadow-sm" />
+                </div>
               ))}
             </div>
 

@@ -547,7 +547,33 @@ fn normalize_base_url(value: Option<&str>) -> Result<Option<String>, String> {
         return Err("Base URL must start with http:// or https://".to_string());
     }
 
+    // Block the cloud instance-metadata endpoint (a classic SSRF/key-theft
+    // target). Loopback and private LAN are intentionally allowed — self-hosted
+    // LLM servers (Ollama, vLLM, LM Studio) legitimately live there.
+    if let Ok(parsed) = reqwest::Url::parse(&clean) {
+        if let Some(host) = parsed.host_str() {
+            if is_blocked_metadata_host(host) {
+                return Err(
+                    "Base URL points at a cloud metadata endpoint, which is not allowed."
+                        .to_string(),
+                );
+            }
+        }
+    }
+
     Ok(Some(clean))
+}
+
+/// Cloud instance-metadata endpoints, blocked as provider base URLs to avoid the
+/// classic SSRF-to-metadata credential-theft vector. Loopback/private ranges are
+/// deliberately allowed (local self-hosted LLM servers use them).
+fn is_blocked_metadata_host(host: &str) -> bool {
+    if let Ok(ip) = host.parse::<std::net::Ipv4Addr>() {
+        let o = ip.octets();
+        // 169.254.0.0/16 link-local (includes 169.254.169.254).
+        return o[0] == 169 && o[1] == 254;
+    }
+    matches!(host, "metadata.google.internal" | "metadata")
 }
 
 fn ensure_secure_known_provider_base_url(base_url: &str) -> Result<(), String> {
@@ -1029,11 +1055,20 @@ async fn fetch_openai_compatible_models(
     base_url: &str,
 ) -> Result<Vec<OpenAiCompatibleModelInfo>, String> {
     ensure_secure_known_provider_base_url(base_url)?;
-    let request = reqwest::Client::new().get(openai_models_url(base_url));
-    let response = with_optional_bearer_auth(request, api_key)
-        .send()
-        .await
-        .map_err(|err| format!("Failed to fetch provider models: {}", err))?;
+    // A host that accepts the connection but never responds would otherwise spin
+    // the "Fetch models" UI forever, so bound the request (all sibling requests
+    // are already time-bounded).
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|err| format!("Failed to build HTTP client: {}", err))?;
+    let url = openai_models_url(base_url);
+    // Idempotent GET — retry transient connect errors / 429 / 5xx.
+    let response = crate::retry::send_with_retry(3, || {
+        with_optional_bearer_auth(client.get(&url), api_key)
+    })
+    .await
+    .map_err(|err| format!("Failed to fetch provider models: {}", err))?;
     let status = response.status();
     let response_text = response
         .text()
@@ -4266,6 +4301,24 @@ pub async fn set_claude_fast_mode(enabled: bool) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blocks_cloud_metadata_but_allows_local_hosts() {
+        assert!(is_blocked_metadata_host("169.254.169.254"));
+        assert!(is_blocked_metadata_host("169.254.0.1"));
+        assert!(is_blocked_metadata_host("metadata.google.internal"));
+        // Loopback and private LAN stay allowed (self-hosted LLM servers).
+        assert!(!is_blocked_metadata_host("127.0.0.1"));
+        assert!(!is_blocked_metadata_host("localhost"));
+        assert!(!is_blocked_metadata_host("192.168.1.50"));
+        assert!(!is_blocked_metadata_host("api.openai.com"));
+    }
+
+    #[test]
+    fn normalize_base_url_rejects_metadata_endpoint() {
+        assert!(normalize_base_url(Some("http://169.254.169.254/latest/meta-data")).is_err());
+        assert!(normalize_base_url(Some("http://localhost:11434")).is_ok());
+    }
 
     fn test_openai_compatible_auth_config() -> DevPrismAuthConfig {
         DevPrismAuthConfig {

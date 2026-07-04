@@ -1,6 +1,6 @@
 import { useEffect, useSyncExternalStore } from "react";
-import { LoaderIcon } from "lucide-react";
 import type { TemplateDefinition } from "@/lib/template-registry";
+import { Skeleton } from "@/components/ui/skeleton";
 import { useTemplateStore } from "@/stores/template-store";
 import {
   getThumbnail,
@@ -139,8 +139,9 @@ export function TemplateCard({ template, recommended }: TemplateCardProps) {
       <div className="flex aspect-3/4 items-center justify-center">
         <button
           onClick={() => openPreview(template.id)}
+          aria-label={`Preview ${template.name} template`}
           style={{ aspectRatio: template.aspectRatio }}
-          className="relative max-h-full w-full overflow-hidden rounded-xl border border-border bg-card transition-all duration-200 hover:border-foreground/20 hover:shadow-md group-hover:scale-[1.02]"
+          className="relative max-h-full w-full overflow-hidden rounded-xl border border-border bg-card transition-all duration-200 hover:border-foreground/20 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background group-hover:scale-[1.02]"
         >
           {thumbnailUrl ? (
             <img
@@ -152,8 +153,11 @@ export function TemplateCard({ template, recommended }: TemplateCardProps) {
             <div className="relative h-full w-full">
               <FallbackThumbnail color={template.accentColor} />
               {!failed && (
-                <div className="absolute inset-0 flex items-center justify-center bg-card/60">
-                  <LoaderIcon className="size-4 animate-spin text-muted-foreground" />
+                <div className="absolute inset-0 flex flex-col gap-2 bg-card/50 p-3">
+                  <Skeleton className="h-2 w-3/5" />
+                  <Skeleton className="h-2 w-full" />
+                  <Skeleton className="h-2 w-[88%]" />
+                  <Skeleton className="mt-auto h-2 w-2/5 self-center opacity-60" />
                 </div>
               )}
             </div>

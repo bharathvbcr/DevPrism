@@ -10,6 +10,15 @@ import {
   CHAT_DRAWER_TOGGLE_EVENT,
   chatDrawerShortcutLabel,
 } from "@/lib/chat-drawer-events";
+import { requestCompile } from "@/lib/compile-events";
+import { dispatchOpenSettings } from "@/lib/home-flow-events";
+import {
+  RECOMMENDED_EMBED_MODEL,
+  getOllamaBaseUrl,
+  resolveOllamaCredential,
+} from "@/lib/ollama";
+import { useOllamaPullStore } from "@/stores/ollama-pull-store";
+import { useClaudeSetupStore } from "@/stores/claude-setup-store";
 import { aiComplete, canUseAiAssist } from "@/lib/ai-assist";
 import { createLogger } from "@/lib/debug/logger";
 
@@ -32,6 +41,17 @@ const READ_ONLY_FRAMING =
 
 const ASK_ACTION_ID = "ask";
 
+/** Dispatched to ask the sidebar to switch to a section (expanding it if collapsed). */
+export const OPEN_SIDEBAR_SECTION_EVENT = "devprism:open-sidebar-section";
+
+function openSidebarSection(section: string, focusInput = false) {
+  window.dispatchEvent(
+    new CustomEvent(OPEN_SIDEBAR_SECTION_EVENT, {
+      detail: { section, focusInput },
+    }),
+  );
+}
+
 /** Build the action registry from live store setters. Memoized per-open. */
 function buildActions(): PaletteAction[] {
   const settings = () => useSettingsStore.getState();
@@ -40,6 +60,71 @@ function buildActions(): PaletteAction[] {
   const toggleHint = (on: boolean) => (on ? "On" : "Off");
 
   const actions: PaletteAction[] = [
+    {
+      id: "open-scholarlm-research",
+      label: "ScholarLM: Research a question",
+      keywords: [
+        "scholar",
+        "wisdev",
+        "research",
+        "papers",
+        "evidence",
+        "literature",
+        "rag",
+        "hypothesis",
+      ],
+      hint: "Sidebar",
+      run: () => openSidebarSection("research", true),
+    },
+    {
+      id: "open-scholarlm-draft",
+      label: "ScholarDoc: Generate a manuscript",
+      keywords: [
+        "scholar",
+        "scholardoc",
+        "wisdev",
+        "manuscript",
+        "docgen",
+        "latex",
+        "draft",
+        "paper",
+        "write",
+      ],
+      hint: "Sidebar",
+      run: () => openSidebarSection("research", true),
+    },
+    {
+      id: "compile-project",
+      label: "Compile project",
+      keywords: ["build", "pdf", "latex", "recompile", "tectonic", "rebuild"],
+      hint: "⌘Enter",
+      run: () => requestCompile(),
+    },
+    {
+      id: "pull-embed-model",
+      label: "Pull embedding model (semantic search)",
+      keywords: [
+        "ollama",
+        "embed",
+        "embedding",
+        "nomic",
+        "semantic",
+        "search",
+        "pull",
+      ],
+      hint: RECOMMENDED_EMBED_MODEL.id,
+      run: () => {
+        if (!settings().nativeAgentEnabled) return;
+        const creds = useClaudeSetupStore.getState().openAiCredentials ?? [];
+        const baseUrl = getOllamaBaseUrl(resolveOllamaCredential(creds, null));
+        void useOllamaPullStore
+          .getState()
+          .pull(RECOMMENDED_EMBED_MODEL.id, baseUrl)
+          .catch((err) =>
+            log.warn("Embed model pull failed", { error: String(err) }),
+          );
+      },
+    },
     {
       id: "toggle-auto-compile",
       label: "Toggle auto-compile",
@@ -62,6 +147,84 @@ function buildActions(): PaletteAction[] {
       run: () => settings().setPdfDarkMode(!settings().pdfDarkMode),
     },
     {
+      id: "open-appearance-settings",
+      label: "Open Appearance settings",
+      keywords: [
+        "settings",
+        "appearance",
+        "theme",
+        "pdf",
+        "dark",
+        "homepage",
+        "project cards",
+        "date",
+      ],
+      hint: "Home",
+      run: () => dispatchOpenSettings("appearance"),
+    },
+    {
+      id: "open-editor-settings",
+      label: "Open Editor settings",
+      keywords: [
+        "settings",
+        "editor",
+        "vim",
+        "spell",
+        "check",
+        "word wrap",
+        "line numbers",
+        "autocomplete",
+      ],
+      hint: "Home",
+      run: () => dispatchOpenSettings("editor"),
+    },
+    {
+      id: "open-compilation-settings",
+      label: "Open Compilation settings",
+      keywords: [
+        "settings",
+        "compilation",
+        "compile",
+        "auto-compile",
+        "tectonic",
+        "latex",
+        "build",
+      ],
+      hint: "Home",
+      run: () => dispatchOpenSettings("compilation"),
+    },
+    {
+      id: "open-ai-features-settings",
+      label: "Open AI Features settings",
+      keywords: [
+        "settings",
+        "ai",
+        "assist",
+        "grammar",
+        "predictive",
+        "ghost text",
+        "summarize",
+        "features",
+      ],
+      hint: "Home",
+      run: () => dispatchOpenSettings("ai"),
+    },
+    {
+      id: "open-personalization-settings",
+      label: "Open Personalization settings",
+      keywords: [
+        "settings",
+        "personalization",
+        "profile",
+        "identity",
+        "research",
+        "interests",
+        "writing style",
+      ],
+      hint: "Home",
+      run: () => dispatchOpenSettings("personalization"),
+    },
+    {
       id: "toggle-spell-check",
       label: "Toggle spell check",
       keywords: ["spelling", "proofread", "grammar", "prose"],
@@ -78,7 +241,14 @@ function buildActions(): PaletteAction[] {
     {
       id: "toggle-chat",
       label: "Toggle chat",
-      keywords: ["assistant", "claude", "ai", "drawer", "panel", "conversation"],
+      keywords: [
+        "assistant",
+        "claude",
+        "ai",
+        "drawer",
+        "panel",
+        "conversation",
+      ],
       hint: chatDrawerShortcutLabel("J"),
       run: () => {
         window.dispatchEvent(new CustomEvent(CHAT_DRAWER_TOGGLE_EVENT));
@@ -156,6 +326,12 @@ export function CommandPalette() {
 
   const routeRequestRef = useRef(0);
   const routeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The element that was focused when the palette opened, so we can restore
+  // focus to it on close (the palette is a hand-rolled overlay, not a Radix
+  // Dialog, so focus return is not automatic).
+  const openerRef = useRef<HTMLElement | null>(null);
+  // The overlay container, used to scope the Tab focus trap.
+  const containerRef = useRef<HTMLDivElement | null>(null);
 
   const close = useCallback(() => {
     setOpen(false);
@@ -167,6 +343,9 @@ export function CommandPalette() {
       clearTimeout(routeTimerRef.current);
       routeTimerRef.current = null;
     }
+    // Return focus to whatever the user was on before opening the palette.
+    openerRef.current?.focus?.();
+    openerRef.current = null;
   }, []);
 
   const runAction = useCallback(
@@ -191,7 +370,13 @@ export function CommandPalette() {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
         e.stopPropagation();
-        setOpen((prev) => !prev);
+        setOpen((prev) => {
+          // Capture the opener only on the open transition.
+          if (!prev) {
+            openerRef.current = document.activeElement as HTMLElement | null;
+          }
+          return !prev;
+        });
       }
     };
     window.addEventListener("keydown", handler);
@@ -233,12 +418,7 @@ export function CommandPalette() {
     setRoutedAction(null);
 
     const hasLexical = actions.some((a) => matchesQuery(a, q));
-    if (
-      q.length < 3 ||
-      hasLexical ||
-      !aiCommandPalette ||
-      !canUseAiAssist()
-    ) {
+    if (q.length < 3 || hasLexical || !aiCommandPalette || !canUseAiAssist()) {
       return;
     }
 
@@ -247,9 +427,7 @@ export function CommandPalette() {
 
     routeTimerRef.current = setTimeout(() => {
       const routable = actions.filter((a) => a.id !== ASK_ACTION_ID);
-      const idList = routable
-        .map((a) => `- ${a.id}: ${a.label}`)
-        .join("\n");
+      const idList = routable.map((a) => `- ${a.id}: ${a.label}`).join("\n");
       const system =
         `You route a user's request to one app action. Available actions:\n${idList}\n` +
         `Pick the single best matching action id for the user's request, or "${ASK_ACTION_ID}" if none fit. ` +
@@ -291,20 +469,50 @@ export function CommandPalette() {
   const trimmed = query.trim();
   // Only surface the AI suggestion when lexical search found nothing (the
   // same gating the router itself uses) so a stale row can't linger.
-  const suggestion =
-    lexicalMatches.length === 0 ? routedAction : null;
+  const suggestion = lexicalMatches.length === 0 ? routedAction : null;
   const showAskFallback =
     askAction && trimmed.length > 0 && lexicalMatches.length === 0;
 
   return (
     <div
+      ref={containerRef}
       className="fixed inset-0 z-[10000] flex items-start justify-center pt-[15vh]"
-      role="presentation"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Command palette"
+      onKeyDown={(e) => {
+        if (e.key !== "Tab") return;
+        // Trap Tab within the palette so focus can't escape to workspace
+        // controls behind the overlay. cmdk handles arrow-key navigation but
+        // not Tab.
+        const root = containerRef.current;
+        if (!root) return;
+        const focusable = Array.from(
+          root.querySelectorAll<HTMLElement>(
+            'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+          ),
+        ).filter(
+          (el) => el.offsetParent !== null || el === document.activeElement,
+        );
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        const active = document.activeElement as HTMLElement | null;
+        if (e.shiftKey) {
+          if (active === first || !root.contains(active)) {
+            e.preventDefault();
+            last.focus();
+          }
+        } else if (active === last || !root.contains(active)) {
+          e.preventDefault();
+          first.focus();
+        }
+      }}
     >
       <button
         type="button"
         aria-label="Close command palette"
-        className="absolute inset-0 cursor-default bg-black/35 backdrop-blur-sm dark:bg-black/45"
+        className="absolute inset-0 cursor-default bg-black/45 backdrop-blur-sm"
         onClick={close}
       />
       <Command
@@ -317,7 +525,7 @@ export function CommandPalette() {
             close();
           }
         }}
-        className="relative z-10 w-full max-w-lg overflow-hidden rounded-lg border bg-background shadow-lg outline-none"
+        className="relative z-10 w-full max-w-lg overflow-hidden rounded-xl border bg-background shadow-lg outline-none"
       >
         <div className="flex items-center gap-2 border-border border-b px-3">
           <Sparkles className="size-4 shrink-0 text-muted-foreground" />
@@ -400,6 +608,18 @@ export function CommandPalette() {
             </Command.Item>
           )}
         </Command.List>
+
+        <div className="flex items-center gap-3 border-border border-t px-3 py-2 text-[11px] text-muted-foreground">
+          <span>
+            <kbd className="rounded bg-muted px-1">↑↓</kbd> Navigate
+          </span>
+          <span>
+            <kbd className="rounded bg-muted px-1">↵</kbd> Select
+          </span>
+          <span>
+            <kbd className="rounded bg-muted px-1">esc</kbd> Close
+          </span>
+        </div>
       </Command>
     </div>
   );

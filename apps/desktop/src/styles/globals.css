@@ -25,6 +25,10 @@
   --color-input: var(--input);
   --color-border: var(--border);
   --color-destructive: var(--destructive);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);
@@ -66,6 +70,12 @@
   --accent: oklch(0.97 0 0);
   --accent-foreground: oklch(0.205 0 0);
   --destructive: oklch(0.577 0.245 27.325);
+  /* Semantic status tokens (mirrors --destructive). App is dark-forced, but
+     light values are defined for theme completeness. */
+  --warning: oklch(0.68 0.15 70);
+  --warning-foreground: oklch(0.98 0.02 80);
+  --success: oklch(0.6 0.14 160);
+  --success-foreground: oklch(0.98 0.02 160);
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
@@ -102,6 +112,12 @@
   --accent: oklch(0.269 0 0);
   --accent-foreground: oklch(0.985 0 0);
   --destructive: oklch(0.704 0.191 22.216);
+  /* Status tokens tuned for the dark surface (readable as text on bg-card/0.205
+     and legible as /15 tint fills). */
+  --warning: oklch(0.82 0.15 82);
+  --warning-foreground: oklch(0.26 0.05 80);
+  --success: oklch(0.75 0.15 162);
+  --success-foreground: oklch(0.24 0.05 162);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);

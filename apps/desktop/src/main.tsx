@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import { initializeAppZoom } from "./lib/app-zoom";
 import { createLogger } from "./lib/debug/logger";
 import { APP_VISIBILITY_RESTORED } from "./lib/debug/log-store";
+import { isTauri } from "./lib/runtime/is-tauri";
 import "./styles/globals.css";
 
 const isDebugWindow = new URLSearchParams(window.location.search).has("debug");
@@ -35,9 +36,11 @@ document.addEventListener("visibilitychange", () => {
 });
 
 // Tauri-native focus event — more reliable than visibilitychange on macOS.
-listen("window-focus-restored", () => {
-  dispatchVisibilityRestored("window-focus-restored");
-});
+if (isTauri()) {
+  void listen("window-focus-restored", () => {
+    dispatchVisibilityRestored("window-focus-restored");
+  });
+}
 
 // Platform-specific titlebar height adjustments
 if (navigator.userAgent.includes("Windows")) {
@@ -60,7 +63,9 @@ function hideLoadingScreen() {
     loading.style.opacity = "0";
     setTimeout(() => loading.remove(), 300);
   }
-  getCurrentWindow().show();
+  if (isTauri()) {
+    void getCurrentWindow().show();
+  }
 }
 
 async function bootstrap() {

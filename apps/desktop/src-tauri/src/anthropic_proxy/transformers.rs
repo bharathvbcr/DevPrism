@@ -110,6 +110,7 @@ mod tests {
             model: model.to_string(),
             transformers: Vec::new(),
             model_transformers: Vec::new(),
+            auth_token: String::new(),
         }
     }
 

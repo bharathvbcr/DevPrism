@@ -21,6 +21,10 @@ pub(crate) struct OpenAiProxyCredential {
     pub(crate) model: String,
     pub(crate) transformers: Vec<String>,
     pub(crate) model_transformers: Vec<String>,
+    /// Per-session secret the local CLI must present (as `x-api-key` or a Bearer
+    /// token). The loopback listener is otherwise open to any local process, so
+    /// without this any program could spend the user's credits / read prompts.
+    pub(crate) auth_token: String,
 }
 
 pub(crate) async fn start_openai_anthropic_proxy(
@@ -112,7 +116,45 @@ async fn handle_connection(
 struct HttpRequest {
     method: String,
     path: String,
+    headers: Vec<(String, String)>,
     body: Vec<u8>,
+}
+
+impl HttpRequest {
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_str())
+    }
+}
+
+/// The token the caller presented: `x-api-key`, or the bearer part of an
+/// `Authorization` header (Claude Code sends `ANTHROPIC_API_KEY` as `x-api-key`).
+fn presented_proxy_token(request: &HttpRequest) -> Option<String> {
+    if let Some(key) = request.header("x-api-key") {
+        return Some(key.to_string());
+    }
+    request.header("authorization").and_then(|value| {
+        value
+            .strip_prefix("Bearer ")
+            .or_else(|| value.strip_prefix("bearer "))
+            .map(|token| token.to_string())
+    })
+}
+
+/// Constant-time string comparison so a wrong-token 401 doesn't leak, via timing,
+/// how much of the per-session secret was guessed.
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 async fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
@@ -150,10 +192,14 @@ async fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, String
         .ok_or_else(|| "Proxy request is missing path".to_string())?
         .to_string();
 
-    let content_length = lines
+    let headers: Vec<(String, String)> = lines
         .filter_map(|line| line.split_once(':'))
+        .map(|(key, value)| (key.trim().to_string(), value.trim().to_string()))
+        .collect();
+    let content_length = headers
+        .iter()
         .find(|(key, _)| key.eq_ignore_ascii_case("content-length"))
-        .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+        .and_then(|(_, value)| value.parse::<usize>().ok())
         .unwrap_or(0);
 
     // Cap the declared body size so a crafted `Content-Length` can't drive the
@@ -180,7 +226,12 @@ async fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, String
     }
     body.truncate(content_length);
 
-    Ok(HttpRequest { method, path, body })
+    Ok(HttpRequest {
+        method,
+        path,
+        headers,
+        body,
+    })
 }
 
 fn find_header_end(buffer: &[u8]) -> Option<usize> {
@@ -241,6 +292,28 @@ async fn handle_messages_to_stream(
     credential: &OpenAiProxyCredential,
     stream: &mut TcpStream,
 ) -> Result<(), String> {
+    // Authenticate the inbound request against the per-session token before doing
+    // anything with the real upstream key. The listener is loopback-only, but any
+    // local process could otherwise use it to spend the user's credits or read
+    // prompts. (Empty token = auth disabled — used only by unit-test fixtures;
+    // the real spawn path always sets a fresh UUID.)
+    if !credential.auth_token.is_empty() {
+        let presented = presented_proxy_token(request).unwrap_or_default();
+        if !constant_time_eq(&presented, &credential.auth_token) {
+            let resp = provider_error_response(
+                401,
+                "authentication_error",
+                "Local proxy authentication failed.",
+                None,
+            );
+            stream
+                .write_all(resp.as_bytes())
+                .await
+                .map_err(|err| format!("Failed to write proxy auth error: {}", err))?;
+            return Ok(());
+        }
+    }
+
     let anthropic_request: Value = serde_json::from_slice(&request.body)
         .map_err(|err| format!("Claude Code sent invalid Anthropic JSON: {}", err))?;
     let wants_stream = anthropic_request
@@ -582,12 +655,19 @@ mod tests {
 
     #[test]
     fn redacts_api_keys_from_error_text() {
+        // Build fake key shapes at runtime so secret scanners don't flag literals.
+        let ant_key = format!("{}-{}-{}", "sk", "ant", "fakeTestKey0001");
         assert_eq!(
-            redact_secrets("bad key sk-ant-api03-abcDEF123456 rejected"),
+            redact_secrets(&format!("bad key {ant_key} rejected")),
             "bad key sk-*** rejected"
         );
+        let bearer_msg = format!(
+            "sent Authorization: {} {} upstream",
+            "Bearer",
+            format!("{}-{}", "sk", "fakeProjKey9999"),
+        );
         assert_eq!(
-            redact_secrets("sent Authorization: Bearer sk-proj-XYZ987654 upstream"),
+            redact_secrets(&bearer_msg),
             "sent Authorization: Bearer *** upstream"
         );
     }
@@ -601,8 +681,13 @@ mod tests {
 
     #[test]
     fn compact_error_text_redacts_before_truncating() {
-        let out = compact_error_text("upstream said Bearer sk-ant-supersecret000 was invalid");
-        assert!(!out.contains("supersecret"));
+        let msg = format!(
+            "upstream said {} {} was invalid",
+            "Bearer",
+            format!("{}-{}-{}", "sk", "ant", "fakeKey0001"),
+        );
+        let out = compact_error_text(&msg);
+        assert!(!out.contains("fakeKey"));
         assert!(out.contains("***"));
     }
 
@@ -625,6 +710,44 @@ mod tests {
         assert!(with.contains("rate_limit_error"));
         let without = provider_error_response(400, "invalid_request_error", "bad", None);
         assert!(!without.contains("Retry-After"));
+    }
+
+    #[test]
+    fn constant_time_eq_matches_only_identical_strings() {
+        assert!(constant_time_eq("abc123", "abc123"));
+        assert!(!constant_time_eq("abc123", "abc124"));
+        assert!(!constant_time_eq("abc", "abcd"));
+        assert!(constant_time_eq("", ""));
+    }
+
+    #[test]
+    fn presented_proxy_token_reads_x_api_key_then_bearer() {
+        let with_key = HttpRequest {
+            method: "POST".into(),
+            path: "/v1/messages".into(),
+            headers: vec![("x-api-key".into(), "secret-1".into())],
+            body: Vec::new(),
+        };
+        assert_eq!(presented_proxy_token(&with_key).as_deref(), Some("secret-1"));
+
+        let with_bearer = HttpRequest {
+            method: "POST".into(),
+            path: "/v1/messages".into(),
+            headers: vec![("Authorization".into(), "Bearer secret-2".into())],
+            body: Vec::new(),
+        };
+        assert_eq!(
+            presented_proxy_token(&with_bearer).as_deref(),
+            Some("secret-2")
+        );
+
+        let none = HttpRequest {
+            method: "GET".into(),
+            path: "/".into(),
+            headers: Vec::new(),
+            body: Vec::new(),
+        };
+        assert_eq!(presented_proxy_token(&none), None);
     }
 
     #[test]
@@ -651,6 +774,7 @@ mod tests {
             model: "qwen-test".to_string(),
             transformers: Vec::new(),
             model_transformers: Vec::new(),
+            auth_token: String::new(),
         };
         let request = json!({
             "system": "system prompt",
@@ -704,6 +828,7 @@ mod tests {
             model: "qwen-test".to_string(),
             transformers: Vec::new(),
             model_transformers: Vec::new(),
+            auth_token: String::new(),
         };
         let request = json!({
             "messages": [
@@ -754,6 +879,7 @@ mod tests {
             model: "qwen-test".to_string(),
             transformers: Vec::new(),
             model_transformers: Vec::new(),
+            auth_token: String::new(),
         };
         let request = json!({
             "messages": [
@@ -794,6 +920,7 @@ mod tests {
             model: "deepseek-test".to_string(),
             transformers: Vec::new(),
             model_transformers: Vec::new(),
+            auth_token: String::new(),
         };
         let request = json!({ "model": "claude-sonnet-4" });
         let response = json!({

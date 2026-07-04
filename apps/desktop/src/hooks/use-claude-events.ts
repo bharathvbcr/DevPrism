@@ -194,6 +194,9 @@ export function useClaudeEvents() {
       const tab = chatStore.tabs.find((t) => t.id === tabId);
       if (!tab?.isStreaming) return;
 
+      // Streaming activity — reset the idle watchdog.
+      chatStore._armStreamWatchdog(tabId);
+
       const count = (msgCountRef.current.get(tabId) ?? 0) + 1;
       msgCountRef.current.set(tabId, count);
       const now = performance.now();
@@ -361,6 +364,8 @@ export function useClaudeEvents() {
         `[${tabId}] complete success=${success} (${count} messages) cancelledForAsk=${cancelledForAskRef.current.get(tabId) ?? false}`,
       );
       const chatStore = useClaudeChatStore.getState();
+      // The turn produced a completion — the idle watchdog is no longer needed.
+      chatStore._clearStreamWatchdog(tabId);
 
       // Guard against duplicate complete events
       const tab = chatStore.tabs.find((t) => t.id === tabId);

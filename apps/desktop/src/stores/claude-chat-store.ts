@@ -12,10 +12,7 @@ import { buildCompileStateContext } from "@/lib/latex-compiler";
 import { buildBibliographyContext } from "@/lib/bibliography-context";
 import { resolveNativeChatOnlyFlag } from "@/lib/native-chat-mode";
 import { openChatDrawer } from "@/lib/chat-drawer-events";
-import {
-  usePersonalizationStore,
-  buildPersonalizationContext,
-} from "./personalization-store";
+import { usePersonalizationStore } from "./personalization-store";
 
 const log = createLogger("claude");
 export const CLAUDE_CODE_PROVIDER_ID = "__claude-code__";
@@ -790,6 +787,11 @@ interface ClaudeChatState {
   _setSessionTitle: (sessionId: string, title: string) => void;
   _setStreaming: (tabId: string, streaming: boolean) => void;
   _setError: (tabId: string, error: string | null) => void;
+  /** (Re)arm the idle stream watchdog for a tab — call on send and on each
+   * streaming message so an active stream never trips it. */
+  _armStreamWatchdog: (tabId: string) => void;
+  /** Clear a tab's idle stream watchdog — call on completion / stop / close. */
+  _clearStreamWatchdog: (tabId: string) => void;
   /** Tabs the user explicitly stopped, so an unexpected stream end on THAT tab
    * isn't misclassified as a crash. Keyed per-tab because multiple tabs stream
    * concurrently (a store-level boolean cross-contaminated them). */
@@ -804,6 +806,15 @@ const cancelledWithout = (tabs: Set<string>, id: string) => {
   next.delete(id);
   return next;
 };
+
+// Idle stream watchdog: if a streaming tab goes silent this long (no delta, no
+// completion — a dropped backend or a missed `claude-complete`), recover the tab
+// instead of spinning forever. It's ARMED on send and RESET on every streaming
+// message, so an actively-generating long local-model turn never trips it — only
+// a genuinely stalled backend does. The backend's own idle timeouts (Ollama 90s,
+// proxy 300s) are the first line; this is the frontend backstop.
+const STREAM_IDLE_MS = 180_000;
+const streamWatchdogs = new Map<string, ReturnType<typeof setTimeout>>();
 
 export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
   // Projected fields (initialized from default tab)
@@ -1059,6 +1070,10 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       };
     });
 
+    // Arm the idle watchdog now that the tab is streaming; it's reset on every
+    // streaming message and cleared on completion.
+    get()._armStreamWatchdog(activeTabId);
+
     // Flush unsaved edits to disk so Claude reads the latest content
     if (docState.files.some((f) => f.isDirty)) {
       log.debug("saving dirty files...");
@@ -1070,7 +1085,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     const activeDoc = docState.files.find(
       (f) => f.id === docState.activeFileId,
     );
-    if (activeDoc && activeDoc.content) {
+    if (activeDoc?.content) {
       usePersonalizationStore
         .getState()
         .analyzeLaTeXContent(activeDoc.relativePath, activeDoc.content);
@@ -2013,5 +2028,31 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
 
   _setError: (tabId: string, error: string | null) => {
     set((state) => applyTabUpdate(state, tabId, { error }));
+  },
+
+  _armStreamWatchdog: (tabId) => {
+    get()._clearStreamWatchdog(tabId);
+    const handle = setTimeout(() => {
+      streamWatchdogs.delete(tabId);
+      const tab = get().tabs.find((t) => t.id === tabId);
+      if (!tab?.isStreaming) return; // already finished or gone
+      set((state) =>
+        applyTabUpdate(state, tabId, {
+          isStreaming: false,
+          streamingStartedAt: null,
+          error:
+            "The AI stopped responding (no activity for a while). Send again or start a new chat.",
+        }),
+      );
+    }, STREAM_IDLE_MS);
+    streamWatchdogs.set(tabId, handle);
+  },
+
+  _clearStreamWatchdog: (tabId) => {
+    const handle = streamWatchdogs.get(tabId);
+    if (handle !== undefined) {
+      clearTimeout(handle);
+      streamWatchdogs.delete(tabId);
+    }
   },
 }));

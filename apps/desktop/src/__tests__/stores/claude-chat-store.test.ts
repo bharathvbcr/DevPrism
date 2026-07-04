@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CLAUDE_CODE_PROVIDER_ID,
   SELECTED_PROVIDER_CREDENTIAL_STORAGE_KEY,
@@ -303,5 +303,69 @@ describe("queued guidance", () => {
         .tabs.find((tab) => tab.id === tabId)
         ?.queuedGuidance?.map((item) => item.prompt),
     ).toEqual(["first"]);
+  });
+});
+
+describe("stream idle watchdog", () => {
+  const STREAM_IDLE_MS = 180_000;
+
+  function seedStreamingTab() {
+    useClaudeChatStore.setState({
+      isStreaming: true,
+      tabs: [
+        {
+          id: "tab-wd",
+          title: "Chat",
+          projectPath: "/p",
+          sessionId: null,
+          providerKey: CLAUDE_CODE_PROVIDER_ID,
+          sessionProviderKey: null,
+          messages: [],
+          isStreaming: true,
+          streamingStartedAt: 0,
+          error: null,
+          totalInputTokens: 0,
+          totalOutputTokens: 0,
+          draft: { input: "", pinnedContexts: [] },
+        },
+      ],
+      activeTabId: "tab-wd",
+    });
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    seedStreamingTab();
+  });
+  afterEach(() => {
+    useClaudeChatStore.getState()._clearStreamWatchdog("tab-wd");
+    vi.useRealTimers();
+  });
+
+  const tab = () =>
+    useClaudeChatStore.getState().tabs.find((t) => t.id === "tab-wd");
+
+  it("recovers a silent streaming tab after the idle timeout", () => {
+    useClaudeChatStore.getState()._armStreamWatchdog("tab-wd");
+    vi.advanceTimersByTime(STREAM_IDLE_MS + 1);
+    expect(tab()?.isStreaming).toBe(false);
+    expect(tab()?.error).toMatch(/stopped responding/i);
+  });
+
+  it("does not fire once cleared", () => {
+    const store = useClaudeChatStore.getState();
+    store._armStreamWatchdog("tab-wd");
+    store._clearStreamWatchdog("tab-wd");
+    vi.advanceTimersByTime(STREAM_IDLE_MS + 1);
+    expect(tab()?.isStreaming).toBe(true);
+  });
+
+  it("re-arming resets the countdown so an active stream never trips", () => {
+    const store = useClaudeChatStore.getState();
+    store._armStreamWatchdog("tab-wd");
+    vi.advanceTimersByTime(STREAM_IDLE_MS - 1000);
+    store._armStreamWatchdog("tab-wd"); // simulated streaming activity → reset
+    vi.advanceTimersByTime(STREAM_IDLE_MS - 1000); // not enough since the reset
+    expect(tab()?.isStreaming).toBe(true);
   });
 });

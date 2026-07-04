@@ -23,6 +23,23 @@ use tauri::{Emitter, WebviewWindow};
 use tokio::sync::Notify;
 
 const MAX_ITERATIONS: usize = 16;
+/// How many times to (re)issue a single chat request before giving up. A
+/// transient failure (server unreachable during a VRAM swap, a dropped stream,
+/// a 5xx) otherwise discards all in-turn progress.
+const MAX_CHAT_ATTEMPTS: u32 = 3;
+
+/// Whether a chat error is worth retrying: transient transport / server issues,
+/// but NOT a permanent capability/config error (no tools, no model) which would
+/// just fail again identically.
+fn is_retryable_chat_error(err: &str) -> bool {
+    if err.contains("E_NO_TOOLS") || err.contains("E_NO_MODEL") {
+        return false;
+    }
+    err.contains("E_OLLAMA_UNREACHABLE")
+        || err.contains("E_OLLAMA_STALLED")
+        || err.contains("Ollama stream error")
+        || err.contains("Ollama returned HTTP 5")
+}
 
 /// Synthetic prompt used to nudge a model that returned nothing; never persisted.
 const CONTINUE_NUDGE: &str =
@@ -877,26 +894,47 @@ pub async fn run_native_agent(
         // Text fragments stream straight to the UI as `streaming_delta` blocks
         // (the same protocol the direct-provider path uses); the finalized turn
         // is reconciled into a `streaming_final` message below.
-        let turn = tokio::select! {
-            r = client.chat(&messages, &tools, |frag: &str| {
-                emit_msg(
-                    &window,
-                    &tab_id,
-                    &json!({
-                        "type": "assistant",
-                        "subtype": "streaming_delta",
-                        "message": { "content": [{ "type": "text", "text": frag }] },
-                    }),
-                );
-            }) => match r {
-                Ok(t) => t,
-                Err(e) => {
-                    emit_result(&window, &tab_id, false, &e);
-                    success = false;
-                    break;
+        let turn = {
+            let mut attempt = 0u32;
+            'chat: loop {
+                let r = tokio::select! {
+                    r = client.chat(&messages, &tools, |frag: &str| {
+                        emit_msg(
+                            &window,
+                            &tab_id,
+                            &json!({
+                                "type": "assistant",
+                                "subtype": "streaming_delta",
+                                "message": { "content": [{ "type": "text", "text": frag }] },
+                            }),
+                        );
+                    }) => r,
+                    _ = notify.notified() => { success = false; break 'outer; }
+                };
+                match r {
+                    Ok(t) => break 'chat t,
+                    Err(e) => {
+                        attempt += 1;
+                        if attempt < MAX_CHAT_ATTEMPTS && is_retryable_chat_error(&e) {
+                            // Transient — back off and retry rather than throwing away
+                            // the turn's progress, staying responsive to Stop.
+                            let backoff =
+                                std::time::Duration::from_millis(400u64 << (attempt - 1));
+                            eprintln!(
+                                "[native-agent] chat attempt {attempt} failed (retryable): {e}"
+                            );
+                            tokio::select! {
+                                _ = tokio::time::sleep(backoff) => {}
+                                _ = notify.notified() => { success = false; break 'outer; }
+                            }
+                            continue 'chat;
+                        }
+                        emit_result(&window, &tab_id, false, &e);
+                        success = false;
+                        break 'outer;
+                    }
                 }
-            },
-            _ = notify.notified() => { success = false; break; }
+            }
         };
 
         // A model that returns neither text nor a tool call: nudge it a couple of
@@ -1654,6 +1692,24 @@ pub async fn pull_ollama_model(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retryable_chat_errors_are_transient_only() {
+        assert!(is_retryable_chat_error(
+            "[E_OLLAMA_UNREACHABLE] Could not reach Ollama at http://localhost:11434"
+        ));
+        assert!(is_retryable_chat_error(
+            "[E_OLLAMA_STALLED] Ollama stopped emitting tokens for 90s"
+        ));
+        assert!(is_retryable_chat_error("Ollama stream error: connection reset"));
+        assert!(is_retryable_chat_error("Ollama returned HTTP 503: unavailable"));
+        // Permanent capability/config errors must NOT retry.
+        assert!(!is_retryable_chat_error(
+            "[E_NO_TOOLS] The model 'gemma:2b' does not support tool-calling."
+        ));
+        assert!(!is_retryable_chat_error("[E_NO_MODEL] No Ollama model installed"));
+        assert!(!is_retryable_chat_error("Ollama returned HTTP 400: bad request"));
+    }
 
     fn role(m: &Value) -> &str {
         m.get("role").and_then(|r| r.as_str()).unwrap_or("")

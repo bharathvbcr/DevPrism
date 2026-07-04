@@ -91,20 +91,12 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ZOTERO_CONSUMER_KEY: ${{ secrets.ZOTERO_CONSUMER_KEY }}
           ZOTERO_CONSUMER_SECRET: ${{ secrets.ZOTERO_CONSUMER_SECRET }}
-        run: pnpm --filter @claude-prism/desktop tauri build --target x86_64-pc-windows-msvc
+        run: bash scripts/ci-tauri-build.sh x86_64-pc-windows-msvc
 
       - name: Collect updater artifacts
         id: collect
         shell: bash
-        run: |
-          BUNDLE="apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle"
-          NSIS_SIG=$(find "$BUNDLE/nsis" -name '*-setup.exe.sig' 2>/dev/null | head -1)
-          NSIS_EXE=$(find "$BUNDLE/nsis" -name '*-setup.exe' ! -name '*.sig' 2>/dev/null | head -1)
-
-          if [ -n "$NSIS_SIG" ] && [ -n "$NSIS_EXE" ]; then
-            echo "sig=$(cat "$NSIS_SIG")" >> $GITHUB_OUTPUT
-            echo "url=$(basename "$NSIS_EXE")" >> $GITHUB_OUTPUT
-          fi
+        run: bash scripts/ci-collect-updater.sh windows x86_64-pc-windows-msvc
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -176,6 +168,7 @@ jobs:
           echo "CFLAGS=" >> $GITHUB_ENV
 
       - name: Import Apple certificate
+        if: ${{ secrets.APPLE_CERTIFICATE != '' }}
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -215,14 +208,21 @@ jobs:
       - run: pnpm install
 
       - name: Build Tauri app
+        shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ZOTERO_CONSUMER_KEY: ${{ secrets.ZOTERO_CONSUMER_KEY }}
           ZOTERO_CONSUMER_SECRET: ${{ secrets.ZOTERO_CONSUMER_SECRET }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-        run: pnpm --filter @claude-prism/desktop tauri build --target aarch64-apple-darwin
+        run: bash scripts/ci-tauri-build.sh aarch64-apple-darwin
 
       - name: Notarize DMG
+        if: >-
+          ${{ secrets.APPLE_CERTIFICATE != '' &&
+          secrets.APPLE_ID != '' &&
+          secrets.APPLE_TEAM_ID != '' &&
+          secrets.APPLE_PASSWORD != '' }}
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -231,7 +231,7 @@ jobs:
           TARGET="aarch64-apple-darwin"
           BUNDLE="apps/desktop/src-tauri/target/$TARGET/release/bundle"
           DMG_PATH=$(find "$BUNDLE/dmg" -name '*.dmg' | head -1)
-          APP_PATH="$BUNDLE/macos/ClaudePrism.app"
+          APP_PATH="$BUNDLE/macos/DevPrism.app"
 
           if [ -z "$DMG_PATH" ]; then
             echo "Error: DMG not found"
@@ -251,15 +251,8 @@ jobs:
 
       - name: Collect updater artifacts
         id: collect
-        run: |
-          BUNDLE="apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle"
-          TAR_SIG=$(find "$BUNDLE/macos" -name '*.app.tar.gz.sig' 2>/dev/null | head -1)
-          TAR_GZ=$(find "$BUNDLE/macos" -name '*.app.tar.gz' ! -name '*.sig' 2>/dev/null | head -1)
-
-          if [ -n "$TAR_SIG" ] && [ -n "$TAR_GZ" ]; then
-            echo "sig=$(cat "$TAR_SIG")" >> $GITHUB_OUTPUT
-            echo "url=$(basename "$TAR_GZ")" >> $GITHUB_OUTPUT
-          fi
+        shell: bash
+        run: bash scripts/ci-collect-updater.sh macos aarch64-apple-darwin
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -333,6 +326,7 @@ jobs:
           echo "CFLAGS=" >> $GITHUB_ENV
 
       - name: Import Apple certificate
+        if: ${{ secrets.APPLE_CERTIFICATE != '' }}
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -372,14 +366,21 @@ jobs:
       - run: pnpm install
 
       - name: Build Tauri app
+        shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ZOTERO_CONSUMER_KEY: ${{ secrets.ZOTERO_CONSUMER_KEY }}
           ZOTERO_CONSUMER_SECRET: ${{ secrets.ZOTERO_CONSUMER_SECRET }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-        run: pnpm --filter @claude-prism/desktop tauri build --target x86_64-apple-darwin
+        run: bash scripts/ci-tauri-build.sh x86_64-apple-darwin
 
       - name: Notarize DMG
+        if: >-
+          ${{ secrets.APPLE_CERTIFICATE != '' &&
+          secrets.APPLE_ID != '' &&
+          secrets.APPLE_TEAM_ID != '' &&
+          secrets.APPLE_PASSWORD != '' }}
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -388,7 +389,7 @@ jobs:
           TARGET="x86_64-apple-darwin"
           BUNDLE="apps/desktop/src-tauri/target/$TARGET/release/bundle"
           DMG_PATH=$(find "$BUNDLE/dmg" -name '*.dmg' | head -1)
-          APP_PATH="$BUNDLE/macos/ClaudePrism.app"
+          APP_PATH="$BUNDLE/macos/DevPrism.app"
 
           if [ -z "$DMG_PATH" ]; then
             echo "Error: DMG not found"
@@ -408,15 +409,8 @@ jobs:
 
       - name: Collect updater artifacts
         id: collect
-        run: |
-          BUNDLE="apps/desktop/src-tauri/target/x86_64-apple-darwin/release/bundle"
-          TAR_SIG=$(find "$BUNDLE/macos" -name '*.app.tar.gz.sig' 2>/dev/null | head -1)
-          TAR_GZ=$(find "$BUNDLE/macos" -name '*.app.tar.gz' ! -name '*.sig' 2>/dev/null | head -1)
-
-          if [ -n "$TAR_SIG" ] && [ -n "$TAR_GZ" ]; then
-            echo "sig=$(cat "$TAR_SIG")" >> $GITHUB_OUTPUT
-            echo "url=$(basename "$TAR_GZ")" >> $GITHUB_OUTPUT
-          fi
+        shell: bash
+        run: bash scripts/ci-collect-updater.sh macos-intel x86_64-apple-darwin
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -468,29 +462,21 @@ jobs:
       - run: pnpm install
 
       - name: Build Tauri app
+        shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ZOTERO_CONSUMER_KEY: ${{ secrets.ZOTERO_CONSUMER_KEY }}
           ZOTERO_CONSUMER_SECRET: ${{ secrets.ZOTERO_CONSUMER_SECRET }}
-          # Use pkg-config (same as tectonic's own CI) with semi-static linking.
-          # AppImage bundles .so files automatically for portable distribution.
           TECTONIC_DEP_BACKEND: pkg-config
           TECTONIC_PKGCONFIG_FORCE_SEMI_STATIC: "true"
           CXXFLAGS: "-std=c++17"
           CFLAGS: ""
-        run: pnpm --filter @claude-prism/desktop tauri build --target x86_64-unknown-linux-gnu
+        run: bash scripts/ci-tauri-build.sh x86_64-unknown-linux-gnu
 
       - name: Collect updater artifacts
         id: collect
-        run: |
-          BUNDLE="apps/desktop/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle"
-          APPIMAGE_SIG=$(find "$BUNDLE/appimage" -name '*.AppImage.sig' 2>/dev/null | head -1)
-          APPIMAGE=$(find "$BUNDLE/appimage" -name '*.AppImage' ! -name '*.sig' 2>/dev/null | head -1)
-
-          if [ -n "$APPIMAGE_SIG" ] && [ -n "$APPIMAGE" ]; then
-            echo "sig=$(cat "$APPIMAGE_SIG")" >> $GITHUB_OUTPUT
-            echo "url=$(basename "$APPIMAGE")" >> $GITHUB_OUTPUT
-          fi
+        shell: bash
+        run: bash scripts/ci-collect-updater.sh linux x86_64-unknown-linux-gnu
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -546,23 +532,23 @@ jobs:
         run: |
           VERSION="${TAG#v}"
           PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          export BASE_URL="https://github.com/delibae/claude-prism/releases/download/$TAG"
+          export BASE_URL="https://github.com/bharathvbcr/DevPrism/releases/download/$TAG"
 
           node -e "
             const BASE = process.env.BASE_URL;
             const platforms = {};
             if (process.env.MAC_SIG)
-              platforms['darwin-aarch64'] = { signature: process.env.MAC_SIG, url: BASE + '/ClaudePrism-macOS.app.tar.gz' };
+              platforms['darwin-aarch64'] = { signature: process.env.MAC_SIG, url: BASE + '/DevPrism-macOS.app.tar.gz' };
             if (process.env.MAC_INTEL_SIG)
-              platforms['darwin-x86_64'] = { signature: process.env.MAC_INTEL_SIG, url: BASE + '/ClaudePrism-macOS-Intel.app.tar.gz' };
+              platforms['darwin-x86_64'] = { signature: process.env.MAC_INTEL_SIG, url: BASE + '/DevPrism-macOS-Intel.app.tar.gz' };
             if (process.env.LIN_SIG)
-              platforms['linux-x86_64'] = { signature: process.env.LIN_SIG, url: BASE + '/ClaudePrism-Linux.AppImage' };
+              platforms['linux-x86_64'] = { signature: process.env.LIN_SIG, url: BASE + '/DevPrism-Linux.AppImage' };
             if (process.env.WIN_SIG)
-              platforms['windows-x86_64'] = { signature: process.env.WIN_SIG, url: BASE + '/ClaudePrism-Windows-setup.exe' };
+              platforms['windows-x86_64'] = { signature: process.env.WIN_SIG, url: BASE + '/DevPrism-Windows-setup.exe' };
 
             const data = {
               version: '$VERSION',
-              notes: 'ClaudePrism $TAG',
+              notes: 'DevPrism $TAG',
               pub_date: '$PUB_DATE',
               platforms
             };
@@ -576,7 +562,7 @@ jobs:
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
           gh release view "$TAG" > /dev/null 2>&1 || \
-            gh release create "$TAG" --title "ClaudePrism $TAG" --generate-notes --draft
+            gh release create "$TAG" --title "DevPrism $TAG" --generate-notes --draft
 
       - name: Rename and upload assets
         env:
@@ -585,20 +571,26 @@ jobs:
           TAG="${{ steps.tag.outputs.tag }}"
           mkdir -p upload
 
+          copy_first() {
+            local dir="$1" name="$2" dest="$3"
+            local match
+            match=$(find "$dir" -name "$name" 2>/dev/null | head -1 || true)
+            if [ -n "$match" ]; then
+              cp "$match" "$dest"
+              echo "  $dest"
+            fi
+          }
+
           # Rename platform artifacts to version-free names
-          # macOS Apple Silicon (from desktop-macos artifact)
-          find artifacts/desktop-macos -name "*.dmg" 2>/dev/null | head -1 | xargs -I{} cp {} upload/ClaudePrism-macOS.dmg
-          find artifacts/desktop-macos -name "*.app.tar.gz" 2>/dev/null | head -1 | xargs -I{} cp {} upload/ClaudePrism-macOS.app.tar.gz
-          # macOS Intel (from desktop-macos-intel artifact)
-          find artifacts/desktop-macos-intel -name "*.dmg" 2>/dev/null | head -1 | xargs -I{} cp {} upload/ClaudePrism-macOS-Intel.dmg
-          find artifacts/desktop-macos-intel -name "*.app.tar.gz" 2>/dev/null | head -1 | xargs -I{} cp {} upload/ClaudePrism-macOS-Intel.app.tar.gz
-          # Windows
-          find artifacts/desktop-windows -name "*-setup.exe" 2>/dev/null | head -1 | xargs -I{} cp {} upload/ClaudePrism-Windows-setup.exe
-          find artifacts/desktop-windows -name "*.msi" 2>/dev/null | head -1 | xargs -I{} cp {} upload/ClaudePrism-Windows.msi
-          # Linux
-          find artifacts/desktop-linux -name "*.deb" 2>/dev/null | head -1 | xargs -I{} cp {} upload/ClaudePrism-Linux.deb
-          find artifacts/desktop-linux -name "*.rpm" 2>/dev/null | head -1 | xargs -I{} cp {} upload/ClaudePrism-Linux.rpm
-          find artifacts/desktop-linux -name "*.AppImage" 2>/dev/null | head -1 | xargs -I{} cp {} upload/ClaudePrism-Linux.AppImage
+          copy_first artifacts/desktop-macos "*.dmg" upload/DevPrism-macOS.dmg
+          copy_first artifacts/desktop-macos "*.app.tar.gz" upload/DevPrism-macOS.app.tar.gz
+          copy_first artifacts/desktop-macos-intel "*.dmg" upload/DevPrism-macOS-Intel.dmg
+          copy_first artifacts/desktop-macos-intel "*.app.tar.gz" upload/DevPrism-macOS-Intel.app.tar.gz
+          copy_first artifacts/desktop-windows "*-setup.exe" upload/DevPrism-Windows-setup.exe
+          copy_first artifacts/desktop-windows "*.msi" upload/DevPrism-Windows.msi
+          copy_first artifacts/desktop-linux "*.deb" upload/DevPrism-Linux.deb
+          copy_first artifacts/desktop-linux "*.rpm" upload/DevPrism-Linux.rpm
+          copy_first artifacts/desktop-linux "*.AppImage" upload/DevPrism-Linux.AppImage
 
           cp latest.json upload/
 
@@ -606,6 +598,7 @@ jobs:
           ls -la upload/
 
           for file in upload/*; do
+            [ -f "$file" ] || continue
             gh release upload "$TAG" "$file" --clobber
           done
 

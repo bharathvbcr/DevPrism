@@ -3038,12 +3038,15 @@ async fn execute_openai_compatible_via_claude_proxy(
         .get(&credential.model)
         .cloned()
         .unwrap_or_default();
+    // Per-session secret so only THIS spawned CLI can use the loopback proxy.
+    let proxy_auth_token = uuid::Uuid::new_v4().to_string();
     let proxy_url = start_openai_anthropic_proxy(OpenAiProxyCredential {
         api_key: credential.api_key.clone(),
         base_url: credential.base_url.clone(),
         model: credential.model.clone(),
         transformers: credential.transformers.clone(),
         model_transformers,
+        auth_token: proxy_auth_token.clone(),
     })
     .await?;
     let claude_path = find_claude_binary()?;
@@ -3055,7 +3058,9 @@ async fn execute_openai_compatible_via_claude_proxy(
 
     let mut cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref());
     clear_anthropic_provider_env(&mut cmd);
-    cmd.env("ANTHROPIC_API_KEY", "claude-prism-local-proxy");
+    // The CLI presents this as `x-api-key`; the proxy checks it before forwarding
+    // with the real provider key (which never leaves the proxy).
+    cmd.env("ANTHROPIC_API_KEY", &proxy_auth_token);
     cmd.env("ANTHROPIC_BASE_URL", proxy_url);
     cmd.env_remove("CLAUDE_MODEL");
 

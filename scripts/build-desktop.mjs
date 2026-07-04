@@ -19,6 +19,13 @@ if (process.platform === "win32") {
   env.CXXFLAGS = [env.CXXFLAGS, "/std:c++17"].filter(Boolean).join(" ");
 }
 
+if (process.platform === "darwin") {
+  env.VCPKG_ROOT ||= join(env.HOME ?? "", "vcpkg");
+  env.TECTONIC_DEP_BACKEND ||= "vcpkg";
+  env.CXXFLAGS = [env.CXXFLAGS, "-std=c++17"].filter(Boolean).join(" ");
+  env.CFLAGS ||= "";
+}
+
 const args = ["--filter=@devprism/desktop", "tauri", "build"];
 
 if (!env.TAURI_SIGNING_PRIVATE_KEY) {

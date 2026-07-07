@@ -52,5 +52,42 @@ export default defineConfig({
       process.env.TAURI_ENV_PLATFORM === "windows" ? "chrome105" : "safari14",
     minify: !process.env.TAURI_ENV_DEBUG ? "esbuild" : false,
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
+    rollupOptions: {
+      output: {
+        // Split heavyweight vendor families into their own cacheable chunks.
+        // Whole families stay together (never split within a family) to
+        // avoid cross-chunk circular-initialization issues.
+        manualChunks(id: string) {
+          if (!id.includes("node_modules")) return undefined;
+          if (id.includes("/mupdf/")) return "mupdf";
+          if (
+            id.includes("@codemirror") ||
+            id.includes("@lezer") ||
+            id.includes("@replit/codemirror-vim") ||
+            id.includes("codemirror-lang-latex")
+          ) {
+            return "codemirror";
+          }
+          if (id.includes("@tiptap") || id.includes("prosemirror-")) {
+            return "tiptap";
+          }
+          if (id.includes("/katex/")) return "katex";
+          if (
+            id.includes("react-markdown") ||
+            id.includes("remark-") ||
+            id.includes("rehype-") ||
+            id.includes("micromark") ||
+            id.includes("mdast-") ||
+            id.includes("hast-") ||
+            id.includes("/unified/") ||
+            id.includes("unist-") ||
+            id.includes("vfile")
+          ) {
+            return "markdown";
+          }
+          return undefined;
+        },
+      },
+    },
   },
 });

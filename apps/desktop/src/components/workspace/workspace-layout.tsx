@@ -61,6 +61,7 @@ export function WorkspaceLayout() {
   const previewPanelRef = useRef<ImperativePanelHandle>(null);
   const sidebarAnimationFrameRef = useRef<number | null>(null);
   const sidebarAnimatingRef = useRef(false);
+  const collapsedSizeRafRef = useRef<number | null>(null);
   const expandedSidebarSizeRef = useRef(SIDEBAR_DEFAULT_SIZE);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarCollapsedSize, setSidebarCollapsedSize] = useState(
@@ -191,14 +192,25 @@ export function WorkspaceLayout() {
           .map((s) => s.trim())
           .find((s) => s.length > 0 && s !== "Compilation failed") ??
         "Your document failed to compile.";
+      const message =
+        firstLine.length > 140 ? `${firstLine.slice(0, 137)}…` : firstLine;
+      const existing = useWorkspaceBannerStore
+        .getState()
+        .banners.find((b) => b.dedupeKey === dedupeKey);
+      if (
+        existing &&
+        existing.title === "Compilation failed" &&
+        existing.message === message
+      ) {
+        return;
+      }
       const fixWithAiAvailable =
         (aiCompileAssist || nativeAgentEnabled) && canUseAiAssist();
       showWorkspaceBanner({
         kind: "error",
         dedupeKey,
         title: "Compilation failed",
-        message:
-          firstLine.length > 140 ? `${firstLine.slice(0, 137)}…` : firstLine,
+        message,
         ...(fixWithAiAvailable
           ? {
               secondaryActionLabel: "Fix with AI",
@@ -224,7 +236,6 @@ export function WorkspaceLayout() {
     compileError,
     dismissWorkspaceBanner,
     nativeAgentEnabled,
-    previewVisible,
     setPreviewVisible,
     showWorkspaceBanner,
   ]);
@@ -234,28 +245,53 @@ export function WorkspaceLayout() {
       if (sidebarAnimationFrameRef.current !== null) {
         window.cancelAnimationFrame(sidebarAnimationFrameRef.current);
       }
+      if (collapsedSizeRafRef.current !== null) {
+        window.cancelAnimationFrame(collapsedSizeRafRef.current);
+      }
     };
   }, []);
 
   useLayoutEffect(() => {
-    const updateCollapsedSize = () => {
+    const applyCollapsedSize = () => {
       const nextSize = getCollapsedSidebarSize();
-      setSidebarCollapsedSize(nextSize);
+      setSidebarCollapsedSize((prev) =>
+        Math.abs(prev - nextSize) < 0.05 ? prev : nextSize,
+      );
 
       if (sidebarCollapsed && !sidebarAnimatingRef.current) {
-        sidebarPanelRef.current?.resize(nextSize);
+        const currentSize = sidebarPanelRef.current?.getSize();
+        if (
+          currentSize === undefined ||
+          Math.abs(currentSize - nextSize) >= 0.05
+        ) {
+          sidebarPanelRef.current?.resize(nextSize);
+        }
       }
     };
 
-    updateCollapsedSize();
+    const scheduleCollapsedSizeUpdate = () => {
+      if (collapsedSizeRafRef.current !== null) return;
+      collapsedSizeRafRef.current = window.requestAnimationFrame(() => {
+        collapsedSizeRafRef.current = null;
+        applyCollapsedSize();
+      });
+    };
+
+    applyCollapsedSize();
 
     const workspaceElement = workspaceRef.current;
     if (!workspaceElement) return;
 
-    const resizeObserver = new ResizeObserver(updateCollapsedSize);
+    const resizeObserver = new ResizeObserver(scheduleCollapsedSizeUpdate);
     resizeObserver.observe(workspaceElement);
 
-    return () => resizeObserver.disconnect();
+    return () => {
+      resizeObserver.disconnect();
+      if (collapsedSizeRafRef.current !== null) {
+        window.cancelAnimationFrame(collapsedSizeRafRef.current);
+        collapsedSizeRafRef.current = null;
+      }
+    };
   }, [getCollapsedSidebarSize, sidebarCollapsed]);
 
   if (!initialized) {

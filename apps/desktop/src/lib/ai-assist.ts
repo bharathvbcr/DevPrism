@@ -11,6 +11,7 @@ import {
   resolveNativeOllamaModel,
   resolveOllamaCredential,
 } from "@/lib/ollama";
+import { runWithSemanticLayer, cosineSimilarity } from "@/lib/semantic-layer";
 
 export interface AiProviderConfig {
   providerCredentialId: string | null;
@@ -106,20 +107,40 @@ export async function aiComplete(options: {
   temperature?: number;
   /** Pass "json" to ask the local model for a strict JSON object. */
   format?: "json";
+  /** RAG chunks compressed via MMR when the semantic layer is enabled. */
+  contextChunks?: string[];
+  skipSemanticLayer?: boolean;
+  skipSemanticCache?: boolean;
 }): Promise<string> {
   const provider = resolveAiProvider();
   await acquireAiSlot();
   try {
-    return await invoke<string>("ai_complete", {
-      prompt: options.prompt,
-      system: options.system ?? null,
-      model: provider.model,
-      baseUrl: provider.baseUrl,
-      providerCredentialId: provider.providerCredentialId,
-      numCtx: provider.numCtx,
-      temperature: options.temperature ?? provider.temperature,
-      format: options.format ?? null,
-    });
+    const { result } = await runWithSemanticLayer(
+      {
+        prompt: options.prompt,
+        system: options.system,
+        format: options.format,
+        contextChunks: options.contextChunks,
+        defaultModel: provider.model,
+        skipSemanticLayer: options.skipSemanticLayer,
+        skipCache: options.skipSemanticCache,
+      },
+      async (prepared) => {
+        const model = prepared.model ?? provider.model;
+        return invoke<string>("ai_complete", {
+          prompt: prepared.prompt,
+          system: prepared.system ?? null,
+          model,
+          baseUrl: provider.baseUrl,
+          providerCredentialId: provider.providerCredentialId,
+          numCtx: provider.numCtx,
+          temperature: options.temperature ?? provider.temperature,
+          format: options.format ?? null,
+        });
+      },
+      aiEmbed,
+    );
+    return result;
   } finally {
     releaseAiSlot();
   }
@@ -131,22 +152,46 @@ export async function aiComplete(options: {
  * chunk). Resolves with the full accumulated text.
  */
 export async function aiCompleteStream(
-  options: { prompt: string; system?: string; temperature?: number },
+  options: {
+    prompt: string;
+    system?: string;
+    temperature?: number;
+    contextChunks?: string[];
+    skipSemanticLayer?: boolean;
+    skipSemanticCache?: boolean;
+  },
   onChunk: (fragment: string) => void,
 ): Promise<string> {
   const provider = resolveAiProvider();
-  const channel = new Channel<string>();
-  channel.onmessage = (fragment) => onChunk(fragment);
-  return invoke<string>("ai_complete_stream", {
-    prompt: options.prompt,
-    system: options.system ?? null,
-    model: provider.model,
-    baseUrl: provider.baseUrl,
-    providerCredentialId: provider.providerCredentialId,
-    numCtx: provider.numCtx,
-    temperature: options.temperature ?? provider.temperature,
-    onChunk: channel,
-  });
+  const { result } = await runWithSemanticLayer(
+    {
+      prompt: options.prompt,
+      system: options.system,
+      defaultModel: provider.model,
+      skipSemanticLayer: options.skipSemanticLayer,
+      skipCache: options.skipSemanticCache,
+      contextChunks: options.contextChunks,
+    },
+    async (prepared) => {
+      const model = prepared.model ?? provider.model;
+      const channel = new Channel<string>();
+      channel.onmessage = (fragment) => onChunk(fragment);
+      return invoke<string>("ai_complete_stream", {
+        prompt: prepared.prompt,
+        system: prepared.system ?? null,
+        model,
+        baseUrl: provider.baseUrl,
+        providerCredentialId: provider.providerCredentialId,
+        numCtx: provider.numCtx,
+        temperature: options.temperature ?? provider.temperature,
+        onChunk: channel,
+      });
+    },
+    aiEmbed,
+    { onCachedResult: onChunk },
+  );
+
+  return result;
 }
 
 /** Embed texts with a local Ollama embedding model. One vector per input.
@@ -173,20 +218,7 @@ export async function aiEmbed(texts: string[]): Promise<number[][]> {
   }
 }
 
-/** Cosine similarity between two equal-length vectors (0 when degenerate). */
-export function cosineSimilarity(a: number[], b: number[]): number {
-  const n = Math.min(a.length, b.length);
-  let dot = 0;
-  let na = 0;
-  let nb = 0;
-  for (let i = 0; i < n; i++) {
-    dot += a[i] * b[i];
-    na += a[i] * a[i];
-    nb += b[i] * b[i];
-  }
-  if (na === 0 || nb === 0) return 0;
-  return dot / (Math.sqrt(na) * Math.sqrt(nb));
-}
+export { cosineSimilarity } from "@/lib/semantic-layer";
 
 /**
  * Rank candidates by local-embedding similarity to a query. Embeds the query
@@ -320,6 +352,8 @@ export async function fetchContextSuggestions(options: {
   spaceKind: SpaceKind;
   excerpt: string;
   fileName?: string;
+  /** Optional extra passages for semantic compression before inference. */
+  contextChunks?: string[];
 }): Promise<ContextSuggestion[]> {
   const excerpt = options.excerpt.trim().slice(0, 1200);
   if (excerpt.length < 40) return [];
@@ -333,6 +367,7 @@ export async function fetchContextSuggestions(options: {
       `Excerpt:\n${excerpt}`,
     temperature: 0.5,
     format: "json",
+    contextChunks: options.contextChunks,
   });
   return parseJsonArray<ContextSuggestion>(raw)
     .filter((s) => s.label?.trim() && s.prompt?.trim())
@@ -512,7 +547,7 @@ export async function draftCommentSuggestion(options: {
 const PREDICTIVE_ACTIONS_SYSTEM =
   "You predict the user's most likely NEXT ACTIONS while writing a document. " +
   'Return a JSON array of 2-4 objects: {"label": string, "prompt": string}. ' +
-  "Labels are imperative, 1-3 words (e.g. \"Add abstract\", \"Tighten intro\", \"Cite source\"). " +
+  'Labels are imperative, 1-3 words (e.g. "Add abstract", "Tighten intro", "Cite source"). ' +
   "Prompts are one actionable sentence to send to an AI writing assistant. " +
   "Base them on what is missing or unfinished in the excerpt. Return ONLY valid JSON — no markdown fences.";
 
@@ -671,7 +706,10 @@ export async function aiParseLimits(
     typeof n === "number" && Number.isFinite(n) && n > 0
       ? Math.round(n)
       : undefined;
-  return { wordLimit: clamp(parsed.wordLimit), charLimit: clamp(parsed.charLimit) };
+  return {
+    wordLimit: clamp(parsed.wordLimit),
+    charLimit: clamp(parsed.charLimit),
+  };
 }
 
 const DIFF_SUMMARY_SYSTEM =
@@ -685,7 +723,7 @@ const COMMENT_REPLY_SYSTEM =
 
 const CITATION_SYSTEM =
   "You pick the most relevant bibliography entries to cite at a point in a document. Given the surrounding " +
-  'text and a JSON list of entries ({key,title,author,year}), return a JSON array of the best citation keys, ' +
+  "text and a JSON list of entries ({key,title,author,year}), return a JSON array of the best citation keys, " +
   "most relevant first, at most 4. Return ONLY a JSON array of key strings — no markdown fences.";
 
 const SEARCH_EXPAND_SYSTEM =
@@ -730,20 +768,18 @@ export async function suggestCitations(
   const ctx = context.trim();
   if (ctx.length < 8 || entries.length === 0) return [];
   const known = new Set(entries.map((e) => e.key));
+  const entryDocs = entries.map(
+    (e) =>
+      `${e.key}: ${(e.title ?? "").slice(0, 120)} (${(e.author ?? "").slice(0, 80)}, ${e.year ?? ""})`,
+  );
   const raw = await aiComplete({
     system: CITATION_SYSTEM,
     prompt:
-      `Context:\n${ctx.slice(0, 1200)}\n\nEntries:\n` +
-      JSON.stringify(
-        entries.map((e) => ({
-          key: e.key,
-          title: (e.title ?? "").slice(0, 120),
-          author: (e.author ?? "").slice(0, 80),
-          year: e.year ?? "",
-        })),
-      ),
+      `Surrounding text:\n${ctx.slice(0, 1200)}\n\n` +
+      "Bibliography entries are provided as numbered context chunks.",
     temperature: 0.2,
     format: "json",
+    contextChunks: entryDocs,
   });
   return parseJsonArray<string>(raw)
     .filter((k) => typeof k === "string" && known.has(k))

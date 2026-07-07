@@ -284,6 +284,11 @@ export function PdfViewer({
 }: PdfViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  // Keep the latest callbacks without re-subscribing observers each render.
+  const onContainerResizeRef = useRef(onContainerResize);
+  onContainerResizeRef.current = onContainerResize;
+  const onFirstPageSizeRef = useRef(onFirstPageSize);
+  onFirstPageSizeRef.current = onFirstPageSize;
 
   const [pageSizes, setPageSizes] = useState<PageSize[]>([]);
   const [visiblePages, setVisiblePages] = useState<Set<number>>(new Set());
@@ -788,10 +793,10 @@ export function PdfViewer({
         });
       }
       if (isFirstLoad.current && syncResult.pageSizes.length > 0) {
-        onFirstPageSize?.(
-          syncResult.pageSizes[0].width,
-          syncResult.pageSizes[0].height,
-        );
+        const cb = onFirstPageSizeRef.current;
+        if (cb) {
+          cb(syncResult.pageSizes[0].width, syncResult.pageSizes[0].height);
+        }
       }
       isFirstLoad.current = false;
       onLoadSuccess?.(syncResult.pageSizes.length);
@@ -823,7 +828,8 @@ export function PdfViewer({
           });
         }
         if (isFirstLoad.current && sizes.length > 0) {
-          onFirstPageSize?.(sizes[0].width, sizes[0].height);
+          const cb = onFirstPageSizeRef.current;
+          if (cb) cb(sizes[0].width, sizes[0].height);
         }
         isFirstLoad.current = false;
         onLoadSuccess?.(sizes.length);
@@ -851,6 +857,7 @@ export function PdfViewer({
       (entries) => {
         setVisiblePages((prev) => {
           const next = new Set(prev);
+          let changed = false;
           for (const entry of entries) {
             const el = entry.target as HTMLElement;
             const pageNum = parseInt(
@@ -859,12 +866,15 @@ export function PdfViewer({
             );
             if (pageNum === 0) continue;
             if (entry.isIntersecting) {
-              next.add(pageNum);
-            } else {
-              next.delete(pageNum);
+              if (!next.has(pageNum)) {
+                next.add(pageNum);
+                changed = true;
+              }
+            } else if (next.delete(pageNum)) {
+              changed = true;
             }
           }
-          return next;
+          return changed ? next : prev;
         });
       },
       {
@@ -882,14 +892,16 @@ export function PdfViewer({
   // Report container dimensions to parent for fit-to-width/height
   useEffect(() => {
     const container = containerRef.current;
-    if (!container || !onContainerResize) return;
+    if (!container) return;
     const ro = new ResizeObserver((entries) => {
+      const cb = onContainerResizeRef.current;
+      if (!cb) return;
       const { width, height } = entries[0].contentRect;
-      onContainerResize(width, height);
+      cb(Math.round(width), Math.round(height));
     });
     ro.observe(container);
     return () => ro.disconnect();
-  }, [onContainerResize]);
+  }, []);
 
   // SyncTeX: double-click or Ctrl/Cmd+click jumps to source
   useEffect(() => {
@@ -1615,7 +1627,7 @@ export function PdfViewer({
         ref={containerRef}
         tabIndex={-1}
         {...{ [LOCAL_ZOOM_SHORTCUTS_ATTR]: "true" }}
-        className="min-h-0 flex-1 overflow-auto overscroll-contain outline-none"
+        className="min-h-0 flex-1 overflow-auto overscroll-contain outline-none [scrollbar-gutter:stable]"
         style={{
           cursor: captureMode ? "crosshair" : undefined,
           touchAction: captureMode ? "none" : "pan-x pan-y",

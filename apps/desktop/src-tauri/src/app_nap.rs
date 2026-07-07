@@ -48,7 +48,7 @@ fn acquire(reason: &str) {
         // additionally resists App Nap's aggressive throttling.
         let opts = NSActivityOptions::UserInitiated | NSActivityOptions::LatencyCritical;
         let pi = NSProcessInfo::processInfo();
-        let token = unsafe { pi.beginActivityWithOptions_reason(opts, &NSString::from_str(reason)) };
+        let token = pi.beginActivityWithOptions_reason(opts, &NSString::from_str(reason));
         s.token = Some(Token(token));
     }
 }

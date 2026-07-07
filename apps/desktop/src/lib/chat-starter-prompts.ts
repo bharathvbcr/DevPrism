@@ -176,7 +176,41 @@ export function buildChatStarterPrompts(
   return prompts.slice(0, MAX_STARTER_PROMPTS);
 }
 
-/** Convenience wrapper that reads live document store state. */
+/**
+ * Convenience wrapper that reads live document store state.
+ *
+ * IMPORTANT: this is used as a `getSnapshot` for `useSyncExternalStore`
+ * (chat-messages.tsx, native-ollama-empty-state.tsx). React compares
+ * consecutive snapshots with `Object.is`, so returning a fresh array on
+ * every call makes React believe the store changed after *every* render —
+ * an infinite re-render loop that throws React error #185 in production.
+ * The snapshot is therefore cached and only recomputed when the inputs
+ * (files array, active file, compile error) actually change; zustand state
+ * is immutable, so reference equality on those inputs is sufficient.
+ */
+let snapshotCache: {
+  files: ProjectFile[];
+  activeFileId: unknown;
+  compileError: string | null;
+  prompts: string[];
+} | null = null;
+
 export function buildChatStarterPromptsFromStore(): string[] {
-  return buildChatStarterPrompts(gatherChatStarterContext());
+  const doc = useDocumentStore.getState();
+  if (
+    snapshotCache &&
+    snapshotCache.files === doc.files &&
+    snapshotCache.activeFileId === doc.activeFileId &&
+    snapshotCache.compileError === doc.compileError
+  ) {
+    return snapshotCache.prompts;
+  }
+  const prompts = buildChatStarterPrompts(gatherChatStarterContext());
+  snapshotCache = {
+    files: doc.files,
+    activeFileId: doc.activeFileId,
+    compileError: doc.compileError,
+    prompts,
+  };
+  return prompts;
 }

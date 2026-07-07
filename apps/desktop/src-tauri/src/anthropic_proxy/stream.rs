@@ -18,6 +18,8 @@ struct OpenAiStreamState {
     stop_reason: Option<String>,
     output_tokens: u64,
     input_tokens: u64,
+    /// Assembled assistant text (excludes thinking blocks).
+    assembled_text: String,
 }
 
 #[derive(Default)]
@@ -32,7 +34,7 @@ pub(super) async fn stream_openai_sse_to_anthropic(
     mut response: reqwest::Response,
     anthropic_request: &Value,
     credential: &OpenAiProxyCredential,
-) -> Result<(), String> {
+) -> Result<String, String> {
     stream
         .write_all(streaming_http_headers().as_bytes())
         .await
@@ -52,7 +54,7 @@ pub(super) async fn stream_openai_sse_to_anthropic(
             let rendered =
                 anthropic_stream_error_sse(&format!("Provider stream ended unexpectedly: {}", err));
             let _ = write_stream_body(stream, &rendered, "provider stream error").await;
-            return Ok(());
+            return Ok(String::new());
         }
     } {
         byte_buf.extend_from_slice(&chunk);
@@ -62,7 +64,7 @@ pub(super) async fn stream_openai_sse_to_anthropic(
             let rendered =
                 openai_sse_event_to_anthropic(&mut state, &event, anthropic_request, credential);
             if !write_stream_body(stream, &rendered, "proxy stream event").await {
-                return Ok(());
+                return Ok(state.assembled_text);
             }
         }
     }
@@ -76,13 +78,13 @@ pub(super) async fn stream_openai_sse_to_anthropic(
         let rendered =
             openai_sse_event_to_anthropic(&mut state, &buffer, anthropic_request, credential);
         if !write_stream_body(stream, &rendered, "final proxy stream event").await {
-            return Ok(());
+            return Ok(state.assembled_text);
         }
     }
 
     let rendered = finish_anthropic_stream(&mut state);
     let _ = write_stream_body(stream, &rendered, "proxy stream completion").await;
-    Ok(())
+    Ok(state.assembled_text)
 }
 
 /// Move every complete UTF-8 codepoint from `bytes` into `out`, leaving only a
@@ -395,6 +397,9 @@ fn push_stream_text_delta(
             },
         }),
     );
+    if block_type == "text" {
+        state.assembled_text.push_str(text);
+    }
 }
 
 fn push_stream_tool_delta(state: &mut OpenAiStreamState, call: &Value) {

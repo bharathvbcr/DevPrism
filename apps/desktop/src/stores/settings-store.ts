@@ -92,6 +92,22 @@ interface SettingsState {
   /** AI command palette (Cmd/Ctrl+K) with natural-language action routing. */
   aiCommandPalette: boolean;
   setAiCommandPalette: (enabled: boolean) => void;
+  /** Semantic layer: cache, router, and RAG compressor on AI assist calls. */
+  semanticLayerEnabled: boolean;
+  setSemanticLayerEnabled: (enabled: boolean) => void;
+  semanticCacheEnabled: boolean;
+  setSemanticCacheEnabled: (enabled: boolean) => void;
+  semanticRouterEnabled: boolean;
+  setSemanticRouterEnabled: (enabled: boolean) => void;
+  semanticCompressorEnabled: boolean;
+  setSemanticCompressorEnabled: (enabled: boolean) => void;
+  /** Optional Ollama models per complexity tier (null = use default chat model). */
+  semanticLightModel: string | null;
+  setSemanticLightModel: (model: string | null) => void;
+  semanticMediumModel: string | null;
+  setSemanticMediumModel: (model: string | null) => void;
+  semanticHeavyModel: string | null;
+  setSemanticHeavyModel: (model: string | null) => void;
   /** Ollama context window (num_ctx) for the native agent. */
   nativeNumCtx: number;
   setNativeNumCtx: (n: number) => void;
@@ -180,6 +196,33 @@ export const useSettingsStore = create<SettingsState>()(
       setAiVisionCaption: (enabled) => set({ aiVisionCaption: enabled }),
       aiCommandPalette: true,
       setAiCommandPalette: (enabled) => set({ aiCommandPalette: enabled }),
+      semanticLayerEnabled: false,
+      setSemanticLayerEnabled: (enabled) =>
+        set({ semanticLayerEnabled: enabled }),
+      semanticCacheEnabled: true,
+      setSemanticCacheEnabled: (enabled) =>
+        set({ semanticCacheEnabled: enabled }),
+      semanticRouterEnabled: true,
+      setSemanticRouterEnabled: (enabled) =>
+        set({ semanticRouterEnabled: enabled }),
+      semanticCompressorEnabled: true,
+      setSemanticCompressorEnabled: (enabled) =>
+        set({ semanticCompressorEnabled: enabled }),
+      semanticLightModel: null,
+      setSemanticLightModel: (model) =>
+        set({
+          semanticLightModel: model?.trim() ? model.trim() : null,
+        }),
+      semanticMediumModel: null,
+      setSemanticMediumModel: (model) =>
+        set({
+          semanticMediumModel: model?.trim() ? model.trim() : null,
+        }),
+      semanticHeavyModel: null,
+      setSemanticHeavyModel: (model) =>
+        set({
+          semanticHeavyModel: model?.trim() ? model.trim() : null,
+        }),
       nativeNumCtx: 8192,
       setNativeNumCtx: (n) =>
         set({

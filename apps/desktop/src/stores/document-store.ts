@@ -490,6 +490,8 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
       })[0];
 
     clearPdfBytesCache();
+    clearScrollPositionCache();
+    clearZoomCache();
     set({
       projectRoot: rootPath,
       files: projectFiles,

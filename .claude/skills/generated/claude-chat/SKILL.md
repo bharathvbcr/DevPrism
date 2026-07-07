@@ -1,98 +1,99 @@
 ---
 name: claude-chat
-description: "Skill for the Claude-chat area of DevPrism. 60 symbols across 16 files."
+description: "Skill for the Claude-chat area of DevPrism. 184 symbols across 26 files."
 ---
 
 # Claude-chat
 
-60 symbols | 16 files | Cohesion: 77%
+184 symbols | 26 files | Cohesion: 76%
 
 ## When to Use
 
 - Working with code in `apps/`
-- Understanding how offsetToLineCol, useOllamaStatus, getOllamaStatus work
+- Understanding how ChatComposer, cancelExecution, setSelectedModel work
 - Modifying claude-chat-related functionality
 
 ## Key Files
 
 | File | Symbols |
 |------|---------|
-| `apps/desktop/src/components/claude-chat/chat-composer.tsx` | pastedFileExtension, safePastedFileName, readFileAsDataUrl, temporaryFilePaths, cleanupTemporaryFilePaths (+13) |
-| `apps/desktop/src/components/claude-chat/slash-command-picker.tsx` | scopeToTab, getCommandIcon, SlashCommandPicker, renderItem, renderEmptyState (+7) |
-| `apps/desktop/src/components/claude-chat/tool-widgets.tsx` | EditWidget, BashWidget, truncate, AskUserQuestionWidget, handleOptionClick (+4) |
-| `apps/desktop/src/lib/ollama.ts` | getOllamaStatus, ollamaModelHeuristics, formatOllamaModelSize |
-| `apps/desktop/src/components/claude-chat/chat-messages.tsx` | UserMessage, renderErrorBlock, submitEdit |
-| `apps/desktop/src/lib/ai-assist.ts` | fetchContextSuggestions, fetchChatFollowUps |
-| `apps/desktop/src/components/claude-chat/chat-space-suggestions.tsx` | ChatSpaceSuggestions, runPrompt |
-| `apps/desktop/src/components/claude-chat/chat-follow-up-suggestions.tsx` | extractLastAssistantText, ChatFollowUpSuggestions |
-| `apps/desktop/src/components/claude-chat/proposed-changes-panel.tsx` | ProposedChangesPanel, updateWidth |
-| `apps/desktop/src/stores/claude-chat-store.ts` | offsetToLineCol |
+| `apps/desktop/src/components/claude-chat/chat-composer.tsx` | cleanupTemporaryFilePaths, cleanupTemporaryPinnedContext, getFileIcon, formatGuidanceText, effortShortLabel (+44) |
+| `apps/desktop/src/components/claude-chat/tool-widgets.tsx` | ToolWidget, StatusIcon, DisclosureChevron, ToolRowButton, WriteWidget (+19) |
+| `apps/desktop/src/components/claude-chat/chat-messages.tsx` | MessageActions, RegenerateButton, resendFromMessage, SummaryCallout, MessageBubble (+13) |
+| `apps/desktop/src/components/claude-chat/slash-command-picker.tsx` | scopeToTab, filterAndSort, tabCounts, filtered, searchGroups (+9) |
+| `apps/desktop/src/components/claude-chat/claude-chat-drawer.tsx` | ClaudeChatDrawer, openDrawer, onOpen, panelStyle, restoreFocus (+6) |
+| `apps/desktop/src/components/claude-chat/markdown-renderer.tsx` | MarkdownRenderer, looksLikeShellCommand, isShellCodeBlock, code, CodeBlock (+3) |
+| `apps/desktop/src/components/claude-chat/chat-tab-bar.tsx` | ChatTabBar, setActiveTab, closeTab, handleKeyDown, handleClose (+3) |
+| `apps/desktop/src/components/claude-chat/context-usage-indicator.tsx` | ContextUsageIndicator, latestContextTruncation, truncation, latestPromptTokens, promptTokens (+2) |
+| `apps/desktop/src/components/claude-chat/proposed-changes-panel.tsx` | rawDiff, diffRows, DiffLinePrefix, UnifiedDiffView, SplitDiffView (+2) |
+| `apps/desktop/src/lib/model-capabilities.ts` | rememberModelCapabilityMetadata, rememberModelListCapabilityMetadata, modelInfoId, isChatModelOption |
 
 ## Entry Points
 
 Start here when exploring this area:
 
-- **`offsetToLineCol`** (Function) — `apps/desktop/src/stores/claude-chat-store.ts:49`
-- **`useOllamaStatus`** (Function) — `apps/desktop/src/hooks/use-ollama-status.ts:6`
-- **`getOllamaStatus`** (Function) — `apps/desktop/src/lib/ollama.ts:68`
-- **`ollamaModelHeuristics`** (Function) — `apps/desktop/src/lib/ollama.ts:87`
-- **`formatOllamaModelSize`** (Function) — `apps/desktop/src/lib/ollama.ts:100`
+- **`ChatComposer`** (Function) — `apps/desktop/src/components/claude-chat/chat-composer.tsx:291`
+- **`cancelExecution`** (Function) — `apps/desktop/src/components/claude-chat/chat-composer.tsx:295`
+- **`setSelectedModel`** (Function) — `apps/desktop/src/components/claude-chat/chat-composer.tsx:304`
+- **`setSelectedProviderModel`** (Function) — `apps/desktop/src/components/claude-chat/chat-composer.tsx:314`
+- **`setEffortLevel`** (Function) — `apps/desktop/src/components/claude-chat/chat-composer.tsx:318`
 
 ## Key Symbols
 
 | Symbol | Type | File | Line |
 |--------|------|------|------|
-| `offsetToLineCol` | Function | `apps/desktop/src/stores/claude-chat-store.ts` | 49 |
-| `useOllamaStatus` | Function | `apps/desktop/src/hooks/use-ollama-status.ts` | 6 |
-| `getOllamaStatus` | Function | `apps/desktop/src/lib/ollama.ts` | 68 |
-| `ollamaModelHeuristics` | Function | `apps/desktop/src/lib/ollama.ts` | 87 |
-| `formatOllamaModelSize` | Function | `apps/desktop/src/lib/ollama.ts` | 100 |
-| `ChatComposer` | Function | `apps/desktop/src/components/claude-chat/chat-composer.tsx` | 283 |
-| `selectCredential` | Function | `apps/desktop/src/components/claude-chat/chat-composer.tsx` | 1849 |
-| `deriveOwner` | Function | `apps/desktop/src/stores/variants-store.ts` | 28 |
-| `useSpaceFeatures` | Function | `apps/desktop/src/hooks/use-space-features.ts` | 26 |
-| `recordPersonalizationEvent` | Function | `apps/desktop/src/lib/personalization.ts` | 34 |
-| `fetchContextSuggestions` | Function | `apps/desktop/src/lib/ai-assist.ts` | 274 |
-| `fetchChatFollowUps` | Function | `apps/desktop/src/lib/ai-assist.ts` | 296 |
-| `SpaceFeaturesBar` | Function | `apps/desktop/src/components/workspace/space-features-bar.tsx` | 13 |
-| `ChatSpaceSuggestions` | Function | `apps/desktop/src/components/claude-chat/chat-space-suggestions.tsx` | 15 |
-| `runPrompt` | Function | `apps/desktop/src/components/claude-chat/chat-space-suggestions.tsx` | 81 |
-| `ChatFollowUpSuggestions` | Function | `apps/desktop/src/components/claude-chat/chat-follow-up-suggestions.tsx` | 32 |
-| `EditorAiSuggestions` | Function | `apps/desktop/src/components/workspace/editor/editor-ai-suggestions.tsx` | 15 |
-| `SlashCommandPicker` | Function | `apps/desktop/src/components/claude-chat/slash-command-picker.tsx` | 351 |
-| `renderItem` | Function | `apps/desktop/src/components/claude-chat/slash-command-picker.tsx` | 520 |
-| `renderEmptyState` | Function | `apps/desktop/src/components/claude-chat/slash-command-picker.tsx` | 563 |
+| `ChatComposer` | Function | `apps/desktop/src/components/claude-chat/chat-composer.tsx` | 291 |
+| `cancelExecution` | Function | `apps/desktop/src/components/claude-chat/chat-composer.tsx` | 295 |
+| `setSelectedModel` | Function | `apps/desktop/src/components/claude-chat/chat-composer.tsx` | 304 |
+| `setSelectedProviderModel` | Function | `apps/desktop/src/components/claude-chat/chat-composer.tsx` | 314 |
+| `setEffortLevel` | Function | `apps/desktop/src/components/claude-chat/chat-composer.tsx` | 318 |
+| `setNativeOllamaModel` | Function | `apps/desktop/src/components/claude-chat/chat-composer.tsx` | 362 |
+| `loadOllamaModels` | Function | `apps/desktop/src/components/claude-chat/chat-composer.tsx` | 728 |
+| `refreshOllamaModels` | Function | `apps/desktop/src/components/claude-chat/chat-composer.tsx` | 747 |
+| `importFiles` | Function | `apps/desktop/src/components/claude-chat/chat-composer.tsx` | 836 |
+| `consumePendingAttachments` | Function | `apps/desktop/src/components/claude-chat/chat-composer.tsx` | 842 |
+| `consumePendingPinnedContextRemovals` | Function | `apps/desktop/src/components/claude-chat/chat-composer.tsx` | 848 |
+| `consumePendingComposerInput` | Function | `apps/desktop/src/components/claude-chat/chat-composer.tsx` | 890 |
+| `buildPinnedContextForFile` | Function | `apps/desktop/src/components/claude-chat/chat-composer.tsx` | 979 |
+| `selectMention` | Function | `apps/desktop/src/components/claude-chat/chat-composer.tsx` | 998 |
+| `clearComposerInput` | Function | `apps/desktop/src/components/claude-chat/chat-composer.tsx` | 1077 |
+| `dismissGhostText` | Function | `apps/desktop/src/components/claude-chat/chat-composer.tsx` | 1091 |
+| `acceptGhostText` | Function | `apps/desktop/src/components/claude-chat/chat-composer.tsx` | 1219 |
+| `handleImprovePrompt` | Function | `apps/desktop/src/components/claude-chat/chat-composer.tsx` | 1236 |
+| `handleKeyDown` | Function | `apps/desktop/src/components/claude-chat/chat-composer.tsx` | 1583 |
+| `ContextUsageIndicator` | Function | `apps/desktop/src/components/claude-chat/context-usage-indicator.tsx` | 88 |
 
 ## Execution Flows
 
 | Flow | Type | Steps |
 |------|------|-------|
-| `ChatSpaceSuggestions → IsOllamaEndpoint` | cross_community | 6 |
-| `ChatFollowUpSuggestions → IsOllamaEndpoint` | cross_community | 6 |
-| `EditorAiSuggestions → IsOllamaEndpoint` | cross_community | 6 |
-| `LatexEditor → IsSpaceKind` | cross_community | 5 |
-| `EditorStatusBar → IsSpaceKind` | cross_community | 5 |
-| `EditorToolbar → IsSpaceKind` | cross_community | 5 |
-| `SpaceQuickActions → IsSpaceKind` | cross_community | 5 |
-| `ChatSpaceSuggestions → IsSpaceKind` | cross_community | 5 |
-| `ChatSpaceSuggestions → ResolveNativeOllamaModel` | cross_community | 5 |
-| `ChatFollowUpSuggestions → IsSpaceKind` | cross_community | 5 |
+| `HandlePaste → ParseBrowserRoot` | cross_community | 6 |
+| `HandlePaste → BrowserRootPath` | cross_community | 6 |
+| `HandlePaste → RelativeFromBrowserAbsolute` | cross_community | 6 |
+| `SpaceQuickActions → IsOllamaEndpoint` | cross_community | 6 |
+| `CommentComposer → IsOllamaEndpoint` | cross_community | 6 |
+| `HandleToolbarAction → ResolveNativeOllamaModel` | cross_community | 6 |
+| `TailorDialog → IsOllamaEndpoint` | cross_community | 6 |
+| `ClaudeChatDrawer → IsBrowserProjectPath` | cross_community | 6 |
+| `ClaudeChatDrawer → ResolveSemanticConfig` | cross_community | 6 |
+| `Handle → IsOllamaEndpoint` | cross_community | 6 |
 
 ## Connected Areas
 
 | Area | Connections |
 |------|-------------|
-| Workspace | 8 calls |
-| Ui | 7 calls |
-| Editor | 7 calls |
-| Components | 4 calls |
-| Cluster_156 | 2 calls |
-| Cluster_179 | 2 calls |
-| Cluster_168 | 2 calls |
-| Stores | 1 calls |
+| Workspace | 23 calls |
+| Ui | 20 calls |
+| Components | 13 calls |
+| Editor | 8 calls |
+| Hooks | 3 calls |
+| Stores | 2 calls |
+| Cluster_333 | 2 calls |
+| Cluster_318 | 2 calls |
 
 ## How to Explore
 
-1. `gitnexus_context({name: "offsetToLineCol"})` — see callers and callees
-2. `gitnexus_query({query: "claude-chat"})` — find related execution flows
+1. `context({name: "ChatComposer"})` — see callers and callees
+2. `query({search_query: "claude-chat"})` — find related execution flows
 3. Read key files listed above for implementation details
+4. `explain({target: "<file or symbol>"})` — persisted taint findings (source→sink data flows), when indexed with `--pdg`

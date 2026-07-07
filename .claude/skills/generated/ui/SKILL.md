@@ -1,83 +1,98 @@
 ---
 name: ui
-description: "Skill for the Ui area of DevPrism. 83 symbols across 38 files."
+description: "Skill for the Ui area of DevPrism. 68 symbols across 32 files."
 ---
 
 # Ui
 
-83 symbols | 38 files | Cohesion: 80%
+68 symbols | 32 files | Cohesion: 45%
 
 ## When to Use
 
 - Working with code in `apps/`
-- Understanding how cn, UvSetupDialog, OllamaModelBadges work
+- Understanding how DevPrismLogo, InstallProgress, CommentsPanel work
 - Modifying ui-related functionality
 
 ## Key Files
 
 | File | Symbols |
 |------|---------|
-| `apps/desktop/src/components/ui/dropdown-menu.tsx` | DropdownMenuContent, DropdownMenuItem, DropdownMenuCheckboxItem, DropdownMenuRadioItem, DropdownMenuLabel (+4) |
-| `apps/desktop/src/components/project-picker.tsx` | isProjectDrag, SpaceGlyph, SpaceNavButton, ProjectNavButton, SettingsDetailButton (+2) |
-| `apps/desktop/src/components/ui/select.tsx` | SelectTrigger, SelectContent, SelectLabel, SelectItem, SelectSeparator (+2) |
-| `apps/desktop/src/components/workspace/sidebar.tsx` | LayoutPaneSwitcher, LayoutToggleRow, DroppableRoot, DroppableFolder, FileCommentBadge (+1) |
-| `apps/desktop/src/components/ui/sheet.tsx` | SheetOverlay, SheetContent, SheetHeader, SheetFooter, SheetTitle (+1) |
-| `apps/desktop/src/components/ui/dialog.tsx` | DialogOverlay, DialogContent, DialogHeader, DialogFooter, DialogTitle (+1) |
-| `apps/desktop/src/components/ui/context-menu.tsx` | ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuSubTrigger, ContextMenuSubContent |
+| `apps/desktop/src/components/ui/dropdown-menu.tsx` | DropdownMenuShortcut, DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem (+3) |
+| `apps/desktop/src/components/ui/sheet.tsx` | SheetPortal, SheetOverlay, SheetContent, SheetHeader, SheetFooter (+2) |
+| `apps/desktop/src/components/ui/card.tsx` | Card, CardHeader, CardTitle, CardDescription, CardContent (+1) |
+| `apps/desktop/src/App.tsx` | LazyDebugPage, TrackChangesPdfDialog, NativeWindowThemeBridge, syncNativeTheme, App |
 | `apps/desktop/src/components/ui/tabs.tsx` | Tabs, TabsList, TabsTrigger, TabsContent |
-| `apps/desktop/src/components/claude-setup.tsx` | StepRow, InstallLogOutput |
-| `apps/desktop/src/components/workspace/comments-panel.tsx` | CommentsPanel, AuthorChip |
+| `apps/desktop/src/components/project-picker.tsx` | SpaceGlyph, formatProjectDate, ProjectPreviewCard, SpaceNavButton |
+| `apps/desktop/src/components/ui/tooltip.tsx` | TooltipProvider, Tooltip, TooltipTrigger, TooltipContent |
+| `apps/desktop/src/components/workspace/space-quick-actions.tsx` | SpaceQuickActions, sendPrompt, iconFor |
+| `apps/desktop/src/components/ui/scroll-area.tsx` | ScrollArea, ScrollBar |
+| `apps/desktop/src/components/ui/select.tsx` | SelectScrollUpButton, SelectScrollDownButton |
 
 ## Entry Points
 
 Start here when exploring this area:
 
-- **`cn`** (Function) — `apps/desktop/src/lib/utils.ts:3`
-- **`UvSetupDialog`** (Function) — `apps/desktop/src/components/uv-setup.tsx:27`
-- **`OllamaModelBadges`** (Function) — `apps/desktop/src/components/ollama-model-badges.tsx:9`
 - **`DevPrismLogo`** (Function) — `apps/desktop/src/components/devprism-logo.tsx:11`
-- **`ZoteroHeader`** (Function) — `apps/desktop/src/components/workspace/zotero-panel.tsx:152`
+- **`InstallProgress`** (Function) — `apps/desktop/src/components/scientific-skills/install-progress.tsx:43`
+- **`CommentsPanel`** (Function) — `apps/desktop/src/components/workspace/comments-panel.tsx:91`
+- **`cn`** (Function) — `apps/desktop/src/lib/utils.ts:3`
+- **`ExportMenu`** (Function) — `apps/desktop/src/components/workspace/editor/export-menu.tsx:52`
 
 ## Key Symbols
 
 | Symbol | Type | File | Line |
 |--------|------|------|------|
-| `cn` | Function | `apps/desktop/src/lib/utils.ts` | 3 |
-| `UvSetupDialog` | Function | `apps/desktop/src/components/uv-setup.tsx` | 27 |
-| `OllamaModelBadges` | Function | `apps/desktop/src/components/ollama-model-badges.tsx` | 9 |
 | `DevPrismLogo` | Function | `apps/desktop/src/components/devprism-logo.tsx` | 11 |
-| `ZoteroHeader` | Function | `apps/desktop/src/components/workspace/zotero-panel.tsx` | 152 |
-| `HistoryPanel` | Function | `apps/desktop/src/components/workspace/history-panel.tsx` | 68 |
-| `CommentsPanel` | Function | `apps/desktop/src/components/workspace/comments-panel.tsx` | 88 |
-| `ToolbarGroup` | Function | `apps/desktop/src/components/ui/toolbar-group.tsx` | 10 |
-| `MarkdownRenderer` | Function | `apps/desktop/src/components/claude-chat/markdown-renderer.tsx` | 78 |
-| `SelectionToolbar` | Function | `apps/desktop/src/components/workspace/editor/selection-toolbar.tsx` | 31 |
-| `isProjectDrag` | Function | `apps/desktop/src/components/project-picker.tsx` | 168 |
-| `SpaceGlyph` | Function | `apps/desktop/src/components/project-picker.tsx` | 176 |
-| `SpaceNavButton` | Function | `apps/desktop/src/components/project-picker.tsx` | 2902 |
-| `ProjectNavButton` | Function | `apps/desktop/src/components/project-picker.tsx` | 2995 |
-| `SettingsDetailButton` | Function | `apps/desktop/src/components/project-picker.tsx` | 3060 |
-| `SettingsPanel` | Function | `apps/desktop/src/components/project-picker.tsx` | 3102 |
-| `StatusRow` | Function | `apps/desktop/src/components/project-picker.tsx` | 3247 |
-| `SetupItem` | Function | `apps/desktop/src/components/environment-onboarding.tsx` | 433 |
-| `StepRow` | Function | `apps/desktop/src/components/claude-setup.tsx` | 417 |
-| `InstallLogOutput` | Function | `apps/desktop/src/components/claude-setup.tsx` | 447 |
+| `InstallProgress` | Function | `apps/desktop/src/components/scientific-skills/install-progress.tsx` | 43 |
+| `CommentsPanel` | Function | `apps/desktop/src/components/workspace/comments-panel.tsx` | 91 |
+| `cn` | Function | `apps/desktop/src/lib/utils.ts` | 3 |
+| `ExportMenu` | Function | `apps/desktop/src/components/workspace/editor/export-menu.tsx` | 52 |
+| `SpaceQuickActions` | Function | `apps/desktop/src/components/workspace/space-quick-actions.tsx` | 39 |
+| `sendPrompt` | Function | `apps/desktop/src/components/workspace/space-quick-actions.tsx` | 45 |
+| `iconFor` | Function | `apps/desktop/src/components/workspace/space-quick-actions.tsx` | 114 |
+| `TrackChangesActions` | Function | `apps/desktop/src/components/workspace/track-changes-actions.tsx` | 40 |
+| `ZoteroHeader` | Function | `apps/desktop/src/components/workspace/zotero-panel.tsx` | 171 |
+| `App` | Function | `apps/desktop/src/App.tsx` | 237 |
+| `BrowserPreviewBanner` | Function | `apps/desktop/src/components/browser-preview-banner.tsx` | 5 |
+| `useKeyboardShortcuts` | Function | `apps/desktop/src/hooks/use-keyboard-shortcuts.ts` | 9 |
+| `syncPersonalizationEnabled` | Function | `apps/desktop/src/lib/personalization.ts` | 72 |
+| `setPersonalizationEnabled` | Function | `apps/desktop/src/stores/personalization-store.ts` | 111 |
+| `TooltipIconButton` | Function | `apps/desktop/src/components/assistant-ui/tooltip-icon-button.tsx` | 16 |
+| `Card` | Function | `apps/desktop/src/components/ui/card.tsx` | 4 |
+| `CardHeader` | Function | `apps/desktop/src/components/ui/card.tsx` | 19 |
+| `CardTitle` | Function | `apps/desktop/src/components/ui/card.tsx` | 31 |
+| `CardDescription` | Function | `apps/desktop/src/components/ui/card.tsx` | 46 |
 
 ## Execution Flows
 
 | Flow | Type | Steps |
 |------|------|-------|
-| `SlashCommandPicker → Cn` | cross_community | 4 |
+| `App → Clear` | cross_community | 6 |
+| `App → IsTauri` | cross_community | 6 |
+| `SpaceQuickActions → IsOllamaEndpoint` | cross_community | 6 |
+| `SpaceQuickActions → ResolveSemanticConfig` | cross_community | 6 |
+| `SpaceQuickActions → EmbedText` | cross_community | 6 |
+| `SpaceQuickActions → FormatCompressedContext` | cross_community | 6 |
+| `App → IsOllamaEndpoint` | cross_community | 5 |
+| `App → ResolveSemanticConfig` | cross_community | 5 |
+| `SpaceQuickActions → ResolveNativeOllamaModel` | cross_community | 5 |
+| `EditorToolbar → Cn` | cross_community | 4 |
 
 ## Connected Areas
 
 | Area | Connections |
 |------|-------------|
-| Cluster_156 | 1 calls |
-| Components | 1 calls |
+| Workspace | 14 calls |
+| Components | 7 calls |
+| Semantic-layer | 4 calls |
+| Stores | 4 calls |
+| Editor | 2 calls |
+| Hooks | 1 calls |
+| Cluster_318 | 1 calls |
 
 ## How to Explore
 
-1. `gitnexus_context({name: "cn"})` — see callers and callees
-2. `gitnexus_query({query: "ui"})` — find related execution flows
+1. `context({name: "DevPrismLogo"})` — see callers and callees
+2. `query({search_query: "ui"})` — find related execution flows
 3. Read key files listed above for implementation details
+4. `explain({target: "<file or symbol>"})` — persisted taint findings (source→sink data flows), when indexed with `--pdg`

@@ -1,98 +1,98 @@
 ---
 name: editor
-description: "Skill for the Editor area of DevPrism. 137 symbols across 36 files."
+description: "Skill for the Editor area of DevPrism. 230 symbols across 38 files."
 ---
 
 # Editor
 
-137 symbols | 36 files | Cohesion: 67%
+230 symbols | 38 files | Cohesion: 73%
 
 ## When to Use
 
 - Working with code in `apps/`
-- Understanding how recommendedTemplateIdsForKind, has, TemplateGallery work
+- Understanding how aiGrammarExtension, aiPredictiveExtension, bibtex work
 - Modifying editor-related functionality
 
 ## Key Files
 
 | File | Symbols |
 |------|---------|
-| `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | DiffLines, computeUnifiedHunks, getActiveFileContent, spellCheckExtension, LatexEditor (+7) |
-| `apps/desktop/src/lib/resume-bullets.ts` | bulletCountSuccessMessage, stripLatexInline, findRoleContextBefore, countLatexItems, isResumeBulletSelection (+7) |
-| `apps/desktop/src/components/workspace/editor/image-drop.ts` | extOf, isDroppableImage, filterImagePaths, captionAndLabel, isSvgPath (+6) |
-| `apps/desktop/src/lib/inline-edit.ts` | inlineEditUsesDirectProvider, inlineEditChatPrompt, canUseDirectInlineTransform, runInlineEdit, inlineEditUsesNativeTransform (+4) |
-| `apps/desktop/src/components/workspace/editor/editor-toolbar.tsx` | getOpenEditorButtonClassName, EditorToolbar, insertText, insertSnippet, handleProfileChange (+3) |
-| `apps/desktop/src/components/workspace/editor/comments-extension.ts` | formatRelTime, el, dispatch, renderTooltipBody, mkBtn (+3) |
-| `apps/desktop/src/components/workspace/sidebar.tsx` | otherGroupKey, isTexFileName, buildFileTree, getOrCreateFolder, sortNodes (+1) |
-| `apps/desktop/src/lib/ai-assist.ts` | canUseAiAssist, aiSuggestVersionName, extractGrammarSpan, fixLintLine, tightenToLimit (+1) |
-| `apps/desktop/src/components/workspace/editor/document-outline.tsx` | readBraceArg, cleanTitle, parseOutline, DocumentOutline, jumpTo (+1) |
-| `apps/desktop/src/lib/resume-bullet-suggestions.ts` | suggestionIdForInsight, findSuggestionById, refinementSuccessMessage, bulletQualityScore, bulletQualityGrade (+1) |
+| `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | getActiveFileContent, spellCheckExtension, LatexEditor, clearJumpRequest, setIsCompiling (+42) |
+| `apps/desktop/src/components/workspace/editor/editor-toolbar.tsx` | OpenEditorIcon, getOpenEditorButtonClassName, FileBreadcrumb, renderCrumb, SaveStatus (+17) |
+| `apps/desktop/src/lib/resume-bullets.ts` | bulletCountSuccessMessage, clampResumeBulletCount, suggestedBulletTargets, buildBulletCountInstruction, countLatexItems (+10) |
+| `apps/desktop/src/components/workspace/editor/comments-extension.ts` | formatRelTime, el, dispatch, renderTooltipBody, mkBtn (+10) |
+| `apps/desktop/src/lib/resume-bullet-suggestions.ts` | findSuggestionById, refinementSuccessMessage, recommendedBulletTarget, envHint, buildBulletRefinementInstruction (+6) |
+| `apps/desktop/src/components/workspace/editor/editor-status-bar.tsx` | compiledPageCount, countWords, stats, selectionStats, cursorBulletBlock (+6) |
+| `apps/desktop/src/components/workspace/editor/image-drop.ts` | filterImagePaths, captionAndLabel, isSvgPath, buildFigureSnippet, insertDroppedImages (+6) |
+| `apps/desktop/src/lib/ai-assist.ts` | suggestCitations, extractGrammarSpan, checkGrammar, aiParseLimits, clamp (+5) |
+| `apps/desktop/src/components/workspace/editor/latex-autocomplete.ts` | latexAutocomplete, fnv1a, parseSignature, getParsed, collectBibEntries (+3) |
+| `apps/desktop/src/components/workspace/editor/ai-grammar-extension.ts` | aiGrammarExtension, cacheKey, grammarLinter, update, refresh (+1) |
 
 ## Entry Points
 
 Start here when exploring this area:
 
-- **`recommendedTemplateIdsForKind`** (Function) — `apps/desktop/src/lib/space-features.ts:565`
-- **`has`** (Function) — `apps/desktop/src-tauri/src/anthropic_proxy/transformers.rs:40`
-- **`TemplateGallery`** (Function) — `apps/desktop/src/components/template-gallery/template-gallery.tsx:32`
-- **`ScientificSkillsOnboarding`** (Function) — `apps/desktop/src/components/scientific-skills/scientific-skills-onboarding.tsx:64`
-- **`SessionSelector`** (Function) — `apps/desktop/src/components/claude-chat/session-selector.tsx:51`
+- **`aiGrammarExtension`** (Function) — `apps/desktop/src/components/workspace/editor/ai-grammar-extension.ts:23`
+- **`aiPredictiveExtension`** (Function) — `apps/desktop/src/components/workspace/editor/ai-predictive-extension.ts:152`
+- **`bibtex`** (Function) — `apps/desktop/src/components/workspace/editor/lang-bibtex.ts:323`
+- **`latexAutocomplete`** (Function) — `apps/desktop/src/components/workspace/editor/latex-autocomplete.ts:240`
+- **`latexStyling`** (Function) — `apps/desktop/src/components/workspace/editor/latex-styling-extension.ts:84`
 
 ## Key Symbols
 
 | Symbol | Type | File | Line |
 |--------|------|------|------|
-| `recommendedTemplateIdsForKind` | Function | `apps/desktop/src/lib/space-features.ts` | 565 |
-| `has` | Function | `apps/desktop/src-tauri/src/anthropic_proxy/transformers.rs` | 40 |
-| `TemplateGallery` | Function | `apps/desktop/src/components/template-gallery/template-gallery.tsx` | 32 |
-| `ScientificSkillsOnboarding` | Function | `apps/desktop/src/components/scientific-skills/scientific-skills-onboarding.tsx` | 64 |
-| `SessionSelector` | Function | `apps/desktop/src/components/claude-chat/session-selector.tsx` | 51 |
-| `ChatMessages` | Function | `apps/desktop/src/components/claude-chat/chat-messages.tsx` | 231 |
-| `isDroppableImage` | Function | `apps/desktop/src/components/workspace/editor/image-drop.ts` | 33 |
-| `suggestVersionName` | Function | `apps/desktop/src/lib/variant-status.ts` | 31 |
-| `inlineEditUsesDirectProvider` | Function | `apps/desktop/src/lib/inline-edit.ts` | 189 |
-| `canUseAiAssist` | Function | `apps/desktop/src/lib/ai-assist.ts` | 56 |
-| `aiSuggestVersionName` | Function | `apps/desktop/src/lib/ai-assist.ts` | 548 |
-| `ProblemsPopover` | Function | `apps/desktop/src/components/workspace/editor/problems-panel.tsx` | 72 |
-| `runSpanFix` | Function | `apps/desktop/src/components/workspace/editor/problems-panel.tsx` | 97 |
-| `DocumentOutline` | Function | `apps/desktop/src/components/workspace/editor/document-outline.tsx` | 81 |
-| `jumpTo` | Function | `apps/desktop/src/components/workspace/editor/document-outline.tsx` | 108 |
-| `handleSummarize` | Function | `apps/desktop/src/components/workspace/editor/document-outline.tsx` | 123 |
-| `CommentComposer` | Function | `apps/desktop/src/components/workspace/editor/comment-composer.tsx` | 27 |
-| `handleAiDraft` | Function | `apps/desktop/src/components/workspace/editor/comment-composer.tsx` | 72 |
-| `bulletCountSuccessMessage` | Function | `apps/desktop/src/lib/resume-bullets.ts` | 176 |
-| `findRoleContextBefore` | Function | `apps/desktop/src/lib/resume-bullets.ts` | 237 |
+| `aiGrammarExtension` | Function | `apps/desktop/src/components/workspace/editor/ai-grammar-extension.ts` | 23 |
+| `aiPredictiveExtension` | Function | `apps/desktop/src/components/workspace/editor/ai-predictive-extension.ts` | 152 |
+| `bibtex` | Function | `apps/desktop/src/components/workspace/editor/lang-bibtex.ts` | 323 |
+| `latexAutocomplete` | Function | `apps/desktop/src/components/workspace/editor/latex-autocomplete.ts` | 240 |
+| `latexStyling` | Function | `apps/desktop/src/components/workspace/editor/latex-styling-extension.ts` | 84 |
+| `LatexEditor` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 204 |
+| `clearJumpRequest` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 215 |
+| `setIsCompiling` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 217 |
+| `setPdfData` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 218 |
+| `setCompileError` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 219 |
+| `saveAllFiles` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 220 |
+| `loadFileContent` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 247 |
+| `goToChunk` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 414 |
+| `isOverEditor` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 1197 |
+| `handleHistoryAddLabel` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 2264 |
+| `ToolbarGroup` | Function | `apps/desktop/src/components/ui/toolbar-group.tsx` | 10 |
+| `EditorToolbar` | Function | `apps/desktop/src/components/workspace/editor/editor-toolbar.tsx` | 251 |
+| `setVimMode` | Function | `apps/desktop/src/components/workspace/editor/editor-toolbar.tsx` | 261 |
+| `setSpellCheck` | Function | `apps/desktop/src/components/workspace/editor/editor-toolbar.tsx` | 263 |
+| `setEditorViewMode` | Function | `apps/desktop/src/components/workspace/editor/editor-toolbar.tsx` | 266 |
 
 ## Execution Flows
 
 | Flow | Type | Steps |
 |------|------|-------|
-| `DocumentOutline → IsOllamaEndpoint` | cross_community | 7 |
-| `ProjectPreviewCard → Has` | cross_community | 7 |
-| `PdfViewer → Has` | cross_community | 6 |
-| `DocumentOutline → ResolveNativeOllamaModel` | cross_community | 6 |
-| `TemplateCard → Has` | cross_community | 6 |
-| `LatexCompletionSource → IsOllamaEndpoint` | cross_community | 6 |
-| `LoadProjectPreview → Has` | cross_community | 6 |
-| `HandleAddressWithAi → IsOllamaEndpoint` | cross_community | 6 |
-| `LatexEditor → IsSpaceKind` | cross_community | 5 |
-| `EditorStatusBar → IsSpaceKind` | cross_community | 5 |
+| `HandleToolbarAction → ResolveNativeOllamaModel` | cross_community | 6 |
+| `HandleBulletAiSuggestion → CountLatexItems` | cross_community | 5 |
+| `HandleBulletAiSuggestion → SetSelectionRange` | intra_community | 5 |
+| `HandleBulletAiSuggestion → ProposeSelectionReplacement` | cross_community | 5 |
+| `HandleBulletAiSuggestion → InlineEditChatPrompt` | cross_community | 5 |
+| `HandleToolbarAction → IsOllamaEndpoint` | cross_community | 5 |
+| `HandleToolbarAction → AcquireAiSlot` | cross_community | 5 |
+| `HandleToolbarAction → ReleaseAiSlot` | cross_community | 5 |
+| `ClaudeChatDrawer → GetCompileRootPreference` | cross_community | 5 |
+| `DeleteFile → ParseBrowserRoot` | cross_community | 5 |
 
 ## Connected Areas
 
 | Area | Connections |
 |------|-------------|
-| Workspace | 7 calls |
-| Ui | 7 calls |
-| Hooks | 6 calls |
-| Cluster_163 | 5 calls |
-| Stores | 5 calls |
-| Components | 3 calls |
+| Workspace | 50 calls |
+| Ui | 17 calls |
+| Cluster_345 | 5 calls |
+| Preview | 5 calls |
+| Browser-project | 4 calls |
 | Claude-chat | 3 calls |
-| Cluster_167 | 3 calls |
+| Cluster_318 | 3 calls |
 
 ## How to Explore
 
-1. `gitnexus_context({name: "recommendedTemplateIdsForKind"})` — see callers and callees
-2. `gitnexus_query({query: "editor"})` — find related execution flows
+1. `context({name: "aiGrammarExtension"})` — see callers and callees
+2. `query({search_query: "editor"})` — find related execution flows
 3. Read key files listed above for implementation details
+4. `explain({target: "<file or symbol>"})` — persisted taint findings (source→sink data flows), when indexed with `--pdg`

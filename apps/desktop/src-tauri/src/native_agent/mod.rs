@@ -8,7 +8,7 @@
 //! in stream-json shape, then `claude-complete`), so the existing chat UI renders
 //! its output and detects file changes without modification.
 
-mod ollama;
+pub(crate) mod ollama;
 mod tools;
 
 use std::collections::{HashMap, HashSet};
@@ -619,6 +619,30 @@ fn emit_cancelled_tool_results(window: &WebviewWindow, tab_id: &str, ids: &[Stri
             }),
         );
     }
+}
+
+/// Deliver a semantic-cache hit to the chat UI without invoking the model.
+#[tauri::command]
+pub async fn deliver_cached_native_reply(
+    window: WebviewWindow,
+    tab_id: String,
+    response: String,
+) -> Result<(), String> {
+    let text = response.trim();
+    if text.is_empty() {
+        return Err("Cached response is empty.".into());
+    }
+    emit_msg(
+        &window,
+        &tab_id,
+        &json!({
+            "type": "assistant",
+            "message": { "content": [{ "type": "text", "text": text }] },
+        }),
+    );
+    emit_result(&window, &tab_id, true, text);
+    finish(&window, &tab_id, true);
+    Ok(())
 }
 
 /// Run one agentic task to completion using a local Ollama model.

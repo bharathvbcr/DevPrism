@@ -16,6 +16,7 @@ import { compileLatex, formatCompileError } from "@/lib/latex-compiler";
 import { resolveActiveCompileTarget } from "@/lib/compile-root-preference";
 import { createLogger } from "@/lib/debug/logger";
 import { getChatLabels } from "@/lib/chat-labels";
+import { completeSemanticTurn } from "@/lib/semantic-layer-bridge";
 
 const log = createLogger("claude-event");
 
@@ -421,6 +422,12 @@ export function useClaudeEvents() {
 
       const completedSessionId = tab.sessionId;
       chatStore._setStreaming(tabId, false);
+      void completeSemanticTurn(
+        tabId,
+        useClaudeChatStore.getState().tabs.find((t) => t.id === tabId)
+          ?.messages ?? tab.messages,
+        success,
+      );
       void cleanupTemporaryFiles(chatStore.consumeTemporaryFilePaths(tabId));
 
       const forceQueuedGuidance = tab.forceQueuedGuidanceOnComplete === true;

@@ -34,24 +34,25 @@ Avoid treating generated outputs, vendor trees, and asset binaries as primary re
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **DevPrism** (7393 symbols, 13289 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **DevPrism** (7464 symbols, 18154 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
-> If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
+> Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 
 ## Always Do
 
-- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `gitnexus_impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
-- **MUST run `gitnexus_detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows.
+- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
+- **MUST run `detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows. For regression review, compare against the default branch: `detect_changes({scope: "compare", base_ref: "main"})`.
 - **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
-- When exploring unfamiliar code, use `gitnexus_query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
-- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `gitnexus_context({name: "symbolName"})`.
+- When exploring unfamiliar code, use `query({search_query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
+- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `context({name: "symbolName"})`.
+- For security review, `explain({target: "fileOrSymbol"})` lists taint findings (source→sink flows; needs `analyze --pdg`).
 
 ## Never Do
 
-- NEVER edit a function, class, or method without first running `gitnexus_impact` on it.
+- NEVER edit a function, class, or method without first running `impact` on it.
 - NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
-- NEVER rename symbols with find-and-replace — use `gitnexus_rename` which understands the call graph.
-- NEVER commit changes without running `gitnexus_detect_changes()` to check affected scope.
+- NEVER rename symbols with find-and-replace — use `rename` which understands the call graph.
+- NEVER commit changes without running `detect_changes()` to check affected scope.
 
 ## Resources
 
@@ -72,25 +73,25 @@ This project is indexed by GitNexus as **DevPrism** (7393 symbols, 13289 relatio
 | Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
 | Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
 | Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
-| Work in the Editor area (137 symbols) | `.claude/skills/generated/editor/SKILL.md` |
-| Work in the Workspace area (126 symbols) | `.claude/skills/generated/workspace/SKILL.md` |
-| Work in the Native_agent area (109 symbols) | `.claude/skills/generated/native-agent/SKILL.md` |
-| Work in the Anthropic_proxy area (107 symbols) | `.claude/skills/generated/anthropic-proxy/SKILL.md` |
-| Work in the Ui area (83 symbols) | `.claude/skills/generated/ui/SKILL.md` |
-| Work in the Components area (74 symbols) | `.claude/skills/generated/components/SKILL.md` |
-| Work in the Claude-chat area (60 symbols) | `.claude/skills/generated/claude-chat/SKILL.md` |
-| Work in the Stores area (54 symbols) | `.claude/skills/generated/stores/SKILL.md` |
-| Work in the Preview area (48 symbols) | `.claude/skills/generated/preview/SKILL.md` |
-| Work in the Cluster_62 area (37 symbols) | `.claude/skills/generated/cluster-62/SKILL.md` |
-| Work in the Hooks area (33 symbols) | `.claude/skills/generated/hooks/SKILL.md` |
-| Work in the Cluster_66 area (23 symbols) | `.claude/skills/generated/cluster-66/SKILL.md` |
-| Work in the Cluster_70 area (19 symbols) | `.claude/skills/generated/cluster-70/SKILL.md` |
-| Work in the Template-gallery area (19 symbols) | `.claude/skills/generated/template-gallery/SKILL.md` |
-| Work in the Scripts area (18 symbols) | `.claude/skills/generated/scripts/SKILL.md` |
-| Work in the Cluster_8 area (14 symbols) | `.claude/skills/generated/cluster-8/SKILL.md` |
-| Work in the Cluster_64 area (14 symbols) | `.claude/skills/generated/cluster-64/SKILL.md` |
-| Work in the Tauri area (14 symbols) | `.claude/skills/generated/tauri/SKILL.md` |
-| Work in the Mupdf area (13 symbols) | `.claude/skills/generated/mupdf/SKILL.md` |
-| Work in the Cluster_15 area (12 symbols) | `.claude/skills/generated/cluster-15/SKILL.md` |
+| Work in the Workspace area (384 symbols) | `.claude/skills/generated/workspace/SKILL.md` |
+| Work in the Editor area (230 symbols) | `.claude/skills/generated/editor/SKILL.md` |
+| Work in the Stores area (206 symbols) | `.claude/skills/generated/stores/SKILL.md` |
+| Work in the Components area (205 symbols) | `.claude/skills/generated/components/SKILL.md` |
+| Work in the Claude-chat area (184 symbols) | `.claude/skills/generated/claude-chat/SKILL.md` |
+| Work in the Native_agent area (141 symbols) | `.claude/skills/generated/native-agent/SKILL.md` |
+| Work in the Preview area (125 symbols) | `.claude/skills/generated/preview/SKILL.md` |
+| Work in the Browser-project area (114 symbols) | `.claude/skills/generated/browser-project/SKILL.md` |
+| Work in the Anthropic_proxy area (112 symbols) | `.claude/skills/generated/anthropic-proxy/SKILL.md` |
+| Work in the Ui area (68 symbols) | `.claude/skills/generated/ui/SKILL.md` |
+| Work in the Cluster_54 area (37 symbols) | `.claude/skills/generated/cluster-54/SKILL.md` |
+| Work in the Semantic-layer area (35 symbols) | `.claude/skills/generated/semantic-layer/SKILL.md` |
+| Work in the Template-gallery area (33 symbols) | `.claude/skills/generated/template-gallery/SKILL.md` |
+| Work in the Semantic_layer area (32 symbols) | `.claude/skills/generated/semantic-layer-2/SKILL.md` |
+| Work in the Hooks area (32 symbols) | `.claude/skills/generated/hooks/SKILL.md` |
+| Work in the Semantic-layer-reference area (28 symbols) | `.claude/skills/generated/semantic-layer-reference/SKILL.md` |
+| Work in the Mupdf area (27 symbols) | `.claude/skills/generated/mupdf/SKILL.md` |
+| Work in the Cluster_1 area (26 symbols) | `.claude/skills/generated/cluster-1/SKILL.md` |
+| Work in the Rich-editor area (22 symbols) | `.claude/skills/generated/rich-editor/SKILL.md` |
+| Work in the Cluster_24 area (20 symbols) | `.claude/skills/generated/cluster-24/SKILL.md` |
 
 <!-- gitnexus:end -->

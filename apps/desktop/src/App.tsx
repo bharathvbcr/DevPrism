@@ -1,7 +1,6 @@
 import { ThemeProvider, useTheme } from "next-themes";
 import { ErrorBoundary } from "react-error-boundary";
 import { Toaster } from "@/components/ui/sonner";
-import { TrackChangesPdfDialog } from "@/components/workspace/track-changes-pdf-dialog";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 
 import { useDocumentStore } from "@/stores/document-store";
@@ -15,7 +14,6 @@ import { ProjectPicker } from "@/components/project-picker";
 import { BrowserPreviewBanner } from "@/components/browser-preview-banner";
 import { displayProjectPathLabel } from "@/lib/browser-project/fsa-persistence";
 import { isTauri } from "@/lib/runtime/is-tauri";
-import { WorkspaceLayout } from "@/components/workspace/workspace-layout";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -28,6 +26,7 @@ import {
   syncPersonalizationEnabled,
   scheduleIdentityProfileSync,
 } from "@/lib/personalization";
+import { watchSemanticLayerConfigSync } from "@/lib/semantic-layer-bridge";
 import { usePersonalizationStore } from "@/stores/personalization-store";
 import { Skeleton } from "@/components/ui/skeleton";
 import { OllamaPullBanner } from "@/components/ollama-pull-banner";
@@ -37,6 +36,21 @@ const log = createLogger("app");
 const LazyDebugPage = lazy(() =>
   import("@/components/debug/debug-page").then((m) => ({
     default: m.DebugPage,
+  })),
+);
+
+// Deferred so the whole editor/workspace bundle (CodeMirror, PDF, templates)
+// is not pulled into the initial ProjectPicker paint.
+const WorkspaceLayout = lazy(() =>
+  import("@/components/workspace/workspace-layout").then((m) => ({
+    default: m.WorkspaceLayout,
+  })),
+);
+
+// PDF/mupdf-heavy dialog that is mounted at the root but rarely opened.
+const TrackChangesPdfDialog = lazy(() =>
+  import("@/components/workspace/track-changes-pdf-dialog").then((m) => ({
+    default: m.TrackChangesPdfDialog,
   })),
 );
 
@@ -214,7 +228,11 @@ function WorkspaceWithClaude() {
     return () => clearTimeout(timer);
   }, [initialized]);
 
-  return <WorkspaceLayout />;
+  return (
+    <Suspense fallback={<div className="h-full w-full bg-background" />}>
+      <WorkspaceLayout />
+    </Suspense>
+  );
 }
 
 export function App({ onReady }: { onReady?: () => void }) {
@@ -245,6 +263,8 @@ export function App({ onReady }: { onReady?: () => void }) {
     void syncPersonalizationEnabled(enabled);
     scheduleIdentityProfileSync(usePersonalizationStore.getState().profile);
   }, []);
+
+  useEffect(() => watchSemanticLayerConfigSync(), []);
 
   useEffect(() => {
     if (!projectRoot) {
@@ -310,7 +330,9 @@ export function App({ onReady }: { onReady?: () => void }) {
             </div>
           )}
           <Toaster />
-          <TrackChangesPdfDialog />
+          <Suspense fallback={null}>
+            <TrackChangesPdfDialog />
+          </Suspense>
         </TooltipProvider>
       </ThemeProvider>
     </ErrorBoundary>

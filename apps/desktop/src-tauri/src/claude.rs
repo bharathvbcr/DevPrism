@@ -3287,6 +3287,8 @@ pub async fn execute_claude_code(
     provider_credential_id: Option<String>,
     provider_model_override: Option<String>,
 ) -> Result<(), String> {
+    // Semantic-layer cache/routing runs in the frontend (`sendPrompt`) before this
+    // command is invoked. The Claude Code CLI process has no further hook point.
     if let Some(mut credential) =
         stored_openai_compatible_credential_by_id(provider_credential_id.as_deref())?
     {

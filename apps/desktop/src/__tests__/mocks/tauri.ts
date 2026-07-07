@@ -32,9 +32,54 @@ Object.defineProperty(globalThis, "localStorage", {
   configurable: true,
 });
 
+const semanticCacheStore = new Map<
+  string,
+  { embedding: number[]; response: string }
+>();
+
+function cosineSimilarity(a: number[], b: number[]): number {
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  const denom = Math.sqrt(normA) * Math.sqrt(normB);
+  return denom === 0 ? 0 : dot / denom;
+}
+
 // Mock @tauri-apps/api/core
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(),
+  invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
+    if (cmd === "semantic_cache_lookup") {
+      const cacheKey = String(args?.cacheKey ?? "");
+      const embedding = (args?.embedding as number[]) ?? [];
+      const exact = semanticCacheStore.get(cacheKey);
+      if (exact) {
+        return { hit: true, response: exact.response, score: 1 };
+      }
+      for (const entry of semanticCacheStore.values()) {
+        if (cosineSimilarity(embedding, entry.embedding) >= 0.92) {
+          return { hit: true, response: entry.response, score: 0.99 };
+        }
+      }
+      return { hit: false, response: undefined, score: undefined };
+    }
+    if (cmd === "semantic_cache_store") {
+      semanticCacheStore.set(String(args?.cacheKey ?? ""), {
+        embedding: (args?.embedding as number[]) ?? [],
+        response: String(args?.response ?? ""),
+      });
+      return;
+    }
+    if (cmd === "semantic_cache_clear") {
+      semanticCacheStore.clear();
+      return;
+    }
+    return undefined;
+  }),
   convertFileSrc: vi.fn((path: string) => `asset://localhost/${path}`),
 }));
 

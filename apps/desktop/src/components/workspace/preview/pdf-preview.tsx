@@ -160,10 +160,17 @@ import { getMupdfClient } from "@/lib/mupdf/mupdf-client";
 import { getOrOpenDocument } from "@/lib/mupdf/pdf-doc-cache";
 import type { StructuredTextData } from "@/lib/mupdf/types";
 import { createLogger } from "@/lib/debug/logger";
+import {
+  type FitMode,
+  ZOOM_OPTIONS,
+  clampScale,
+  computeFitScale,
+  settleScale,
+  settleSize,
+  zoomSelectValue,
+} from "@/lib/pdf-zoom";
 
 const log = createLogger("pdf-preview");
-
-type FitMode = "fit-width" | "fit-height" | null;
 
 /** Per-root zoom state cache: rootFileId -> { scale, fitMode } */
 const zoomCache = new Map<string, { scale: number; fitMode: FitMode }>();
@@ -175,17 +182,6 @@ const MAX_ALIVE_VIEWERS = 5;
 export function clearZoomCache(): void {
   zoomCache.clear();
 }
-
-const ZOOM_OPTIONS = [
-  { value: "0.5", label: "50%" },
-  { value: "0.75", label: "75%" },
-  { value: "1", label: "100%" },
-  { value: "1.25", label: "125%" },
-  { value: "1.5", label: "150%" },
-  { value: "2", label: "200%" },
-  { value: "3", label: "300%" },
-  { value: "4", label: "400%" },
-];
 
 const IS_MAC =
   typeof navigator !== "undefined" && navigator.userAgent.includes("Mac");
@@ -433,12 +429,17 @@ export function PdfPreview() {
       setCaption(null);
       setCaptioning(false);
       setCapturedRegion(null);
+      setContainerSize(null);
+      setFirstPageSize(null);
     }
-    // Restore new root's zoom
+    // Restore new root's zoom (or reset when uncached after a switch).
     const cached = zoomCache.get(currentRootFileId);
     if (cached) {
-      setScale(cached.scale);
-      setFitMode(cached.fitMode);
+      setScale((s) => settleScale(s, cached.scale));
+      setFitMode((f) => (f === cached.fitMode ? f : cached.fitMode));
+    } else if (prev && prev !== currentRootFileId) {
+      setScale((s) => settleScale(s, 1));
+      setFitMode((f) => (f === null ? f : null));
     }
     prevRootRef.current = currentRootFileId;
   }, [currentRootFileId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -968,27 +969,23 @@ export function PdfPreview() {
     activeFile,
   ]);
 
-  // Recompute scale when fit mode is active and container/page size changes
+  // Recompute scale when fit mode is active and container/page size changes.
+  // `settleScale` swallows sub-threshold updates so a scrollbar-induced resize
+  // can't ping-pong scale <-> containerSize forever (React error #185).
   useEffect(() => {
-    if (!fitMode || !containerSize || !firstPageSize) return;
-    const PADDING = 32; // p-4 on each side
-    if (fitMode === "fit-width") {
-      const newScale = (containerSize.width - PADDING) / firstPageSize.width;
-      setScale(Math.max(0.25, Math.min(4, newScale)));
-    } else if (fitMode === "fit-height") {
-      const newScale = (containerSize.height - PADDING) / firstPageSize.height;
-      setScale(Math.max(0.25, Math.min(4, newScale)));
-    }
+    const newScale = computeFitScale(fitMode, containerSize, firstPageSize);
+    if (newScale === null) return;
+    setScale((prev) => settleScale(prev, newScale));
   }, [fitMode, containerSize, firstPageSize]);
 
   const zoomIn = () => {
     setFitMode(null);
-    setScale((s) => Math.min(4, s + 0.1));
+    setScale((s) => clampScale(s + 0.1));
     bumpPreviewPill();
   };
   const zoomOut = () => {
     setFitMode(null);
-    setScale((s) => Math.max(0.25, s - 0.1));
+    setScale((s) => clampScale(s - 0.1));
     bumpPreviewPill();
   };
 
@@ -1107,12 +1104,22 @@ export function PdfPreview() {
 
   const handleScaleChange = useCallback(
     (newScale: number) => {
-      setFitMode(null);
-      setScale(newScale);
+      setFitMode((f) => (f === null ? f : null));
+      setScale((s) => settleScale(s, newScale));
       bumpPreviewPill();
     },
     [bumpPreviewPill],
   );
+
+  const handleFirstPageSize = useCallback((width: number, height: number) => {
+    setFirstPageSize((prev) => settleSize(prev, width, height));
+  }, []);
+
+  const handleContainerResize = useCallback((width: number, height: number) => {
+    setContainerSize((prev) => settleSize(prev, width, height));
+  }, []);
+
+  const handleCancelCapture = useCallback(() => setCaptureMode(false), []);
 
   /** Summarize the current page (default) or the whole document via local AI.
    *  User-triggered: cancellation-safe via a requestId guard, toasts on error. */
@@ -1651,15 +1658,9 @@ export function PdfPreview() {
                       : null
                   }
                   onTextSelect={isActive ? handleTextSelect : undefined}
-                  onFirstPageSize={
-                    isActive
-                      ? (w, h) => setFirstPageSize({ width: w, height: h })
-                      : undefined
-                  }
+                  onFirstPageSize={isActive ? handleFirstPageSize : undefined}
                   onContainerResize={
-                    isActive
-                      ? (w, h) => setContainerSize({ width: w, height: h })
-                      : undefined
+                    isActive ? handleContainerResize : undefined
                   }
                   onCurrentPageChange={
                     isActive ? handleCurrentPageChange : undefined
@@ -1667,9 +1668,7 @@ export function PdfPreview() {
                   scrollToPageRef={isActive ? scrollToPageRef : undefined}
                   captureMode={isActive ? captureMode : false}
                   onCapture={isActive ? handleCapture : undefined}
-                  onCancelCapture={
-                    isActive ? () => setCaptureMode(false) : undefined
-                  }
+                  onCancelCapture={isActive ? handleCancelCapture : undefined}
                 />
               </div>
             </ErrorBoundary>
@@ -2248,7 +2247,7 @@ export function PdfPreview() {
               <MinusIcon className="size-4" />
             </Button>
             <Select
-              value={fitMode ?? scale.toString()}
+              value={zoomSelectValue(fitMode, scale)}
               onValueChange={(v) => {
                 if (v === "fit-width" || v === "fit-height") {
                   setFitMode(v);

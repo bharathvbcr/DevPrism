@@ -320,6 +320,9 @@ async fn handle_messages_to_stream(
         .get("stream")
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
+
+    // Semantic cache/routing runs in the frontend (`sendPrompt`) before the CLI
+    // is invoked; the proxy forwards provider requests only.
     let transformers = ProxyTransformerChain::for_credential(credential, wants_stream);
     let mut openai_request =
         anthropic_to_openai_request(&anthropic_request, credential, &transformers)?;
@@ -398,7 +401,13 @@ async fn handle_messages_to_stream(
             .unwrap_or_default()
             .to_ascii_lowercase();
         if content_type.contains("stream") {
-            stream_openai_sse_to_anthropic(stream, response, &anthropic_request, credential).await
+            stream_openai_sse_to_anthropic(
+                stream,
+                response,
+                &anthropic_request,
+                credential,
+            )
+            .await?;
         } else {
             let response_text = response
                 .text()
@@ -411,7 +420,7 @@ async fn handle_messages_to_stream(
             stream
                 .write_all(sse_response(&anthropic_response).as_bytes())
                 .await
-                .map_err(|err| format!("Failed to write proxy SSE response: {}", err))
+                .map_err(|err| format!("Failed to write proxy SSE response: {}", err))?;
         }
     } else {
         let response_text = response
@@ -425,8 +434,10 @@ async fn handle_messages_to_stream(
         stream
             .write_all(json_response(200, &anthropic_response).as_bytes())
             .await
-            .map_err(|err| format!("Failed to write proxy JSON response: {}", err))
+            .map_err(|err| format!("Failed to write proxy JSON response: {}", err))?;
     }
+
+    Ok(())
 }
 
 fn openai_chat_completions_url(base_url: &str) -> String {
@@ -620,7 +631,11 @@ fn redact_secrets(text: &str) -> String {
                 continue;
             }
         }
-        let ch = rest.chars().next().unwrap();
+        // Loop invariant guarantees `rest` is non-empty; fail-safe instead of
+        // panicking if that ever changes.
+        let Some(ch) = rest.chars().next() else {
+            break;
+        };
         out.push(ch);
         i += ch.len_utf8();
     }

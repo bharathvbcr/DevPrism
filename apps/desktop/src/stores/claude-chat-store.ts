@@ -4,7 +4,16 @@ import { useDocumentStore } from "./document-store";
 import { useHistoryStore } from "./history-store";
 import { useClaudeSetupStore } from "./claude-setup-store";
 import { useSettingsStore } from "./settings-store";
-import { aiComplete, canUseAiAssist } from "@/lib/ai-assist";
+import { aiComplete, aiEmbed, canUseAiAssist } from "@/lib/ai-assist";
+import {
+  prepareChatSemanticInference,
+  resolveSemanticConfig,
+} from "@/lib/semantic-layer";
+import {
+  syncSemanticLayerConfig,
+  trackSemanticTurn,
+  clearSemanticTurn,
+} from "@/lib/semantic-layer-bridge";
 import { getChatLabels } from "@/lib/chat-labels";
 import { createLogger } from "@/lib/debug/logger";
 import { recordPersonalizationEvent } from "@/lib/personalization";
@@ -1142,11 +1151,18 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       }
     }
 
-    const compileStatePrompt =
-      [buildCompileStateContext(), buildBibliographyContext()]
-        .filter(Boolean)
-        .join("\n\n") || null;
-    if (compileStatePrompt) {
+    const chatContextChunks = [
+      buildCompileStateContext(),
+      buildBibliographyContext(),
+    ].filter((c): c is string => Boolean(c?.trim()));
+    const compileStatePrompt = chatContextChunks.join("\n\n") || null;
+    const semanticConfig = resolveSemanticConfig();
+    const compressorHandledContext =
+      semanticConfig.enabled &&
+      semanticConfig.compressorEnabled &&
+      chatContextChunks.length > 0;
+
+    if (!compressorHandledContext && compileStatePrompt) {
       prompt = `${compileStatePrompt}\n\n${prompt}`;
     }
 
@@ -1156,6 +1172,8 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     });
 
     try {
+      syncSemanticLayerConfig();
+
       if (useSettingsStore.getState().nativeAgentEnabled) {
         // DevPrism native runtime: talk directly to a local Ollama model, no
         // Claude CLI. Keeps multi-turn memory per tab in the Rust runtime and
@@ -1233,11 +1251,40 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
           selectionStartLine = offsetToLineCol(selContent, sel.start).line;
           selectionEndLine = offsetToLineCol(selContent, sel.end).line;
         }
+
+        const nativeContextChunks = chatContextChunks;
+        const compressorHandledNativeContext = compressorHandledContext;
+
+        const prepared = await prepareChatSemanticInference(
+          {
+            prompt: nativePrompt,
+            defaultModel: nativeModel,
+            contextChunks: nativeContextChunks,
+          },
+          aiEmbed,
+        );
+
+        if (prepared.cachedResponse != null) {
+          await invoke("deliver_cached_native_reply", {
+            tabId: activeTabId,
+            response: prepared.cachedResponse,
+          });
+          log.info(
+            `sendPrompt complete (semantic cache) in ${(performance.now() - sendStart).toFixed(0)}ms`,
+          );
+          return;
+        }
+
+        trackSemanticTurn(activeTabId, {
+          prompt: prepared.prompt,
+          system: prepared.system,
+        });
+
         await invoke("run_native_agent", {
           projectPath,
-          prompt: nativePrompt,
+          prompt: prepared.prompt,
           tabId: activeTabId,
-          model: nativeModel || null,
+          model: prepared.model || nativeModel || null,
           baseUrl: cred?.base_url || null,
           images: nativeImages.length ? nativeImages : null,
           numCtx: ns.nativeNumCtx ?? null,
@@ -1248,37 +1295,69 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
           selectionStartLine,
           selectionEndLine,
           personalizationPrompt: null,
-          compileStatePrompt,
+          compileStatePrompt: compressorHandledNativeContext
+            ? null
+            : compileStatePrompt,
           chatOnly: resolveNativeChatOnlyFlag(),
         });
-      } else if (resumeSessionId) {
-        // Resume existing session
-        await invoke("resume_claude_code", {
-          projectPath,
-          sessionId: resumeSessionId,
-          prompt,
-          tabId: activeTabId,
-          model: selectedModel,
-          effortLevel,
-          providerCredentialId,
-          providerModelOverride,
-        });
       } else {
-        // New session
-        await invoke("execute_claude_code", {
-          projectPath,
-          prompt,
-          tabId: activeTabId,
-          model: selectedModel,
-          effortLevel,
-          providerCredentialId,
-          providerModelOverride,
+        const prepared = await prepareChatSemanticInference(
+          {
+            prompt,
+            defaultModel: selectedModel,
+            contextChunks: chatContextChunks,
+            skipRouter: true,
+          },
+          aiEmbed,
+        );
+
+        if (prepared.cachedResponse != null) {
+          await invoke("deliver_cached_native_reply", {
+            tabId: activeTabId,
+            response: prepared.cachedResponse,
+          });
+          log.info(
+            `sendPrompt complete (semantic cache) in ${(performance.now() - sendStart).toFixed(0)}ms`,
+          );
+          return;
+        }
+
+        trackSemanticTurn(activeTabId, {
+          prompt: prepared.prompt,
+          system: prepared.system,
         });
+        prompt = prepared.prompt;
+
+        if (resumeSessionId) {
+          // Resume existing session
+          await invoke("resume_claude_code", {
+            projectPath,
+            sessionId: resumeSessionId,
+            prompt,
+            tabId: activeTabId,
+            model: selectedModel,
+            effortLevel,
+            providerCredentialId,
+            providerModelOverride,
+          });
+        } else {
+          // New session
+          await invoke("execute_claude_code", {
+            projectPath,
+            prompt,
+            tabId: activeTabId,
+            model: selectedModel,
+            effortLevel,
+            providerCredentialId,
+            providerModelOverride,
+          });
+        }
       }
       log.info(
         `sendPrompt complete in ${(performance.now() - sendStart).toFixed(0)}ms`,
       );
     } catch (err: any) {
+      clearSemanticTurn(activeTabId);
       log.error(
         `sendPrompt failed after ${(performance.now() - sendStart).toFixed(0)}ms`,
         { error: String(err) },

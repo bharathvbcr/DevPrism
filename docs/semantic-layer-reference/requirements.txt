@@ -1,0 +1,7 @@
+# Semantic Layer reference implementation
+# Install: pip install -r requirements.txt
+
+numpy>=1.24.0,<3.0
+faiss-cpu>=1.7.4
+sentence-transformers>=2.7.0
+torch>=2.0.0

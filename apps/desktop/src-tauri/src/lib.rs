@@ -15,6 +15,8 @@ mod personalization;
 mod project_context;
 mod project_import;
 mod retry;
+#[allow(dead_code)] // proxy-integration wiring is in progress, see docs/SEMANTIC_LAYER_ARCHITECTURE.md
+mod semantic_layer;
 mod skills;
 mod slash_commands;
 mod uv;
@@ -204,7 +206,7 @@ fn hide_titlebar_separator(window: &tauri::WebviewWindow) {
             return;
         }
         let ns: &NSWindow = unsafe { &*(ptr as *const NSWindow) };
-        unsafe { ns.setTitlebarSeparatorStyle(NSTitlebarSeparatorStyle::None) };
+        ns.setTitlebarSeparatorStyle(NSTitlebarSeparatorStyle::None);
     }
 }
 
@@ -702,7 +704,12 @@ pub fn run() {
             personalization::get_personalization_profile,
             personalization::set_personalization_enabled,
             personalization::clear_personalization_profile,
+            semantic_layer::sync_semantic_layer_config,
+            semantic_layer::semantic_cache_lookup,
+            semantic_layer::semantic_cache_store,
+            semantic_layer::semantic_cache_clear,
             native_agent::run_native_agent,
+            native_agent::deliver_cached_native_reply,
             native_agent::inline_transform_text,
             native_agent::ai_complete,
             native_agent::ai_embed,

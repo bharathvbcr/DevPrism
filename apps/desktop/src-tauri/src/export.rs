@@ -10,6 +10,7 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 use std::os::windows::process::CommandExt;
 
 fn pandoc_command() -> Command {
+    #[allow(unused_mut)] // only needs to be mut on Windows, for creation_flags below
     let mut cmd = Command::new("pandoc");
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW);

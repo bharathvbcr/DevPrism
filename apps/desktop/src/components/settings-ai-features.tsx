@@ -7,10 +7,17 @@ import {
   WandSparklesIcon,
 } from "lucide-react";
 import { useSettingsStore } from "@/stores/settings-store";
+import { useClaudeSetupStore } from "@/stores/claude-setup-store";
 import { SettingsCollapsibleSection } from "@/components/settings-collapsible-section";
 import { SettingsToggleRow } from "@/components/settings-toggle-row";
 import { OllamaEmbedSetupHints } from "@/components/ollama-embed-setup-hints";
 import { useEmbeddingReady } from "@/hooks/use-embedding-ready";
+import {
+  getOllamaBaseUrl,
+  listOllamaModels,
+  resolveOllamaCredential,
+  type OllamaModelInfo,
+} from "@/lib/ollama";
 
 type ToggleDef = {
   key: string;
@@ -78,6 +85,64 @@ export function SettingsAiFeatures({
   const setAiCommandAssist = useSettingsStore((s) => s.setAiCommandAssist);
   const aiCommandPalette = useSettingsStore((s) => s.aiCommandPalette);
   const setAiCommandPalette = useSettingsStore((s) => s.setAiCommandPalette);
+  const semanticLayerEnabled = useSettingsStore((s) => s.semanticLayerEnabled);
+  const setSemanticLayerEnabled = useSettingsStore(
+    (s) => s.setSemanticLayerEnabled,
+  );
+  const semanticCacheEnabled = useSettingsStore((s) => s.semanticCacheEnabled);
+  const setSemanticCacheEnabled = useSettingsStore(
+    (s) => s.setSemanticCacheEnabled,
+  );
+  const semanticRouterEnabled = useSettingsStore(
+    (s) => s.semanticRouterEnabled,
+  );
+  const setSemanticRouterEnabled = useSettingsStore(
+    (s) => s.setSemanticRouterEnabled,
+  );
+  const semanticCompressorEnabled = useSettingsStore(
+    (s) => s.semanticCompressorEnabled,
+  );
+  const setSemanticCompressorEnabled = useSettingsStore(
+    (s) => s.setSemanticCompressorEnabled,
+  );
+  const semanticLightModel = useSettingsStore((s) => s.semanticLightModel);
+  const setSemanticLightModel = useSettingsStore(
+    (s) => s.setSemanticLightModel,
+  );
+  const semanticMediumModel = useSettingsStore((s) => s.semanticMediumModel);
+  const setSemanticMediumModel = useSettingsStore(
+    (s) => s.setSemanticMediumModel,
+  );
+  const semanticHeavyModel = useSettingsStore((s) => s.semanticHeavyModel);
+  const setSemanticHeavyModel = useSettingsStore(
+    (s) => s.setSemanticHeavyModel,
+  );
+  const openAiCredentials = useClaudeSetupStore((s) => s.openAiCredentials);
+  const [tierModels, setTierModels] = useState<OllamaModelInfo[]>([]);
+  const [tierModelsLoading, setTierModelsLoading] = useState(false);
+  const tierModelsBaseUrl = useMemo(
+    () => getOllamaBaseUrl(resolveOllamaCredential(openAiCredentials, null)),
+    [openAiCredentials],
+  );
+
+  useEffect(() => {
+    if (!semanticLayerEnabled || !semanticRouterEnabled) return;
+    let cancelled = false;
+    setTierModelsLoading(true);
+    void listOllamaModels(tierModelsBaseUrl)
+      .then((models) => {
+        if (!cancelled) setTierModels(models);
+      })
+      .catch(() => {
+        if (!cancelled) setTierModels([]);
+      })
+      .finally(() => {
+        if (!cancelled) setTierModelsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [semanticLayerEnabled, semanticRouterEnabled, tierModelsBaseUrl]);
 
   const sections = useMemo(
     () => [
@@ -296,6 +361,42 @@ export function SettingsAiFeatures({
             get: () => aiCommandPalette,
             set: setAiCommandPalette,
           },
+          {
+            key: "semantic-layer",
+            title: "Semantic layer",
+            description:
+              "Cache, route, and compress across AI assist, native chat, and provider proxy.",
+            keywords: "semantic layer cache router compressor rag",
+            get: () => semanticLayerEnabled,
+            set: setSemanticLayerEnabled,
+          },
+          {
+            key: "semantic-cache",
+            title: "Semantic cache",
+            description:
+              "Reuse similar AI assist answers via local embeddings.",
+            keywords: "semantic cache embeddings similarity",
+            get: () => semanticCacheEnabled,
+            set: setSemanticCacheEnabled,
+          },
+          {
+            key: "semantic-router",
+            title: "Complexity router",
+            description:
+              "Route simple vs complex prompts to light/medium/heavy Ollama models.",
+            keywords: "router complexity model tier",
+            get: () => semanticRouterEnabled,
+            set: setSemanticRouterEnabled,
+          },
+          {
+            key: "semantic-compressor",
+            title: "RAG compressor",
+            description:
+              "MMR-select the most relevant context chunks before inference.",
+            keywords: "rag mmr compressor context chunks",
+            get: () => semanticCompressorEnabled,
+            set: setSemanticCompressorEnabled,
+          },
         ] satisfies ToggleDef[],
       },
     ],
@@ -317,6 +418,10 @@ export function SettingsAiFeatures({
       aiProjectBlurb,
       aiPromptImprove,
       aiSemanticSearch,
+      semanticLayerEnabled,
+      semanticCacheEnabled,
+      semanticRouterEnabled,
+      semanticCompressorEnabled,
       aiSnippetFill,
       aiSummarize,
       aiTemplateRecommend,
@@ -338,6 +443,10 @@ export function SettingsAiFeatures({
       setAiProjectBlurb,
       setAiPromptImprove,
       setAiSemanticSearch,
+      setSemanticLayerEnabled,
+      setSemanticCacheEnabled,
+      setSemanticRouterEnabled,
+      setSemanticCompressorEnabled,
       setAiSnippetFill,
       setAiSummarize,
       setAiTemplateRecommend,
@@ -430,7 +539,12 @@ export function SettingsAiFeatures({
                 <SettingsToggleRow
                   key={toggle.key}
                   checked={toggle.get()}
-                  disabled={!aiAssistEnabled}
+                  disabled={
+                    !aiAssistEnabled ||
+                    (toggle.key.startsWith("semantic-") &&
+                      toggle.key !== "semantic-layer" &&
+                      !semanticLayerEnabled)
+                  }
                   onChange={toggle.set}
                   title={toggle.title}
                   description={toggle.description}
@@ -438,10 +552,54 @@ export function SettingsAiFeatures({
               ))}
               {section.id === "search" &&
                 aiAssistEnabled &&
-                aiSemanticSearch &&
-                nativeAgentEnabled &&
+                semanticLayerEnabled &&
+                semanticRouterEnabled && (
+                  <div className="grid gap-3 border-border/40 border-t px-4 py-3 sm:grid-cols-3">
+                    {(
+                      [
+                        [
+                          "Light tier",
+                          semanticLightModel,
+                          setSemanticLightModel,
+                        ],
+                        [
+                          "Medium tier",
+                          semanticMediumModel,
+                          setSemanticMediumModel,
+                        ],
+                        [
+                          "Heavy tier",
+                          semanticHeavyModel,
+                          setSemanticHeavyModel,
+                        ],
+                      ] as const
+                    ).map(([label, value, setter]) => (
+                      <label key={label} className="flex flex-col gap-1">
+                        <span className="text-muted-foreground text-xs">
+                          {label}
+                        </span>
+                        <select
+                          value={value ?? ""}
+                          disabled={tierModelsLoading}
+                          onChange={(e) => setter(e.target.value || null)}
+                          className="h-8 w-full min-w-0 rounded-md border border-input bg-background px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                        >
+                          <option value="">Default chat model</option>
+                          {tierModels.map((model) => (
+                            <option key={model.name} value={model.name}>
+                              {model.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              {section.id === "search" &&
+                aiAssistEnabled &&
                 embedding.connected &&
-                !embedding.ready && (
+                !embedding.ready &&
+                (semanticLayerEnabled || aiSemanticSearch) && (
                   <div className="px-4 py-3">
                     <OllamaEmbedSetupHints
                       compact

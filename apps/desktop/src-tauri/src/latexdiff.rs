@@ -17,6 +17,7 @@ fn latexdiff_binary() -> Option<PathBuf> {
 }
 
 fn latexdiff_command(bin: &PathBuf) -> Command {
+    #[allow(unused_mut)] // only needs to be mut on Windows, for creation_flags below
     let mut cmd = Command::new(bin);
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW);

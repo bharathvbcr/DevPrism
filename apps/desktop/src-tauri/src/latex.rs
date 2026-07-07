@@ -1216,8 +1216,6 @@ pub async fn compile_latex(
 
 struct CompileFail {
     backend_label: String,
-    main_file: String,
-    log_content: String,
     message: String,
 }
 
@@ -1229,16 +1227,9 @@ impl CompileFail {
         )
     }
 
-    fn new(
-        backend_label: impl Into<String>,
-        main_file: impl Into<String>,
-        log_content: impl Into<String>,
-        message: impl Into<String>,
-    ) -> Self {
+    fn new(backend_label: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             backend_label: backend_label.into(),
-            main_file: main_file.into(),
-            log_content: log_content.into(),
             message: message.into(),
         }
     }
@@ -1257,8 +1248,6 @@ async fn compile_latex_inner(
         .try_acquire_owned()
         .map_err(|_| CompileFail {
             backend_label: "n/a".into(),
-            main_file: main_file.clone(),
-            log_content: String::new(),
             message: "Server busy, too many concurrent compilations".into(),
         })?;
 
@@ -1305,8 +1294,8 @@ async fn compile_latex_inner(
             }
         })
         .await
-        .map_err(|e| CompileFail::new("n/a", &main_file, "", format!("File sync task panicked: {e}")))?
-        .map_err(|e| CompileFail::new("n/a", &main_file, "", e))?;
+        .map_err(|e| CompileFail::new("n/a", format!("File sync task panicked: {e}")))?
+        .map_err(|e| CompileFail::new("n/a", e))?;
     }
 
     eprintln!(
@@ -1330,8 +1319,6 @@ async fn compile_latex_inner(
     if !main_tex_path.exists() {
         return Err(CompileFail::new(
             "n/a",
-            &main_file,
-            "",
             format!(
                 "No .tex file found: \"{main_file}\". Create a document.tex or main.tex file to compile."
             ),
@@ -1358,8 +1345,6 @@ async fn compile_latex_inner(
         if let Some(TexEngine::LuaLaTeX) = engine {
             return Err(CompileFail::new(
                 &backend_label,
-                &main_file,
-                "",
                 "This document requires LuaLaTeX (% !TEX program = lualatex), \
                  which is not supported. Prism uses a XeTeX-based engine (Tectonic). \
                  Please switch to XeLaTeX or remove the magic comment.",
@@ -1375,7 +1360,7 @@ async fn compile_latex_inner(
             compile_with_texlive(&work_dir_clone, &main_file_clone, engine, &main_tex_content)
         })
         .await
-        .map_err(|e| CompileFail::new(&backend_label, &main_file, "", format!("Compilation task panicked: {e}")))?;
+        .map_err(|e| CompileFail::new(&backend_label, format!("Compilation task panicked: {e}")))?;
         eprintln!(
             "[latex] +{:.0}ms texlive done (ok={})",
             t0.elapsed().as_millis(),
@@ -1392,7 +1377,7 @@ async fn compile_latex_inner(
             compile_with_tectonic_subprocess(&work_dir_clone, &main_file_clone)
         })
         .await
-        .map_err(|e| CompileFail::new(&backend, &main_file, "", format!("Compilation task panicked: {e}")))?;
+        .map_err(|e| CompileFail::new(&backend, format!("Compilation task panicked: {e}")))?;
         eprintln!(
             "[latex] +{:.0}ms tectonic done (ok={})",
             t0.elapsed().as_millis(),
@@ -1432,15 +1417,15 @@ async fn compile_latex_inner(
             Ok::<bool, String>(false)
         })
         .await
-        .map_err(|e| CompileFail::new(&backend_label, &main_file, "", format!("Retry prep panicked: {e}")))?
-        .map_err(|e| CompileFail::new(&backend_label, &main_file, "", e))?;
+        .map_err(|e| CompileFail::new(&backend_label, format!("Retry prep panicked: {e}")))?
+        .map_err(|e| CompileFail::new(&backend_label, e))?;
 
         if needs_retry {
             let retry_result = tokio::task::spawn_blocking(move || {
                 compile_with_tectonic_subprocess(&work_dir_clone, &main_file_clone)
             })
             .await
-            .map_err(|e| CompileFail::new(&backend_label, &main_file, "", format!("Retry task panicked: {e}")))?;
+            .map_err(|e| CompileFail::new(&backend_label, format!("Retry task panicked: {e}")))?;
             eprintln!(
                 "[latex] empty-body retry: ok={} pdf_exists={}",
                 retry_result.is_ok(),
@@ -1469,8 +1454,8 @@ async fn compile_latex_inner(
         let pdf_path_clone = pdf_path.clone();
         let pdf_bytes = tokio::task::spawn_blocking(move || std::fs::read(&pdf_path_clone))
             .await
-            .map_err(|e| CompileFail::new(&backend_label, &main_file, "", format!("PDF read task panicked: {e}")))?
-            .map_err(|e| CompileFail::new(&backend_label, &main_file, "", format!("Failed to read PDF: {e}")))?;
+            .map_err(|e| CompileFail::new(&backend_label, format!("PDF read task panicked: {e}")))?
+            .map_err(|e| CompileFail::new(&backend_label, format!("Failed to read PDF: {e}")))?;
         eprintln!(
             "[latex] +{:.0}ms total (reuse={}, backend={}) pdf_size={}KB",
             t0.elapsed().as_millis(),
@@ -1510,12 +1495,7 @@ async fn compile_latex_inner(
         } else {
             details
         };
-        Err(CompileFail::new(
-            &backend_label,
-            &main_file,
-            log_content,
-            msg,
-        ))
+        Err(CompileFail::new(&backend_label, msg))
     }
 }
 
@@ -1695,6 +1675,61 @@ mod tests {
         assert_eq!(errs.len(), 1);
         assert_eq!(errs[0].file.as_deref(), Some("chapters/intro.tex"));
         assert_eq!(errs[0].line, Some(15));
+    }
+
+    // --- parse_latex_line_number ---
+
+    #[test]
+    fn parse_latex_line_number_reads_value() {
+        assert_eq!(parse_latex_line_number("l.42 \\foo"), Some(42));
+        assert_eq!(parse_latex_line_number("  l.7"), Some(7));
+    }
+
+    #[test]
+    fn parse_latex_line_number_rejects_invalid() {
+        assert_eq!(parse_latex_line_number("l.0"), None); // line numbers are 1-based
+        assert_eq!(parse_latex_line_number("l.abc"), None);
+        assert_eq!(parse_latex_line_number("no prefix here"), None);
+    }
+
+    // --- parse_latex_file_line_ref ---
+
+    #[test]
+    fn parse_latex_file_line_ref_parses_tex_reference() {
+        assert_eq!(
+            parse_latex_file_line_ref("./chapters/intro.tex:15: error"),
+            Some(("chapters/intro.tex".to_string(), 15))
+        );
+    }
+
+    #[test]
+    fn parse_latex_file_line_ref_normalizes_backslashes() {
+        assert_eq!(
+            parse_latex_file_line_ref("chapters\\intro.tex:3:"),
+            Some(("chapters/intro.tex".to_string(), 3))
+        );
+    }
+
+    #[test]
+    fn parse_latex_file_line_ref_rejects_non_tex_or_zero_line() {
+        assert_eq!(parse_latex_file_line_ref("notes.txt:10:"), None);
+        assert_eq!(parse_latex_file_line_ref("intro.tex:0:"), None);
+    }
+
+    // --- has_real_errors ---
+
+    #[test]
+    fn has_real_errors_detects_bang_and_error_colon() {
+        assert!(has_real_errors("! Undefined control sequence."));
+        assert!(has_real_errors("LaTeX Error: Something broke"));
+    }
+
+    #[test]
+    fn has_real_errors_ignores_lowercase_error_and_plain_text() {
+        // has_real_errors only matches `!` lines or the exact "Error:" marker.
+        assert!(!has_real_errors("error: lowercase is not matched"));
+        assert!(!has_real_errors("everything compiled fine"));
+        assert!(!has_real_errors(""));
     }
 
     // --- install_glyphtounicode_stub ---

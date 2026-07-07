@@ -1,98 +1,99 @@
 ---
 name: workspace
-description: "Skill for the Workspace area of DevPrism. 126 symbols across 23 files."
+description: "Skill for the Workspace area of DevPrism. 384 symbols across 73 files."
 ---
 
 # Workspace
 
-126 symbols | 23 files | Cohesion: 77%
+384 symbols | 73 files | Cohesion: 68%
 
 ## When to Use
 
 - Working with code in `apps/`
-- Understanding how aiComplete, checkGrammar, explainCompileErrors work
+- Understanding how stats, SessionSelector, newSession work
 - Modifying workspace-related functionality
 
 ## Key Files
 
 | File | Symbols |
 |------|---------|
-| `apps/desktop/src/components/workspace/sidebar.tsx` | parseTableOfContents, isInsideFolder, parentFolderOfPath, normalizeSelectionItems, useAppVersion (+18) |
-| `apps/desktop/src/components/workspace/comments-panel.tsx` | handleDraftReply, CommentRow, saveEdit, cancelEdit, handleReplySubmit (+15) |
-| `apps/desktop/src/lib/ai-assist.ts` | aiComplete, checkGrammar, explainCompileErrors, fetchPredictiveContinuation, fetchPredictiveActions (+8) |
-| `apps/desktop/src/components/workspace/bibliography-panel.tsx` | writeBib, handleDelete, handleAddEntry, handlePasteImport, BibliographyPanel (+6) |
-| `apps/desktop/src/lib/bibtex.ts` | entryToFields, removeBibEntry, appendBibEntry, importBibEntries, serializeBibEntry (+4) |
-| `apps/desktop/src-tauri/src/personalization.rs` | dominant_tone, dominant_formality, top_space_kinds, top_features, top_doc_classes (+2) |
-| `apps/desktop/src/components/workspace/version-overview.tsx` | formatDate, jdSnippet, VersionOverview, open_, tailorWithAi |
-| `apps/desktop/src-tauri/src/latex.rs` | default, install_glyphtounicode_stub, compile_with_tectonic, test_install_glyphtounicode_stub_writes_stub, test_install_glyphtounicode_stub_does_not_clobber_project_copy |
-| `apps/desktop/src/components/workspace/history-panel.tsx` | formatRelativeTime, snapshotTypeLabel, snapshotTypeBadgeColor, SnapshotRow |
-| `apps/desktop/src/components/workspace/workspace-layout.tsx` | easeInOutSmooth, step, WorkspaceLayout, updateCollapsedSize |
+| `apps/desktop/src/components/workspace/sidebar.tsx` | EnvironmentSection, checkSkillsStatus, DevPrismSkillsDialog, handleInstallBundled, handleCreate (+78) |
+| `apps/desktop/src/components/workspace/comments-panel.tsx` | CommentsHeader, refresh, updateComment, setActiveFile, switchToCommentFile (+23) |
+| `apps/desktop/src/components/workspace/history-panel.tsx` | HistoryPanel, init, loadDiff, startReview, addLabel (+15) |
+| `apps/desktop/src/components/workspace/workspace-layout.tsx` | WorkspaceLayout, showWorkspaceBanner, dismissWorkspaceBanner, getCollapsedSidebarSize, animateSidebarToSize (+13) |
+| `apps/desktop/src/components/workspace/bibliography-panel.tsx` | BibliographyPanel, setActiveFile, handleSaveEntry, handleCopyCite, handleAiGenerate (+11) |
+| `apps/desktop/src/components/workspace/version-switcher.tsx` | countTargetWords, TargetDescriptionTextarea, setJd, TailorDialog, submit (+10) |
+| `apps/desktop/src/components/workspace/editor/rich/rich-latex-editor.tsx` | lineToOffset, getGrammarCheckSpan, RichLatexEditor, setViewMode, requestJumpToPosition (+9) |
+| `apps/desktop/src/lib/ai-assist.ts` | canUseAiAssist, completeBibEntryFields, summarizeSection, draftCommentSuggestion, parseJsonObject (+8) |
+| `apps/desktop/src/components/workspace/zotero-panel.tsx` | SuggestCollection, ZoteroApiKeyDialog, connect, handleConnect, run (+7) |
+| `apps/desktop/src/components/workspace/version-overview.tsx` | formatDate, jdSnippet, VersionOverview, setStatus, DeleteDialog (+5) |
 
 ## Entry Points
 
 Start here when exploring this area:
 
-- **`aiComplete`** (Function) — `apps/desktop/src/lib/ai-assist.ts:74`
-- **`checkGrammar`** (Function) — `apps/desktop/src/lib/ai-assist.ts:256`
-- **`explainCompileErrors`** (Function) — `apps/desktop/src/lib/ai-assist.ts:326`
-- **`fetchPredictiveContinuation`** (Function) — `apps/desktop/src/lib/ai-assist.ts:424`
-- **`fetchPredictiveActions`** (Function) — `apps/desktop/src/lib/ai-assist.ts:497`
+- **`stats`** (Function) — `apps/desktop/src/components/claude-chat/proposed-changes-panel.tsx:159`
+- **`SessionSelector`** (Function) — `apps/desktop/src/components/claude-chat/session-selector.tsx:51`
+- **`newSession`** (Function) — `apps/desktop/src/components/claude-chat/session-selector.tsx:61`
+- **`resumeSession`** (Function) — `apps/desktop/src/components/claude-chat/session-selector.tsx:62`
+- **`handleSelectSession`** (Function) — `apps/desktop/src/components/claude-chat/session-selector.tsx:111`
 
 ## Key Symbols
 
 | Symbol | Type | File | Line |
 |--------|------|------|------|
-| `aiComplete` | Function | `apps/desktop/src/lib/ai-assist.ts` | 74 |
-| `checkGrammar` | Function | `apps/desktop/src/lib/ai-assist.ts` | 256 |
-| `explainCompileErrors` | Function | `apps/desktop/src/lib/ai-assist.ts` | 326 |
-| `fetchPredictiveContinuation` | Function | `apps/desktop/src/lib/ai-assist.ts` | 424 |
-| `fetchPredictiveActions` | Function | `apps/desktop/src/lib/ai-assist.ts` | 497 |
-| `improvePrompt` | Function | `apps/desktop/src/lib/ai-assist.ts` | 520 |
-| `recommendTemplates` | Function | `apps/desktop/src/lib/ai-assist.ts` | 563 |
-| `summarizeDiff` | Function | `apps/desktop/src/lib/ai-assist.ts` | 648 |
-| `draftCommentReply` | Function | `apps/desktop/src/lib/ai-assist.ts` | 659 |
-| `suggestCitations` | Function | `apps/desktop/src/lib/ai-assist.ts` | 677 |
-| `expandSearchTerms` | Function | `apps/desktop/src/lib/ai-assist.ts` | 705 |
-| `handleSummarize` | Function | `apps/desktop/src/components/workspace/version-compare.tsx` | 108 |
-| `SpaceQuickActions` | Function | `apps/desktop/src/components/workspace/space-quick-actions.tsx` | 38 |
-| `iconFor` | Function | `apps/desktop/src/components/workspace/space-quick-actions.tsx` | 113 |
-| `projectMarks` | Function | `apps/desktop/src/stores/file-marks-store.ts` | 60 |
-| `Sidebar` | Function | `apps/desktop/src/components/workspace/sidebar.tsx` | 564 |
-| `handleAddFile` | Function | `apps/desktop/src/components/workspace/sidebar.tsx` | 1515 |
-| `handleCreateFolder` | Function | `apps/desktop/src/components/workspace/sidebar.tsx` | 1537 |
-| `handleImport` | Function | `apps/desktop/src/components/workspace/sidebar.tsx` | 1551 |
-| `handleProjectRename` | Function | `apps/desktop/src/components/workspace/sidebar.tsx` | 1575 |
+| `stats` | Function | `apps/desktop/src/components/claude-chat/proposed-changes-panel.tsx` | 159 |
+| `SessionSelector` | Function | `apps/desktop/src/components/claude-chat/session-selector.tsx` | 51 |
+| `newSession` | Function | `apps/desktop/src/components/claude-chat/session-selector.tsx` | 61 |
+| `resumeSession` | Function | `apps/desktop/src/components/claude-chat/session-selector.tsx` | 62 |
+| `handleSelectSession` | Function | `apps/desktop/src/components/claude-chat/session-selector.tsx` | 111 |
+| `handleDeleteSession` | Function | `apps/desktop/src/components/claude-chat/session-selector.tsx` | 121 |
+| `handleNewChat` | Function | `apps/desktop/src/components/claude-chat/session-selector.tsx` | 152 |
+| `SlashCommandPicker` | Function | `apps/desktop/src/components/claude-chat/slash-command-picker.tsx` | 364 |
+| `selectProviderCard` | Function | `apps/desktop/src/components/claude-setup.tsx` | 645 |
+| `renderApiKeyForm` | Function | `apps/desktop/src/components/claude-setup.tsx` | 689 |
+| `ErrorFallback` | Function | `apps/desktop/src/components/error-fallback.tsx` | 4 |
+| `PersonalizationSettings` | Function | `apps/desktop/src/components/personalization-settings.tsx` | 32 |
+| `toggleSection` | Function | `apps/desktop/src/components/personalization-settings.tsx` | 61 |
+| `handleAddInterest` | Function | `apps/desktop/src/components/personalization-settings.tsx` | 93 |
+| `sectionMatches` | Function | `apps/desktop/src/components/personalization-settings.tsx` | 105 |
+| `ScientificSkillsOnboarding` | Function | `apps/desktop/src/components/scientific-skills/scientific-skills-onboarding.tsx` | 64 |
+| `TemplatePreview` | Function | `apps/desktop/src/components/template-gallery/template-preview.tsx` | 69 |
+| `handleRemoveAttachment` | Function | `apps/desktop/src/components/template-gallery/template-preview.tsx` | 421 |
+| `InlineBanner` | Function | `apps/desktop/src/components/ui/inline-banner.tsx` | 29 |
+| `UvSetupDialog` | Function | `apps/desktop/src/components/uv-setup.tsx` | 27 |
 
 ## Execution Flows
 
 | Flow | Type | Steps |
 |------|------|-------|
-| `DocumentOutline → IsOllamaEndpoint` | cross_community | 7 |
-| `ProjectPreviewCard → IsOllamaEndpoint` | cross_community | 7 |
-| `PdfViewer → IsOllamaEndpoint` | cross_community | 6 |
-| `SpaceQuickActions → IsOllamaEndpoint` | cross_community | 6 |
-| `ChatSpaceSuggestions → IsOllamaEndpoint` | cross_community | 6 |
-| `ChatFollowUpSuggestions → IsOllamaEndpoint` | cross_community | 6 |
-| `EditorAiSuggestions → IsOllamaEndpoint` | cross_community | 6 |
-| `DocumentOutline → ResolveNativeOllamaModel` | cross_community | 6 |
-| `Inline_transform_text → Cmp` | cross_community | 6 |
-| `ScratchForm → IsOllamaEndpoint` | cross_community | 6 |
+| `RenderApiKeyForm → DeepseekOrigin` | cross_community | 7 |
+| `RenderApiKeyForm → QwenOrigin` | cross_community | 7 |
+| `RenderApiKeyForm → NormalizeOriginOnlyUrl` | cross_community | 7 |
+| `RenderApiKeyForm → MoonshotOrigin` | cross_community | 7 |
+| `TailorDialog → IsTauri` | cross_community | 7 |
+| `RichLatexEditor → UnescapeText` | cross_community | 6 |
+| `RichLatexEditor → TextNode` | cross_community | 6 |
+| `RichLatexEditor → ReadCommandName` | cross_community | 6 |
+| `RichLatexEditor → ReadBraceGroup` | cross_community | 6 |
+| `RichLatexEditor → EscapeLatexText` | cross_community | 6 |
 
 ## Connected Areas
 
 | Area | Connections |
 |------|-------------|
-| Editor | 11 calls |
-| Ui | 8 calls |
-| Stores | 2 calls |
-| Cluster_197 | 2 calls |
-| Hooks | 2 calls |
-| Cluster_156 | 1 calls |
-| Cluster_179 | 1 calls |
-| Claude-chat | 1 calls |
+| Ui | 84 calls |
+| Components | 17 calls |
+| Preview | 14 calls |
+| Editor | 13 calls |
+| Mupdf | 5 calls |
+| Browser-project | 5 calls |
+| Claude-chat | 5 calls |
+| Cluster_332 | 4 calls |
 
 ## How to Explore
 
-1. `gitnexus_context({name: "aiComplete"})` — see callers and callees
-2. `gitnexus_query({query: "workspace"})` — find related execution flows
+1. `context({name: "stats"})` — see callers and callees
+2. `query({search_query: "workspace"})` — find related execution flows
 3. Read key files listed above for implementation details
+4. `explain({target: "<file or symbol>"})` — persisted taint findings (source→sink data flows), when indexed with `--pdg`

@@ -603,12 +603,63 @@ fn install_glyphtounicode_stub(work_dir: &Path) {
     let _ = std::fs::write(&stub_path, stub);
 }
 
+/// Marker prepended to the main `.tex` file so pdfTeX-only count-register
+/// assignments (e.g. `\pdfgentounicode=1` in `fontenc` / `ragged2e`) compile
+/// under the XeTeX-based Tectonic engine.
+const XETEX_COMPAT_INPUT: &str = "\\input{devprism-xetex-compat}\n";
+
+/// Write `devprism-xetex-compat.tex` into the build dir.  XeTeX lacks several
+/// pdfTeX count registers that pdfLaTeX-oriented packages assign during their
+/// setup (notably `\pdfgentounicode`, set by `fontenc` and `ragged2e`).  Under
+/// Tectonic the first `\pdfgentounicode=1` aborts with "Undefined control
+/// sequence".  Defining them as ordinary count registers makes the assignments
+/// harmless no-ops; xdvipdfmx already handles ToUnicode mapping from the font.
+fn install_xetex_compat_stub(work_dir: &Path) {
+    let stub_path = work_dir.join("devprism-xetex-compat.tex");
+    if stub_path.exists() {
+        return;
+    }
+    let stub = "\
+% devprism-xetex-compat.tex — injected by DevPrism for the XeTeX/Tectonic engine.
+% pdfTeX-only count registers are defined as no-op stubs so assignments like
+% \\pdfgentounicode=1 in pdfLaTeX-oriented packages do not abort under XeTeX.
+\\ifcsname pdfgentounicode\\endcsname\\else
+  \\newcount\\pdfgentounicode
+\\fi
+\\ifcsname pdfinclusioncopyfonts\\endcsname\\else
+  \\newcount\\pdfinclusioncopyfonts
+\\fi
+\\ifcsname pdfcompresslevel\\endcsname\\else
+  \\newcount\\pdfcompresslevel
+\\fi
+\\endinput
+";
+    let _ = std::fs::write(&stub_path, stub);
+}
+
+/// Prepend `\\input{devprism-xetex-compat}` to the main `.tex` in `work_dir`
+/// so the shim runs before `\\documentclass` and early `\\usepackage` calls.
+/// Idempotent: skips if the marker is already present (e.g. on retry).
+fn prepend_xetex_compat_input(work_dir: &Path, main_file: &str) {
+    let main_path = work_dir.join(main_file);
+    let Ok(content) = std::fs::read_to_string(&main_path) else {
+        return;
+    };
+    if content.contains("devprism-xetex-compat") {
+        return;
+    }
+    let modified = format!("{XETEX_COMPAT_INPUT}{content}");
+    let _ = std::fs::write(&main_path, &modified);
+}
+
 pub(crate) fn compile_with_tectonic(work_dir: &Path, main_file: &str) -> Result<(), String> {
     use tectonic::config::PersistentConfig;
     use tectonic::driver::{OutputFormat, PassSetting, ProcessingSessionBuilder};
     use tectonic::status::NoopStatusBackend;
 
     install_glyphtounicode_stub(work_dir);
+    install_xetex_compat_stub(work_dir);
+    prepend_xetex_compat_input(work_dir, main_file);
 
     let mut status = NoopStatusBackend {};
 
@@ -1762,6 +1813,64 @@ mod tests {
             std::fs::read_to_string(&stub_path).unwrap(),
             "USER PROVIDED",
             "a project-provided glyphtounicode.tex must be left untouched"
+        );
+    }
+
+    // --- install_xetex_compat_stub / prepend_xetex_compat_input ---
+
+    #[test]
+    fn test_install_xetex_compat_stub_writes_stub() {
+        let work_dir = tempfile::tempdir().unwrap();
+        let stub_path = work_dir.path().join("devprism-xetex-compat.tex");
+        assert!(!stub_path.exists());
+
+        install_xetex_compat_stub(work_dir.path());
+
+        assert!(stub_path.exists(), "stub should be created");
+        let contents = std::fs::read_to_string(&stub_path).unwrap();
+        assert!(contents.contains("\\pdfgentounicode"));
+        assert!(contents.contains("\\pdfinclusioncopyfonts"));
+        assert!(contents.contains("\\pdfcompresslevel"));
+        assert!(contents.contains("\\endinput"));
+    }
+
+    #[test]
+    fn test_install_xetex_compat_stub_does_not_clobber_existing() {
+        let work_dir = tempfile::tempdir().unwrap();
+        let stub_path = work_dir.path().join("devprism-xetex-compat.tex");
+        std::fs::write(&stub_path, "USER PROVIDED").unwrap();
+
+        install_xetex_compat_stub(work_dir.path());
+
+        assert_eq!(
+            std::fs::read_to_string(&stub_path).unwrap(),
+            "USER PROVIDED",
+            "an existing devprism-xetex-compat.tex must be left untouched"
+        );
+    }
+
+    #[test]
+    fn test_prepend_xetex_compat_input_prepends_once() {
+        let work_dir = tempfile::tempdir().unwrap();
+        let main_path = work_dir.path().join("main.tex");
+        std::fs::write(&main_path, "\\documentclass{article}\n").unwrap();
+
+        prepend_xetex_compat_input(work_dir.path(), "main.tex");
+
+        let first = std::fs::read_to_string(&main_path).unwrap();
+        assert!(
+            first.starts_with("\\input{devprism-xetex-compat}"),
+            "compat input should be prepended"
+        );
+        assert!(first.contains("\\documentclass{article}"));
+
+        prepend_xetex_compat_input(work_dir.path(), "main.tex");
+
+        let second = std::fs::read_to_string(&main_path).unwrap();
+        assert_eq!(
+            second.matches("devprism-xetex-compat").count(),
+            1,
+            "compat input must not be prepended twice"
         );
     }
 

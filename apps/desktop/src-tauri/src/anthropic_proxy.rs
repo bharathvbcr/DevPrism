@@ -349,6 +349,10 @@ async fn handle_messages_to_stream(
         .map_err(|err| format!("Failed to create provider client: {}", err))?;
     let url = openai_chat_completions_url(&credential.base_url);
     let body = openai_request.to_string();
+    // Vertex AI only accepts OAuth tokens; mint one from gcloud when needed.
+    let bearer_token =
+        crate::google_auth::resolve_vertex_bearer_token(&credential.base_url, &credential.api_key)
+            .await?;
     // Retry transient 429/5xx (honoring Retry-After) and connect errors before we
     // begin streaming — safe because the response body isn't consumed until then.
     let response = crate::retry::send_with_retry(3, || {
@@ -357,7 +361,7 @@ async fn handle_messages_to_stream(
                 .post(&url)
                 .header("Content-Type", "application/json")
                 .body(body.clone()),
-            &credential.api_key,
+            bearer_token.as_deref(),
         )
     })
     .await
@@ -453,12 +457,11 @@ fn openai_chat_completions_url(base_url: &str) -> String {
 
 fn with_optional_bearer_auth(
     request: reqwest::RequestBuilder,
-    api_key: &str,
+    bearer_token: Option<&str>,
 ) -> reqwest::RequestBuilder {
-    if api_key.trim().is_empty() {
-        request
-    } else {
-        request.bearer_auth(api_key)
+    match bearer_token {
+        Some(token) if !token.trim().is_empty() => request.bearer_auth(token),
+        _ => request,
     }
 }
 
@@ -497,6 +500,8 @@ fn openai_compatible_base_url_has_chat_root(base_url: &str) -> bool {
     let last = segments.last().copied().unwrap_or_default();
     matches!(last, "v1" | "v2" | "v3" | "v4" | "beta")
         || path.ends_with("/openai")
+        // Vertex AI OpenAI-compatible root ends with /endpoints/openapi
+        || path.ends_with("/endpoints/openapi")
         || path.ends_with("compatible-mode/v1")
 }
 

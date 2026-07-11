@@ -1,10 +1,46 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import {
+  type AgentBackend,
+  isAgentBackend,
+  migrateNativeAgentEnabled,
+} from "@/lib/agent-backend";
+import type { HeaderFields } from "@/lib/resume-templates";
 
 type CompilerBackend = "tectonic" | "texlive";
 
 /** Which timestamp the homepage project cards show. */
 export type HomepageDateField = "created" | "modified";
+
+export const EMPTY_RESUME_HEADER: HeaderFields = {
+  fullName: "",
+  cityRegion: "",
+  email: "",
+  phone: "",
+  linkedinUrl: "",
+  githubUrl: "",
+  portfolioUrl: "",
+};
+
+function normalizeResumeHeader(value: unknown): HeaderFields {
+  const o =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  const str = (k: string) => (typeof o[k] === "string" ? (o[k] as string) : "");
+  return {
+    fullName: str("fullName"),
+    cityRegion: str("cityRegion"),
+    email: str("email"),
+    phone: str("phone"),
+    linkedinUrl: str("linkedinUrl") || undefined,
+    linkedinLabel: str("linkedinLabel") || undefined,
+    githubUrl: str("githubUrl") || undefined,
+    githubLabel: str("githubLabel") || undefined,
+    portfolioUrl: str("portfolioUrl") || undefined,
+    portfolioLabel: str("portfolioLabel") || undefined,
+  };
+}
 
 interface SettingsState {
   compilerBackend: CompilerBackend;
@@ -20,12 +56,21 @@ interface SettingsState {
   /** Native (OS/Chromium) spell checking of prose in the editor. */
   spellCheck: boolean;
   setSpellCheck: (enabled: boolean) => void;
+  /** Which agent runtime powers chat (Ollama, Groq API, Claude Code, Cursor CLI). */
+  agentBackend: AgentBackend;
+  setAgentBackend: (backend: AgentBackend) => void;
   /**
-   * Use DevPrism's built-in native agent (talks directly to a local Ollama
-   * model — no Claude Code CLI required) instead of the CLI-based backend.
+   * @deprecated Use `agentBackend`. True when a native backend (Ollama or Groq) is active.
    */
   nativeAgentEnabled: boolean;
+  /** @deprecated Use `setAgentBackend`. */
   setNativeAgentEnabled: (enabled: boolean) => void;
+  /** Groq model for native-groq backend (null = default llama-3.3-70b-versatile). */
+  nativeGroqModel: string | null;
+  setNativeGroqModel: (model: string | null) => void;
+  /** Prefer Cursor ACP over stream-json fallback when both are available. */
+  cursorAcpPreferred: boolean;
+  setCursorAcpPreferred: (enabled: boolean) => void;
   /** Master toggle for lightweight AI assist (grammar, predictive text, suggestions). */
   aiAssistEnabled: boolean;
   setAiAssistEnabled: (enabled: boolean) => void;
@@ -132,6 +177,12 @@ interface SettingsState {
     projectRoot: string,
     rootId: string | null,
   ) => void;
+  /**
+   * Contact header for resume synthesis (name / email / phone / links).
+   * Persisted here (not career DB) so synthesis UI does not race career_db edits.
+   */
+  resumeHeader: HeaderFields;
+  setResumeHeader: (header: HeaderFields | Partial<HeaderFields>) => void;
 }
 
 export const useSettingsStore = create<SettingsState>()(
@@ -147,8 +198,28 @@ export const useSettingsStore = create<SettingsState>()(
       setVimMode: (enabled) => set({ vimMode: enabled }),
       spellCheck: false,
       setSpellCheck: (enabled) => set({ spellCheck: enabled }),
+      agentBackend: "native-ollama" as AgentBackend,
+      setAgentBackend: (backend) =>
+        set({
+          agentBackend: backend,
+          nativeAgentEnabled:
+            backend === "native-ollama" ||
+            backend === "native-api" ||
+            backend === "native-groq",
+        }),
       nativeAgentEnabled: true,
-      setNativeAgentEnabled: (enabled) => set({ nativeAgentEnabled: enabled }),
+      setNativeAgentEnabled: (enabled) =>
+        set({
+          nativeAgentEnabled: enabled,
+          agentBackend: enabled ? "native-ollama" : "claude-code",
+        }),
+      nativeGroqModel: null,
+      setNativeGroqModel: (model) =>
+        set({
+          nativeGroqModel: model?.trim() ? model.trim() : null,
+        }),
+      cursorAcpPreferred: true,
+      setCursorAcpPreferred: (enabled) => set({ cursorAcpPreferred: enabled }),
       aiAssistEnabled: true,
       setAiAssistEnabled: (enabled) => set({ aiAssistEnabled: enabled }),
       aiGrammarHints: true,
@@ -266,15 +337,30 @@ export const useSettingsStore = create<SettingsState>()(
           }
           return { compileRootByProject };
         }),
+      resumeHeader: { ...EMPTY_RESUME_HEADER },
+      setResumeHeader: (header) =>
+        set((state) => ({
+          resumeHeader: normalizeResumeHeader({
+            ...state.resumeHeader,
+            ...header,
+          }),
+        })),
     }),
     {
       name: "claude-prism-settings",
-      version: 1,
-      // v1: earlier builds had no migrate, so a hand-edited or pre-validator
-      // nativeNumCtx/nativeTemperature/nativeKeepAlive could rehydrate unclamped
-      // and be forwarded raw to Ollama. Re-apply the same clamps the setters use.
-      migrate: (persisted) => {
+      version: 3,
+      migrate: (persisted, version) => {
         const s = { ...(persisted as Record<string, unknown>) };
+        // v2: replace nativeAgentEnabled boolean with agentBackend enum.
+        if (version < 2) {
+          if (!isAgentBackend(s.agentBackend)) {
+            s.agentBackend = migrateNativeAgentEnabled(s.nativeAgentEnabled);
+          }
+          s.nativeAgentEnabled =
+            s.agentBackend === "native-ollama" ||
+            s.agentBackend === "native-api" ||
+            s.agentBackend === "native-groq";
+        }
         if ("nativeNumCtx" in s) {
           s.nativeNumCtx = Math.min(
             131072,
@@ -296,6 +382,12 @@ export const useSettingsStore = create<SettingsState>()(
           s.nativeKeepAlive = /^(-1|\d+(\.\d+)?(ms|s|m|h)?)$/.test(v)
             ? v
             : "10m";
+        }
+        // v3: resume contact header for synthesis.
+        if (version < 3 || !("resumeHeader" in s)) {
+          s.resumeHeader = normalizeResumeHeader(s.resumeHeader);
+        } else {
+          s.resumeHeader = normalizeResumeHeader(s.resumeHeader);
         }
         return s as unknown as SettingsState;
       },

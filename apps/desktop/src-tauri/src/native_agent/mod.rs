@@ -9,6 +9,7 @@
 //! its output and detects file changes without modification.
 
 pub(crate) mod ollama;
+pub mod openai_compat;
 mod tools;
 
 use std::collections::{HashMap, HashSet};
@@ -27,6 +28,8 @@ const MAX_ITERATIONS: usize = 16;
 /// transient failure (server unreachable during a VRAM swap, a dropped stream,
 /// a 5xx) otherwise discards all in-turn progress.
 const MAX_CHAT_ATTEMPTS: u32 = 3;
+/// Keep the frontend idle watchdog from tripping during long tool runs or AskUser waits.
+const TOOL_HEARTBEAT_SECS: u64 = 30;
 
 /// Whether a chat error is worth retrying: transient transport / server issues,
 /// but NOT a permanent capability/config error (no tools, no model) which would
@@ -37,8 +40,54 @@ fn is_retryable_chat_error(err: &str) -> bool {
     }
     err.contains("E_OLLAMA_UNREACHABLE")
         || err.contains("E_OLLAMA_STALLED")
+        || err.contains("E_OPENAI_UNREACHABLE")
+        || err.contains("E_OPENAI_STALLED")
+        || err.contains("E_RATE_LIMIT")
         || err.contains("Ollama stream error")
+        || err.contains("OpenAI stream error")
         || err.contains("Ollama returned HTTP 5")
+        || err.contains("OpenAI API returned HTTP 5")
+}
+
+/// Unified chat backend for the native agent tool loop (Ollama or OpenAI-compat).
+enum NativeChatClient {
+    Ollama(ollama::OllamaClient),
+    OpenAi(openai_compat::OpenAiCompatClient),
+}
+
+impl NativeChatClient {
+    fn num_ctx(&self) -> u32 {
+        match self {
+            Self::Ollama(c) => c.num_ctx(),
+            Self::OpenAi(c) => c.num_ctx(),
+        }
+    }
+
+    async fn supports_tools(&self) -> Option<bool> {
+        match self {
+            Self::Ollama(c) => c.supports_tools().await,
+            Self::OpenAi(c) => c.supports_tools().await,
+        }
+    }
+
+    async fn supports_vision(&self) -> Option<bool> {
+        match self {
+            Self::Ollama(c) => c.supports_vision().await,
+            Self::OpenAi(c) => c.supports_vision().await,
+        }
+    }
+
+    async fn chat<F: FnMut(ollama::StreamDeltaKind, &str)>(
+        &self,
+        messages: &Value,
+        tools: &Value,
+        on_delta: F,
+    ) -> Result<ollama::ChatTurn, String> {
+        match self {
+            Self::Ollama(c) => c.chat(messages, tools, on_delta).await,
+            Self::OpenAi(c) => c.chat(messages, tools, on_delta).await,
+        }
+    }
 }
 
 /// Synthetic prompt used to nudge a model that returned nothing; never persisted.
@@ -111,7 +160,11 @@ fn read_surrounding_lines(project_dir: &Path, rel: &str, start: u32, end: u32) -
     let path = project_dir.join(rel);
     // Don't slurp a pathologically large file just to slice a few lines — fall
     // back to the "Read with offset" pointer (which uses the tool's bounded read).
-    if std::fs::metadata(&path).map(|m| m.len()).unwrap_or(u64::MAX) > 2 * 1024 * 1024 {
+    if std::fs::metadata(&path)
+        .map(|m| m.len())
+        .unwrap_or(u64::MAX)
+        > 2 * 1024 * 1024
+    {
         return None;
     }
     let content = std::fs::read_to_string(&path).ok()?;
@@ -251,9 +304,51 @@ struct CancelHandle {
     notify: Arc<Notify>,
 }
 
+impl Clone for CancelHandle {
+    fn clone(&self) -> Self {
+        Self {
+            flag: Arc::clone(&self.flag),
+            notify: Arc::clone(&self.notify),
+        }
+    }
+}
+
 fn cancels() -> &'static Mutex<HashMap<String, CancelHandle>> {
     static C: OnceLock<Mutex<HashMap<String, CancelHandle>>> = OnceLock::new();
     C.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Separate cancel registry for one-shot `ai_complete` / `ai_complete_stream`
+/// requests (keyed by frontend-generated request id).
+fn ai_request_cancels() -> &'static Mutex<HashMap<String, CancelHandle>> {
+    static A: OnceLock<Mutex<HashMap<String, CancelHandle>>> = OnceLock::new();
+    A.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+const CLAUDE_CODE_PROVIDER_ID: &str = "__claude-code__";
+const CURSOR_CLI_PROVIDER_ID: &str = "__cursor-cli__";
+
+fn register_ai_request_cancel(request_id: &str) -> CancelHandle {
+    let handle = CancelHandle {
+        flag: Arc::new(AtomicBool::new(false)),
+        notify: Arc::new(Notify::new()),
+    };
+    if let Ok(mut guard) = ai_request_cancels().lock() {
+        guard.insert(request_id.to_string(), handle.clone());
+    }
+    handle
+}
+
+fn take_ai_request_cancel(request_id: &str) {
+    if let Ok(mut guard) = ai_request_cancels().lock() {
+        guard.remove(request_id);
+    }
+}
+
+fn clone_cancel_parts(
+    handle: &CancelHandle,
+) -> (Arc<AtomicBool>, Arc<Notify>) {
+    (Arc::clone(&handle.flag), Arc::clone(&handle.notify))
 }
 
 // ─── Pending AskUser answers (per question) ───
@@ -334,10 +429,10 @@ async fn wait_for_answer(request_id: &str) -> Option<String> {
 /// timed out, or the run was stopped.
 #[tauri::command]
 pub fn answer_native_agent_question(request_id: String, answer: String) -> Result<(), String> {
-    let handle = pending_answers()
-        .lock()
-        .ok()
-        .and_then(|g| g.get(&request_id).map(|p| (p.slot.clone(), p.notify.clone())));
+    let handle = pending_answers().lock().ok().and_then(|g| {
+        g.get(&request_id)
+            .map(|p| (p.slot.clone(), p.notify.clone()))
+    });
     match handle {
         Some((slot, notify)) => {
             if let Ok(mut s) = slot.lock() {
@@ -444,15 +539,20 @@ struct CompactionResult {
 fn compact_tool_results(messages: &mut Value, budget_bytes: usize) -> CompactionResult {
     let arr = match messages.as_array_mut() {
         Some(a) => a,
-        None => return CompactionResult {
-            total_bytes: 0,
-            dropped: Vec::new(),
-        },
+        None => {
+            return CompactionResult {
+                total_bytes: 0,
+                dropped: Vec::new(),
+            }
+        }
     };
     let mut dropped: Vec<String> = Vec::new();
     let mut total: usize = arr.iter().map(|m| m.to_string().len()).sum();
     if total <= budget_bytes {
-        return CompactionResult { total_bytes: total, dropped };
+        return CompactionResult {
+            total_bytes: total,
+            dropped,
+        };
     }
     let mut over = total - budget_bytes;
     // Walk oldest -> newest, skipping the system message (index 0) and stopping
@@ -509,12 +609,7 @@ fn compact_tool_results(messages: &mut Value, budget_bytes: usize) -> Compaction
     }
 }
 
-fn emit_context_truncation(
-    window: &WebviewWindow,
-    tab_id: &str,
-    dropped: &[String],
-    source: &str,
-) {
+fn emit_context_truncation(window: &WebviewWindow, tab_id: &str, dropped: &[String], source: &str) {
     if dropped.is_empty() {
         return;
     }
@@ -585,6 +680,53 @@ fn emit_msg(window: &WebviewWindow, tab_id: &str, msg: &Value) {
             data: msg.to_string(),
         },
     );
+}
+
+/// Lightweight keepalive so the chat UI knows a long-running tool or AskUser wait
+/// is still active (resets the frontend stream watchdog without appending to chat).
+fn stream_heartbeat_message(phase: &str, detail: Option<&str>) -> Value {
+    let mut payload = json!({
+        "type": "system",
+        "subtype": "heartbeat",
+        "phase": phase,
+    });
+    if let Some(detail) = detail {
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("detail".to_string(), json!(detail));
+        }
+    }
+    payload
+}
+
+fn emit_stream_heartbeat(window: &WebviewWindow, tab_id: &str, phase: &str, detail: Option<&str>) {
+    emit_msg(window, tab_id, &stream_heartbeat_message(phase, detail));
+}
+
+async fn with_stream_heartbeats<F, T>(
+    window: WebviewWindow,
+    tab_id: String,
+    phase: &'static str,
+    detail: Option<String>,
+    work: F,
+) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    use tokio::time::{interval, MissedTickBehavior};
+
+    let mut heartbeat = interval(Duration::from_secs(TOOL_HEARTBEAT_SECS));
+    heartbeat.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    heartbeat.tick().await;
+
+    tokio::pin!(work);
+    loop {
+        tokio::select! {
+            res = &mut work => return res,
+            _ = heartbeat.tick() => {
+                emit_stream_heartbeat(&window, &tab_id, phase, detail.as_deref());
+            }
+        }
+    }
 }
 
 fn emit_result(window: &WebviewWindow, tab_id: &str, ok: bool, text: &str) {
@@ -676,16 +818,26 @@ pub async fn run_native_agent(
     compile_state_prompt: Option<String>,
     // When true (or auto-detected), run without tools — chat-only completion.
     chat_only: Option<bool>,
+    // UI effort level (`low` / `medium` / `high`) — maps to Ollama `think`.
+    effort_level: Option<String>,
+    // OpenAI-compat API key (required for native-api / native-groq backends).
+    api_key: Option<String>,
+    // Chat provider: `ollama` (default) or `openai-compat` (Groq/OpenRouter/Gemini/…).
+    chat_provider: Option<String>,
+    // Stored credential id for resolving the API key when `api_key` is absent.
+    provider_credential_id: Option<String>,
 ) -> Result<(), String> {
     let cancel = Arc::new(AtomicBool::new(false));
     let notify = Arc::new(Notify::new());
 
     let base = base_url.unwrap_or_else(|| "http://localhost:11434".to_string());
+    let use_openai = chat_provider.as_deref() == Some("openai-compat");
     // Resolve the model BEFORE registering the cancel handle: the resolution
     // await below is not wrapped in the notify-based select, so registering
     // earlier only risks leaking the registry entry on the early error return.
     let model = match model {
         Some(m) if !m.trim().is_empty() => m,
+        _ if use_openai => "llama-3.3-70b-versatile".to_string(),
         _ => match ollama::first_installed_model(&base).await {
             Some(m) => m,
             None => {
@@ -728,6 +880,8 @@ pub async fn run_native_agent(
         return Err(msg);
     }
 
+    let finish_guard = StreamFinishGuard::new(window.clone(), tab_id.clone());
+
     // Suppress macOS App Nap for the lifetime of this turn so a backgrounded
     // window doesn't throttle the Ollama stream or a Bash tool mid-run. Dropped
     // when this command returns (success, error, or cancel), like the CLI path.
@@ -735,8 +889,40 @@ pub async fn run_native_agent(
     let _nap = crate::app_nap::NapActivity::begin("Native agent session");
 
     let project = std::path::Path::new(&project_path);
-    let client = ollama::OllamaClient::new(&base, &model, num_ctx, temperature)
-        .with_keep_alive(keep_alive.as_deref());
+    let client = if use_openai {
+        let key = api_key
+            .filter(|k| !k.trim().is_empty())
+            .or_else(|| {
+                crate::claude::openai_credential_api_key(provider_credential_id.as_deref(), "")
+            })
+            .or_else(|| std::env::var("GROQ_API_KEY").ok())
+            .unwrap_or_default();
+        if key.trim().is_empty() {
+            let msg =
+                "[E_AUTH] API key is required. Add a provider credential in Settings → Provider."
+                    .to_string();
+            emit_result(&window, &tab_id, false, &msg);
+            if let Ok(mut guard) = cancels().lock() {
+                guard.remove(&tab_id);
+            }
+            finish_guard.complete(false);
+            return Err(msg);
+        }
+        NativeChatClient::OpenAi(openai_compat::OpenAiCompatClient::new(
+            &base,
+            &model,
+            &key,
+            num_ctx,
+            temperature,
+        ))
+    } else {
+        let mut ollama_client = ollama::OllamaClient::new(&base, &model, num_ctx, temperature)
+            .with_keep_alive(keep_alive.as_deref());
+        if ollama_client.supports_thinking().await.unwrap_or(false) {
+            ollama_client = ollama_client.with_think(effort_level.as_deref());
+        }
+        NativeChatClient::Ollama(ollama_client)
+    };
 
     // Preflight: when the model definitively lacks tool-calling, fall back to
     // chat-only mode instead of failing mid-turn. `None` (unknown) keeps tools
@@ -785,7 +971,9 @@ pub async fn run_native_agent(
     }
 
     let mut system = String::from(SYSTEM_RULES);
-    system.push_str(&crate::project_context::build_project_context_prompt(project));
+    system.push_str(&crate::project_context::build_project_context_prompt(
+        project,
+    ));
     if system.contains("[context truncated to fit]") {
         emit_context_truncation(
             &window,
@@ -808,7 +996,10 @@ pub async fn run_native_agent(
     }
     if let Some(rel) = normalize_rel(active_file.as_deref()) {
         let sel_lines = selection_start_line.zip(selection_end_line);
-        let has_selection = selection.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
+        let has_selection = selection
+            .as_deref()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
         // With a selection: pre-load the lines around it. Without one: inline the
         // whole file if it's small. Either way the model can edit in one turn with
         // no Read (the frontend flushed dirty files to disk before this call, so
@@ -906,12 +1097,7 @@ pub async fn run_native_agent(
         let compaction = compact_tool_results(&mut messages, ctx_budget);
         let sent_bytes = compaction.total_bytes;
         if !compaction.dropped.is_empty() {
-            emit_context_truncation(
-                &window,
-                &tab_id,
-                &compaction.dropped,
-                "tool results",
-            );
+            emit_context_truncation(&window, &tab_id, &compaction.dropped, "tool results");
         }
 
         // Run the request, but abort it immediately if the user hits stop.
@@ -922,17 +1108,31 @@ pub async fn run_native_agent(
             let mut attempt = 0u32;
             'chat: loop {
                 let r = tokio::select! {
-                    r = client.chat(&messages, &tools, |frag: &str| {
-                        emit_msg(
-                            &window,
-                            &tab_id,
-                            &json!({
-                                "type": "assistant",
-                                "subtype": "streaming_delta",
-                                "message": { "content": [{ "type": "text", "text": frag }] },
-                            }),
-                        );
-                    }) => r,
+                    r = with_stream_heartbeats(
+                        window.clone(),
+                        tab_id.clone(),
+                        "chat",
+                        None,
+                        client.chat(&messages, &tools, |kind, frag| {
+                            let block = match kind {
+                                ollama::StreamDeltaKind::Thinking => {
+                                    json!({ "type": "thinking", "thinking": frag })
+                                }
+                                ollama::StreamDeltaKind::Text => {
+                                    json!({ "type": "text", "text": frag })
+                                }
+                            };
+                            emit_msg(
+                                &window,
+                                &tab_id,
+                                &json!({
+                                    "type": "assistant",
+                                    "subtype": "streaming_delta",
+                                    "message": { "content": [block] },
+                                }),
+                            );
+                        }),
+                    ) => r,
                     _ = notify.notified() => { success = false; break 'outer; }
                 };
                 match r {
@@ -942,13 +1142,18 @@ pub async fn run_native_agent(
                         if attempt < MAX_CHAT_ATTEMPTS && is_retryable_chat_error(&e) {
                             // Transient — back off and retry rather than throwing away
                             // the turn's progress, staying responsive to Stop.
-                            let backoff =
-                                std::time::Duration::from_millis(400u64 << (attempt - 1));
+                            let backoff = std::time::Duration::from_millis(400u64 << (attempt - 1));
                             eprintln!(
                                 "[native-agent] chat attempt {attempt} failed (retryable): {e}"
                             );
                             tokio::select! {
-                                _ = tokio::time::sleep(backoff) => {}
+                                _ = with_stream_heartbeats(
+                                    window.clone(),
+                                    tab_id.clone(),
+                                    "retry",
+                                    Some(format!("attempt {attempt}")),
+                                    tokio::time::sleep(backoff),
+                                ) => {}
                                 _ = notify.notified() => { success = false; break 'outer; }
                             }
                             continue 'chat;
@@ -971,13 +1176,21 @@ pub async fn run_native_agent(
                 }
                 continue;
             }
-            emit_result(&window, &tab_id, true, "(the model returned no further output)");
+            emit_result(
+                &window,
+                &tab_id,
+                true,
+                "(the model returned no further output)",
+            );
             break;
         }
         consecutive_empty = 0;
 
         // Build the assistant content blocks for the UI and stable tool ids.
         let mut content_blocks: Vec<Value> = Vec::new();
+        if !turn.thinking.trim().is_empty() {
+            content_blocks.push(json!({ "type": "thinking", "thinking": turn.thinking.clone() }));
+        }
         if !turn.content.trim().is_empty() {
             final_text = turn.content.clone();
             content_blocks.push(json!({ "type": "text", "text": turn.content.clone() }));
@@ -1031,7 +1244,7 @@ pub async fn run_native_agent(
             // instead of leaving a duplicate. A tool-only turn streamed no text,
             // so there is no delta bubble to replace — emit a plain assistant
             // message exactly as before.
-            if !turn.content.trim().is_empty() {
+            if !turn.content.trim().is_empty() || !turn.thinking.trim().is_empty() {
                 assistant_msg["subtype"] = json!("streaming_final");
             }
             emit_msg(&window, &tab_id, &assistant_msg);
@@ -1070,10 +1283,32 @@ pub async fn run_native_agent(
         let assistant_tool_calls: Vec<Value> = turn
             .tool_calls
             .iter()
-            .map(|tc| json!({ "type": "function", "function": { "name": tc.name, "arguments": tc.args } }))
+            .enumerate()
+            .map(|(idx, tc)| {
+                if use_openai {
+                    let args_str = if tc.args.is_string() {
+                        tc.args.as_str().unwrap_or("{}").to_string()
+                    } else {
+                        serde_json::to_string(&tc.args).unwrap_or_else(|_| "{}".to_string())
+                    };
+                    json!({
+                        "id": call_ids[idx],
+                        "type": "function",
+                        "function": { "name": tc.name, "arguments": args_str }
+                    })
+                } else {
+                    json!({
+                        "type": "function",
+                        "function": { "name": tc.name, "arguments": tc.args }
+                    })
+                }
+            })
             .collect();
         if let Some(arr) = messages.as_array_mut() {
             let mut assistant_msg = json!({ "role": "assistant", "content": turn.content });
+            if !turn.thinking.trim().is_empty() {
+                assistant_msg["thinking"] = json!(turn.thinking);
+            }
             if !assistant_tool_calls.is_empty() {
                 assistant_msg["tool_calls"] = json!(assistant_tool_calls);
             }
@@ -1125,7 +1360,13 @@ pub async fn run_native_agent(
                 // ends the wait). Never cached in seen_calls — re-asking the same
                 // question later is a legitimate call.
                 let answer = tokio::select! {
-                    a = wait_for_answer(id) => a,
+                    a = with_stream_heartbeats(
+                        window.clone(),
+                        tab_id.clone(),
+                        "ask_user",
+                        None,
+                        wait_for_answer(id),
+                    ) => a,
                     _ = notify.notified() => {
                         remove_pending_answer(id);
                         emit_cancelled_tool_results(&window, &tab_id, &call_ids[idx..]);
@@ -1150,7 +1391,13 @@ pub async fn run_native_agent(
                 // Abort the tool mid-flight if the user hits stop (Bash sets
                 // kill_on_drop, so dropping this future reaps the child process).
                 let r = tokio::select! {
-                    res = tools::execute(project, &tc.name, &tc.args) => res,
+                    res = with_stream_heartbeats(
+                        window.clone(),
+                        tab_id.clone(),
+                        "tool",
+                        Some(tc.name.clone()),
+                        tools::execute(project, &tc.name, &tc.args),
+                    ) => res,
                     _ = notify.notified() => {
                         emit_cancelled_tool_results(&window, &tab_id, &call_ids[idx..]);
                         success = false;
@@ -1185,14 +1432,22 @@ pub async fn run_native_agent(
             );
 
             if let Some(arr) = messages.as_array_mut() {
-                // Ollama's chat Message uses `tool_name` (and `tool_call_id`) — not
-                // `name` — to pair a result with its call across multi-tool rounds.
-                arr.push(json!({
-                    "role": "tool",
-                    "tool_name": tc.name,
-                    "tool_call_id": id,
-                    "content": result,
-                }));
+                if use_openai {
+                    arr.push(json!({
+                        "role": "tool",
+                        "tool_call_id": id,
+                        "content": result,
+                    }));
+                } else {
+                    // Ollama's chat Message uses `tool_name` (and `tool_call_id`) — not
+                    // `name` — to pair a result with its call across multi-tool rounds.
+                    arr.push(json!({
+                        "role": "tool",
+                        "tool_name": tc.name,
+                        "tool_call_id": id,
+                        "content": result,
+                    }));
+                }
             }
         }
 
@@ -1225,7 +1480,7 @@ pub async fn run_native_agent(
     if let Ok(mut guard) = cancels().lock() {
         guard.remove(&tab_id);
     }
-    finish(&window, &tab_id, success);
+    finish_guard.complete(success);
     Ok(())
 }
 
@@ -1237,6 +1492,38 @@ fn finish(window: &WebviewWindow, tab_id: &str, success: bool) {
             success,
         },
     );
+}
+
+/// Ensures `claude-complete` is emitted even if the agent task panics or returns early.
+struct StreamFinishGuard {
+    window: WebviewWindow,
+    tab_id: String,
+    emitted: bool,
+}
+
+impl StreamFinishGuard {
+    fn new(window: WebviewWindow, tab_id: String) -> Self {
+        Self {
+            window,
+            tab_id,
+            emitted: false,
+        }
+    }
+
+    fn complete(mut self, success: bool) {
+        if !self.emitted {
+            finish(&self.window, &self.tab_id, success);
+            self.emitted = true;
+        }
+    }
+}
+
+impl Drop for StreamFinishGuard {
+    fn drop(&mut self) {
+        if !self.emitted {
+            finish(&self.window, &self.tab_id, false);
+        }
+    }
 }
 
 const INLINE_TRANSFORM_SYSTEM: &str = concat!(
@@ -1293,14 +1580,12 @@ async fn complete_chat_messages(
         .map(str::trim)
         .filter(|id| !id.is_empty())
     {
-        // OpenAI-compatible providers vary in JSON-mode support; the caller's
-        // prompt already requests JSON and the frontend salvages it, so we do
-        // not force a response format on this path.
-        return crate::claude::complete_openai_compatible_chat(
+        return crate::claude::complete_openai_compatible_chat_with_format(
             Some(cred_id),
             messages,
             model.as_deref(),
             temperature,
+            json_format,
         )
         .await;
     }
@@ -1323,7 +1608,7 @@ async fn complete_chat_messages(
         client = client.with_json_format();
     }
     let turn = client
-        .chat(&json!(messages), &json!([]), |_| {})
+        .chat(&json!(messages), &json!([]), |_, _| {})
         .await
         .map_err(|e| e.to_string())?;
 
@@ -1371,7 +1656,8 @@ pub async fn inline_transform_text(
 
     let instruction = inline_transform_instruction(&action, custom_instruction.as_deref());
     let user = format!("{instruction}\n\n---\n\n{selection}");
-    let system = crate::personalization::augment_system_prompt(Some(INLINE_TRANSFORM_SYSTEM.to_string()));
+    let system =
+        crate::personalization::augment_system_prompt(Some(INLINE_TRANSFORM_SYSTEM.to_string()));
     let messages = vec![
         json!({ "role": "system", "content": system.unwrap_or_else(|| INLINE_TRANSFORM_SYSTEM.to_string()) }),
         json!({ "role": "user", "content": user }),
@@ -1406,10 +1692,100 @@ pub async fn ai_complete(
     temperature: Option<f32>,
     provider_credential_id: Option<String>,
     format: Option<String>,
+    request_id: Option<String>,
 ) -> Result<String, String> {
     let user = prompt.trim();
     if user.is_empty() {
         return Err("Prompt is empty.".to_string());
+    }
+
+    let cancel = request_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(register_ai_request_cancel);
+    let cancel_parts = cancel.as_ref().map(clone_cancel_parts);
+
+    let result = ai_complete_inner(
+        user.to_string(),
+        system,
+        model,
+        base_url,
+        num_ctx,
+        temperature,
+        provider_credential_id,
+        format,
+        cancel_parts,
+    )
+    .await;
+
+    if let Some(id) = request_id.as_deref().map(str::trim).filter(|id| !id.is_empty()) {
+        take_ai_request_cancel(id);
+    }
+    result
+}
+
+async fn ai_complete_inner(
+    user: String,
+    system: Option<String>,
+    model: Option<String>,
+    base_url: Option<String>,
+    num_ctx: Option<u32>,
+    temperature: Option<f32>,
+    provider_credential_id: Option<String>,
+    format: Option<String>,
+    cancel_parts: Option<(Arc<AtomicBool>, Arc<Notify>)>,
+) -> Result<String, String> {
+    if cancel_parts
+        .as_ref()
+        .is_some_and(|(f, _)| f.load(Ordering::Relaxed))
+    {
+        return Err("cancelled".into());
+    }
+
+    let cred_id = provider_credential_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty());
+
+    // Claude Code / Cursor CLI print-mode backends (synthesis + assist).
+    if cred_id == Some(CLAUDE_CODE_PROVIDER_ID) {
+        let (flag, notify) = match cancel_parts {
+            Some((f, n)) => (Some(f), Some(n)),
+            None => (None, None),
+        };
+        let system = crate::personalization::augment_system_prompt(system);
+        let out = crate::claude::complete_claude_print(
+            &user,
+            system.as_deref(),
+            flag,
+            notify,
+        )
+        .await?;
+        let out = strip_inline_fences(&out);
+        if out.is_empty() {
+            return Err("The model returned an empty response.".into());
+        }
+        return Ok(out);
+    }
+    if cred_id == Some(CURSOR_CLI_PROVIDER_ID) {
+        let (flag, notify) = match cancel_parts {
+            Some((f, n)) => (Some(f), Some(n)),
+            None => (None, None),
+        };
+        let system = crate::personalization::augment_system_prompt(system);
+        let out = crate::cursor_agent::stream_spawn::complete_cursor_print(
+            &user,
+            system.as_deref(),
+            flag,
+            notify,
+        )
+        .await?;
+        let out = strip_inline_fences(&out);
+        if out.is_empty() {
+            return Err("The model returned an empty response.".into());
+        }
+        return Ok(out);
     }
 
     // `format: "json"` asks the local model for a strict JSON object, hardening
@@ -1426,7 +1802,7 @@ pub async fn ai_complete(
     }
     messages.push(json!({ "role": "user", "content": user }));
 
-    let content = complete_chat_messages(
+    let work = complete_chat_messages(
         messages,
         model,
         base_url,
@@ -1434,8 +1810,23 @@ pub async fn ai_complete(
         temperature,
         provider_credential_id,
         json_format,
-    )
-    .await?;
+    );
+
+    let content = if let Some((_, notify)) = cancel_parts.as_ref() {
+        tokio::select! {
+            _ = notify.notified() => return Err("cancelled".into()),
+            result = work => result?,
+        }
+    } else {
+        work.await?
+    };
+
+    if cancel_parts
+        .as_ref()
+        .is_some_and(|(f, _)| f.load(Ordering::Relaxed))
+    {
+        return Err("cancelled".into());
+    }
 
     let out = strip_inline_fences(&content);
     if out.is_empty() {
@@ -1444,17 +1835,49 @@ pub async fn ai_complete(
     Ok(out)
 }
 
-/// Embed one or more texts with a local Ollama embedding model (e.g.
-/// `nomic-embed-text`). Returns one float vector per input, enabling local
-/// semantic search/ranking. Ollama-only — provider credentials are not used.
+/// Cooperatively cancel an in-flight `ai_complete` / `ai_complete_stream`.
+#[tauri::command]
+pub fn ai_cancel_request(request_id: String) {
+    let id = request_id.trim();
+    if id.is_empty() {
+        return;
+    }
+    if let Ok(guard) = ai_request_cancels().lock() {
+        if let Some(handle) = guard.get(id) {
+            handle.flag.store(true, Ordering::Relaxed);
+            handle.notify.notify_waiters();
+        }
+    }
+}
+
+/// Embed one or more texts. Prefers an OpenAI-compat credential that exposes
+/// `/embeddings` (Gemini, OpenAI) when `provider_credential_id` is set;
+/// otherwise uses a local Ollama embedding model (e.g. `nomic-embed-text`).
 #[tauri::command]
 pub async fn ai_embed(
     texts: Vec<String>,
     model: Option<String>,
     base_url: Option<String>,
+    provider_credential_id: Option<String>,
 ) -> Result<Vec<Vec<f32>>, String> {
     if texts.is_empty() {
         return Ok(Vec::new());
+    }
+
+    if let Some(cred_id) = provider_credential_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        if let Ok(Some(cred)) = crate::claude::stored_openai_compatible_credential(Some(cred_id)) {
+            if let Some(client) = openai_compat::embedding_client_for_credential(
+                &cred.base_url,
+                &cred.api_key,
+                model.as_deref(),
+            ) {
+                return client.embeddings(&texts).await;
+            }
+        }
     }
 
     let base = base_url.unwrap_or_else(|| "http://localhost:11434".to_string());
@@ -1477,9 +1900,9 @@ pub async fn ai_embed(
 }
 
 /// Streaming variant of `ai_complete`: text fragments are forwarded over the
-/// `on_chunk` channel as they arrive. The OpenAI-compatible credential path is
-/// non-streaming, so it sends the whole reply as a single chunk. Returns the
-/// fully-accumulated (fence-stripped) text.
+/// `on_chunk` channel as they arrive. The OpenAI-compatible credential path and
+/// CLI backends are non-streaming, so they send the whole reply as a single
+/// chunk. Returns the fully-accumulated (fence-stripped) text.
 #[tauri::command]
 pub async fn ai_complete_stream(
     prompt: String,
@@ -1490,10 +1913,78 @@ pub async fn ai_complete_stream(
     temperature: Option<f32>,
     provider_credential_id: Option<String>,
     on_chunk: tauri::ipc::Channel<String>,
+    request_id: Option<String>,
 ) -> Result<String, String> {
     let user = prompt.trim();
     if user.is_empty() {
         return Err("Prompt is empty.".to_string());
+    }
+
+    let cancel = request_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(register_ai_request_cancel);
+    let cancel_parts = cancel.as_ref().map(clone_cancel_parts);
+
+    let result = ai_complete_stream_inner(
+        user.to_string(),
+        system,
+        model,
+        base_url,
+        num_ctx,
+        temperature,
+        provider_credential_id,
+        on_chunk,
+        cancel_parts,
+    )
+    .await;
+
+    if let Some(id) = request_id.as_deref().map(str::trim).filter(|id| !id.is_empty()) {
+        take_ai_request_cancel(id);
+    }
+    result
+}
+
+async fn ai_complete_stream_inner(
+    user: String,
+    system: Option<String>,
+    model: Option<String>,
+    base_url: Option<String>,
+    num_ctx: Option<u32>,
+    temperature: Option<f32>,
+    provider_credential_id: Option<String>,
+    on_chunk: tauri::ipc::Channel<String>,
+    cancel_parts: Option<(Arc<AtomicBool>, Arc<Notify>)>,
+) -> Result<String, String> {
+    if cancel_parts
+        .as_ref()
+        .is_some_and(|(f, _)| f.load(Ordering::Relaxed))
+    {
+        return Err("cancelled".into());
+    }
+
+    let cred_id = provider_credential_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty());
+
+    // CLI backends: one-shot then emit a single chunk (compatible with stream callers).
+    if cred_id == Some(CLAUDE_CODE_PROVIDER_ID) || cred_id == Some(CURSOR_CLI_PROVIDER_ID) {
+        let out = ai_complete_inner(
+            user,
+            system,
+            model,
+            base_url,
+            num_ctx,
+            temperature,
+            provider_credential_id,
+            None,
+            cancel_parts,
+        )
+        .await?;
+        let _ = on_chunk.send(out.clone());
+        return Ok(out);
     }
 
     let system = crate::personalization::augment_system_prompt(system);
@@ -1503,18 +1994,21 @@ pub async fn ai_complete_stream(
     }
     messages.push(json!({ "role": "user", "content": user }));
 
-    if let Some(cred_id) = provider_credential_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-    {
-        let content = crate::claude::complete_openai_compatible_chat(
+    if let Some(cred_id) = cred_id {
+        let work = crate::claude::complete_openai_compatible_chat(
             Some(cred_id),
             messages,
             model.as_deref(),
             temperature,
-        )
-        .await?;
+        );
+        let content = if let Some((_, notify)) = cancel_parts.as_ref() {
+            tokio::select! {
+                _ = notify.notified() => return Err("cancelled".into()),
+                result = work => result?,
+            }
+        } else {
+            work.await?
+        };
         let out = strip_inline_fences(&content);
         if out.is_empty() {
             return Err("The model returned an empty response.".into());
@@ -1538,12 +2032,34 @@ pub async fn ai_complete_stream(
     };
 
     let client = ollama::OllamaClient::new(&base, &model, num_ctx, temperature);
-    let turn = client
-        .chat(&json!(messages), &json!([]), |frag| {
-            let _ = on_chunk.send(frag.to_string());
-        })
-        .await
-        .map_err(|e| e.to_string())?;
+    let cancel_flag = cancel_parts.as_ref().map(|(f, _)| Arc::clone(f));
+    let messages_json = json!(messages);
+    let empty_tools = json!([]);
+    let work = client.chat(&messages_json, &empty_tools, |_, frag| {
+        if cancel_flag
+            .as_ref()
+            .is_some_and(|f| f.load(Ordering::Relaxed))
+        {
+            return;
+        }
+        let _ = on_chunk.send(frag.to_string());
+    });
+
+    let turn = if let Some((_, notify)) = cancel_parts.as_ref() {
+        tokio::select! {
+            _ = notify.notified() => return Err("cancelled".into()),
+            result = work => result.map_err(|e| e.to_string())?,
+        }
+    } else {
+        work.await.map_err(|e| e.to_string())?
+    };
+
+    if cancel_parts
+        .as_ref()
+        .is_some_and(|(f, _)| f.load(Ordering::Relaxed))
+    {
+        return Err("cancelled".into());
+    }
 
     if !turn.tool_calls.is_empty() {
         return Err("Expected text only, but the model returned tool calls.".into());
@@ -1576,7 +2092,9 @@ pub async fn ai_caption(
     let b64 = raw.rsplit(',').next().unwrap_or(raw).trim().to_string();
     // Captioning wants determinism, so default low; but honor an explicit user
     // temperature when provided rather than ignoring their setting.
-    let caption_temp = temperature.filter(|&t| (0.0..=2.0).contains(&t)).unwrap_or(0.3);
+    let caption_temp = temperature
+        .filter(|&t| (0.0..=2.0).contains(&t))
+        .unwrap_or(0.3);
 
     let base = base_url
         .clone()
@@ -1616,7 +2134,9 @@ pub async fn ai_caption(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or("Describe this image concisely for a figure caption: one sentence, no preamble.");
+        .unwrap_or(
+            "Describe this image concisely for a figure caption: one sentence, no preamble.",
+        );
 
     let messages = vec![json!({
         "role": "user",
@@ -1725,14 +2245,22 @@ mod tests {
         assert!(is_retryable_chat_error(
             "[E_OLLAMA_STALLED] Ollama stopped emitting tokens for 90s"
         ));
-        assert!(is_retryable_chat_error("Ollama stream error: connection reset"));
-        assert!(is_retryable_chat_error("Ollama returned HTTP 503: unavailable"));
+        assert!(is_retryable_chat_error(
+            "Ollama stream error: connection reset"
+        ));
+        assert!(is_retryable_chat_error(
+            "Ollama returned HTTP 503: unavailable"
+        ));
         // Permanent capability/config errors must NOT retry.
         assert!(!is_retryable_chat_error(
             "[E_NO_TOOLS] The model 'gemma:2b' does not support tool-calling."
         ));
-        assert!(!is_retryable_chat_error("[E_NO_MODEL] No Ollama model installed"));
-        assert!(!is_retryable_chat_error("Ollama returned HTTP 400: bad request"));
+        assert!(!is_retryable_chat_error(
+            "[E_NO_MODEL] No Ollama model installed"
+        ));
+        assert!(!is_retryable_chat_error(
+            "Ollama returned HTTP 400: bad request"
+        ));
     }
 
     fn role(m: &Value) -> &str {
@@ -1786,7 +2314,12 @@ mod tests {
             { "role": "tool", "tool_name": "Read", "content": "recent small result" },
             { "role": "assistant", "content": "final" }
         ]);
-        let before: usize = msgs.as_array().unwrap().iter().map(|m| m.to_string().len()).sum();
+        let before: usize = msgs
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m.to_string().len())
+            .sum();
 
         let result = compact_tool_results(&mut msgs, 4 * 1024);
         let arr = msgs.as_array().unwrap();
@@ -1826,7 +2359,12 @@ mod tests {
             { "role": "tool", "tool_name": "Read", "content": "small" },
             { "role": "assistant", "content": "done" }
         ]);
-        let before: usize = msgs.as_array().unwrap().iter().map(|m| m.to_string().len()).sum();
+        let before: usize = msgs
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m.to_string().len())
+            .sum();
 
         let result = compact_tool_results(&mut msgs, 4 * 1024);
         let arr = msgs.as_array().unwrap();
@@ -1915,14 +2453,22 @@ mod tests {
     async fn wait_for_answer_missing_entry_is_none() {
         // A missing entry resolves immediately to None (graceful "no answer"),
         // never hangs the agent loop.
-        assert!(wait_for_answer("native_ask-missing-tab_0_0").await.is_none());
+        assert!(wait_for_answer("native_ask-missing-tab_0_0")
+            .await
+            .is_none());
     }
 
     #[test]
     fn normalize_rel_resolves_and_guards() {
-        assert_eq!(normalize_rel(Some("chapters/intro.tex")).as_deref(), Some("chapters/intro.tex"));
+        assert_eq!(
+            normalize_rel(Some("chapters/intro.tex")).as_deref(),
+            Some("chapters/intro.tex")
+        );
         // Backslashes normalized to '/', a leading './' stripped.
-        assert_eq!(normalize_rel(Some(".\\a\\b.tex")).as_deref(), Some("a/b.tex"));
+        assert_eq!(
+            normalize_rel(Some(".\\a\\b.tex")).as_deref(),
+            Some("a/b.tex")
+        );
         // Absent / blank / traversal / absolute / drive yield None.
         assert!(normalize_rel(None).is_none());
         assert!(normalize_rel(Some("   ")).is_none());
@@ -1954,7 +2500,13 @@ mod tests {
     #[test]
     fn active_file_hint_prefers_preloaded_slice_else_points() {
         // With a pre-loaded slice, embed it and don't ask for a Read.
-        let h = active_file_hint("a.tex", Some("sel"), Some((40, 42)), Some(">   40  hi\n"), None);
+        let h = active_file_hint(
+            "a.tex",
+            Some("sel"),
+            Some((40, 42)),
+            Some(">   40  hi\n"),
+            None,
+        );
         assert!(h.contains("without reading the file again"));
         assert!(h.contains(">   40  hi"));
         assert!(!h.contains("Read `a.tex` with offset"));
@@ -1974,7 +2526,13 @@ mod tests {
     #[test]
     fn active_file_hint_inlines_whole_small_file_only_without_selection() {
         // No selection + a short file: inline its content for direct editing.
-        let h = active_file_hint("a.tex", None, None, None, Some("Intro paragraph.\nSecond line."));
+        let h = active_file_hint(
+            "a.tex",
+            None,
+            None,
+            None,
+            Some("Intro paragraph.\nSecond line."),
+        );
         assert!(h.contains("full current content"));
         assert!(h.contains("Intro paragraph."));
         assert!(h.contains("Second line."));
@@ -2007,7 +2565,9 @@ mod tests {
         assert!(read_small_file(&dir, "empty.tex").is_none());
 
         // A file over the line bound is not inlined (model should Read instead).
-        let big: String = (0..WHOLE_FILE_MAX_LINES + 5).map(|i| format!("l{i}\n")).collect();
+        let big: String = (0..WHOLE_FILE_MAX_LINES + 5)
+            .map(|i| format!("l{i}\n"))
+            .collect();
         std::fs::write(dir.join("big.tex"), &big).unwrap();
         assert!(read_small_file(&dir, "big.tex").is_none());
 
@@ -2054,5 +2614,17 @@ mod tests {
             inline_transform_instruction("edit", Some("Make it shorter")),
             "Make it shorter"
         );
+    }
+
+    #[test]
+    fn stream_heartbeat_message_shape() {
+        let base = super::stream_heartbeat_message("tool", None);
+        assert_eq!(base["type"], "system");
+        assert_eq!(base["subtype"], "heartbeat");
+        assert_eq!(base["phase"], "tool");
+        assert!(base.get("detail").is_none());
+
+        let with_detail = super::stream_heartbeat_message("tool", Some("Bash"));
+        assert_eq!(with_detail["detail"], "Bash");
     }
 }

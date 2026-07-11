@@ -1,17 +1,17 @@
 ---
-name: cluster-54
-description: "Skill for the Cluster_54 area of DevPrism. 37 symbols across 1 files."
+name: cluster-56
+description: "Skill for the Cluster_56 area of DevPrism. 37 symbols across 1 files."
 ---
 
-# Cluster_54
+# Cluster_56
 
-37 symbols | 1 files | Cohesion: 100%
+37 symbols | 1 files | Cohesion: 98%
 
 ## When to Use
 
 - Working with code in `apps/`
 - Understanding how history_init, history_snapshot, history_list work
-- Modifying cluster_54-related functionality
+- Modifying cluster_56-related functionality
 
 ## Key Files
 
@@ -54,9 +54,15 @@ Start here when exploring this area:
 | `test_history_snapshot_after_modification` | Function | `apps/desktop/src-tauri/src/history.rs` | 592 |
 | `test_history_snapshot_no_change_returns_none` | Function | `apps/desktop/src-tauri/src/history.rs` | 608 |
 
+## Connected Areas
+
+| Area | Connections |
+|------|-------------|
+| Cursor_agent | 5 calls |
+
 ## How to Explore
 
 1. `context({name: "history_init"})` — see callers and callees
-2. `query({search_query: "cluster_54"})` — find related execution flows
+2. `query({search_query: "cluster_56"})` — find related execution flows
 3. Read key files listed above for implementation details
 4. `explain({target: "<file or symbol>"})` — persisted taint findings (source→sink data flows), when indexed with `--pdg`

@@ -30,6 +30,7 @@ vi.mock("@/stores/history-store", () => ({
 
 import {
   CLAUDE_CODE_PROVIDER_ID,
+  STREAM_STALLED_ERROR,
   useClaudeChatStore,
 } from "@/stores/claude-chat-store";
 import { useSettingsStore } from "@/stores/settings-store";
@@ -40,6 +41,7 @@ function resetClaudeChatStore() {
     sessionId: null,
     isStreaming: false,
     streamingStartedAt: null,
+    streamingPhase: null,
     error: null,
     totalInputTokens: 0,
     totalOutputTokens: 0,
@@ -54,6 +56,7 @@ function resetClaudeChatStore() {
         messages: [],
         isStreaming: false,
         streamingStartedAt: null,
+        streamingPhase: null,
         error: null,
         totalInputTokens: 0,
         totalOutputTokens: 0,
@@ -675,6 +678,176 @@ describe("useClaudeChatStore native agent", () => {
     await useClaudeChatStore.getState().sendPrompt("tighten this");
     expect(lastUserText("tab-native-chiprange")).toBe(
       "@main.tex:1-2\ntighten this",
+    );
+  });
+
+  it("still seeds provider switch context when the first native invoke fails", async () => {
+    useTabWithMessages("tab-native-retry-seed", [
+      {
+        type: "user",
+        message: { content: [{ type: "text", text: "earlier question" }] },
+      },
+      {
+        type: "assistant",
+        message: { content: [{ type: "text", text: "earlier answer" }] },
+      },
+    ]);
+
+    vi.mocked(invoke).mockImplementation((cmd) => {
+      if (cmd === "run_native_agent") {
+        return Promise.reject(new Error("[E_AUTH] Groq API key is missing"));
+      }
+      return Promise.resolve(null);
+    });
+
+    await useClaudeChatStore.getState().sendPrompt("follow up question");
+    const first = lastNativeArgs();
+    expect(first.prompt).toContain("[Provider switch context]");
+    expect(first.prompt).toContain("earlier question");
+
+    useClaudeChatStore.setState((s) => ({
+      tabs: s.tabs.map((t) =>
+        t.id === "tab-native-retry-seed"
+          ? { ...t, isStreaming: false, error: null }
+          : t,
+      ),
+    }));
+
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockImplementation((cmd) => {
+      if (cmd === "run_native_agent") return Promise.resolve(null);
+      return Promise.resolve(null);
+    });
+
+    await useClaudeChatStore.getState().sendPrompt("retry question");
+    const second = lastNativeArgs();
+    expect(second.prompt).toContain("[Provider switch context]");
+    expect(second.prompt).toContain("earlier question");
+    expect(second.prompt).toContain("retry question");
+  });
+});
+
+describe("useClaudeChatStore.sendPrompt native prep watchdog", () => {
+  const STREAM_BOOTSTRAP_MS = 300_000;
+  const STREAM_IDLE_MS = 180_000;
+  const PREP_HEARTBEAT_MS = 30_000;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    resetClaudeChatStore();
+    setMockDocumentState();
+    vi.mocked(invoke).mockReset();
+    createSnapshotMock.mockClear();
+    useSettingsStore.getState().setNativeAgentEnabled(true);
+  });
+
+  afterEach(async () => {
+    useClaudeChatStore.getState()._clearStreamWatchdog("tab-native-wd");
+    vi.useRealTimers();
+    useSettingsStore.getState().setNativeAgentEnabled(false);
+  });
+
+  it("keeps the bootstrap watchdog armed while prep ticks during a pending invoke", async () => {
+    useClaudeChatStore.setState((s) => ({
+      tabs: [{ ...s.tabs[0], id: "tab-native-wd" }],
+      activeTabId: "tab-native-wd",
+    }));
+
+    let resolveNative!: () => void;
+    vi.mocked(invoke).mockImplementation((cmd) => {
+      if (cmd === "run_native_agent") {
+        return new Promise((resolve) => {
+          resolveNative = () => resolve(null);
+        });
+      }
+      return Promise.resolve(null);
+    });
+
+    const sendPromise = useClaudeChatStore.getState().sendPrompt("hello");
+
+    for (let i = 0; i < 30; i++) {
+      await Promise.resolve();
+      if (
+        vi.mocked(invoke).mock.calls.some((c) => c[0] === "run_native_agent")
+      ) {
+        break;
+      }
+    }
+
+    expect(
+      vi.mocked(invoke).mock.calls.some((c) => c[0] === "run_native_agent"),
+    ).toBe(true);
+
+    const tab = () =>
+      useClaudeChatStore.getState().tabs.find((t) => t.id === "tab-native-wd");
+
+    expect(tab()?.isStreaming).toBe(true);
+    expect(tab()?.streamingPhase).toBe("prep");
+
+    // Past the idle window — would stall here if prep ticks demoted bootstrap.
+    await vi.advanceTimersByTimeAsync(STREAM_IDLE_MS + 1);
+    expect(tab()?.isStreaming).toBe(true);
+    expect(tab()?.error).toBeNull();
+
+    // A few prep heartbeats while still under the bootstrap cap.
+    await vi.advanceTimersByTimeAsync(PREP_HEARTBEAT_MS * 2);
+    expect(tab()?.isStreaming).toBe(true);
+    expect(tab()?.error).toBeNull();
+
+    // Remaining bootstrap budget — watchdog should trip now.
+    await vi.advanceTimersByTimeAsync(
+      STREAM_BOOTSTRAP_MS - STREAM_IDLE_MS - PREP_HEARTBEAT_MS * 2,
+    );
+    expect(tab()?.isStreaming).toBe(false);
+    expect(tab()?.error).toBe(STREAM_STALLED_ERROR);
+
+    vi.useRealTimers();
+    resolveNative();
+    await sendPromise.catch(() => {});
+  });
+});
+
+describe("useClaudeChatStore.sendPrompt backend routing", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(invoke).mockImplementation(() => Promise.resolve(null));
+    resetClaudeChatStore();
+    setMockDocumentState();
+  });
+
+  it("routes native-ollama to run_native_agent", async () => {
+    useSettingsStore.getState().setAgentBackend("native-ollama");
+    await useClaudeChatStore.getState().sendPrompt("hello");
+    expect(invoke).toHaveBeenCalledWith(
+      "run_native_agent",
+      expect.objectContaining({ chatProvider: "ollama" }),
+    );
+  });
+
+  it("routes native-groq to run_native_agent with openai-compat", async () => {
+    useSettingsStore.getState().setAgentBackend("native-groq");
+    await useClaudeChatStore.getState().sendPrompt("hello");
+    expect(invoke).toHaveBeenCalledWith(
+      "run_native_agent",
+      expect.objectContaining({ chatProvider: "openai-compat" }),
+    );
+  });
+
+  it("routes cursor-cli to execute_cursor_agent", async () => {
+    useSettingsStore.getState().setAgentBackend("cursor-cli");
+    await useClaudeChatStore.getState().sendPrompt("hello");
+    expect(invoke).toHaveBeenCalledWith(
+      "execute_cursor_agent",
+      expect.objectContaining({ tabId: "tab-default" }),
+    );
+  });
+
+  it("routes claude-code to execute_claude_code", async () => {
+    useSettingsStore.getState().setAgentBackend("claude-code");
+    await useClaudeChatStore.getState().sendPrompt("hello");
+    expect(invoke).toHaveBeenCalledWith(
+      "execute_claude_code",
+      expect.objectContaining({ tabId: "tab-default" }),
     );
   });
 });

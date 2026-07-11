@@ -1,0 +1,131 @@
+import { invoke } from "@tauri-apps/api/core";
+import type {
+  EmbeddingItem,
+  ExperienceBlock,
+  IngestReport,
+  KbChunkRow,
+  KbSourceRow,
+  Persona,
+  PreparedSource,
+  ScoredHit,
+  SearchFilter,
+  SynthesisRun,
+} from "./types";
+
+export type {
+  BlockKind,
+  Bullet,
+  BulletMetric,
+  DateRange,
+  EmbedPipelineResult,
+  EmbeddingItem,
+  EmbeddingOwnerKind,
+  ExperienceBlock,
+  IngestReport,
+  KbChunkMeta,
+  KbChunkRow,
+  KbSourceRow,
+  KbSourceType,
+  Persona,
+  PersonaId,
+  PreparedChunk,
+  PreparedSource,
+  ProcessingPhase,
+  ProcessingProgress,
+  ScoredHit,
+  SearchFilter,
+  SectionKind,
+  SeniorityLevel,
+  SkillTag,
+  SynthesisRun,
+} from "./types";
+
+export * from "./ingest";
+export * from "./block-helpers";
+export * from "./block-embed";
+export { extractBlocksFromResume } from "./extract-resume";
+
+export function listBlocks(
+  missingEmbeddingsOnly = false,
+): Promise<ExperienceBlock[]> {
+  return invoke<ExperienceBlock[]>("career_list_blocks", {
+    missingEmbeddingsOnly,
+  });
+}
+
+export function upsertBlock(block: ExperienceBlock): Promise<void> {
+  return invoke<void>("career_upsert_block", { block });
+}
+
+export function deleteBlock(id: string): Promise<void> {
+  return invoke<void>("career_delete_block", { id });
+}
+
+export function listPersonas(): Promise<Persona[]> {
+  return invoke<Persona[]>("career_list_personas");
+}
+
+export function upsertPersona(persona: Persona): Promise<void> {
+  return invoke<void>("career_upsert_persona", { persona });
+}
+
+export function deletePersona(id: string): Promise<void> {
+  return invoke<void>("career_delete_persona", { id });
+}
+
+/** Legacy path-based ingest (minimal Rust chunker). Prefer `ingestFilePath`. */
+export function ingestSource(
+  path: string,
+  sourceType: string,
+): Promise<IngestReport> {
+  return invoke<IngestReport>("career_ingest_source", { path, sourceType });
+}
+
+/** Upsert frontend-prepared chunks with per-chunk content-hash reuse. */
+export function upsertKbSource(
+  prepared: PreparedSource,
+): Promise<IngestReport> {
+  return invoke<IngestReport>("career_upsert_kb_source", { prepared });
+}
+
+export function listKbSources(): Promise<KbSourceRow[]> {
+  return invoke<KbSourceRow[]>("career_list_kb_sources");
+}
+
+export function listKbChunks(
+  sourceId?: string,
+  missingEmbeddingsOnly = false,
+): Promise<KbChunkRow[]> {
+  return invoke<KbChunkRow[]>("career_list_kb_chunks", {
+    sourceId: sourceId ?? null,
+    missingEmbeddingsOnly,
+  });
+}
+
+export function deleteKbSource(sourceId: string): Promise<void> {
+  return invoke<void>("career_delete_kb_source", { sourceId });
+}
+
+export function storeEmbeddings(items: EmbeddingItem[]): Promise<void> {
+  return invoke<void>("career_store_embeddings", { items });
+}
+
+export function vectorSearch(
+  queryVec: number[],
+  k: number,
+  filter?: SearchFilter,
+): Promise<ScoredHit[]> {
+  return invoke<ScoredHit[]>("career_vector_search", {
+    queryVec,
+    k,
+    filter: filter ?? null,
+  });
+}
+
+export function saveRun(run: SynthesisRun): Promise<void> {
+  return invoke<void>("career_save_run", { run });
+}
+
+export function listRuns(): Promise<SynthesisRun[]> {
+  return invoke<SynthesisRun[]>("career_list_runs");
+}

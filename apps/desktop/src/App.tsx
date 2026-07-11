@@ -28,6 +28,7 @@ import {
 } from "@/lib/personalization";
 import { watchSemanticLayerConfigSync } from "@/lib/semantic-layer-bridge";
 import { usePersonalizationStore } from "@/stores/personalization-store";
+import { useCareerStore } from "@/stores/career-store";
 import { Skeleton } from "@/components/ui/skeleton";
 import { OllamaPullBanner } from "@/components/ollama-pull-banner";
 
@@ -44,6 +45,12 @@ const LazyDebugPage = lazy(() =>
 const WorkspaceLayout = lazy(() =>
   import("@/components/workspace/workspace-layout").then((m) => ({
     default: m.WorkspaceLayout,
+  })),
+);
+
+const CareerView = lazy(() =>
+  import("@/components/career/career-view").then((m) => ({
+    default: m.CareerView,
   })),
 );
 
@@ -237,6 +244,7 @@ function WorkspaceWithClaude() {
 
 export function App({ onReady }: { onReady?: () => void }) {
   const projectRoot = useDocumentStore((s) => s.projectRoot);
+  const careerOpen = useCareerStore((s) => s.careerOpen);
   const [showDebug, setShowDebug] = useState(false);
 
   // Register global keyboard shortcuts (Cmd+S, Cmd+N) at the app level
@@ -295,7 +303,17 @@ export function App({ onReady }: { onReady?: () => void }) {
             data-tauri-drag-region
             className="fixed inset-x-0 top-0 z-[9999] h-[var(--titlebar-height)]"
           />
-          {projectRoot ? <WorkspaceWithClaude /> : <ProjectPicker />}
+          {careerOpen ? (
+            <Suspense
+              fallback={<div className="h-full w-full bg-background" />}
+            >
+              <CareerView />
+            </Suspense>
+          ) : projectRoot ? (
+            <WorkspaceWithClaude />
+          ) : (
+            <ProjectPicker />
+          )}
           <EnvironmentOnboarding />
           {showDebug && (
             <div className="fixed inset-0 z-[9998] flex items-end justify-center">

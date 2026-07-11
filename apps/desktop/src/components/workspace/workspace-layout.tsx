@@ -18,6 +18,7 @@ import { WorkspacePanelResizeHandle } from "./panel-resize-handle";
 import { WorkspaceLoadingSkeleton } from "./workspace-loading-skeleton";
 import { WorkspaceBannerBar } from "./workspace-banner-bar";
 import { CommandPalette } from "@/components/command-palette";
+import { ClaudeChatDrawer } from "@/components/claude-chat/claude-chat-drawer";
 import { useDocumentStore } from "@/stores/document-store";
 import { useEditorViewModeStore } from "@/stores/editor-view-mode-store";
 import { usePreviewStore } from "@/stores/preview-store";
@@ -341,11 +342,14 @@ export function WorkspaceLayout() {
             minSize={25}
             className="min-w-0"
           >
-            {editorViewMode === "rich" && activeIsTex ? (
-              <RichLatexEditor />
-            ) : (
-              <LatexEditor />
-            )}
+            <div className="relative flex h-full min-h-0 flex-col">
+              {editorViewMode === "rich" && activeIsTex ? (
+                <RichLatexEditor />
+              ) : (
+                <LatexEditor />
+              )}
+              <ClaudeChatDrawer />
+            </div>
           </Panel>
         )}
 

@@ -24,9 +24,11 @@ import { ChatComposer } from "./chat-composer";
 import { ChatTabBar } from "./chat-tab-bar";
 import { OllamaErrorHelp } from "@/components/ollama-error-help";
 import { requestOllamaRefresh } from "@/lib/ollama-events";
+import { classifyOllamaError } from "@/lib/ollama";
 
 const MIN_HEIGHT = 260;
 const DEFAULT_HEIGHT = 360;
+const DOCKED_BORDER_RADIUS = "12px 12px 0 0";
 
 export function ClaudeChatDrawer() {
   // Initialize event listeners for Claude streaming
@@ -37,16 +39,23 @@ export function ClaudeChatDrawer() {
   );
   const error = useClaudeChatStore((s) => s.error);
   const clearMessages = useClaudeChatStore((s) => s.clearMessages);
+  const retryLastPrompt = useClaudeChatStore((s) => s.retryLastPrompt);
   const hasMessages = useClaudeChatStore((s) => s.messages.length > 0);
+
+  const handleErrorRetry = useCallback(() => {
+    if (!error) return;
+    const classified = classifyOllamaError(error);
+    if (classified.kind === "unreachable") {
+      requestOllamaRefresh();
+    }
+    void retryLastPrompt();
+  }, [error, retryLastPrompt]);
 
   const [isOpen, setIsOpen] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
   const [height, setHeight] = useState(DEFAULT_HEIGHT);
   const [isDragging, setIsDragging] = useState(false);
-  const [viewport, setViewport] = useState(() => ({
-    width: window.innerWidth,
-    height: window.innerHeight,
-  }));
+  const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
   const containerRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const focusReturnRef = useRef<HTMLElement | null>(null);
@@ -61,7 +70,10 @@ export function ClaudeChatDrawer() {
     const shouldOpen = anyStreaming || pendingAttachments.length > 0;
     if (shouldOpen && !isOpen) {
       setIsOpen(true);
-      const maxHeight = Math.max(MIN_HEIGHT, window.innerHeight * 0.5);
+      const maxHeight = Math.max(
+        MIN_HEIGHT,
+        (containerSize.height || window.innerHeight) * 0.5,
+      );
       const nextHeight = Math.max(maxHeight, MIN_HEIGHT);
       setHeight(nextHeight);
       heightRef.current = nextHeight;
@@ -71,13 +83,22 @@ export function ClaudeChatDrawer() {
     }
   }, [anyStreaming, isOpen, pendingAttachments]);
 
-  // Track viewport size so the fullscreen panel and height caps follow window
-  // resizing (dimensions are derived from window.inner* at render time).
+  // Track the editor pane size so the drawer stays scoped to that panel.
   useEffect(() => {
-    const onResize = () =>
-      setViewport({ width: window.innerWidth, height: window.innerHeight });
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
+    const container = containerRef.current;
+    if (!container) return;
+
+    const updateSize = () => {
+      setContainerSize({
+        width: container.clientWidth,
+        height: container.clientHeight,
+      });
+    };
+
+    updateSize();
+    const resizeObserver = new ResizeObserver(updateSize);
+    resizeObserver.observe(container);
+    return () => resizeObserver.disconnect();
   }, []);
 
   const restoreFocus = useCallback(() => {
@@ -168,7 +189,9 @@ export function ClaudeChatDrawer() {
 
       const handleMouseMove = (e: MouseEvent) => {
         hasDraggedRef.current = true;
-        const maxHeight = Math.max(MIN_HEIGHT, window.innerHeight * 0.5);
+        const paneHeight =
+          containerRef.current?.clientHeight || window.innerHeight;
+        const maxHeight = Math.max(MIN_HEIGHT, paneHeight * 0.5);
         const delta = startY - e.clientY;
         const newHeight = Math.min(
           Math.max(startHeight + delta, MIN_HEIGHT),
@@ -194,27 +217,27 @@ export function ClaudeChatDrawer() {
   );
 
   const panelStyle = (): React.CSSProperties => {
+    const paneHeight = containerSize.height || window.innerHeight;
     if (!isOpen && !isExpanded) {
-      return { height: 0, maxWidth: 672, borderRadius: 24 };
+      return { height: 0, width: "100%", borderRadius: DOCKED_BORDER_RADIUS };
     }
     if (isExpanded) {
       return {
-        height: viewport.height,
-        maxWidth: viewport.width,
+        height: paneHeight,
+        width: "100%",
         borderRadius: 0,
       };
     }
-    // Clamp to the viewport so a stored height never overflows after the window
-    // shrinks below the height the user previously dragged to.
+    // Clamp to the editor pane so a stored height never overflows after resize.
     const clampedHeight = Math.min(
       Math.max(height, MIN_HEIGHT),
-      Math.max(MIN_HEIGHT, viewport.height),
+      Math.max(MIN_HEIGHT, paneHeight),
     );
     return {
       height: clampedHeight,
       minHeight: MIN_HEIGHT,
-      maxWidth: 672,
-      borderRadius: 24,
+      width: "100%",
+      borderRadius: DOCKED_BORDER_RADIUS,
     };
   };
 
@@ -281,8 +304,8 @@ export function ClaudeChatDrawer() {
     <div
       ref={containerRef}
       className={cn(
-        "pointer-events-none fixed inset-0 z-40 flex items-end justify-center transition-[padding] duration-300 ease-out",
-        isExpanded ? "p-0" : "px-4 pt-4 pb-6",
+        "pointer-events-none absolute inset-0 z-10 flex flex-col justify-end transition-[padding] duration-300 ease-out",
+        isExpanded ? "p-0" : "pb-0",
       )}
     >
       {/* Floating toggle button */}
@@ -290,7 +313,7 @@ export function ClaudeChatDrawer() {
         type="button"
         onClick={() => openDrawer()}
         className={cn(
-          "pointer-events-auto absolute right-4 bottom-6 flex size-12 items-center justify-center rounded-full border border-border bg-background shadow-lg transition-all duration-300 ease-out hover:scale-105 hover:shadow-xl",
+          "pointer-events-auto absolute right-4 bottom-4 flex size-12 items-center justify-center rounded-full border border-border bg-background shadow-lg transition-all duration-300 ease-out hover:scale-105 hover:shadow-xl",
           isOpen
             ? "pointer-events-none scale-50 opacity-0"
             : "scale-100 opacity-100",
@@ -318,7 +341,7 @@ export function ClaudeChatDrawer() {
           "pointer-events-auto flex w-full flex-col overflow-hidden border bg-background transition-[height,max-width,border-radius,border-color,box-shadow,opacity,transform] duration-300 ease-out",
           isExpanded
             ? "border-transparent shadow-none"
-            : "border-border shadow-2xl",
+            : "border-border border-t shadow-lg",
           isOpen
             ? "scale-100 opacity-100"
             : "pointer-events-none origin-bottom scale-95 opacity-0",
@@ -358,7 +381,10 @@ export function ClaudeChatDrawer() {
                   const delta = e.key === "ArrowUp" ? 24 : -24;
                   const clampedHeight = Math.min(
                     Math.max(heightRef.current + delta, MIN_HEIGHT),
-                    Math.max(MIN_HEIGHT, viewport.height),
+                    Math.max(
+                      MIN_HEIGHT,
+                      containerSize.height || window.innerHeight,
+                    ),
                   );
                   heightRef.current = clampedHeight;
                   setHeight(clampedHeight);
@@ -401,7 +427,7 @@ export function ClaudeChatDrawer() {
         {error && (
           <div className="mx-3 mt-2 mb-1 flex items-start gap-2 rounded-lg border border-destructive/50 bg-destructive/10 px-3 py-2 text-destructive text-xs">
             <div className="min-w-0 flex-1">
-              <OllamaErrorHelp error={error} onRetry={requestOllamaRefresh} />
+              <OllamaErrorHelp error={error} onRetry={handleErrorRetry} />
             </div>
           </div>
         )}

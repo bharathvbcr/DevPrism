@@ -59,12 +59,20 @@ export function useKeyboardShortcuts() {
         window.dispatchEvent(new CustomEvent("toggle-debug-panel"));
       }
 
-      // Cmd+Shift+J / Ctrl+Shift+J: Open chat and focus composer
+      // Cmd+Shift+J / Ctrl+Shift+J: open chat (editor uses the same chord for
+      // forward SyncTeX via its CodeMirror keymap when focused).
       if (
         (e.metaKey || e.ctrlKey) &&
         e.shiftKey &&
         e.key.toLowerCase() === "j"
       ) {
+        const target = e.target;
+        if (
+          target instanceof Element &&
+          (target.closest(".cm-editor") || target.closest(".mupdf-page"))
+        ) {
+          return;
+        }
         e.preventDefault();
         window.dispatchEvent(
           new CustomEvent(CHAT_DRAWER_OPEN_EVENT, {

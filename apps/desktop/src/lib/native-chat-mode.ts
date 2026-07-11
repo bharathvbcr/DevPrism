@@ -1,4 +1,5 @@
 import { peekCachedOllamaModelCapabilities } from "@/hooks/use-ollama-model-capabilities";
+import { isNativeOllamaBackend } from "@/lib/agent-backend";
 import {
   getOllamaBaseUrl,
   resolveNativeOllamaModel,
@@ -15,7 +16,8 @@ import { useSettingsStore } from "@/stores/settings-store";
  * Returns `null` only when the model name is unknown.
  */
 export function resolveNativeChatOnlyFlag(): boolean | null {
-  if (!useSettingsStore.getState().nativeAgentEnabled) return null;
+  if (!isNativeOllamaBackend(useSettingsStore.getState().agentBackend))
+    return null;
 
   const chat = useClaudeChatStore.getState();
   const creds = useClaudeSetupStore.getState().openAiCredentials ?? [];

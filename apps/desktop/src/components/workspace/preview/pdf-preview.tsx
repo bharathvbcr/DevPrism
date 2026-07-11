@@ -34,6 +34,7 @@ import {
   useDocumentStore,
   getPdfBytes,
   getCurrentPdfBytes,
+  getCurrentPdfRootId,
   resolveTexRoot,
 } from "@/stores/document-store";
 import { useHistoryStore } from "@/stores/history-store";
@@ -398,10 +399,14 @@ export function PdfPreview() {
   const compileErrorCache = useDocumentStore((s) => s.compileErrorCache);
   const activeFileId = useDocumentStore((s) => s.activeFileId);
 
-  const currentRootFileId = useMemo(
-    () => resolvePreviewCompileRoot(projectRoot, activeFileId, files),
-    [projectRoot, activeFileId, files],
-  );
+  const currentRootFileId = useMemo(() => {
+    // Prefer the root actually driving getCurrentPdfBytes() so highlights,
+    // forward-sync pulses, and the visible PdfViewer stay aligned.
+    return (
+      getCurrentPdfRootId() ??
+      resolvePreviewCompileRoot(projectRoot, activeFileId, files)
+    );
+  }, [pdfRevision, projectRoot, activeFileId, files]);
   const currentCompileRoot = useMemo(
     () => compileRoots.find((r) => r.rootId === currentRootFileId) ?? null,
     [compileRoots, currentRootFileId],
@@ -484,6 +489,7 @@ export function PdfPreview() {
   const activeColorId = useAnnotationStore((s) => s.activeColorId);
   const setActiveColor = useAnnotationStore((s) => s.setActiveColor);
   const clearHighlights = useAnnotationStore((s) => s.clearHighlights);
+  const removeHighlight = useAnnotationStore((s) => s.removeHighlight);
   const highlightCount = useAnnotationStore((s) =>
     currentRootFileId
       ? (s.highlightsByRoot[currentRootFileId]?.length ?? 0)
@@ -507,6 +513,7 @@ export function PdfPreview() {
       return;
     }
     const color = getHighlightColor(activeColorId);
+    const before = getHighlightsForRoot(currentRootFileId).length;
     addHighlight(currentRootFileId, {
       pageIndex: sel.pageNumber - 1,
       colorId: color.id,
@@ -515,7 +522,22 @@ export function PdfPreview() {
       quads: sel.quads,
       text: sel.text,
     });
-  }, [pdfSelection, currentRootFileId, activeColorId, addHighlight]);
+    const added = getHighlightsForRoot(currentRootFileId)[before];
+    if (added) {
+      toast("Highlighted", {
+        action: {
+          label: "Undo",
+          onClick: () => removeHighlight(currentRootFileId, added.id),
+        },
+      });
+    }
+  }, [
+    pdfSelection,
+    currentRootFileId,
+    activeColorId,
+    addHighlight,
+    removeHighlight,
+  ]);
 
   const handleTextClick = useCallback(
     (text: string) => {
@@ -1658,6 +1680,7 @@ export function PdfPreview() {
                       : null
                   }
                   onTextSelect={isActive ? handleTextSelect : undefined}
+                  selectionForOverlay={isActive ? pdfSelection : null}
                   onFirstPageSize={isActive ? handleFirstPageSize : undefined}
                   onContainerResize={
                     isActive ? handleContainerResize : undefined
@@ -2302,6 +2325,7 @@ export function PdfPreview() {
           position={pdfToolbarPosition}
           contextLabel={pdfContextLabel}
           actions={pdfToolbarActions}
+          autoFocusPrompt={false}
           onSendPrompt={handlePdfToolbarSendPrompt}
           onAction={handlePdfToolbarAction}
           onDismiss={handlePdfToolbarDismiss}

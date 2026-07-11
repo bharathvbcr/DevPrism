@@ -92,6 +92,13 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+  /* PDF preview overlays (search matches, SyncTeX forward-sync pulse) */
+  --pdf-synctex-pulse: rgba(14, 165, 233, 0.35);
+  --pdf-synctex-pulse-outline: #0ea5e9;
+  --pdf-search-active: rgba(249, 115, 22, 0.45);
+  --pdf-search-match: rgba(250, 204, 21, 0.4);
+  --pdf-search-active-outline: #ea580c;
+  --pdf-selection: rgba(59, 130, 246, 0.28);
 }
 
 .dark {
@@ -134,6 +141,12 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
+  --pdf-synctex-pulse: rgba(56, 189, 248, 0.42);
+  --pdf-synctex-pulse-outline: #38bdf8;
+  --pdf-search-active: rgba(251, 146, 60, 0.5);
+  --pdf-search-match: rgba(250, 204, 21, 0.45);
+  --pdf-search-active-outline: #fb923c;
+  --pdf-selection: rgba(96, 165, 250, 0.35);
 }
 
 @layer base {
@@ -218,6 +231,8 @@
   inset: 0;
   z-index: 1;
   pointer-events: auto;
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .mupdf-text-layer text {

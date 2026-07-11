@@ -47,7 +47,9 @@ export type OllamaErrorKind =
   | "no_vision"
   | "already_running"
   | "stalled"
+  | "stream_stalled"
   | "empty"
+  | "auth"
   | "generic";
 
 export interface ClassifiedOllamaError {
@@ -172,6 +174,7 @@ const ERROR_CODE_TO_KIND: Record<string, OllamaErrorKind> = {
   E_ALREADY_RUNNING: "already_running",
   E_OLLAMA_STALLED: "stalled",
   E_OLLAMA_EMPTY: "empty",
+  E_AUTH: "auth",
 };
 
 /** Turn native-agent / Ollama errors into actionable categories for the UI.
@@ -232,6 +235,19 @@ export function classifyOllamaError(message: string): ClassifiedOllamaError {
     return { kind: "already_running", message: text };
   }
 
+  if (
+    lower.includes("api key") ||
+    lower.includes("authentication") ||
+    lower.includes("unauthorized") ||
+    lower.includes("invalid key")
+  ) {
+    return { kind: "auth", message: text };
+  }
+
+  if (lower.includes("produced no output for several minutes")) {
+    return { kind: "stream_stalled", message: text };
+  }
+
   return { kind: "generic", message: text };
 }
 
@@ -239,7 +255,7 @@ export function classifyOllamaError(message: string): ClassifiedOllamaError {
 export function ollamaModelHeuristics(model: string) {
   const name = model.toLowerCase();
   const tools =
-    /llama3\.[12]|llama3\.1|qwen2\.5|qwen3|mistral-nemo|command-r|deepseek-r1|phi[34]|granite|nemotron|gemma2|gemma3|mixtral|firefunction/.test(
+    /llama3\.[12]|llama3\.1|qwen2\.5|qwen3|mistral-nemo|command-r|deepseek-r1|phi[34]|granite|nemotron|gemma2|gemma3|mixtral|firefunction|gpt-oss/.test(
       name,
     );
   const vision =

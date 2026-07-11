@@ -2,6 +2,7 @@ import { invoke, Channel } from "@tauri-apps/api/core";
 import {
   useClaudeChatStore,
   CLAUDE_CODE_PROVIDER_ID,
+  CURSOR_CLI_PROVIDER_ID,
 } from "@/stores/claude-chat-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useClaudeSetupStore } from "@/stores/claude-setup-store";
@@ -13,12 +14,61 @@ import {
 } from "@/lib/ollama";
 import { runWithSemanticLayer, cosineSimilarity } from "@/lib/semantic-layer";
 
+/** Backend used for one-shot `ai_complete` / `ai_complete_stream`. */
+export type AiAssistBackend =
+  | "ollama"
+  | "openai-compat"
+  | "claude-code"
+  | "cursor-cli";
+
 export interface AiProviderConfig {
   providerCredentialId: string | null;
   model: string | null;
   baseUrl: string | null;
   numCtx: number | null;
   temperature: number | null;
+  backend: AiAssistBackend;
+}
+
+function isCliProviderId(id: string | null | undefined): boolean {
+  return id === CLAUDE_CODE_PROVIDER_ID || id === CURSOR_CLI_PROVIDER_ID;
+}
+
+function newAiRequestId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `ai_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  throw new DOMException("AI request cancelled", "AbortError");
+}
+
+/** Best-effort cancel of an in-flight `ai_complete` / `ai_complete_stream`. */
+export async function aiCancelRequest(requestId: string): Promise<void> {
+  try {
+    await invoke("ai_cancel_request", { requestId });
+  } catch {
+    // Ignore — request may have already finished.
+  }
+}
+
+function bindAbortToRequest(
+  signal: AbortSignal | undefined,
+  requestId: string,
+): () => void {
+  if (!signal) return () => {};
+  const onAbort = () => {
+    void aiCancelRequest(requestId);
+  };
+  if (signal.aborted) {
+    onAbort();
+    return () => {};
+  }
+  signal.addEventListener("abort", onAbort);
+  return () => signal.removeEventListener("abort", onAbort);
 }
 
 /** Resolve the model/provider used for lightweight local AI assist calls. */
@@ -28,7 +78,29 @@ export function resolveAiProvider(): AiProviderConfig {
   const providerModels = useClaudeChatStore.getState().selectedProviderModels;
   const ns = useSettingsStore.getState();
 
-  if (selectedId && selectedId !== CLAUDE_CODE_PROVIDER_ID) {
+  if (selectedId === CLAUDE_CODE_PROVIDER_ID) {
+    return {
+      providerCredentialId: CLAUDE_CODE_PROVIDER_ID,
+      model: null,
+      baseUrl: null,
+      numCtx: ns.nativeNumCtx ?? null,
+      temperature: ns.nativeTemperature ?? null,
+      backend: "claude-code",
+    };
+  }
+
+  if (selectedId === CURSOR_CLI_PROVIDER_ID) {
+    return {
+      providerCredentialId: CURSOR_CLI_PROVIDER_ID,
+      model: null,
+      baseUrl: null,
+      numCtx: ns.nativeNumCtx ?? null,
+      temperature: ns.nativeTemperature ?? null,
+      backend: "cursor-cli",
+    };
+  }
+
+  if (selectedId && !isCliProviderId(selectedId)) {
     const cred = creds.find((c) => c.id === selectedId);
     if (cred) {
       return {
@@ -37,6 +109,7 @@ export function resolveAiProvider(): AiProviderConfig {
         baseUrl: cred.base_url || null,
         numCtx: ns.nativeNumCtx ?? null,
         temperature: ns.nativeTemperature ?? null,
+        backend: "openai-compat",
       };
     }
   }
@@ -52,15 +125,21 @@ export function resolveAiProvider(): AiProviderConfig {
     baseUrl: ollama?.base_url || null,
     numCtx: ns.nativeNumCtx ?? null,
     temperature: ns.nativeTemperature ?? null,
+    backend: "ollama",
   };
 }
 
-/** Whether direct one-shot AI (Ollama or OpenAI-compatible) is available. */
+/**
+ * Whether one-shot AI assist is available for the selected chat provider.
+ * Claude Code / Cursor use CLI print-mode; embeddings still need Ollama/cloud.
+ */
 export function canUseAiAssist(): boolean {
   if (!useSettingsStore.getState().aiAssistEnabled) return false;
 
   const providerId = useClaudeChatStore.getState().selectedProviderCredentialId;
-  if (providerId && providerId !== CLAUDE_CODE_PROVIDER_ID) {
+  if (isCliProviderId(providerId)) return true;
+
+  if (providerId && !isCliProviderId(providerId)) {
     const creds = useClaudeSetupStore.getState().openAiCredentials ?? [];
     return creds.some((c) => c.id === providerId);
   }
@@ -100,7 +179,20 @@ function releaseAiSlot(): void {
   }
 }
 
-/** One-shot completion via the native agent backend (Ollama or OpenAI-compatible). */
+function mapInvokeAbortError(err: unknown): never {
+  const message =
+    err instanceof Error
+      ? err.message
+      : typeof err === "string"
+        ? err
+        : String(err);
+  if (/cancell?ed|aborted/i.test(message)) {
+    throw new DOMException("AI request cancelled", "AbortError");
+  }
+  throw err instanceof Error ? err : new Error(message);
+}
+
+/** One-shot completion via Ollama, OpenAI-compat, Claude Code, or Cursor CLI. */
 export async function aiComplete(options: {
   prompt: string;
   system?: string;
@@ -111,10 +203,16 @@ export async function aiComplete(options: {
   contextChunks?: string[];
   skipSemanticLayer?: boolean;
   skipSemanticCache?: boolean;
+  /** When aborted, cancels the in-flight Rust request mid-call. */
+  signal?: AbortSignal;
 }): Promise<string> {
+  throwIfAborted(options.signal);
   const provider = resolveAiProvider();
+  const requestId = newAiRequestId();
+  const unbind = bindAbortToRequest(options.signal, requestId);
   await acquireAiSlot();
   try {
+    throwIfAborted(options.signal);
     const { result } = await runWithSemanticLayer(
       {
         prompt: options.prompt,
@@ -126,30 +224,39 @@ export async function aiComplete(options: {
         skipCache: options.skipSemanticCache,
       },
       async (prepared) => {
+        throwIfAborted(options.signal);
         const model = prepared.model ?? provider.model;
-        return invoke<string>("ai_complete", {
-          prompt: prepared.prompt,
-          system: prepared.system ?? null,
-          model,
-          baseUrl: provider.baseUrl,
-          providerCredentialId: provider.providerCredentialId,
-          numCtx: provider.numCtx,
-          temperature: options.temperature ?? provider.temperature,
-          format: options.format ?? null,
-        });
+        try {
+          return await invoke<string>("ai_complete", {
+            prompt: prepared.prompt,
+            system: prepared.system ?? null,
+            model,
+            baseUrl: provider.baseUrl,
+            providerCredentialId: provider.providerCredentialId,
+            numCtx: provider.numCtx,
+            temperature: options.temperature ?? provider.temperature,
+            format: options.format ?? null,
+            requestId,
+          });
+        } catch (err) {
+          throwIfAborted(options.signal);
+          mapInvokeAbortError(err);
+        }
       },
-      aiEmbed,
+      (texts) => aiEmbed(texts, options.signal),
     );
+    throwIfAborted(options.signal);
     return result;
   } finally {
+    unbind();
     releaseAiSlot();
   }
 }
 
 /**
  * Streaming one-shot completion. Forwards text fragments to `onChunk` as they
- * arrive (local Ollama streams token-by-token; the credential path delivers one
- * chunk). Resolves with the full accumulated text.
+ * arrive (local Ollama streams token-by-token; credential / CLI paths may
+ * deliver one chunk). Resolves with the full accumulated text.
  */
 export async function aiCompleteStream(
   options: {
@@ -159,59 +266,98 @@ export async function aiCompleteStream(
     contextChunks?: string[];
     skipSemanticLayer?: boolean;
     skipSemanticCache?: boolean;
+    signal?: AbortSignal;
   },
   onChunk: (fragment: string) => void,
 ): Promise<string> {
+  throwIfAborted(options.signal);
   const provider = resolveAiProvider();
-  const { result } = await runWithSemanticLayer(
-    {
-      prompt: options.prompt,
-      system: options.system,
-      defaultModel: provider.model,
-      skipSemanticLayer: options.skipSemanticLayer,
-      skipCache: options.skipSemanticCache,
-      contextChunks: options.contextChunks,
-    },
-    async (prepared) => {
-      const model = prepared.model ?? provider.model;
-      const channel = new Channel<string>();
-      channel.onmessage = (fragment) => onChunk(fragment);
-      return invoke<string>("ai_complete_stream", {
-        prompt: prepared.prompt,
-        system: prepared.system ?? null,
-        model,
-        baseUrl: provider.baseUrl,
-        providerCredentialId: provider.providerCredentialId,
-        numCtx: provider.numCtx,
-        temperature: options.temperature ?? provider.temperature,
-        onChunk: channel,
-      });
-    },
-    aiEmbed,
-    { onCachedResult: onChunk },
-  );
+  const requestId = newAiRequestId();
+  const unbind = bindAbortToRequest(options.signal, requestId);
+  try {
+    const { result } = await runWithSemanticLayer(
+      {
+        prompt: options.prompt,
+        system: options.system,
+        defaultModel: provider.model,
+        skipSemanticLayer: options.skipSemanticLayer,
+        skipCache: options.skipSemanticCache,
+        contextChunks: options.contextChunks,
+      },
+      async (prepared) => {
+        throwIfAborted(options.signal);
+        const model = prepared.model ?? provider.model;
+        const channel = new Channel<string>();
+        channel.onmessage = (fragment) => {
+          if (options.signal?.aborted) return;
+          onChunk(fragment);
+        };
+        try {
+          return await invoke<string>("ai_complete_stream", {
+            prompt: prepared.prompt,
+            system: prepared.system ?? null,
+            model,
+            baseUrl: provider.baseUrl,
+            providerCredentialId: provider.providerCredentialId,
+            numCtx: provider.numCtx,
+            temperature: options.temperature ?? provider.temperature,
+            onChunk: channel,
+            requestId,
+          });
+        } catch (err) {
+          throwIfAborted(options.signal);
+          mapInvokeAbortError(err);
+        }
+      },
+      (texts) => aiEmbed(texts, options.signal),
+      { onCachedResult: onChunk },
+    );
 
-  return result;
+    throwIfAborted(options.signal);
+    return result;
+  } finally {
+    unbind();
+  }
 }
 
-/** Embed texts with a local Ollama embedding model. One vector per input.
- * Embeddings are Ollama-only, so this always targets the local Ollama endpoint —
- * never the active provider's base URL, which may be a cloud host with no
- * `/api/embed`. */
-export async function aiEmbed(texts: string[]): Promise<number[][]> {
+/** Embed texts with a local Ollama embedding model, or an OpenAI-compat
+ * credential that exposes `/embeddings` (Gemini / OpenAI) when one is selected.
+ * One vector per input. CLI chat backends never embed — always Ollama/cloud. */
+export async function aiEmbed(
+  texts: string[],
+  signal?: AbortSignal,
+): Promise<number[][]> {
   if (texts.length === 0) return [];
+  throwIfAborted(signal);
   const creds = useClaudeSetupStore.getState().openAiCredentials ?? [];
   const selectedId = useClaudeChatStore.getState().selectedProviderCredentialId;
   const ollama = resolveOllamaCredential(creds, selectedId);
+  // Never treat Claude Code / Cursor sentinel ids as cloud embed credentials.
+  const selected = isCliProviderId(selectedId)
+    ? undefined
+    : creds.find((c) => c.id === selectedId);
   const baseUrl = ollama?.base_url ?? "http://localhost:11434";
+  // Prefer cloud embeddings when the selected credential supports them
+  // (Gemini / OpenAI); otherwise fall back to local Ollama.
+  const cloudEmbedCred =
+    selected &&
+    !/:11434|localhost|127\.0\.0\.1/i.test(selected.base_url ?? "") &&
+    /aiplatform\.googleapis\.com|generativelanguage\.googleapis\.com|api\.openai\.com/i.test(
+      selected.base_url ?? "",
+    )
+      ? selected
+      : null;
   await acquireAiSlot();
   try {
+    throwIfAborted(signal);
     return await invoke<number[][]>("ai_embed", {
       texts,
       // Embedding uses a dedicated embed model, not the chat model; let the
-      // backend pick an installed embedding model when none is configured.
+      // backend pick an installed embedding model / provider default when none
+      // is configured.
       model: null,
       baseUrl,
+      providerCredentialId: cloudEmbedCred?.id ?? null,
     });
   } finally {
     releaseAiSlot();

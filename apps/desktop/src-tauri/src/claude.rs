@@ -29,6 +29,8 @@ struct DevPrismAuthConfig {
     openai_model: Option<String>,
     active_openai_credential_id: Option<String>,
     openai_credentials: Vec<StoredOpenAiCompatibleCredentialConfig>,
+    #[serde(default)]
+    cursor_api_key: Option<String>,
 }
 
 struct StoredClaudeCredential {
@@ -37,14 +39,14 @@ struct StoredClaudeCredential {
 }
 
 #[derive(Clone, Debug)]
-struct StoredOpenAiCompatibleCredential {
-    id: String,
-    label: String,
-    api_key: String,
-    base_url: String,
-    model: String,
-    transformers: Vec<String>,
-    model_transformers: HashMap<String, Vec<String>>,
+pub(crate) struct StoredOpenAiCompatibleCredential {
+    pub(crate) id: String,
+    pub(crate) label: String,
+    pub(crate) api_key: String,
+    pub(crate) base_url: String,
+    pub(crate) model: String,
+    pub(crate) transformers: Vec<String>,
+    pub(crate) model_transformers: HashMap<String, Vec<String>>,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -722,6 +724,75 @@ fn stored_openai_compatible_credential_by_id(
     openai_compatible_credential_by_id_from_config(&config, credential_id)
 }
 
+/// Look up a stored OpenAI-compatible credential by id (for native embeddings, etc.).
+pub(crate) fn stored_openai_compatible_credential(
+    credential_id: Option<&str>,
+) -> Result<Option<StoredOpenAiCompatibleCredential>, String> {
+    stored_openai_compatible_credential_by_id(credential_id)
+}
+
+/// Resolve an OpenAI-compat API key for native agent backends.
+///
+/// When `credential_id` is set, returns that credential's key with no base-URL
+/// filter. When unset, optionally scans stored credentials whose `base_url`
+/// contains `base_url_contains` (used by Groq setup status checks).
+pub(crate) fn openai_credential_api_key(
+    credential_id: Option<&str>,
+    base_url_contains: &str,
+) -> Option<String> {
+    let explicit_id = credential_id.map(str::trim).filter(|id| !id.is_empty());
+    if explicit_id.is_some() {
+        if let Ok(Some(cred)) = stored_openai_compatible_credential_by_id(explicit_id) {
+            return Some(cred.api_key);
+        }
+        return None;
+    }
+    if base_url_contains.is_empty() {
+        return None;
+    }
+    if let Ok(config) = read_claude_prism_auth_config() {
+        for cred in normalized_openai_compatible_credentials(&config) {
+            if cred.base_url.contains(base_url_contains) {
+                return Some(cred.api_key);
+            }
+        }
+    }
+    None
+}
+
+/// Read a persisted Cursor API key from secure auth storage.
+pub(crate) fn stored_cursor_api_key() -> Option<String> {
+    read_claude_prism_auth_config().ok().and_then(|config| {
+        config
+            .cursor_api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+            .map(str::to_string)
+    })
+}
+
+/// Persist a Cursor API key to secure auth storage.
+pub(crate) fn persist_cursor_api_key(api_key: &str) -> Result<(), String> {
+    let api_key = normalize_optional_api_key(api_key)?;
+    let mut config = read_claude_prism_auth_config_for_update()?;
+    config.cursor_api_key = Some(api_key);
+    write_claude_prism_auth_config(&config)
+}
+
+/// Persist a Groq API key into OpenAI-compatible credential storage.
+pub(crate) async fn persist_groq_api_key(api_key: String) -> Result<(), String> {
+    save_anthropic_api_key(
+        api_key,
+        Some("https://api.groq.com/openai/v1".to_string()),
+        Some(PROVIDER_OPENAI_COMPATIBLE.to_string()),
+        Some("llama-3.3-70b-versatile".to_string()),
+        Some("Groq".to_string()),
+        Some("groq-native".to_string()),
+    )
+    .await
+}
+
 fn normalized_openai_compatible_credentials(
     config: &DevPrismAuthConfig,
 ) -> Vec<StoredOpenAiCompatibleCredential> {
@@ -1050,11 +1121,74 @@ pub async fn list_openai_compatible_credential_models(
     fetch_openai_compatible_models(&credential.api_key, &credential.base_url).await
 }
 
+fn vertex_openai_compat_models() -> Vec<OpenAiCompatibleModelInfo> {
+    // Vertex OpenAI-compat does not expose a working /models list endpoint
+    // (it returns Google's HTML 404). Offer common Gemini model ids instead.
+    [
+        "google/gemini-3.5-flash",
+        "google/gemini-3-pro-preview",
+        "google/gemini-2.5-flash",
+        "google/gemini-2.5-pro",
+        "google/gemini-2.0-flash-001",
+        "google/gemini-2.0-flash-lite-001",
+        "google/gemini-1.5-pro",
+        "google/gemini-1.5-flash",
+    ]
+    .into_iter()
+    .map(|id| OpenAiCompatibleModelInfo {
+        id: id.to_string(),
+        metadata: json!({ "id": id, "owned_by": "google", "source": "vertex-curated" }),
+    })
+    .collect()
+}
+
+fn normalize_openai_compatible_model_id(id: &str, base_url: &str) -> String {
+    if base_url
+        .to_ascii_lowercase()
+        .contains("generativelanguage.googleapis.com")
+    {
+        id.strip_prefix("models/").unwrap_or(id).to_string()
+    } else {
+        id.to_string()
+    }
+}
+
 async fn fetch_openai_compatible_models(
     api_key: &str,
     base_url: &str,
 ) -> Result<Vec<OpenAiCompatibleModelInfo>, String> {
     ensure_secure_known_provider_base_url(base_url)?;
+    if crate::google_auth::is_vertex_openai_compat_base_url(base_url) {
+        // #region agent log
+        {
+            let payload = serde_json::json!({
+                "sessionId": "2b80f1",
+                "runId": "post-fix",
+                "hypothesisId": "A",
+                "location": "claude.rs:fetch_openai_compatible_models",
+                "message": "using curated Vertex model list (no /models endpoint)",
+                "data": {
+                    "baseUrl": base_url,
+                    "modelsUrlWouldBe": openai_models_url(base_url),
+                    "curatedCount": 8
+                },
+                "timestamp": std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0)
+            });
+            if let Ok(mut file) = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("/Users/bharath/Code/DevPrism/.cursor/debug-2b80f1.log")
+            {
+                let _ = writeln!(file, "{}", payload);
+            }
+        }
+        // #endregion
+        return Ok(vertex_openai_compat_models());
+    }
+
     // A host that accepts the connection but never responds would otherwise spin
     // the "Fetch models" UI forever, so bound the request (all sibling requests
     // are already time-bounded).
@@ -1063,9 +1197,33 @@ async fn fetch_openai_compatible_models(
         .build()
         .map_err(|err| format!("Failed to build HTTP client: {}", err))?;
     let url = openai_models_url(base_url);
+    // #region agent log
+    {
+        let payload = serde_json::json!({
+            "sessionId": "2b80f1",
+            "runId": "post-fix",
+            "hypothesisId": "A",
+            "location": "claude.rs:fetch_openai_compatible_models:request",
+            "message": "fetching provider models",
+            "data": { "baseUrl": base_url, "modelsUrl": url },
+            "timestamp": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0)
+        });
+        if let Ok(mut file) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/Users/bharath/Code/DevPrism/.cursor/debug-2b80f1.log")
+        {
+            let _ = writeln!(file, "{}", payload);
+        }
+    }
+    // #endregion
     // Idempotent GET — retry transient connect errors / 429 / 5xx.
+    let bearer_token = crate::google_auth::resolve_vertex_bearer_token(base_url, api_key).await?;
     let response = crate::retry::send_with_retry(3, || {
-        with_optional_bearer_auth(client.get(&url), api_key)
+        with_bearer_auth(client.get(&url), bearer_token.as_deref())
     })
     .await
     .map_err(|err| format!("Failed to fetch provider models: {}", err))?;
@@ -1076,7 +1234,12 @@ async fn fetch_openai_compatible_models(
         .map_err(|err| format!("Failed to read provider models response: {}", err))?;
 
     if !status.is_success() {
-        return Err(openai_compatible_verification_error(status, &response_text));
+        return Err(openai_compatible_verification_error(
+            status,
+            &response_text,
+            base_url,
+            api_key,
+        ));
     }
 
     let value: Value = serde_json::from_str(&response_text)
@@ -1091,12 +1254,12 @@ async fn fetch_openai_compatible_models(
                     item.get("id")
                         .and_then(|value| value.as_str())
                         .map(|id| OpenAiCompatibleModelInfo {
-                            id: id.to_string(),
+                            id: normalize_openai_compatible_model_id(id, base_url),
                             metadata: item.clone(),
                         })
                         .or_else(|| {
                             item.as_str().map(|id| OpenAiCompatibleModelInfo {
-                                id: id.to_string(),
+                                id: normalize_openai_compatible_model_id(id, base_url),
                                 metadata: json!({ "id": id }),
                             })
                         })
@@ -2608,15 +2771,23 @@ fn openai_chat_completions_url(base_url: &str) -> String {
     }
 }
 
-fn with_optional_bearer_auth(
+fn with_bearer_auth(
     request: reqwest::RequestBuilder,
-    api_key: &str,
+    bearer_token: Option<&str>,
 ) -> reqwest::RequestBuilder {
-    if api_key.trim().is_empty() {
-        request
-    } else {
-        request.bearer_auth(api_key)
+    match bearer_token {
+        Some(token) => request.bearer_auth(token),
+        None => request,
     }
+}
+
+async fn with_optional_bearer_auth(
+    request: reqwest::RequestBuilder,
+    base_url: &str,
+    api_key: &str,
+) -> Result<reqwest::RequestBuilder, String> {
+    let bearer_token = crate::google_auth::resolve_vertex_bearer_token(base_url, api_key).await?;
+    Ok(with_bearer_auth(request, bearer_token.as_deref()))
 }
 
 fn with_optional_anthropic_key(
@@ -2669,8 +2840,10 @@ fn openai_compatible_base_url_has_chat_root(base_url: &str) -> bool {
 
     let segments = path.split('/').collect::<Vec<_>>();
     let last = segments.last().copied().unwrap_or_default();
-    matches!(last, "v1" | "v2" | "v3" | "v4" | "beta")
+    matches!(last, "v1" | "v2" | "v3" | "v4" | "beta" | "openai")
         || path.ends_with("/openai")
+        // Vertex AI OpenAI-compatible root ends with /endpoints/openapi
+        || path.ends_with("/endpoints/openapi")
         || path.ends_with("compatible-mode/v1")
 }
 
@@ -2732,17 +2905,47 @@ fn provider_error_excerpt(body: &str) -> String {
     format!("{}...", truncated)
 }
 
-fn openai_compatible_verification_error(status: reqwest::StatusCode, body: &str) -> String {
+fn openai_compatible_verification_error(
+    status: reqwest::StatusCode,
+    body: &str,
+    base_url: &str,
+    api_key: &str,
+) -> String {
     let detail = provider_error_excerpt(body);
+    let body_lower = body.to_lowercase();
+    // Gemini and other providers often return HTTP 429 for billing exhaustion,
+    // not only transient rate limits.
+    let looks_like_billing = body_lower.contains("prepayment")
+        || body_lower.contains("credits are depleted")
+        || body_lower.contains("credits depleted")
+        || body_lower.contains("insufficient credits")
+        || body_lower.contains("billing")
+        || (body_lower.contains("resource_exhausted")
+            && (body_lower.contains("credit")
+                || body_lower.contains("prepay")
+                || body_lower.contains("billing")));
+    let looks_like_html = body_lower.contains("<!doctype html") || body_lower.contains("<html");
     let hint = match status {
+        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+            if crate::google_auth::is_vertex_openai_compat_base_url(base_url)
+                && api_key.trim().starts_with("AIza") =>
+        {
+            "Vertex needs an OAuth access token, not an API key — use the Gemini (AI Studio) preset for API keys, or log in with gcloud."
+        }
         reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
             "Invalid provider API key or missing model access."
+        }
+        reqwest::StatusCode::NOT_FOUND if looks_like_html => {
+            "Provider endpoint was not found (HTML 404). For Vertex AI use .../endpoints/openapi as the Base URL and a model id like google/gemini-2.5-flash — Vertex does not support Fetch Models via /models."
         }
         reqwest::StatusCode::NOT_FOUND => {
             "Provider endpoint or model was not found. Check the Base URL and model name."
         }
         reqwest::StatusCode::BAD_REQUEST | reqwest::StatusCode::UNPROCESSABLE_ENTITY => {
             "Provider rejected the request. Check the Base URL and model name."
+        }
+        reqwest::StatusCode::TOO_MANY_REQUESTS if looks_like_billing => {
+            "Provider billing or prepaid credits are exhausted. Add credits in the provider console, then try again."
         }
         reqwest::StatusCode::TOO_MANY_REQUESTS => {
             "Provider rate limited the verification request. Try again later."
@@ -2769,12 +2972,43 @@ async fn verify_openai_compatible_credential(
     }
 
     let request_body = openai_compatible_verification_body(&credential.model);
+    let chat_url = openai_chat_completions_url(&credential.base_url);
+    // #region agent log
+    {
+        let payload = serde_json::json!({
+            "sessionId": "2b80f1",
+            "runId": "post-fix",
+            "hypothesisId": "A",
+            "location": "claude.rs:verify_openai_compatible_credential",
+            "message": "verification chat URL",
+            "data": {
+                "baseUrl": credential.base_url,
+                "chatUrl": chat_url,
+                "model": credential.model,
+                "hasExtraV1": chat_url.contains("/openapi/v1/chat/completions"),
+                "endsWithOpenapiChat": chat_url.ends_with("/openapi/chat/completions")
+            },
+            "timestamp": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0)
+        });
+        if let Ok(mut file) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/Users/bharath/Code/DevPrism/.cursor/debug-2b80f1.log")
+        {
+            let _ = writeln!(file, "{}", payload);
+        }
+    }
+    // #endregion
 
     let request = client
-        .post(openai_chat_completions_url(&credential.base_url))
+        .post(&chat_url)
         .header("Content-Type", "application/json")
         .body(request_body.to_string());
-    let response = with_optional_bearer_auth(request, &credential.api_key)
+    let response = with_optional_bearer_auth(request, &credential.base_url, &credential.api_key)
+        .await?
         .send()
         .await
         .map_err(|err| format!("Provider verification request failed: {}", err))?;
@@ -2785,8 +3019,47 @@ async fn verify_openai_compatible_credential(
         .await
         .map_err(|err| format!("Failed to read provider verification response: {}", err))?;
 
+    // #region agent log
+    {
+        let is_html = response_text.trim_start().starts_with("<!DOCTYPE")
+            || response_text
+                .trim_start()
+                .to_ascii_lowercase()
+                .starts_with("<html");
+        let payload = serde_json::json!({
+            "sessionId": "2b80f1",
+            "runId": "post-fix",
+            "hypothesisId": "A",
+            "location": "claude.rs:verify_openai_compatible_credential:response",
+            "message": "verification HTTP response",
+            "data": {
+                "status": status.as_u16(),
+                "success": status.is_success(),
+                "isHtml404": is_html && status.as_u16() == 404,
+                "bodyLen": response_text.len()
+            },
+            "timestamp": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0)
+        });
+        if let Ok(mut file) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/Users/bharath/Code/DevPrism/.cursor/debug-2b80f1.log")
+        {
+            let _ = writeln!(file, "{}", payload);
+        }
+    }
+    // #endregion
+
     if !status.is_success() {
-        return Err(openai_compatible_verification_error(status, &response_text));
+        return Err(openai_compatible_verification_error(
+            status,
+            &response_text,
+            &credential.base_url,
+            &credential.api_key,
+        ));
     }
 
     let response_json: serde_json::Value = serde_json::from_str(&response_text).map_err(|err| {
@@ -2830,7 +3103,12 @@ async fn verify_native_anthropic_credential(
         .map_err(|err| format!("Failed to read provider verification response: {}", err))?;
 
     if !status.is_success() {
-        return Err(openai_compatible_verification_error(status, &response_text));
+        return Err(openai_compatible_verification_error(
+            status,
+            &response_text,
+            anthropic_base_url,
+            &credential.api_key,
+        ));
     }
 
     let response_json: serde_json::Value = serde_json::from_str(&response_text).map_err(|err| {
@@ -2857,6 +3135,7 @@ async fn send_openai_compatible_no_tools_text_request(
     credential: &StoredOpenAiCompatibleCredential,
     messages: &[serde_json::Value],
     temperature: Option<f32>,
+    json_format: bool,
 ) -> Result<(String, String), String> {
     if let Some(anthropic_base_url) = native_anthropic_base_url(credential) {
         return send_native_anthropic_no_tools_text_request(
@@ -2877,14 +3156,27 @@ async fn send_openai_compatible_no_tools_text_request(
         if let Some(temp) = temperature.filter(|t| (0.0..=2.0).contains(t)) {
             body["temperature"] = json!(temp);
         }
+        if json_format {
+            body["response_format"] = json!({ "type": "json_object" });
+        }
         body
     };
 
-    let request = client
+    let mut request = client
         .post(openai_chat_completions_url(&credential.base_url))
         .header("Content-Type", "application/json")
         .body(request_body.to_string());
-    let response = with_optional_bearer_auth(request, &credential.api_key)
+    if credential
+        .base_url
+        .to_ascii_lowercase()
+        .contains("openrouter.ai")
+    {
+        request = request
+            .header("HTTP-Referer", "https://github.com/bharathvbcr/DevPrism")
+            .header("X-Title", "DevPrism");
+    }
+    let response = with_optional_bearer_auth(request, &credential.base_url, &credential.api_key)
+        .await?
         .send()
         .await
         .map_err(|err| format!("Provider request failed: {}", err))?;
@@ -2934,6 +3226,24 @@ pub async fn complete_openai_compatible_chat(
     model_override: Option<&str>,
     temperature: Option<f32>,
 ) -> Result<String, String> {
+    complete_openai_compatible_chat_with_format(
+        credential_id,
+        messages,
+        model_override,
+        temperature,
+        false,
+    )
+    .await
+}
+
+/// One-shot chat completion with optional JSON response format.
+pub async fn complete_openai_compatible_chat_with_format(
+    credential_id: Option<&str>,
+    messages: Vec<serde_json::Value>,
+    model_override: Option<&str>,
+    temperature: Option<f32>,
+    json_format: bool,
+) -> Result<String, String> {
     let mut credential = stored_openai_compatible_credential_by_id(credential_id)?
         .ok_or_else(|| "No provider credential configured.".to_string())?;
     if let Some(model) = model_override.filter(|m| !m.trim().is_empty()) {
@@ -2948,6 +3258,7 @@ pub async fn complete_openai_compatible_chat(
         &credential,
         &messages,
         temperature,
+        json_format,
     )
     .await?;
     let text = if content.trim().is_empty() {
@@ -2959,6 +3270,158 @@ pub async fn complete_openai_compatible_chat(
         return Err("Provider returned an empty response.".to_string());
     }
     Ok(text)
+}
+
+/// Extract the final assistant text from Claude Code `--output-format json` stdout.
+pub fn extract_claude_print_result(stdout: &str) -> Result<String, String> {
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        return Err("Claude Code returned an empty response.".into());
+    }
+    if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
+        if let Some(r) = v.get("result").and_then(|x| x.as_str()) {
+            let out = r.trim();
+            if !out.is_empty() {
+                return Ok(out.to_string());
+            }
+        }
+    }
+    // NDJSON: prefer the last `type: result` line.
+    for line in trimmed.lines().rev() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<Value>(line) {
+            if v.get("type").and_then(|t| t.as_str()) == Some("result") {
+                if let Some(r) = v.get("result").and_then(|x| x.as_str()) {
+                    let out = r.trim();
+                    if !out.is_empty() {
+                        return Ok(out.to_string());
+                    }
+                }
+            }
+        }
+    }
+    Ok(trimmed.to_string())
+}
+
+/// One-shot Claude Code CLI print-mode completion (`claude -p --output-format json`).
+///
+/// Used by `ai_complete` when the selected chat provider is Claude Code.
+/// `cancel_flag` / `cancel_notify` mirror the native-agent cancel registry so
+/// mid-request Stop kills the child process.
+pub async fn complete_claude_print(
+    prompt: &str,
+    system: Option<&str>,
+    cancel_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    cancel_notify: Option<std::sync::Arc<tokio::sync::Notify>>,
+) -> Result<String, String> {
+    let user = prompt.trim();
+    if user.is_empty() {
+        return Err("Prompt is empty.".into());
+    }
+    if cancel_flag
+        .as_ref()
+        .is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed))
+    {
+        return Err("cancelled".into());
+    }
+
+    let claude_path = find_claude_binary()?;
+    let cwd = std::env::temp_dir();
+    let cwd_str = cwd.to_string_lossy().to_string();
+
+    let mut args = vec![
+        "-p".to_string(),
+        "--output-format".to_string(),
+        "json".to_string(),
+        "--dangerously-skip-permissions".to_string(),
+    ];
+    if let Some(sys) = system.map(str::trim).filter(|s| !s.is_empty()) {
+        args.push("--append-system-prompt".to_string());
+        args.push(sys.to_string());
+    }
+    let (args, stdin_payload) = with_prompt_transport(args, user.to_string());
+
+    let mut cmd = create_command(&claude_path, args, &cwd_str, None);
+    if stdin_payload.is_some() {
+        cmd.stdin(std::process::Stdio::piped());
+    }
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to spawn Claude Code: {e}"))?;
+
+    if let Some(payload) = stdin_payload {
+        if let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            let _ = stdin.write_all(payload.as_bytes()).await;
+            let _ = stdin.shutdown().await;
+        }
+    }
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Claude Code stdout missing".to_string())?;
+    let mut reader = BufReader::new(stdout);
+    let mut buf = Vec::new();
+
+    let read_stdout = async {
+        use tokio::io::AsyncReadExt;
+        reader
+            .read_to_end(&mut buf)
+            .await
+            .map_err(|e| format!("Failed to read Claude Code output: {e}"))
+    };
+
+    let outcome = if let Some(notify) = cancel_notify {
+        tokio::select! {
+            _ = notify.notified() => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                Err("cancelled".into())
+            }
+            read = read_stdout => {
+                read?;
+                let status = child
+                    .wait()
+                    .await
+                    .map_err(|e| format!("Claude Code wait failed: {e}"))?;
+                if !status.success() {
+                    let preview = String::from_utf8_lossy(&buf);
+                    return Err(format!(
+                        "Claude Code exited with status {status}. Output: {}",
+                        preview.chars().take(400).collect::<String>()
+                    ));
+                }
+                extract_claude_print_result(&String::from_utf8_lossy(&buf))
+            }
+        }
+    } else {
+        read_stdout.await?;
+        let status = child
+            .wait()
+            .await
+            .map_err(|e| format!("Claude Code wait failed: {e}"))?;
+        if !status.success() {
+            let preview = String::from_utf8_lossy(&buf);
+            return Err(format!(
+                "Claude Code exited with status {status}. Output: {}",
+                preview.chars().take(400).collect::<String>()
+            ));
+        }
+        extract_claude_print_result(&String::from_utf8_lossy(&buf))
+    };
+
+    if cancel_flag
+        .as_ref()
+        .is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed))
+    {
+        return Err("cancelled".into());
+    }
+    outcome
 }
 
 async fn send_native_anthropic_no_tools_text_request(
@@ -3940,7 +4403,8 @@ async fn generate_model_session_title(
     ];
 
     let (content, reasoning) =
-        send_openai_compatible_no_tools_text_request(client, credential, &messages, None).await?;
+        send_openai_compatible_no_tools_text_request(client, credential, &messages, None, false)
+            .await?;
     let title = if content.trim().is_empty() {
         reasoning.trim()
     } else {
@@ -4446,6 +4910,24 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_claude_print_result_from_json_object() {
+        let raw = r#"{"type":"result","result":"hello world","is_error":false}"#;
+        assert_eq!(
+            extract_claude_print_result(raw).unwrap(),
+            "hello world"
+        );
+    }
+
+    #[test]
+    fn test_extract_claude_print_result_from_ndjson() {
+        let raw = "{\n\"type\":\"assistant\"}\n{\"type\":\"result\",\"result\":\"final answer\"}\n";
+        assert_eq!(
+            extract_claude_print_result(raw).unwrap(),
+            "final answer"
+        );
+    }
+
+    #[test]
     fn test_provider_model_override_ignores_claude_model_selectors() {
         assert_eq!(
             normalize_provider_model_override(Some("claude-opus-4-7")).unwrap(),
@@ -4908,6 +5390,18 @@ mod tests {
             openai_chat_completions_url("https://api.deepseek.com"),
             "https://api.deepseek.com/chat/completions"
         );
+        assert_eq!(
+            openai_chat_completions_url(
+                "https://aiplatform.googleapis.com/v1/projects/my-proj/locations/global/endpoints/openapi"
+            ),
+            "https://aiplatform.googleapis.com/v1/projects/my-proj/locations/global/endpoints/openapi/chat/completions"
+        );
+        assert_eq!(
+            openai_chat_completions_url(
+                "https://us-central1-aiplatform.googleapis.com/v1/projects/my-proj/locations/us-central1/endpoints/openapi"
+            ),
+            "https://us-central1-aiplatform.googleapis.com/v1/projects/my-proj/locations/us-central1/endpoints/openapi/chat/completions"
+        );
     }
 
     #[test]
@@ -5007,6 +5501,35 @@ mod tests {
             openai_models_url("http://localhost:11434/v1"),
             "http://localhost:11434/v1/models"
         );
+        assert_eq!(
+            openai_models_url(
+                "https://aiplatform.googleapis.com/v1/projects/my-proj/locations/global/endpoints/openapi"
+            ),
+            "https://aiplatform.googleapis.com/v1/projects/my-proj/locations/global/endpoints/openapi/models"
+        );
+        assert!(crate::google_auth::is_vertex_openai_compat_base_url(
+            "https://aiplatform.googleapis.com/v1/projects/my-proj/locations/global/endpoints/openapi"
+        ));
+        let curated = vertex_openai_compat_models();
+        assert!(curated.iter().any(|m| m.id == "google/gemini-2.5-flash"));
+        assert!(curated.iter().any(|m| m.id == "google/gemini-3.5-flash"));
+        assert!(curated
+            .iter()
+            .any(|m| m.id == "google/gemini-3-pro-preview"));
+        assert_eq!(
+            normalize_openai_compatible_model_id(
+                "models/gemini-3.5-flash",
+                "https://generativelanguage.googleapis.com/v1beta/openai"
+            ),
+            "gemini-3.5-flash"
+        );
+        assert_eq!(
+            normalize_openai_compatible_model_id(
+                "models/custom-model",
+                "https://api.example.com/v1"
+            ),
+            "models/custom-model"
+        );
     }
 
     #[test]
@@ -5033,17 +5556,47 @@ mod tests {
         let unauthorized = openai_compatible_verification_error(
             reqwest::StatusCode::UNAUTHORIZED,
             r#"{ "error": { "message": "bad key" } }"#,
+            "https://api.example.com/v1",
+            "bad-key",
         );
         assert!(unauthorized.contains("Invalid provider API key"));
         assert!(unauthorized.contains("bad key"));
 
-        let not_found =
-            openai_compatible_verification_error(reqwest::StatusCode::NOT_FOUND, "no model");
+        let vertex_api_key = openai_compatible_verification_error(
+            reqwest::StatusCode::UNAUTHORIZED,
+            "unsupported credential",
+            "https://aiplatform.googleapis.com/v1/projects/p/locations/global/endpoints/openapi",
+            "AIza-example",
+        );
+        assert!(vertex_api_key.contains("Vertex needs an OAuth access token"));
+        assert!(vertex_api_key.contains("Gemini (AI Studio)"));
+        assert!(vertex_api_key.contains("gcloud"));
+
+        let not_found = openai_compatible_verification_error(
+            reqwest::StatusCode::NOT_FOUND,
+            "no model",
+            "https://api.example.com/v1",
+            "key",
+        );
         assert!(not_found.contains("Base URL and model name"));
 
-        let rate_limited =
-            openai_compatible_verification_error(reqwest::StatusCode::TOO_MANY_REQUESTS, "");
+        let rate_limited = openai_compatible_verification_error(
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            "",
+            "https://api.example.com/v1",
+            "key",
+        );
         assert!(rate_limited.contains("rate limited"));
+
+        let billing_exhausted = openai_compatible_verification_error(
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            r#"[{ "error": { "code": 429, "message": "Your prepayment credits are depleted. Please go to AI Studio at https://ai.studio/projects to manage your project and billing.", "status": "RESOURCE_EXHAUSTED" } } ]"#,
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+            "AIza-example",
+        );
+        assert!(billing_exhausted.contains("billing or prepaid credits are exhausted"));
+        assert!(!billing_exhausted.contains("rate limited"));
+        assert!(billing_exhausted.contains("prepayment credits are depleted"));
     }
 
     // --- create_command ---

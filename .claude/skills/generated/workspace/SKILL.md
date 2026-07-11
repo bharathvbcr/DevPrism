@@ -1,11 +1,11 @@
 ---
 name: workspace
-description: "Skill for the Workspace area of DevPrism. 384 symbols across 73 files."
+description: "Skill for the Workspace area of DevPrism. 368 symbols across 69 files."
 ---
 
 # Workspace
 
-384 symbols | 73 files | Cohesion: 68%
+368 symbols | 69 files | Cohesion: 69%
 
 ## When to Use
 
@@ -17,8 +17,8 @@ description: "Skill for the Workspace area of DevPrism. 384 symbols across 73 fi
 
 | File | Symbols |
 |------|---------|
-| `apps/desktop/src/components/workspace/sidebar.tsx` | EnvironmentSection, checkSkillsStatus, DevPrismSkillsDialog, handleInstallBundled, handleCreate (+78) |
-| `apps/desktop/src/components/workspace/comments-panel.tsx` | CommentsHeader, refresh, updateComment, setActiveFile, switchToCommentFile (+23) |
+| `apps/desktop/src/components/workspace/sidebar.tsx` | EnvironmentSection, checkSkillsStatus, DevPrismSkillsDialog, handleInstallBundled, handleCreate (+75) |
+| `apps/desktop/src/components/workspace/comments-panel.tsx` | CommentsHeader, refresh, updateComment, setActiveFile, switchToCommentFile (+22) |
 | `apps/desktop/src/components/workspace/history-panel.tsx` | HistoryPanel, init, loadDiff, startReview, addLabel (+15) |
 | `apps/desktop/src/components/workspace/workspace-layout.tsx` | WorkspaceLayout, showWorkspaceBanner, dismissWorkspaceBanner, getCollapsedSidebarSize, animateSidebarToSize (+13) |
 | `apps/desktop/src/components/workspace/bibliography-panel.tsx` | BibliographyPanel, setActiveFile, handleSaveEntry, handleCopyCite, handleAiGenerate (+11) |
@@ -50,8 +50,8 @@ Start here when exploring this area:
 | `handleDeleteSession` | Function | `apps/desktop/src/components/claude-chat/session-selector.tsx` | 121 |
 | `handleNewChat` | Function | `apps/desktop/src/components/claude-chat/session-selector.tsx` | 152 |
 | `SlashCommandPicker` | Function | `apps/desktop/src/components/claude-chat/slash-command-picker.tsx` | 364 |
-| `selectProviderCard` | Function | `apps/desktop/src/components/claude-setup.tsx` | 645 |
-| `renderApiKeyForm` | Function | `apps/desktop/src/components/claude-setup.tsx` | 689 |
+| `selectProviderCard` | Function | `apps/desktop/src/components/claude-setup.tsx` | 653 |
+| `renderApiKeyForm` | Function | `apps/desktop/src/components/claude-setup.tsx` | 697 |
 | `ErrorFallback` | Function | `apps/desktop/src/components/error-fallback.tsx` | 4 |
 | `PersonalizationSettings` | Function | `apps/desktop/src/components/personalization-settings.tsx` | 32 |
 | `toggleSection` | Function | `apps/desktop/src/components/personalization-settings.tsx` | 61 |
@@ -82,14 +82,14 @@ Start here when exploring this area:
 
 | Area | Connections |
 |------|-------------|
-| Ui | 84 calls |
-| Components | 17 calls |
-| Preview | 14 calls |
-| Editor | 13 calls |
+| Ui | 83 calls |
+| Components | 19 calls |
+| Preview | 13 calls |
+| Editor | 12 calls |
+| Claude-chat | 8 calls |
 | Mupdf | 5 calls |
-| Browser-project | 5 calls |
-| Claude-chat | 5 calls |
-| Cluster_332 | 4 calls |
+| Cluster_340 | 4 calls |
+| Scientific-skills | 4 calls |
 
 ## How to Explore
 

@@ -1,10 +1,84 @@
-import { describe, it, expect } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
 import {
   extractGrammarSpan,
   extractProseContext,
   parseCompileErrorLine,
   lineOffsets,
+  resolveAiProvider,
+  canUseAiAssist,
 } from "@/lib/ai-assist";
+import {
+  CLAUDE_CODE_PROVIDER_ID,
+  CURSOR_CLI_PROVIDER_ID,
+} from "@/stores/claude-chat-store";
+
+vi.mock("@/stores/claude-chat-store", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/stores/claude-chat-store")>();
+  return {
+    ...actual,
+    useClaudeChatStore: {
+      getState: vi.fn(() => ({
+        selectedProviderCredentialId: actual.CLAUDE_CODE_PROVIDER_ID,
+        selectedProviderModels: {},
+      })),
+    },
+  };
+});
+
+vi.mock("@/stores/settings-store", () => ({
+  useSettingsStore: {
+    getState: vi.fn(() => ({
+      aiAssistEnabled: true,
+      nativeAgentEnabled: false,
+      nativeNumCtx: null,
+      nativeTemperature: null,
+      nativeOllamaModel: null,
+    })),
+  },
+}));
+
+vi.mock("@/stores/claude-setup-store", () => ({
+  useClaudeSetupStore: {
+    getState: vi.fn(() => ({
+      openAiCredentials: [],
+    })),
+  },
+}));
+
+describe("resolveAiProvider CLI backends", () => {
+  beforeEach(async () => {
+    const { useClaudeChatStore } = await import("@/stores/claude-chat-store");
+    vi.mocked(useClaudeChatStore.getState).mockReturnValue({
+      selectedProviderCredentialId: CLAUDE_CODE_PROVIDER_ID,
+      selectedProviderModels: {},
+    } as never);
+  });
+
+  it("routes Claude Code sentinel to claude-code backend", async () => {
+    const { useClaudeChatStore } = await import("@/stores/claude-chat-store");
+    vi.mocked(useClaudeChatStore.getState).mockReturnValue({
+      selectedProviderCredentialId: CLAUDE_CODE_PROVIDER_ID,
+      selectedProviderModels: {},
+    } as never);
+    const cfg = resolveAiProvider();
+    expect(cfg.backend).toBe("claude-code");
+    expect(cfg.providerCredentialId).toBe(CLAUDE_CODE_PROVIDER_ID);
+    expect(canUseAiAssist()).toBe(true);
+  });
+
+  it("routes Cursor sentinel to cursor-cli backend", async () => {
+    const { useClaudeChatStore } = await import("@/stores/claude-chat-store");
+    vi.mocked(useClaudeChatStore.getState).mockReturnValue({
+      selectedProviderCredentialId: CURSOR_CLI_PROVIDER_ID,
+      selectedProviderModels: {},
+    } as never);
+    const cfg = resolveAiProvider();
+    expect(cfg.backend).toBe("cursor-cli");
+    expect(cfg.providerCredentialId).toBe(CURSOR_CLI_PROVIDER_ID);
+    expect(canUseAiAssist()).toBe(true);
+  });
+});
 
 describe("extractProseContext", () => {
   it("returns prose prefix when cursor is in body text", () => {
@@ -39,9 +113,9 @@ describe("extractGrammarSpan", () => {
 
 describe("parseCompileErrorLine", () => {
   it("parses l.NN from LaTeX logs", () => {
-    expect(parseCompileErrorLine("! Undefined control sequence. l.42 \\foo")).toBe(
-      42,
-    );
+    expect(
+      parseCompileErrorLine("! Undefined control sequence. l.42 \\foo"),
+    ).toBe(42);
     expect(parseCompileErrorLine("no line here")).toBeNull();
   });
 });

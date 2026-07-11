@@ -1,11 +1,11 @@
 ---
 name: ui
-description: "Skill for the Ui area of DevPrism. 68 symbols across 32 files."
+description: "Skill for the Ui area of DevPrism. 67 symbols across 31 files."
 ---
 
 # Ui
 
-68 symbols | 32 files | Cohesion: 45%
+67 symbols | 31 files | Cohesion: 44%
 
 ## When to Use
 
@@ -87,8 +87,9 @@ Start here when exploring this area:
 | Semantic-layer | 4 calls |
 | Stores | 4 calls |
 | Editor | 2 calls |
+| Browser-project | 1 calls |
 | Hooks | 1 calls |
-| Cluster_318 | 1 calls |
+| Cluster_324 | 1 calls |
 
 ## How to Explore
 

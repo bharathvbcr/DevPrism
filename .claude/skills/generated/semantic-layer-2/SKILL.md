@@ -5,7 +5,7 @@ description: "Skill for the Semantic_layer area of DevPrism. 32 symbols across 4
 
 # Semantic_layer
 
-32 symbols | 4 files | Cohesion: 87%
+32 symbols | 4 files | Cohesion: 86%
 
 ## When to Use
 
@@ -66,17 +66,18 @@ Start here when exploring this area:
 | `Prepare_proxy_inference → Build_client` | cross_community | 7 |
 | `Store_proxy_cache → Build_client` | cross_community | 7 |
 | `Prepare_proxy_inference → Contains_any_term` | cross_community | 5 |
+| `Prepare_proxy_inference → New` | cross_community | 4 |
 | `Prepare_proxy_inference → Default` | cross_community | 4 |
 | `Prepare_proxy_inference → Looks_like_embedding` | cross_community | 4 |
 | `Prepare_proxy_inference → Tier_for_complexity` | cross_community | 4 |
 | `Prepare_proxy_inference → Model_for_tier` | cross_community | 4 |
-| `Prepare_proxy_inference → RouterDecision` | cross_community | 4 |
 
 ## Connected Areas
 
 | Area | Connections |
 |------|-------------|
-| Native_agent | 1 calls |
+| Cursor_agent | 2 calls |
+| Native_agent | 2 calls |
 
 ## How to Explore
 

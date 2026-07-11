@@ -1,11 +1,11 @@
 ---
 name: hooks
-description: "Skill for the Hooks area of DevPrism. 32 symbols across 11 files."
+description: "Skill for the Hooks area of DevPrism. 40 symbols across 15 files."
 ---
 
 # Hooks
 
-32 symbols | 11 files | Cohesion: 82%
+40 symbols | 15 files | Cohesion: 78%
 
 ## When to Use
 
@@ -17,16 +17,16 @@ description: "Skill for the Hooks area of DevPrism. 32 symbols across 11 files."
 
 | File | Symbols |
 |------|---------|
-| `apps/desktop/src/hooks/use-claude-events.ts` | useClaudeEvents, setUserVisibleError, providerErrorMessage, registerProposedChange, norm (+2) |
+| `apps/desktop/src/hooks/use-claude-events.ts` | useClaudeEvents, setUserVisibleError, providerErrorMessage, elapsed, handleStreamMessage (+2) |
 | `apps/desktop/src/lib/space-features.ts` | isSpaceKind, inferSpaceKind, inferSpaceKindFromProjectPath, spaceFeatureConfig, recommendedTemplateIdsForKind |
 | `apps/desktop/src/lib/app-zoom.ts` | getAppZoomAction, shouldHandleAppZoomShortcut, hasLocalZoomSurfaceAtPoint, hasLocalZoomSurfaceInPath, shouldHandleNativeWheelZoom |
 | `apps/desktop/src/hooks/use-ollama-model-capabilities.ts` | cacheKey, useOllamaModelCapabilities, refresh, peekCachedOllamaModelCapabilities, useOllamaModelsCapabilities |
+| `apps/desktop/src/lib/claude-stream-heartbeat.ts` | heartbeatPhaseFromMessage, isStreamHeartbeat, hasThinkingBlock, streamActivityPhaseFromMessage |
 | `apps/desktop/src/hooks/use-space-features.ts` | spaceForProject, resolved |
+| `apps/desktop/src/stores/document-store.ts` | reloadFile, loadFileContent |
 | `apps/desktop/src/hooks/use-ollama-model-pull.ts` | pullModel, pull |
 | `apps/desktop/src/hooks/use-updater.ts` | useUpdater, checkForUpdate |
 | `apps/desktop/src/components/template-gallery/template-gallery.tsx` | recommendedIds |
-| `apps/desktop/src/stores/spaces-store.ts` | migrate |
-| `apps/desktop/src/hooks/use-keyboard-shortcuts.ts` | handleZoomKeyDown |
 
 ## Entry Points
 
@@ -51,39 +51,39 @@ Start here when exploring this area:
 | `spaceFeatureConfig` | Function | `apps/desktop/src/lib/space-features.ts` | 541 |
 | `recommendedTemplateIdsForKind` | Function | `apps/desktop/src/lib/space-features.ts` | 565 |
 | `migrate` | Function | `apps/desktop/src/stores/spaces-store.ts` | 216 |
-| `useClaudeEvents` | Function | `apps/desktop/src/hooks/use-claude-events.ts` | 60 |
-| `setUserVisibleError` | Function | `apps/desktop/src/hooks/use-claude-events.ts` | 104 |
-| `providerErrorMessage` | Function | `apps/desktop/src/hooks/use-claude-events.ts` | 109 |
-| `registerProposedChange` | Function | `apps/desktop/src/hooks/use-claude-events.ts` | 134 |
-| `norm` | Function | `apps/desktop/src/hooks/use-claude-events.ts` | 144 |
-| `elapsed` | Function | `apps/desktop/src/hooks/use-claude-events.ts` | 175 |
-| `handleStreamMessage` | Function | `apps/desktop/src/hooks/use-claude-events.ts` | 181 |
-| `handleZoomKeyDown` | Function | `apps/desktop/src/hooks/use-keyboard-shortcuts.ts` | 11 |
-| `getAppZoomAction` | Function | `apps/desktop/src/lib/app-zoom.ts` | 69 |
-| `shouldHandleAppZoomShortcut` | Function | `apps/desktop/src/lib/app-zoom.ts` | 105 |
-| `useOllamaModelCapabilities` | Function | `apps/desktop/src/hooks/use-ollama-model-capabilities.ts` | 12 |
+| `useClaudeEvents` | Function | `apps/desktop/src/hooks/use-claude-events.ts` | 69 |
+| `setUserVisibleError` | Function | `apps/desktop/src/hooks/use-claude-events.ts` | 113 |
+| `providerErrorMessage` | Function | `apps/desktop/src/hooks/use-claude-events.ts` | 118 |
+| `elapsed` | Function | `apps/desktop/src/hooks/use-claude-events.ts` | 184 |
+| `handleStreamMessage` | Function | `apps/desktop/src/hooks/use-claude-events.ts` | 190 |
+| `heartbeatPhaseFromMessage` | Function | `apps/desktop/src/lib/claude-stream-heartbeat.ts` | 6 |
+| `isStreamHeartbeat` | Function | `apps/desktop/src/lib/claude-stream-heartbeat.ts` | 14 |
+| `streamActivityPhaseFromMessage` | Function | `apps/desktop/src/lib/claude-stream-heartbeat.ts` | 26 |
+| `registerProposedChange` | Function | `apps/desktop/src/hooks/use-claude-events.ts` | 143 |
+| `norm` | Function | `apps/desktop/src/hooks/use-claude-events.ts` | 153 |
+| `readTexFileContent` | Function | `apps/desktop/src/lib/tauri/fs.ts` | 97 |
 
 ## Execution Flows
 
 | Flow | Type | Steps |
 |------|------|-------|
-| `ClaudeChatDrawer → IsBrowserProjectPath` | cross_community | 6 |
-| `ClaudeChatDrawer → ResolveSemanticConfig` | cross_community | 6 |
 | `ImportDroppedBrowserFiles → IsSpaceKind` | cross_community | 5 |
 | `ImportDroppedPaths → IsSpaceKind` | cross_community | 5 |
-| `ClaudeChatDrawer → Norm` | cross_community | 5 |
-| `ClaudeChatDrawer → ExtractLastAssistantText` | cross_community | 5 |
-| `ClaudeChatDrawer → GetCompileRootPreference` | cross_community | 5 |
-| `ChatComposer → CacheKey` | cross_community | 4 |
-| `ChatComposer → GetOllamaModelCapabilities` | cross_community | 4 |
+| `ClaudeChatDrawer → HasThinkingBlock` | cross_community | 5 |
+| `ClaudeChatDrawer → IsNativeGroqBackend` | cross_community | 5 |
+| `ClaudeChatDrawer → IsNativeOllamaBackend` | cross_community | 5 |
+| `ClaudeChatDrawer → IsCursorCliBackend` | cross_community | 5 |
+| `ClaudeChatDrawer → IsNativeBackend` | cross_community | 5 |
 | `VersionSwitcher → IsSpaceKind` | cross_community | 4 |
+| `VersionOverview → IsSpaceKind` | cross_community | 4 |
+| `Resolved → IsSpaceKind` | intra_community | 4 |
 
 ## Connected Areas
 
 | Area | Connections |
 |------|-------------|
-| Stores | 1 calls |
-| Workspace | 1 calls |
+| Stores | 2 calls |
+| Browser-project | 2 calls |
 | Preview | 1 calls |
 
 ## How to Explore

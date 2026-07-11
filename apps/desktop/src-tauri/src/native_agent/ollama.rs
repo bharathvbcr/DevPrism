@@ -31,7 +31,7 @@ fn build_client() -> reqwest::Client {
 /// Local models often emit tool names lowercased ("read"), padded, or
 /// OpenAI-namespaced ("functions.Read"). Map them back to our canonical
 /// PascalCase names so dispatch and the UI's file-change detection still work.
-fn canonicalize_tool_name(raw: &str) -> String {
+pub(crate) fn canonicalize_tool_name(raw: &str) -> String {
     let base = raw.trim().rsplit('.').next().unwrap_or("").trim();
     match base.to_lowercase().as_str() {
         "read" => "Read".to_string(),
@@ -50,14 +50,22 @@ pub struct ToolCall {
     pub args: Value,
 }
 
+/// Kind of streamed text fragment from Ollama (`message.thinking` vs `message.content`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamDeltaKind {
+    Thinking,
+    Text,
+}
+
 /// Fold one parsed streaming line from Ollama's `/api/chat` (stream mode) into
 /// the accumulating turn: append any content fragment (forwarding it to
 /// `on_delta` for live UI streaming), collect any tool calls, and on the final
 /// `done` line record the prompt/eval token counts. Returns Err only for an
 /// explicit error envelope embedded in the stream.
-fn accumulate_stream_line<F: FnMut(&str)>(
+fn accumulate_stream_line<F: FnMut(StreamDeltaKind, &str)>(
     v: &Value,
     content: &mut String,
+    thinking: &mut String,
     tool_calls: &mut Vec<ToolCall>,
     prompt_tokens: &mut u64,
     eval_tokens: &mut u64,
@@ -67,10 +75,16 @@ fn accumulate_stream_line<F: FnMut(&str)>(
         return Err(format!("Ollama error: {}", err));
     }
     if let Some(msg) = v.get("message") {
+        if let Some(frag) = msg.get("thinking").and_then(|c| c.as_str()) {
+            if !frag.is_empty() {
+                thinking.push_str(frag);
+                on_delta(StreamDeltaKind::Thinking, frag);
+            }
+        }
         if let Some(frag) = msg.get("content").and_then(|c| c.as_str()) {
             if !frag.is_empty() {
                 content.push_str(frag);
-                on_delta(frag);
+                on_delta(StreamDeltaKind::Text, frag);
             }
         }
         if let Some(arr) = msg.get("tool_calls").and_then(|t| t.as_array()) {
@@ -107,6 +121,7 @@ fn accumulate_stream_line<F: FnMut(&str)>(
 
 pub struct ChatTurn {
     pub content: String,
+    pub thinking: String,
     pub tool_calls: Vec<ToolCall>,
     /// Prompt (input) tokens for this request, per Ollama's `prompt_eval_count`.
     pub prompt_tokens: u64,
@@ -127,10 +142,26 @@ pub struct OllamaClient {
     /// Optional response format passed through to Ollama (`"json"` to force a
     /// strict JSON object). `None` leaves the request unconstrained.
     format: Option<Value>,
+    /// Reasoning / thinking parameter for `/api/chat` (`true` or `low`/`medium`/`high`).
+    think: Option<Value>,
 }
 
 /// Default `keep_alive` when the caller doesn't override it.
 const DEFAULT_KEEP_ALIVE: &str = "10m";
+
+/// Map UI effort level + model name to Ollama's `think` request field.
+/// GPT-OSS requires `"low"` / `"medium"` / `"high"` — boolean `true` is ignored.
+fn think_param_for_model(model: &str, effort: &str) -> Value {
+    if model.to_lowercase().contains("gpt-oss") {
+        let level = match effort {
+            "low" | "medium" | "high" => effort,
+            _ => "medium",
+        };
+        json!(level)
+    } else {
+        json!(true)
+    }
+}
 
 /// Normalize a user-supplied keep_alive to a value Ollama accepts: a duration
 /// string ("10m", "1h", "30s"), a bare number of seconds, or "0"/"-1". Falls
@@ -159,8 +190,15 @@ pub fn native_base(base_url: &str) -> String {
 
 /// Name fragments of embedding-only models, which reject `/api/chat`.
 const EMBED_MARKERS: &[&str] = &[
-    "embed", "bge", "nomic-embed", "all-minilm", "mxbai", "snowflake-arctic-embed",
-    "paraphrase", "gte-", "e5-",
+    "embed",
+    "bge",
+    "nomic-embed",
+    "all-minilm",
+    "mxbai",
+    "snowflake-arctic-embed",
+    "paraphrase",
+    "gte-",
+    "e5-",
 ];
 
 /// True if a model name looks like an embedding-only model (no chat endpoint).
@@ -298,13 +336,11 @@ pub async fn server_status(base_url: Option<String>) -> OllamaStatus {
     let (connected, version) = match version_resp {
         Ok(res) if res.status().is_success() => {
             let version = res.text().await.ok().and_then(|text| {
-                serde_json::from_str::<Value>(&text)
-                    .ok()
-                    .and_then(|v| {
-                        v.get("version")
-                            .and_then(|s| s.as_str())
-                            .map(str::to_string)
-                    })
+                serde_json::from_str::<Value>(&text).ok().and_then(|v| {
+                    v.get("version")
+                        .and_then(|s| s.as_str())
+                        .map(str::to_string)
+                })
             });
             (true, version)
         }
@@ -374,7 +410,10 @@ pub async fn running_models(base_url: Option<String>) -> Result<Vec<OllamaRunnin
         .await
         .map_err(|e| format!("[E_OLLAMA_UNREACHABLE] Could not reach Ollama at {root}: {e}"))?;
     if !res.status().is_success() {
-        return Err(format!("Ollama returned HTTP {} for /api/ps.", res.status()));
+        return Err(format!(
+            "Ollama returned HTTP {} for /api/ps.",
+            res.status()
+        ));
     }
     let text = res.text().await.map_err(|e| e.to_string())?;
     let v: Value = serde_json::from_str(&text).map_err(|e| format!("Bad /api/ps response: {e}"))?;
@@ -425,11 +464,21 @@ pub async fn delete_model(base_url: Option<String>, model: String) -> Result<(),
         return Ok(());
     }
     let status = res.status();
-    let snippet: String = res.text().await.unwrap_or_default().chars().take(300).collect();
+    let snippet: String = res
+        .text()
+        .await
+        .unwrap_or_default()
+        .chars()
+        .take(300)
+        .collect();
     if status.as_u16() == 404 {
-        return Err(format!("Model '{name}' is not installed (nothing to delete)."));
+        return Err(format!(
+            "Model '{name}' is not installed (nothing to delete)."
+        ));
     }
-    Err(format!("Ollama returned HTTP {status} for /api/delete: {snippet}"))
+    Err(format!(
+        "Ollama returned HTTP {status} for /api/delete: {snippet}"
+    ))
 }
 
 /// Copy an installed model to a new name (`POST /api/copy`), e.g. to fork a model
@@ -459,11 +508,19 @@ pub async fn copy_model(
         return Ok(());
     }
     let status = res.status();
-    let snippet: String = res.text().await.unwrap_or_default().chars().take(300).collect();
+    let snippet: String = res
+        .text()
+        .await
+        .unwrap_or_default()
+        .chars()
+        .take(300)
+        .collect();
     if status.as_u16() == 404 {
         return Err(format!("Source model '{source}' is not installed."));
     }
-    Err(format!("Ollama returned HTTP {status} for /api/copy: {snippet}"))
+    Err(format!(
+        "Ollama returned HTTP {status} for /api/copy: {snippet}"
+    ))
 }
 
 /// Query `/api/show` capabilities for a single installed model.
@@ -541,7 +598,11 @@ pub async fn pull_model<F: FnMut(OllamaPullProgress)>(
         return Err(format!("Ollama returned HTTP {}: {}", status, snippet));
     }
 
-    let mut emit = |status: &str, completed: Option<u64>, total: Option<u64>, done: bool, error: Option<String>| {
+    let mut emit = |status: &str,
+                    completed: Option<u64>,
+                    total: Option<u64>,
+                    done: bool,
+                    error: Option<String>| {
         let percent = match (completed, total) {
             (Some(c), Some(t)) if t > 0 => Some((c as f32 / t as f32) * 100.0),
             _ => None,
@@ -644,9 +705,12 @@ impl OllamaClient {
             num_ctx: num_ctx
                 .filter(|&n| (512..=131072).contains(&n))
                 .unwrap_or(CONTEXT_WINDOW),
-            temperature: temperature.filter(|&t| (0.0..=2.0).contains(&t)).unwrap_or(0.4),
+            temperature: temperature
+                .filter(|&t| (0.0..=2.0).contains(&t))
+                .unwrap_or(0.4),
             keep_alive: DEFAULT_KEEP_ALIVE.to_string(),
             format: None,
+            think: None,
         }
     }
 
@@ -660,6 +724,15 @@ impl OllamaClient {
     /// Override how long Ollama keeps the model loaded between requests.
     pub fn with_keep_alive(mut self, keep_alive: Option<&str>) -> Self {
         self.keep_alive = normalize_keep_alive(keep_alive);
+        self
+    }
+
+    /// Set the `think` parameter from the UI effort level (`low`/`medium`/`high`).
+    pub fn with_think(mut self, effort: Option<&str>) -> Self {
+        self.think = Some(think_param_for_model(
+            &self.model,
+            effort.unwrap_or("medium"),
+        ));
         self
     }
 
@@ -710,11 +783,16 @@ impl OllamaClient {
         self.capability("vision").await
     }
 
+    /// Whether the model advertises separated reasoning / thinking output.
+    pub async fn supports_thinking(&self) -> Option<bool> {
+        self.capability("thinking").await
+    }
+
     /// One streaming chat round. `messages` is a JSON array; `tools` is a JSON
     /// array of OpenAI-style function schemas (sent only if non-empty). Text
     /// fragments are forwarded to `on_delta` as they arrive (so the caller can
     /// stream them to the UI); the fully-accumulated turn is returned at the end.
-    pub async fn chat<F: FnMut(&str)>(
+    pub async fn chat<F: FnMut(StreamDeltaKind, &str)>(
         &self,
         messages: &Value,
         tools: &Value,
@@ -737,6 +815,9 @@ impl OllamaClient {
             // Keep the model resident between rounds so it isn't reloaded each turn.
             "keep_alive": self.keep_alive,
         });
+        if let Some(think) = &self.think {
+            body["think"] = think.clone();
+        }
         if tools.as_array().map(|a| !a.is_empty()).unwrap_or(false) {
             body["tools"] = tools.clone();
         }
@@ -784,6 +865,7 @@ impl OllamaClient {
         }
 
         let mut content = String::new();
+        let mut thinking = String::new();
         let mut tool_calls: Vec<ToolCall> = Vec::new();
         let mut prompt_tokens = 0u64;
         let mut eval_tokens = 0u64;
@@ -829,6 +911,7 @@ impl OllamaClient {
                 accumulate_stream_line(
                     &v,
                     &mut content,
+                    &mut thinking,
                     &mut tool_calls,
                     &mut prompt_tokens,
                     &mut eval_tokens,
@@ -846,6 +929,7 @@ impl OllamaClient {
                 accumulate_stream_line(
                     &v,
                     &mut content,
+                    &mut thinking,
                     &mut tool_calls,
                     &mut prompt_tokens,
                     &mut eval_tokens,
@@ -879,6 +963,7 @@ impl OllamaClient {
         );
         Ok(ChatTurn {
             content,
+            thinking,
             tool_calls,
             prompt_tokens,
             eval_tokens,
@@ -908,7 +993,10 @@ impl OllamaClient {
         let text = resp.text().await.map_err(|e| e.to_string())?;
         if !status.is_success() {
             let snippet: String = text.chars().take(300).collect();
-            return Err(format!("Ollama embed returned HTTP {}: {}", status, snippet));
+            return Err(format!(
+                "Ollama embed returned HTTP {}: {}",
+                status, snippet
+            ));
         }
 
         let v: Value =
@@ -975,6 +1063,7 @@ mod tests {
         ];
 
         let mut content = String::new();
+        let mut thinking = String::new();
         let mut tool_calls = Vec::new();
         let (mut pt, mut et) = (0u64, 0u64);
         let mut streamed = String::new();
@@ -982,16 +1071,22 @@ mod tests {
             accumulate_stream_line(
                 v,
                 &mut content,
+                &mut thinking,
                 &mut tool_calls,
                 &mut pt,
                 &mut et,
-                &mut |frag: &str| streamed.push_str(frag),
+                &mut |kind, frag: &str| {
+                    if kind == StreamDeltaKind::Text {
+                        streamed.push_str(frag);
+                    }
+                },
             )
             .unwrap();
         }
 
         assert_eq!(content, "Hello");
-        assert_eq!(streamed, "Hello"); // on_delta saw every fragment, in order
+        assert_eq!(thinking, "");
+        assert_eq!(streamed, "Hello"); // on_delta saw every text fragment, in order
         assert_eq!(tool_calls.len(), 1);
         assert_eq!(tool_calls[0].name, "Read"); // canonicalized from "read"
         assert_eq!(pt, 123);
@@ -999,17 +1094,55 @@ mod tests {
     }
 
     #[test]
+    fn accumulates_streamed_thinking() {
+        let lines = [
+            json!({ "message": { "role": "assistant", "thinking": "Let me " }, "done": false }),
+            json!({ "message": { "role": "assistant", "thinking": "reason." }, "done": false }),
+            json!({ "message": { "role": "assistant", "content": "Answer" }, "done": true }),
+        ];
+
+        let mut content = String::new();
+        let mut thinking = String::new();
+        let mut tool_calls = Vec::new();
+        let (mut pt, mut et) = (0u64, 0u64);
+        let mut thinking_streamed = String::new();
+        let mut text_streamed = String::new();
+        for v in &lines {
+            accumulate_stream_line(
+                v,
+                &mut content,
+                &mut thinking,
+                &mut tool_calls,
+                &mut pt,
+                &mut et,
+                &mut |kind, frag: &str| match kind {
+                    StreamDeltaKind::Thinking => thinking_streamed.push_str(frag),
+                    StreamDeltaKind::Text => text_streamed.push_str(frag),
+                },
+            )
+            .unwrap();
+        }
+
+        assert_eq!(thinking, "Let me reason.");
+        assert_eq!(thinking_streamed, "Let me reason.");
+        assert_eq!(content, "Answer");
+        assert_eq!(text_streamed, "Answer");
+    }
+
+    #[test]
     fn stream_error_envelope_surfaces() {
         let mut content = String::new();
+        let mut thinking = String::new();
         let mut tool_calls = Vec::new();
         let (mut pt, mut et) = (0u64, 0u64);
         let err = accumulate_stream_line(
             &json!({ "error": "model runner crashed" }),
             &mut content,
+            &mut thinking,
             &mut tool_calls,
             &mut pt,
             &mut et,
-            &mut |_: &str| {},
+            &mut |_: StreamDeltaKind, _: &str| {},
         );
         assert!(err.is_err());
         assert!(err.unwrap_err().contains("model runner crashed"));
@@ -1035,10 +1168,35 @@ mod tests {
 
     #[test]
     fn normalizes_base_url() {
-        assert_eq!(native_base("http://localhost:11434/v1"), "http://localhost:11434");
-        assert_eq!(native_base("http://localhost:11434/v1/"), "http://localhost:11434");
-        assert_eq!(native_base("http://localhost:11434/"), "http://localhost:11434");
+        assert_eq!(
+            native_base("http://localhost:11434/v1"),
+            "http://localhost:11434"
+        );
+        assert_eq!(
+            native_base("http://localhost:11434/v1/"),
+            "http://localhost:11434"
+        );
+        assert_eq!(
+            native_base("http://localhost:11434/"),
+            "http://localhost:11434"
+        );
         assert_eq!(native_base(""), "http://localhost:11434");
         assert_eq!(native_base("http://host:1/v1"), "http://host:1");
+    }
+
+    #[test]
+    fn think_param_uses_levels_for_gpt_oss() {
+        assert_eq!(think_param_for_model("gpt-oss:20b", "low"), json!("low"));
+        assert_eq!(think_param_for_model("gpt-oss:20b", "high"), json!("high"));
+        assert_eq!(
+            think_param_for_model("gpt-oss:20b", "bogus"),
+            json!("medium")
+        );
+    }
+
+    #[test]
+    fn think_param_uses_boolean_for_other_models() {
+        assert_eq!(think_param_for_model("qwen3:8b", "low"), json!(true));
+        assert_eq!(think_param_for_model("llama3.1", "high"), json!(true));
     }
 }

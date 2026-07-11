@@ -4,6 +4,7 @@ import { getMupdfClient } from "@/lib/mupdf/mupdf-client";
 import { createLogger } from "@/lib/debug/logger";
 import { APP_VISIBILITY_RESTORED } from "@/lib/debug/log-store";
 import type { StructuredTextData, LinkData, Rect } from "@/lib/mupdf/types";
+import type { PdfTextQuad } from "@/lib/pdf-text-selection";
 import {
   Popover,
   PopoverContent,
@@ -118,6 +119,8 @@ interface MupdfPageProps {
   highlights?: { rect: Rect; active: boolean; pulse?: boolean }[];
   /** Persistent user highlights to render on this page. */
   annotations?: PageAnnotation[];
+  /** Transient text-selection overlay (shown while the selection toolbar is open). */
+  selectionOverlay?: PdfTextQuad[];
   /** Remove a user highlight by id (delete affordance). */
   onRemoveAnnotation?: (id: string) => void;
   /** Update the note text for a highlight. */
@@ -151,6 +154,7 @@ export const MupdfPage = memo(function MupdfPage({
   darkMode = false,
   highlights,
   annotations,
+  selectionOverlay,
   onRemoveAnnotation,
   onUpdateNote,
 }: MupdfPageProps) {
@@ -340,8 +344,8 @@ export const MupdfPage = memo(function MupdfPage({
                       width: `${(r.w / pageWidth) * 100}%`,
                       height: `${(r.h / pageHeight) * 100}%`,
                       backgroundColor: annot.css,
-                      opacity: 0.4,
-                      mixBlendMode: "multiply",
+                      opacity: darkMode ? 0.55 : 0.4,
+                      mixBlendMode: darkMode ? "normal" : "multiply",
                     }}
                   />
                 ))}
@@ -382,9 +386,41 @@ export const MupdfPage = memo(function MupdfPage({
         </div>
       )}
 
+      {/* Active text selection (pre-highlight) */}
+      {selectionOverlay && selectionOverlay.length > 0 && (
+        <div
+          className="pointer-events-none absolute inset-0"
+          style={{ zIndex: 2 }}
+        >
+          {selectionOverlay.map((q, i) => {
+            const x = q[0];
+            const y = q[1];
+            const w = q[2] - q[0];
+            const h = q[5] - q[1];
+            return (
+              <div
+                key={i}
+                className="absolute rounded-[1px]"
+                style={{
+                  left: `${(x / pageWidth) * 100}%`,
+                  top: `${(y / pageHeight) * 100}%`,
+                  width: `${(w / pageWidth) * 100}%`,
+                  height: `${(h / pageHeight) * 100}%`,
+                  backgroundColor: "var(--pdf-selection)",
+                  mixBlendMode: darkMode ? "normal" : "multiply",
+                }}
+              />
+            );
+          })}
+        </div>
+      )}
+
       {/* Search highlight layer */}
       {highlights && highlights.length > 0 && (
-        <div className="pointer-events-none absolute inset-0">
+        <div
+          className="pointer-events-none absolute inset-0"
+          style={{ zIndex: 2 }}
+        >
           {highlights.map((h, i) => (
             <div
               key={i}
@@ -403,7 +439,7 @@ export const MupdfPage = memo(function MupdfPage({
                     ? "var(--pdf-search-active)"
                     : "var(--pdf-search-match)",
                 outline: h.pulse
-                  ? "2px solid var(--pdf-synctex-pulse)"
+                  ? "2px solid var(--pdf-synctex-pulse-outline)"
                   : h.active
                     ? "2.5px solid var(--pdf-search-active-outline)"
                     : undefined,

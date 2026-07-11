@@ -3,23 +3,39 @@
 English · [한국어](NATIVE_AGENT.ko.md) · [日本語](NATIVE_AGENT.ja.md) · [简体中文](NATIVE_AGENT.zh-CN.md)
 
 DevPrism includes a built-in agent runtime that talks **directly to a local
-[Ollama](https://ollama.com) model** — no Claude Code CLI and no translation
-proxy. It's fully offline and self-contained.
+[Ollama](https://ollama.com) model** or any **OpenAI-compatible API** (Groq,
+OpenRouter, Gemini, …) — no Claude Code CLI and no translation proxy for the
+native path.
 
-## Enabling it
+## Enabling Ollama
 
 1. Install and start Ollama, and pull a **tool-capable** model:
    ```bash
    ollama pull llama3.1      # or qwen2.5, mistral-nemo, …
    ```
    (Small models without tool-calling support can chat but won't use tools.)
-2. In DevPrism: **Settings → Provider → "Native local agent (no Claude CLI)"**.
+2. In DevPrism: **Settings → Provider → Agent backend → Native Ollama**.
 3. (Optional) Configure the Ollama endpoint/model as an OpenAI-compatible
    provider in the same panel. If you don't, the runtime defaults to
    `http://localhost:11434` and the first installed model.
 
-When the toggle is on, the chat uses the native runtime; the cloud providers are
-used only when it's off.
+## Native API (Groq / OpenRouter / Gemini / …)
+
+For cloud OpenAI-compatible providers without the Claude CLI:
+
+1. Add a credential in **Settings → Provider** (Groq, OpenRouter, Gemini, or
+   custom base URL). Presets already exist for common hosts.
+2. Select **Agent backend → Native API**, then pick that credential in the chat
+   composer.
+3. **Native Groq** remains available as a convenience alias that prefers a Groq
+   credential and defaults to `llama-3.3-70b-versatile`.
+
+The optional [groq-code-cli](https://github.com/build-with-groq/groq-code-cli)
+can be installed for terminal use — it is **not** spawned for in-app chat.
+
+When a native backend is active, Claude Code and other cloud CLI providers are
+not used for chat. Embeddings prefer Gemini/OpenAI `/embeddings` when such a
+credential is selected; otherwise they use local Ollama.
 
 ## What it does
 

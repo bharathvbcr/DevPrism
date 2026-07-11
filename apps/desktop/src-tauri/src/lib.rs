@@ -1,12 +1,18 @@
 #![recursion_limit = "512"]
 
+mod agent_process;
 mod anthropic_proxy;
 #[cfg(target_os = "macos")]
 pub mod app_nap;
+mod career_compile;
+mod career_db;
 mod claude;
 mod claude_process;
 mod comments;
+mod cursor_agent;
 mod export;
+mod google_auth;
+mod groq_setup;
 mod history;
 mod latex;
 mod latexdiff;
@@ -15,7 +21,8 @@ mod personalization;
 mod project_context;
 mod project_import;
 mod retry;
-#[allow(dead_code)] // proxy-integration wiring is in progress, see docs/SEMANTIC_LAYER_ARCHITECTURE.md
+#[allow(dead_code)]
+// proxy-integration wiring is in progress, see docs/SEMANTIC_LAYER_ARCHITECTURE.md
 mod semantic_layer;
 mod skills;
 mod slash_commands;
@@ -611,6 +618,7 @@ pub fn run() {
         .manage(latex::LatexCompilerState::default())
         .manage(zotero::ZoteroOAuthState::default())
         .manage(comments::CommentsWatcherState::default())
+        .manage(career_db::CareerDbState::default())
         .setup(|app| {
             // Safety net: force-show the main window after a timeout if the
             // frontend JS never calls `getCurrentWindow().show()`.
@@ -642,6 +650,21 @@ pub fn run() {
             variants::update_variant,
             variants::delete_variant,
             variants::diff_variant,
+            career_db::career_list_blocks,
+            career_db::career_upsert_block,
+            career_db::career_delete_block,
+            career_db::career_list_personas,
+            career_db::career_upsert_persona,
+            career_db::career_delete_persona,
+            career_db::career_ingest_source,
+            career_db::career_upsert_kb_source,
+            career_db::career_list_kb_sources,
+            career_db::career_list_kb_chunks,
+            career_db::career_delete_kb_source,
+            career_db::career_store_embeddings,
+            career_db::career_vector_search,
+            career_db::career_save_run,
+            career_db::career_list_runs,
             detect_editors,
             open_in_editor,
             js_log,
@@ -650,6 +673,7 @@ pub fn run() {
             latex::synctex_edit,
             latex::synctex_forward,
             latex::detect_texlive,
+            career_compile::career_verify_compile,
             latexdiff::detect_latexdiff,
             latexdiff::latexdiff_generate,
             export::export_document,
@@ -714,6 +738,7 @@ pub fn run() {
             native_agent::ai_complete,
             native_agent::ai_embed,
             native_agent::ai_complete_stream,
+            native_agent::ai_cancel_request,
             native_agent::ai_caption,
             native_agent::stop_native_agent,
             native_agent::answer_native_agent_question,
@@ -725,6 +750,18 @@ pub fn run() {
             native_agent::pull_ollama_model,
             native_agent::delete_ollama_model,
             native_agent::copy_ollama_model,
+            groq_setup::check_groq_cli_status,
+            groq_setup::install_groq_cli,
+            groq_setup::verify_groq_api_key,
+            groq_setup::save_groq_api_key,
+            groq_setup::list_groq_models,
+            cursor_agent::setup::check_cursor_cli_status,
+            cursor_agent::setup::install_cursor_cli,
+            cursor_agent::setup::login_cursor_cli,
+            cursor_agent::setup::save_cursor_api_key,
+            cursor_agent::stream_spawn::execute_cursor_agent,
+            cursor_agent::stream_spawn::resume_cursor_agent,
+            cursor_agent::stream_spawn::cancel_cursor_agent,
             wisdev::wisdev_check,
             wisdev::wisdev_build,
             wisdev::wisdev_research,
@@ -813,6 +850,7 @@ pub fn run() {
                 let state_clone = claude_state.inner().clone();
                 tauri::async_runtime::spawn(async move {
                     claude::kill_process_for_window(&state_clone, &label_clone).await;
+                    cursor_agent::cleanup_all_acp_sessions().await;
                 });
 
                 // Quit the app when the last window is closed

@@ -73,6 +73,18 @@ export async function loadPersistedFsaRoot(
   }
 }
 
+export async function removePersistedFsaRoot(id: string): Promise<void> {
+  const db = await openDb();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction([STORE, META_STORE], "readwrite");
+    tx.objectStore(STORE).delete(id);
+    tx.objectStore(META_STORE).delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+  db.close();
+}
+
 export async function getPersistedFsaFolderName(
   id: string,
 ): Promise<string | null> {

@@ -34,7 +34,7 @@ Avoid treating generated outputs, vendor trees, and asset binaries as primary re
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **DevPrism** (7464 symbols, 18154 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **DevPrism** (7836 symbols, 19143 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 
@@ -73,25 +73,25 @@ This project is indexed by GitNexus as **DevPrism** (7464 symbols, 18154 relatio
 | Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
 | Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
 | Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
-| Work in the Workspace area (384 symbols) | `.claude/skills/generated/workspace/SKILL.md` |
-| Work in the Editor area (230 symbols) | `.claude/skills/generated/editor/SKILL.md` |
-| Work in the Stores area (206 symbols) | `.claude/skills/generated/stores/SKILL.md` |
-| Work in the Components area (205 symbols) | `.claude/skills/generated/components/SKILL.md` |
-| Work in the Claude-chat area (184 symbols) | `.claude/skills/generated/claude-chat/SKILL.md` |
-| Work in the Native_agent area (141 symbols) | `.claude/skills/generated/native-agent/SKILL.md` |
-| Work in the Preview area (125 symbols) | `.claude/skills/generated/preview/SKILL.md` |
-| Work in the Browser-project area (114 symbols) | `.claude/skills/generated/browser-project/SKILL.md` |
+| Work in the Workspace area (368 symbols) | `.claude/skills/generated/workspace/SKILL.md` |
+| Work in the Stores area (240 symbols) | `.claude/skills/generated/stores/SKILL.md` |
+| Work in the Editor area (239 symbols) | `.claude/skills/generated/editor/SKILL.md` |
+| Work in the Components area (221 symbols) | `.claude/skills/generated/components/SKILL.md` |
+| Work in the Claude-chat area (208 symbols) | `.claude/skills/generated/claude-chat/SKILL.md` |
+| Work in the Native_agent area (154 symbols) | `.claude/skills/generated/native-agent/SKILL.md` |
+| Work in the Preview area (132 symbols) | `.claude/skills/generated/preview/SKILL.md` |
+| Work in the Browser-project area (118 symbols) | `.claude/skills/generated/browser-project/SKILL.md` |
 | Work in the Anthropic_proxy area (112 symbols) | `.claude/skills/generated/anthropic-proxy/SKILL.md` |
-| Work in the Ui area (68 symbols) | `.claude/skills/generated/ui/SKILL.md` |
-| Work in the Cluster_54 area (37 symbols) | `.claude/skills/generated/cluster-54/SKILL.md` |
+| Work in the Cursor_agent area (104 symbols) | `.claude/skills/generated/cursor-agent/SKILL.md` |
+| Work in the Ui area (67 symbols) | `.claude/skills/generated/ui/SKILL.md` |
+| Work in the Hooks area (40 symbols) | `.claude/skills/generated/hooks/SKILL.md` |
+| Work in the Cluster_56 area (37 symbols) | `.claude/skills/generated/cluster-56/SKILL.md` |
 | Work in the Semantic-layer area (35 symbols) | `.claude/skills/generated/semantic-layer/SKILL.md` |
 | Work in the Template-gallery area (33 symbols) | `.claude/skills/generated/template-gallery/SKILL.md` |
 | Work in the Semantic_layer area (32 symbols) | `.claude/skills/generated/semantic-layer-2/SKILL.md` |
-| Work in the Hooks area (32 symbols) | `.claude/skills/generated/hooks/SKILL.md` |
 | Work in the Semantic-layer-reference area (28 symbols) | `.claude/skills/generated/semantic-layer-reference/SKILL.md` |
 | Work in the Mupdf area (27 symbols) | `.claude/skills/generated/mupdf/SKILL.md` |
-| Work in the Cluster_1 area (26 symbols) | `.claude/skills/generated/cluster-1/SKILL.md` |
-| Work in the Rich-editor area (22 symbols) | `.claude/skills/generated/rich-editor/SKILL.md` |
-| Work in the Cluster_24 area (20 symbols) | `.claude/skills/generated/cluster-24/SKILL.md` |
+| Work in the Cluster_3 area (24 symbols) | `.claude/skills/generated/cluster-3/SKILL.md` |
+| Work in the Cluster_26 area (24 symbols) | `.claude/skills/generated/cluster-26/SKILL.md` |
 
 <!-- gitnexus:end -->

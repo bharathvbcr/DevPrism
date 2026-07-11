@@ -1,11 +1,11 @@
 ---
 name: browser-project
-description: "Skill for the Browser-project area of DevPrism. 114 symbols across 18 files."
+description: "Skill for the Browser-project area of DevPrism. 118 symbols across 19 files."
 ---
 
 # Browser-project
 
-114 symbols | 18 files | Cohesion: 83%
+118 symbols | 19 files | Cohesion: 80%
 
 ## When to Use
 
@@ -23,8 +23,8 @@ description: "Skill for the Browser-project area of DevPrism. 114 symbols across
 | `apps/desktop/src/lib/browser-project/fsa-store.ts` | directoryEntries, entries, getFsaDirectoryAtRelativePath, writeFsaFile, readFsaFile (+7) |
 | `apps/desktop/src/stores/document-store.ts` | migratePdfBytesKey, migrateCacheKey, deleteFolder, renameFile, createNewFile (+5) |
 | `apps/desktop/src/lib/browser-project/constants.ts` | isBrowserProjectPath, browserJoin, parseBrowserRoot, relativeFromBrowserAbsolute, sanitizeProjectName (+4) |
+| `apps/desktop/src/lib/browser-project/fsa-persistence.ts` | openDb, persistFsaRoot, removePersistedFsaRoot, getPersistedFsaFolderName, loadPersistedFsaRoot (+2) |
 | `apps/desktop/src/components/project-picker.tsx` | firstExistingProjectFile, firstExistingPath, findMainTexFile, onDragEnter, onDragOver (+1) |
-| `apps/desktop/src/lib/browser-project/fsa-persistence.ts` | ensureFsaProjectPermission, ensureBrowserProjectAccessible, openDb, persistFsaRoot, loadPersistedFsaRoot (+1) |
 | `apps/desktop/src/lib/browser-project/drag-drop.ts` | readDirectoryEntry, readBatch, entryToDropFiles, collectBrowserDropFiles, hasBrowserFileDrag |
 | `apps/desktop/src/lib/browser-project/attachment-staging.ts` | getStagedBrowserFile, stageBrowserFile, isStagedBrowserFilePath, stagedBrowserFileName |
 
@@ -60,8 +60,8 @@ Start here when exploring this area:
 | `browserJoin` | Function | `apps/desktop/src/lib/browser-project/constants.ts` | 31 |
 | `parseBrowserRoot` | Function | `apps/desktop/src/lib/browser-project/constants.ts` | 43 |
 | `relativeFromBrowserAbsolute` | Function | `apps/desktop/src/lib/browser-project/constants.ts` | 62 |
-| `ensureFsaProjectPermission` | Function | `apps/desktop/src/lib/browser-project/fsa-persistence.ts` | 94 |
-| `ensureBrowserProjectAccessible` | Function | `apps/desktop/src/lib/browser-project/fsa-persistence.ts` | 130 |
+| `getFsaDirectoryAtRelativePath` | Function | `apps/desktop/src/lib/browser-project/fsa-store.ts` | 14 |
+| `writeFsaFile` | Function | `apps/desktop/src/lib/browser-project/fsa-store.ts` | 34 |
 
 ## Execution Flows
 
@@ -82,10 +82,10 @@ Start here when exploring this area:
 
 | Area | Connections |
 |------|-------------|
-| Semantic-layer | 3 calls |
+| Semantic-layer | 4 calls |
 | Stores | 2 calls |
 | Editor | 1 calls |
-| Workspace | 1 calls |
+| Hooks | 1 calls |
 
 ## How to Explore
 

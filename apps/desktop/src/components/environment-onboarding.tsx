@@ -33,12 +33,36 @@ import {
 import { ClaudeSetup } from "@/components/claude-setup";
 import { useClaudeSetupStore } from "@/stores/claude-setup-store";
 import { useUvSetupStore } from "@/stores/uv-setup-store";
+import {
+  isClaudeCodeBackend,
+  isCursorCliBackend,
+  isNativeApiBackend,
+  isNativeGroqBackend,
+  isNativeOllamaBackend,
+  type AgentBackend,
+} from "@/lib/agent-backend";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useSetupFlowStore } from "@/stores/setup-flow-store";
 import { dispatchOpenProjectWizard } from "@/lib/home-flow-events";
 import { cn } from "@/lib/utils";
 
 type SetupItemState = "ready" | "loading" | "blocked" | "error";
+
+function optionalAgentDetail(backend: AgentBackend): string {
+  if (isNativeOllamaBackend(backend)) {
+    return "Optional when using the native Ollama agent";
+  }
+  if (isNativeGroqBackend(backend)) {
+    return "Optional when using the native Groq agent";
+  }
+  if (isNativeApiBackend(backend)) {
+    return "Optional when using the Native API agent";
+  }
+  if (isCursorCliBackend(backend)) {
+    return "Optional when using Cursor CLI";
+  }
+  return "Optional for this agent backend";
+}
 
 interface SkillsStatus {
   installed: boolean;
@@ -85,7 +109,8 @@ export function EnvironmentOnboarding() {
   const checkUvStatus = useUvSetupStore((s) => s.checkStatus);
   const installUv = useUvSetupStore((s) => s.install);
   const finishUvInstall = useUvSetupStore((s) => s._finishInstall);
-  const nativeAgentEnabled = useSettingsStore((s) => s.nativeAgentEnabled);
+  const agentBackend = useSettingsStore((s) => s.agentBackend);
+  const claudeOptional = !isClaudeCodeBackend(agentBackend);
 
   const checkSkillsStatus = useCallback(async () => {
     setSkillsChecking(true);
@@ -140,7 +165,7 @@ export function EnvironmentOnboarding() {
   const isClaudeReady = claudeStatus === "ready";
   const isUvReady = uvStatus === "ready";
   const isSkillsReady = !!skillsStatus?.installed;
-  const claudeNeedsAttention = nativeAgentEnabled
+  const claudeNeedsAttention = claudeOptional
     ? false
     : isClaudeInstalling || (claudeStatus !== "checking" && !isClaudeReady);
   const uvNeedsAttention =
@@ -154,16 +179,16 @@ export function EnvironmentOnboarding() {
   const setupSteps = [
     {
       id: "claude",
-      ready: isClaudeReady || nativeAgentEnabled,
-      optional: nativeAgentEnabled,
-      label: nativeAgentEnabled ? "Claude Code (optional)" : "Claude Code",
+      ready: isClaudeReady || claudeOptional,
+      optional: claudeOptional,
+      label: claudeOptional ? "Claude Code (optional)" : "Claude Code",
     },
     { id: "uv", ready: isUvReady, optional: false, label: "Python (uv)" },
     {
       id: "provider",
-      ready: isClaudeReady || nativeAgentEnabled,
-      optional: nativeAgentEnabled,
-      label: nativeAgentEnabled ? "Cloud provider (optional)" : "AI Provider",
+      ready: isClaudeReady || claudeOptional,
+      optional: claudeOptional,
+      label: claudeOptional ? "Cloud provider (optional)" : "AI Provider",
     },
     {
       id: "skills",
@@ -182,7 +207,7 @@ export function EnvironmentOnboarding() {
     initialCheckComplete &&
     !needsAttention &&
     !isCheckingSetup &&
-    (nativeAgentEnabled ? isUvReady : readyRequiredCount >= requiredStepCount);
+    (claudeOptional ? isUvReady : readyRequiredCount >= requiredStepCount);
   const shouldShow =
     initialCheckComplete &&
     !wizardActive &&
@@ -298,7 +323,7 @@ export function EnvironmentOnboarding() {
                 DevPrism
               </DialogTitle>
               <DialogDescription className="max-w-sm text-sm leading-relaxed">
-                {nativeAgentEnabled
+                {claudeOptional
                   ? "Configure Python and optional cloud tools — or create a project to start writing right away."
                   : "Set up local tools and your model provider — or create a project and finish setup later from Settings."}
               </DialogDescription>
@@ -341,8 +366,8 @@ export function EnvironmentOnboarding() {
                 icon={TerminalIcon}
                 title="Claude Code"
                 detail={
-                  nativeAgentEnabled
-                    ? "Optional when using the native Ollama agent"
+                  claudeOptional
+                    ? optionalAgentDetail(agentBackend)
                     : isClaudeInstalling
                       ? "Installing..."
                       : claudeStatus === "checking"
@@ -524,7 +549,7 @@ export function EnvironmentOnboarding() {
                   Set up later
                 </Button>
                 <p className="text-muted-foreground text-xs">
-                  {nativeAgentEnabled
+                  {claudeOptional
                     ? "You can write and compile without finishing setup."
                     : "Cloud AI features stay limited until setup is finished."}
                 </p>

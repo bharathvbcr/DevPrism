@@ -1,4 +1,4 @@
-import { type ButtonHTMLAttributes, type FC, useState } from "react";
+import { type ButtonHTMLAttributes, type FC, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   AlertCircleIcon,
@@ -935,11 +935,19 @@ const GenericWidget: FC<{
 
 // ─── Thinking Widget ───
 
-export const ThinkingWidget: FC<{ thinking: string; signature?: string }> = ({
-  thinking,
-}) => {
-  const [expanded, setExpanded] = useState(false);
+export const ThinkingWidget: FC<{
+  thinking: string;
+  signature?: string;
+  streaming?: boolean;
+}> = ({ thinking, streaming = false }) => {
+  const [expanded, setExpanded] = useState(streaming);
   const trimmed = thinking.trim();
+  const preview =
+    trimmed.length > 120 ? `${trimmed.slice(0, 120).trimEnd()}…` : trimmed;
+
+  useEffect(() => {
+    if (streaming) setExpanded(true);
+  }, [streaming]);
 
   return (
     <div className="my-1.5 overflow-hidden rounded-lg border border-muted-foreground/20 bg-muted-foreground/5">
@@ -949,20 +957,25 @@ export const ThinkingWidget: FC<{ thinking: string; signature?: string }> = ({
         aria-expanded={expanded}
         className="flex w-full items-center gap-2 px-3 py-2 transition-colors hover:bg-muted-foreground/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
       >
-        <div className="flex items-center gap-2">
-          <div className="flex size-5 items-center justify-center rounded-full bg-muted-foreground/10">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <div className="flex size-5 shrink-0 items-center justify-center rounded-full bg-muted-foreground/10">
             <BrainIcon className="size-3.5 text-muted-foreground" />
           </div>
           <span className="font-medium text-muted-foreground text-sm italic">
-            Thinking...
+            {streaming ? "Thinking…" : "Thought process"}
           </span>
+          {!expanded && preview && (
+            <span className="truncate text-muted-foreground/70 text-xs italic">
+              {preview}
+            </span>
+          )}
         </div>
         <DisclosureChevron expanded={expanded} />
       </button>
       {expanded && (
         <div className="border-muted-foreground/20 border-t px-3 pt-2 pb-3">
           <pre className="whitespace-pre-wrap rounded-lg bg-muted-foreground/5 p-3 font-mono text-muted-foreground text-xs italic">
-            {trimmed}
+            {trimmed || (streaming ? "…" : "")}
           </pre>
         </div>
       )}

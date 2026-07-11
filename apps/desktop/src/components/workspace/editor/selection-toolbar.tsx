@@ -26,6 +26,8 @@ interface SelectionToolbarProps {
   onSendPrompt: (prompt: string) => void;
   onAction: (actionId: string) => void;
   onDismiss: () => void;
+  /** When false, the prompt field is not focused on open (e.g. PDF highlight toolbar). */
+  autoFocusPrompt?: boolean;
   resumeBulletAdjust?: ResumeBulletControlsProps;
 }
 
@@ -36,6 +38,7 @@ export function SelectionToolbar({
   onSendPrompt,
   onAction,
   onDismiss,
+  autoFocusPrompt = true,
   resumeBulletAdjust,
 }: SelectionToolbarProps) {
   const [input, setInput] = useState("");
@@ -90,8 +93,8 @@ export function SelectionToolbar({
 
   // Focus the prompt field on open so the user can type immediately.
   useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
+    if (autoFocusPrompt) inputRef.current?.focus();
+  }, [autoFocusPrompt]);
 
   return (
     <div

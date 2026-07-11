@@ -55,8 +55,23 @@ import {
 } from "@/stores/claude-setup-store";
 import { useDocumentStore, type ProjectFile } from "@/stores/document-store";
 import { useSettingsStore } from "@/stores/settings-store";
+import {
+  AGENT_BACKENDS,
+  type AgentBackend,
+  backendUsesNativeRuntime,
+  GROQ_DEFAULT_MODEL,
+  isCursorCliBackend,
+  isNativeApiBackend,
+  isNativeGroqBackend,
+  isNativeOllamaBackend,
+} from "@/lib/agent-backend";
+import {
+  useBackendAvailability,
+  type BackendAvailabilityStatus,
+} from "@/lib/backend-availability";
 import { getUniqueTargetName } from "@/lib/tauri/fs";
 import {
+  getBackendIconSrc,
   getProviderDisplayName,
   getProviderIconSrc,
 } from "@/lib/provider-icons";
@@ -70,6 +85,8 @@ import {
 import { ModelCapabilityBadges } from "@/components/model-capability-badges";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { ClaudeSetup } from "@/components/claude-setup";
+import { CursorSetup } from "@/components/cursor-setup";
+import { GroqSetup } from "@/components/groq-setup";
 import {
   Dialog,
   DialogContent,
@@ -110,6 +127,8 @@ import {
   fetchPredictiveContinuation,
   improvePrompt,
 } from "@/lib/ai-assist";
+import { useCursorSetupStore } from "@/stores/cursor-setup-store";
+import { useGroqSetupStore } from "@/stores/groq-setup-store";
 
 const log = createLogger("chat-composer");
 const EMPTY_GUIDANCE: QueuedGuidance[] = [];
@@ -358,7 +377,13 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
   const selectedProviderCredential =
     configuredOpenAiCredential ??
     (!showClaudeProvider ? fallbackProviderCredential : null);
-  const nativeAgentEnabled = useSettingsStore((s) => s.nativeAgentEnabled);
+  const agentBackend = useSettingsStore((s) => s.agentBackend);
+  const setAgentBackend = useSettingsStore((s) => s.setAgentBackend);
+  const isNativeOllama = isNativeOllamaBackend(agentBackend);
+  const isNativeGroq = isNativeGroqBackend(agentBackend);
+  const isNativeApi = isNativeApiBackend(agentBackend);
+  const isCursorCli = isCursorCliBackend(agentBackend);
+  const nativeGroqModel = useSettingsStore((s) => s.nativeGroqModel);
   const nativeOllamaModel = useSettingsStore((s) => s.nativeOllamaModel);
   const setNativeOllamaModel = useSettingsStore((s) => s.setNativeOllamaModel);
   const nativeNumCtx = useSettingsStore((s) => s.nativeNumCtx);
@@ -369,7 +394,10 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
   const claudeProviderActive =
     showClaudeProvider && !selectedProviderCredential;
   const providerSelectionReady =
-    nativeAgentEnabled || claudeProviderActive || !!selectedProviderCredential;
+    backendUsesNativeRuntime(agentBackend) ||
+    isCursorCli ||
+    claudeProviderActive ||
+    !!selectedProviderCredential;
   const selectedProviderModel = selectedProviderCredential
     ? selectedProviderModels[selectedProviderCredential.id] ||
       selectedProviderCredential.model
@@ -398,27 +426,36 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
     refresh: refreshOllamaStatus,
   } = useOllamaStatus(
     ollamaBaseUrl,
-    nativeAgentEnabled,
-    isStreaming ? 8_000 : 30_000,
+    // Always poll so the Agent switcher can show Ollama readiness.
+    true,
+    isStreaming ? 8_000 : isNativeOllama ? 30_000 : 60_000,
   );
+  const backendAvailability = useBackendAvailability({
+    ollamaConnected: ollamaStatus?.connected ?? null,
+    ollamaChatModels: ollamaStatus?.chatModels ?? 0,
+    ollamaLoading: ollamaStatusLoading && !ollamaStatus,
+  });
+  const cursorIconSrc = getBackendIconSrc("cursor-cli");
+  const checkCursorStatus = useCursorSetupStore((s) => s.checkStatus);
+  const checkGroqStatus = useGroqSetupStore((s) => s.checkStatus);
 
   useEffect(() => {
-    if (!nativeAgentEnabled) return;
+    if (!isNativeOllama) return;
     const onRefresh = () => void refreshOllamaStatus();
     window.addEventListener(OLLAMA_REFRESH_EVENT, onRefresh);
     return () => window.removeEventListener(OLLAMA_REFRESH_EVENT, onRefresh);
-  }, [nativeAgentEnabled, refreshOllamaStatus]);
+  }, [isNativeOllama, refreshOllamaStatus]);
   const { capabilities: selectedModelCapabilities } =
     useOllamaModelCapabilities(
       effectiveOllamaModel,
       ollamaBaseUrl,
-      nativeAgentEnabled,
+      isNativeOllama,
     );
   const selectedResolvedCaps = effectiveOllamaModel
     ? resolveOllamaCapabilities(effectiveOllamaModel, selectedModelCapabilities)
     : null;
   const chatOnlyMode = Boolean(
-    nativeAgentEnabled &&
+    isNativeOllama &&
       effectiveOllamaModel &&
       selectedResolvedCaps &&
       !selectedResolvedCaps.tools,
@@ -439,10 +476,17 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
         model: ollamaCredential.model,
       })
     : "Ollama";
-  const chatModelLabel = nativeAgentEnabled
+  const chatModelLabel = isNativeOllama
     ? effectiveOllamaModel || "Auto"
-    : directProviderModel;
-  const selectedProviderSupportsVision = nativeAgentEnabled
+    : isNativeGroq
+      ? nativeGroqModel || GROQ_DEFAULT_MODEL
+      : isNativeApi
+        ? nativeGroqModel ||
+          selectedProviderModel ||
+          selectedProviderCredential?.model ||
+          "Provider"
+        : directProviderModel;
+  const selectedProviderSupportsVision = isNativeOllama
     ? effectiveOllamaModel
       ? resolveOllamaCapabilities(
           effectiveOllamaModel,
@@ -486,6 +530,9 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
     null,
   );
   const [providerSetupOpen, setProviderSetupOpen] = useState(false);
+  const [cursorSetupOpen, setCursorSetupOpen] = useState(false);
+  const [groqSetupOpen, setGroqSetupOpen] = useState(false);
+  const [ollamaSetupOpen, setOllamaSetupOpen] = useState(false);
   const [providerDeleteTarget, setProviderDeleteTarget] =
     useState<OpenAiCompatibleCredentialInfo | null>(null);
   const [providerDeleteError, setProviderDeleteError] = useState<string | null>(
@@ -521,6 +568,41 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
   const modelPickerRequestId = useClaudeChatStore(
     (s) => s.modelPickerRequestId,
   );
+
+  useEffect(() => {
+    if (!modelPickerOpen) return;
+    void checkCursorStatus();
+    void checkGroqStatus();
+  }, [modelPickerOpen, checkCursorStatus, checkGroqStatus]);
+
+  const openBackendSetup = useCallback((backend: AgentBackend) => {
+    setModelPickerOpen(false);
+    switch (backend) {
+      case "claude-code":
+      case "native-api":
+        setProviderSetupOpen(true);
+        break;
+      case "cursor-cli":
+        setCursorSetupOpen(true);
+        break;
+      case "native-groq":
+        setGroqSetupOpen(true);
+        break;
+      case "native-ollama":
+        setOllamaSetupOpen(true);
+        break;
+    }
+  }, []);
+
+  const selectAgentBackend = useCallback(
+    (backend: AgentBackend, status: BackendAvailabilityStatus) => {
+      if (isStreaming || status !== "ready") return;
+      setAgentBackend(backend);
+      // Keep the picker open so provider/model columns re-render for the new backend.
+    },
+    [isStreaming, setAgentBackend],
+  );
+
   const chatOllamaModelNames = useMemo(
     () =>
       ollamaModels
@@ -532,7 +614,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
     useOllamaModelsCapabilities(
       chatOllamaModelNames,
       ollamaBaseUrl,
-      nativeAgentEnabled && modelPickerOpen,
+      isNativeOllama && modelPickerOpen,
     );
   const modelPickerRef = useRef<HTMLDivElement>(null);
   const modelButtonRef = useRef<HTMLButtonElement>(null);
@@ -741,9 +823,9 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
   }, [ollamaBaseUrl]);
 
   useEffect(() => {
-    if (!modelPickerOpen || !nativeAgentEnabled) return;
+    if (!modelPickerOpen || !isNativeOllama) return;
     void loadOllamaModels();
-  }, [loadOllamaModels, modelPickerOpen, nativeAgentEnabled]);
+  }, [loadOllamaModels, modelPickerOpen, isNativeOllama]);
 
   const refreshOllamaModels = useCallback(() => {
     void refreshOllamaStatus();
@@ -1202,7 +1284,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
         ghostDebounceRef.current = null;
       }
     };
-    // aiAssistEnabled / nativeAgentEnabled / selectedProviderCredentialId are
+    // aiAssistEnabled / agentBackend / selectedProviderCredentialId are
     // the reactive gating inputs read by canUseAiAssist(); include them so the
     // effect re-evaluates when AI assist is toggled or a provider is selected
     // while text is already in the box.
@@ -1212,7 +1294,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
     popupOpen,
     isStreaming,
     aiAssistEnabled,
-    nativeAgentEnabled,
+    agentBackend,
     selectedProviderCredentialId,
   ]);
 
@@ -1927,478 +2009,600 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
               else next = current <= 0 ? items.length - 1 : current - 1;
               items[next]?.focus();
             }}
-            className="fixed w-[28rem] max-w-[calc(100vw-1rem)] overflow-hidden rounded-xl border border-border bg-popover/95 p-1.5 text-popover-foreground shadow-lg backdrop-blur-sm focus:outline-none [&_button:focus-visible]:relative [&_button:focus-visible]:z-10 [&_button:focus-visible]:outline-none [&_button:focus-visible]:ring-2 [&_button:focus-visible]:ring-ring [&_button:focus-visible]:ring-inset"
+            className="fixed w-[30rem] max-w-[calc(100vw-1rem)] overflow-hidden rounded-xl border border-border bg-popover/95 p-1.5 text-popover-foreground shadow-lg backdrop-blur-sm focus:outline-none [&_button:focus-visible]:relative [&_button:focus-visible]:z-10 [&_button:focus-visible]:outline-none [&_button:focus-visible]:ring-2 [&_button:focus-visible]:ring-ring [&_button:focus-visible]:ring-inset"
             style={{
               left: pickerPos.left,
               bottom: pickerPos.bottom,
               zIndex: 9999,
             }}
           >
-            <div
-              className={cn(
-                "grid",
-                nativeAgentEnabled
-                  ? "grid-cols-1"
-                  : "grid-cols-[minmax(0,11.5rem)_minmax(0,1fr)]",
-              )}
-            >
-              {!nativeAgentEnabled && (
-                <div className="max-h-80 overflow-y-auto border-border border-r pr-1">
-                  <div className="px-2 py-1 font-medium text-muted-foreground text-xs">
-                    Provider
-                  </div>
-                  {showClaudeProvider && (
-                    <button
+            <div className="max-h-[min(28rem,70vh)] overflow-y-auto">
+              <div className="px-2 py-1 font-medium text-muted-foreground text-xs">
+                Agent
+              </div>
+              <div className="space-y-0.5 pb-1.5">
+                {AGENT_BACKENDS.map((backend) => {
+                  const status = backendAvailability[backend.id];
+                  const active = agentBackend === backend.id;
+                  const iconSrc = getBackendIconSrc(backend.id);
+                  const rowDisabled = isStreaming || status === "checking";
+                  return (
+                    <div
+                      key={backend.id}
                       className={cn(
-                        "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors",
-                        claudeProviderActive
+                        "flex items-center gap-1 rounded-lg pr-1 transition-colors",
+                        active
                           ? "bg-accent text-accent-foreground"
-                          : "hover:bg-muted",
-                      )}
-                      onClick={() => {
-                        setSelectedProviderCredentialId(
-                          CLAUDE_CODE_PROVIDER_ID,
-                        );
-                        setModelPickerOpen(false);
-                      }}
-                    >
-                      {claudeCodeIconSrc ? (
-                        <img
-                          src={claudeCodeIconSrc}
-                          alt=""
-                          className="size-4 shrink-0 object-contain"
-                        />
-                      ) : (
-                        <SparklesIcon className="size-3.5 shrink-0" />
-                      )}
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate font-medium text-xs">
-                          Claude Code
-                        </div>
-                        <div className="truncate text-muted-foreground text-xs">
-                          {claudeModelDisplayName(selectedModel)}
-                        </div>
-                      </div>
-                      {claudeProviderActive && (
-                        <CheckIcon className="size-3 shrink-0" />
-                      )}
-                    </button>
-                  )}
-
-                  {openAiCredentials.map((credential) => {
-                    const active =
-                      selectedProviderCredential?.id === credential.id;
-                    const displayName = getProviderDisplayName({
-                      label: credential.label,
-                      baseUrl: credential.base_url,
-                      model: credential.model,
-                    });
-                    const iconSrc = getProviderIconSrc({
-                      label: credential.label,
-                      baseUrl: credential.base_url,
-                      model: credential.model,
-                    });
-                    const currentModel =
-                      selectedProviderModels[credential.id] || credential.model;
-
-                    const isDeleting = deletingProviderId === credential.id;
-                    const selectCredential = () => {
-                      if (isDeleting) return;
-                      setSelectedProviderCredentialId(credential.id);
-                      setModelPickerOpen(false);
-                    };
-
-                    return (
-                      <div
-                        key={credential.id}
-                        className={cn(
-                          "group/provider flex items-center gap-1 rounded-lg pr-1 transition-colors",
-                          active
-                            ? "bg-accent text-accent-foreground"
+                          : status === "needs-setup"
+                            ? "opacity-60"
                             : "hover:bg-muted",
-                          isDeleting && "pointer-events-none opacity-70",
-                        )}
+                        rowDisabled && "pointer-events-none opacity-50",
+                      )}
+                      title={
+                        isStreaming
+                          ? "Finish or stop the current response first"
+                          : undefined
+                      }
+                    >
+                      <button
+                        type="button"
+                        disabled={rowDisabled}
+                        className="flex min-w-0 flex-1 items-center gap-2 rounded-lg py-2 pl-3 text-left text-sm"
+                        onClick={() => {
+                          if (status === "ready") {
+                            selectAgentBackend(backend.id, status);
+                          }
+                        }}
                       >
-                        <button
-                          type="button"
-                          className="flex min-w-0 flex-1 items-center gap-2 rounded-lg py-2 pl-3 text-left text-sm"
-                          onClick={selectCredential}
-                        >
-                          {iconSrc ? (
-                            <img
-                              src={iconSrc}
-                              alt=""
-                              className="size-4 shrink-0 object-contain"
-                            />
-                          ) : (
-                            <SparklesIcon className="size-3.5 shrink-0" />
-                          )}
-                          <div className="min-w-0 flex-1">
-                            <div className="truncate font-medium text-xs">
-                              {displayName}
-                            </div>
-                            <div className="truncate text-muted-foreground text-xs">
-                              {currentModel}
-                            </div>
+                        {iconSrc ? (
+                          <img
+                            src={iconSrc}
+                            alt=""
+                            className="size-4 shrink-0 object-contain"
+                          />
+                        ) : (
+                          <SparklesIcon className="size-3.5 shrink-0" />
+                        )}
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate font-medium text-xs">
+                            {backend.label}
                           </div>
-                          {active && <CheckIcon className="size-3 shrink-0" />}
-                        </button>
+                          <div className="truncate text-muted-foreground text-xs">
+                            {backend.description}
+                          </div>
+                        </div>
+                        {active && status === "ready" && (
+                          <CheckIcon className="size-3 shrink-0" />
+                        )}
+                      </button>
+                      {status === "needs-setup" && !isStreaming && (
                         <button
                           type="button"
-                          className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                          aria-label={`Delete ${displayName}`}
-                          title="Delete provider"
-                          disabled={!!deletingProviderId}
+                          className="shrink-0 rounded-md px-2 py-1 font-medium text-[10px] text-foreground transition-colors hover:bg-muted"
                           onClick={(event) => {
                             event.preventDefault();
                             event.stopPropagation();
-                            setProviderDeleteError(null);
-                            setProviderDeleteTarget(credential);
+                            openBackendSetup(backend.id);
                           }}
                         >
-                          {isDeleting ? (
-                            <Loader2Icon className="size-3.5 animate-spin" />
-                          ) : (
-                            <Trash2Icon className="size-3.5" />
-                          )}
+                          Set up
                         </button>
-                      </div>
-                    );
-                  })}
-                  <button
-                    className="mt-1 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-muted-foreground text-sm transition-colors hover:bg-muted hover:text-foreground"
-                    onClick={() => {
-                      setModelPickerOpen(false);
-                      setProviderSetupOpen(true);
-                    }}
-                  >
-                    <PlusIcon className="size-3.5 shrink-0" />
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate font-medium text-xs">
-                        Add Provider
-                      </div>
-                      <div className="truncate text-xs">
-                        Save another API key
-                      </div>
-                    </div>
-                  </button>
-                </div>
-              )}
-
-              {nativeAgentEnabled && (
-                <div className="border-border border-b px-3 py-2.5">
-                  <div className="flex items-center gap-2">
-                    {ollamaIconSrc ? (
-                      <img
-                        src={ollamaIconSrc}
-                        alt=""
-                        className="size-5 shrink-0 object-contain"
-                      />
-                    ) : (
-                      <SparklesIcon className="size-5 shrink-0" />
-                    )}
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate font-medium text-sm">
-                        {ollamaDisplayName}
-                      </div>
-                      <div className="truncate font-mono text-[10px] text-muted-foreground">
-                        {ollamaBaseUrl}
-                        {ollamaStatus?.version
-                          ? ` · v${ollamaStatus.version}`
-                          : ""}
-                      </div>
-                      {ollamaStatus && ollamaStatus.connected && (
-                        <div className="mt-0.5 text-[10px] text-muted-foreground">
-                          {ollamaStatus.chatModels} chat
-                          {ollamaStatus.embeddingModels > 0
-                            ? ` · ${ollamaStatus.embeddingModels} embed`
-                            : ""}
-                        </div>
+                      )}
+                      {status === "checking" && (
+                        <Loader2Icon className="mr-2 size-3.5 shrink-0 animate-spin text-muted-foreground" />
                       )}
                     </div>
-                    <button
-                      type="button"
-                      className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                      title="Refresh Ollama models"
-                      aria-label="Refresh Ollama models"
-                      disabled={ollamaModelsLoading || ollamaStatusLoading}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        refreshOllamaModels();
-                      }}
-                    >
-                      <RefreshCwIcon
-                        className={cn(
-                          "size-3.5",
-                          (ollamaModelsLoading || ollamaStatusLoading) &&
-                            "animate-spin",
-                        )}
-                      />
-                    </button>
-                    <span
-                      className={cn(
-                        "size-2 shrink-0 rounded-full",
-                        ollamaModelsError || ollamaStatusError
-                          ? "bg-destructive"
-                          : ollamaModelsLoading || ollamaStatusLoading
-                            ? "animate-pulse bg-muted-foreground"
-                            : "bg-emerald-500",
-                      )}
-                      title={
-                        ollamaModelsError || ollamaStatusError
-                          ? "Ollama unreachable"
-                          : ollamaModelsLoading || ollamaStatusLoading
-                            ? "Checking Ollama…"
-                            : "Ollama connected"
-                      }
-                    />
-                  </div>
-                  <p className="mt-2 text-muted-foreground text-xs leading-relaxed">
-                    Native offline agent with project file tools. Cloud
-                    providers are paused while this mode is on.
-                  </p>
-                  <div className="mt-2 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-muted-foreground">
-                    <span>Context {nativeNumCtx.toLocaleString()}</span>
-                    <span>Temp {nativeTemperature}</span>
-                  </div>
-                  <button
-                    type="button"
-                    className="mt-2 text-foreground text-xs underline underline-offset-2 hover:text-primary"
-                    onClick={() => {
-                      setModelPickerOpen(false);
-                      setProviderSetupOpen(true);
-                    }}
-                  >
-                    Ollama &amp; sampling settings
-                  </button>
-                </div>
-              )}
+                  );
+                })}
+              </div>
 
-              <div className="flex max-h-80 min-w-0 flex-col pl-1">
-                <div
-                  ref={providerModelListRef}
-                  className="min-h-0 flex-1 overflow-y-auto"
-                >
-                  <div className="px-2 py-1 font-medium text-muted-foreground text-xs">
-                    Model
-                  </div>
-                  {nativeAgentEnabled ? (
-                    <>
-                      {ollamaModelsLoading && (
-                        <div className="space-y-2 px-3 py-2">
-                          <Skeleton className="h-7 w-full" />
-                          <Skeleton className="h-7 w-4/5" />
-                          <Skeleton className="h-7 w-3/5" />
-                        </div>
-                      )}
-                      {ollamaModelsError && (
-                        <div className="px-3 py-2 text-destructive text-xs leading-relaxed">
-                          {ollamaModelsError}
-                        </div>
-                      )}
-                      {(ollamaModelsError ||
-                        ollamaStatusError ||
-                        (ollamaStatus &&
-                          (!ollamaStatus.connected ||
-                            ollamaStatus.chatModels === 0))) && (
-                        <div className="px-2 pb-2">
-                          <OllamaSetupHints
-                            compact
-                            baseUrl={ollamaBaseUrl}
-                            onModelsChanged={() => {
-                              void refreshOllamaModels();
-                            }}
-                            connected={
-                              Boolean(ollamaStatus?.connected) &&
-                              !ollamaStatusError
-                            }
-                            chatModels={ollamaStatus?.chatModels ?? 0}
-                          />
-                        </div>
-                      )}
-                      {!ollamaModelsLoading && !ollamaModelsError && (
-                        <>
-                          <button
-                            type="button"
-                            className={cn(
-                              "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors",
-                              !effectiveOllamaModel
-                                ? "bg-accent text-accent-foreground"
-                                : "hover:bg-muted",
-                            )}
-                            onClick={() => {
-                              setNativeOllamaModel(null);
-                              setModelPickerOpen(false);
-                            }}
-                          >
-                            <div className="min-w-0 flex-1">
-                              <div className="font-medium text-xs">Auto</div>
-                              <div className="truncate text-muted-foreground text-xs">
-                                First installed chat model
-                              </div>
-                            </div>
-                            {!effectiveOllamaModel && (
-                              <CheckIcon className="size-3 shrink-0" />
-                            )}
-                          </button>
-                          {[...ollamaModels]
-                            .sort(
-                              (a, b) =>
-                                Number(b.chatCapable) - Number(a.chatCapable),
-                            )
-                            .map((model) => {
-                              const caps = resolveOllamaCapabilities(
-                                model.name,
-                                ollamaCapabilitiesByModel[model.name],
-                              );
-                              const sizeLabel = formatOllamaModelSize(
-                                model.sizeBytes,
-                              );
-                              return (
-                                <button
-                                  key={model.name}
-                                  type="button"
-                                  disabled={!model.chatCapable}
-                                  className={cn(
-                                    "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors",
-                                    effectiveOllamaModel === model.name
-                                      ? "bg-accent text-accent-foreground"
-                                      : model.chatCapable
-                                        ? "hover:bg-muted"
-                                        : "cursor-not-allowed opacity-50",
-                                  )}
-                                  onClick={() => {
-                                    if (!model.chatCapable) return;
-                                    setNativeOllamaModel(model.name);
-                                    setModelPickerOpen(false);
-                                  }}
-                                >
-                                  <div className="min-w-0 flex-1">
-                                    <div className="flex items-center gap-1.5">
-                                      <span className="truncate font-medium text-xs">
-                                        {model.name}
-                                      </span>
-                                      {model.chatCapable && (
-                                        <OllamaModelBadges
-                                          tools={caps.tools}
-                                          vision={caps.vision}
-                                          source={caps.source}
-                                          chatOnly={!caps.tools}
-                                        />
-                                      )}
-                                    </div>
-                                    {sizeLabel && (
-                                      <div className="text-[10px] text-muted-foreground">
-                                        {sizeLabel}
-                                      </div>
-                                    )}
-                                  </div>
-                                  {!model.chatCapable && (
-                                    <span className="shrink-0 text-[10px] text-muted-foreground">
-                                      embed only
-                                    </span>
-                                  )}
-                                  {effectiveOllamaModel === model.name && (
-                                    <CheckIcon className="size-3 shrink-0" />
-                                  )}
-                                </button>
-                              );
-                            })}
-                        </>
-                      )}
-                    </>
-                  ) : claudeProviderActive ? (
-                    claudeModelOptions.map((m) => (
+              <div className="mx-1 border-border border-t" />
+
+              <div
+                className={cn(
+                  "grid pt-1.5",
+                  isNativeOllama || isCursorCli
+                    ? "grid-cols-1"
+                    : "grid-cols-[minmax(0,11.5rem)_minmax(0,1fr)]",
+                )}
+              >
+                {!isNativeOllama && !isCursorCli && (
+                  <div className="max-h-80 overflow-y-auto border-border border-r pr-1">
+                    <div className="px-2 py-1 font-medium text-muted-foreground text-xs">
+                      Provider
+                    </div>
+                    {showClaudeProvider && (
                       <button
-                        key={m.id}
                         className={cn(
                           "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors",
-                          selectedModel === m.id
+                          claudeProviderActive
                             ? "bg-accent text-accent-foreground"
                             : "hover:bg-muted",
                         )}
                         onClick={() => {
-                          setSelectedModel(m.id);
+                          setSelectedProviderCredentialId(
+                            CLAUDE_CODE_PROVIDER_ID,
+                          );
                           setModelPickerOpen(false);
                         }}
                       >
-                        {m.icon}
+                        {claudeCodeIconSrc ? (
+                          <img
+                            src={claudeCodeIconSrc}
+                            alt=""
+                            className="size-4 shrink-0 object-contain"
+                          />
+                        ) : (
+                          <SparklesIcon className="size-3.5 shrink-0" />
+                        )}
                         <div className="min-w-0 flex-1">
-                          <div className="font-medium text-xs">{m.name}</div>
+                          <div className="truncate font-medium text-xs">
+                            Claude Code
+                          </div>
                           <div className="truncate text-muted-foreground text-xs">
-                            {m.desc}
+                            {claudeModelDisplayName(selectedModel)}
                           </div>
                         </div>
-                        {selectedModel === m.id && (
+                        {claudeProviderActive && (
                           <CheckIcon className="size-3 shrink-0" />
                         )}
                       </button>
-                    ))
-                  ) : selectedProviderCredential ? (
-                    <>
-                      {activeProviderModelsLoading && (
-                        <div className="px-3 py-1.5 text-muted-foreground text-xs">
-                          Fetching models...
-                        </div>
-                      )}
-                      {activeProviderModelOptions.map((modelId) => (
-                        <button
-                          key={modelId}
-                          ref={(node) => {
-                            if (node) {
-                              providerModelItemRefs.current[modelId] = node;
-                            } else {
-                              delete providerModelItemRefs.current[modelId];
-                            }
-                          }}
+                    )}
+
+                    {openAiCredentials.map((credential) => {
+                      const active =
+                        selectedProviderCredential?.id === credential.id;
+                      const displayName = getProviderDisplayName({
+                        label: credential.label,
+                        baseUrl: credential.base_url,
+                        model: credential.model,
+                      });
+                      const iconSrc = getProviderIconSrc({
+                        label: credential.label,
+                        baseUrl: credential.base_url,
+                        model: credential.model,
+                      });
+                      const currentModel =
+                        selectedProviderModels[credential.id] ||
+                        credential.model;
+
+                      const isDeleting = deletingProviderId === credential.id;
+                      const selectCredential = () => {
+                        if (isDeleting) return;
+                        setSelectedProviderCredentialId(credential.id);
+                        setModelPickerOpen(false);
+                      };
+
+                      return (
+                        <div
+                          key={credential.id}
                           className={cn(
-                            "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors",
-                            directProviderModel === modelId
+                            "group/provider flex items-center gap-1 rounded-lg pr-1 transition-colors",
+                            active
                               ? "bg-accent text-accent-foreground"
                               : "hover:bg-muted",
+                            isDeleting && "pointer-events-none opacity-70",
                           )}
-                          onClick={() => {
-                            setSelectedProviderModel(
-                              selectedProviderCredential.id,
-                              modelId,
-                            );
-                            setModelPickerOpen(false);
-                          }}
                         >
-                          <span className="flex min-w-0 flex-1 items-center gap-2">
-                            <span className="min-w-0 truncate font-medium text-xs">
-                              {modelId}
-                            </span>
-                            <ModelCapabilityBadges
-                              label={selectedProviderCredential.label}
-                              baseUrl={selectedProviderCredential.base_url}
-                              model={modelId}
-                            />
-                          </span>
-                          {directProviderModel === modelId && (
-                            <CheckIcon className="size-3 shrink-0" />
+                          <button
+                            type="button"
+                            className="flex min-w-0 flex-1 items-center gap-2 rounded-lg py-2 pl-3 text-left text-sm"
+                            onClick={selectCredential}
+                          >
+                            {iconSrc ? (
+                              <img
+                                src={iconSrc}
+                                alt=""
+                                className="size-4 shrink-0 object-contain"
+                              />
+                            ) : (
+                              <SparklesIcon className="size-3.5 shrink-0" />
+                            )}
+                            <div className="min-w-0 flex-1">
+                              <div className="truncate font-medium text-xs">
+                                {displayName}
+                              </div>
+                              <div className="truncate text-muted-foreground text-xs">
+                                {currentModel}
+                              </div>
+                            </div>
+                            {active && (
+                              <CheckIcon className="size-3 shrink-0" />
+                            )}
+                          </button>
+                          <button
+                            type="button"
+                            className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            aria-label={`Delete ${displayName}`}
+                            title="Delete provider"
+                            disabled={!!deletingProviderId}
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              setProviderDeleteError(null);
+                              setProviderDeleteTarget(credential);
+                            }}
+                          >
+                            {isDeleting ? (
+                              <Loader2Icon className="size-3.5 animate-spin" />
+                            ) : (
+                              <Trash2Icon className="size-3.5" />
+                            )}
+                          </button>
+                        </div>
+                      );
+                    })}
+                    <button
+                      className="mt-1 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-muted-foreground text-sm transition-colors hover:bg-muted hover:text-foreground"
+                      onClick={() => {
+                        setModelPickerOpen(false);
+                        setProviderSetupOpen(true);
+                      }}
+                    >
+                      <PlusIcon className="size-3.5 shrink-0" />
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate font-medium text-xs">
+                          Add Provider
+                        </div>
+                        <div className="truncate text-xs">
+                          Save another API key
+                        </div>
+                      </div>
+                    </button>
+                  </div>
+                )}
+
+                {isNativeOllama && (
+                  <div className="border-border border-b px-3 py-2.5">
+                    <div className="flex items-center gap-2">
+                      {ollamaIconSrc ? (
+                        <img
+                          src={ollamaIconSrc}
+                          alt=""
+                          className="size-5 shrink-0 object-contain"
+                        />
+                      ) : (
+                        <SparklesIcon className="size-5 shrink-0" />
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate font-medium text-sm">
+                          {ollamaDisplayName}
+                        </div>
+                        <div className="truncate font-mono text-[10px] text-muted-foreground">
+                          {ollamaBaseUrl}
+                          {ollamaStatus?.version
+                            ? ` · v${ollamaStatus.version}`
+                            : ""}
+                        </div>
+                        {ollamaStatus && ollamaStatus.connected && (
+                          <div className="mt-0.5 text-[10px] text-muted-foreground">
+                            {ollamaStatus.chatModels} chat
+                            {ollamaStatus.embeddingModels > 0
+                              ? ` · ${ollamaStatus.embeddingModels} embed`
+                              : ""}
+                          </div>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                        title="Refresh Ollama models"
+                        aria-label="Refresh Ollama models"
+                        disabled={ollamaModelsLoading || ollamaStatusLoading}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          refreshOllamaModels();
+                        }}
+                      >
+                        <RefreshCwIcon
+                          className={cn(
+                            "size-3.5",
+                            (ollamaModelsLoading || ollamaStatusLoading) &&
+                              "animate-spin",
                           )}
-                        </button>
-                      ))}
-                      {providerModelError && (
-                        <div className="px-3 py-1 text-amber-600 text-xs">
-                          {providerModelError}
+                        />
+                      </button>
+                      <span
+                        className={cn(
+                          "size-2 shrink-0 rounded-full",
+                          ollamaModelsError || ollamaStatusError
+                            ? "bg-destructive"
+                            : ollamaModelsLoading || ollamaStatusLoading
+                              ? "animate-pulse bg-muted-foreground"
+                              : "bg-emerald-500",
+                        )}
+                        title={
+                          ollamaModelsError || ollamaStatusError
+                            ? "Ollama unreachable"
+                            : ollamaModelsLoading || ollamaStatusLoading
+                              ? "Checking Ollama…"
+                              : "Ollama connected"
+                        }
+                      />
+                    </div>
+                    <p className="mt-2 text-muted-foreground text-xs leading-relaxed">
+                      Native offline agent with project file tools. Cloud
+                      providers are paused while this mode is on.
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-muted-foreground">
+                      <span>Context {nativeNumCtx.toLocaleString()}</span>
+                      <span>Temp {nativeTemperature}</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="mt-2 text-foreground text-xs underline underline-offset-2 hover:text-primary"
+                      onClick={() => {
+                        setModelPickerOpen(false);
+                        setProviderSetupOpen(true);
+                      }}
+                    >
+                      Ollama &amp; sampling settings
+                    </button>
+                  </div>
+                )}
+
+                {isCursorCli && (
+                  <div className="border-border border-b px-3 py-2.5">
+                    <div className="flex items-center gap-2">
+                      {cursorIconSrc ? (
+                        <img
+                          src={cursorIconSrc}
+                          alt=""
+                          className="size-5 shrink-0 object-contain"
+                        />
+                      ) : (
+                        <SparklesIcon className="size-5 shrink-0" />
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate font-medium text-sm">
+                          Cursor CLI
+                        </div>
+                        <div className="truncate text-[10px] text-muted-foreground">
+                          Agent Client Protocol · stream-json fallback
+                        </div>
+                      </div>
+                    </div>
+                    <p className="mt-2 text-muted-foreground text-xs leading-relaxed">
+                      Cursor manages models and auth in the CLI. There is no
+                      in-app model list for this backend.
+                    </p>
+                  </div>
+                )}
+
+                {!isCursorCli && (
+                  <div className="flex max-h-80 min-w-0 flex-col pl-1">
+                    <div
+                      ref={providerModelListRef}
+                      className="min-h-0 flex-1 overflow-y-auto"
+                    >
+                      <div className="px-2 py-1 font-medium text-muted-foreground text-xs">
+                        Model
+                      </div>
+                      {isNativeOllama ? (
+                        <>
+                          {ollamaModelsLoading && (
+                            <div className="space-y-2 px-3 py-2">
+                              <Skeleton className="h-7 w-full" />
+                              <Skeleton className="h-7 w-4/5" />
+                              <Skeleton className="h-7 w-3/5" />
+                            </div>
+                          )}
+                          {ollamaModelsError && (
+                            <div className="px-3 py-2 text-destructive text-xs leading-relaxed">
+                              {ollamaModelsError}
+                            </div>
+                          )}
+                          {(ollamaModelsError ||
+                            ollamaStatusError ||
+                            (ollamaStatus &&
+                              (!ollamaStatus.connected ||
+                                ollamaStatus.chatModels === 0))) && (
+                            <div className="px-2 pb-2">
+                              <OllamaSetupHints
+                                compact
+                                baseUrl={ollamaBaseUrl}
+                                onModelsChanged={() => {
+                                  void refreshOllamaModels();
+                                }}
+                                connected={
+                                  Boolean(ollamaStatus?.connected) &&
+                                  !ollamaStatusError
+                                }
+                                chatModels={ollamaStatus?.chatModels ?? 0}
+                              />
+                            </div>
+                          )}
+                          {!ollamaModelsLoading && !ollamaModelsError && (
+                            <>
+                              <button
+                                type="button"
+                                className={cn(
+                                  "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors",
+                                  !effectiveOllamaModel
+                                    ? "bg-accent text-accent-foreground"
+                                    : "hover:bg-muted",
+                                )}
+                                onClick={() => {
+                                  setNativeOllamaModel(null);
+                                  setModelPickerOpen(false);
+                                }}
+                              >
+                                <div className="min-w-0 flex-1">
+                                  <div className="font-medium text-xs">
+                                    Auto
+                                  </div>
+                                  <div className="truncate text-muted-foreground text-xs">
+                                    First installed chat model
+                                  </div>
+                                </div>
+                                {!effectiveOllamaModel && (
+                                  <CheckIcon className="size-3 shrink-0" />
+                                )}
+                              </button>
+                              {[...ollamaModels]
+                                .sort(
+                                  (a, b) =>
+                                    Number(b.chatCapable) -
+                                    Number(a.chatCapable),
+                                )
+                                .map((model) => {
+                                  const caps = resolveOllamaCapabilities(
+                                    model.name,
+                                    ollamaCapabilitiesByModel[model.name],
+                                  );
+                                  const sizeLabel = formatOllamaModelSize(
+                                    model.sizeBytes,
+                                  );
+                                  return (
+                                    <button
+                                      key={model.name}
+                                      type="button"
+                                      disabled={!model.chatCapable}
+                                      className={cn(
+                                        "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors",
+                                        effectiveOllamaModel === model.name
+                                          ? "bg-accent text-accent-foreground"
+                                          : model.chatCapable
+                                            ? "hover:bg-muted"
+                                            : "cursor-not-allowed opacity-50",
+                                      )}
+                                      onClick={() => {
+                                        if (!model.chatCapable) return;
+                                        setNativeOllamaModel(model.name);
+                                        setModelPickerOpen(false);
+                                      }}
+                                    >
+                                      <div className="min-w-0 flex-1">
+                                        <div className="flex items-center gap-1.5">
+                                          <span className="truncate font-medium text-xs">
+                                            {model.name}
+                                          </span>
+                                          {model.chatCapable && (
+                                            <OllamaModelBadges
+                                              tools={caps.tools}
+                                              vision={caps.vision}
+                                              source={caps.source}
+                                              chatOnly={!caps.tools}
+                                            />
+                                          )}
+                                        </div>
+                                        {sizeLabel && (
+                                          <div className="text-[10px] text-muted-foreground">
+                                            {sizeLabel}
+                                          </div>
+                                        )}
+                                      </div>
+                                      {!model.chatCapable && (
+                                        <span className="shrink-0 text-[10px] text-muted-foreground">
+                                          embed only
+                                        </span>
+                                      )}
+                                      {effectiveOllamaModel === model.name && (
+                                        <CheckIcon className="size-3 shrink-0" />
+                                      )}
+                                    </button>
+                                  );
+                                })}
+                            </>
+                          )}
+                        </>
+                      ) : claudeProviderActive ? (
+                        claudeModelOptions.map((m) => (
+                          <button
+                            key={m.id}
+                            className={cn(
+                              "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors",
+                              selectedModel === m.id
+                                ? "bg-accent text-accent-foreground"
+                                : "hover:bg-muted",
+                            )}
+                            onClick={() => {
+                              setSelectedModel(m.id);
+                              setModelPickerOpen(false);
+                            }}
+                          >
+                            {m.icon}
+                            <div className="min-w-0 flex-1">
+                              <div className="font-medium text-xs">
+                                {m.name}
+                              </div>
+                              <div className="truncate text-muted-foreground text-xs">
+                                {m.desc}
+                              </div>
+                            </div>
+                            {selectedModel === m.id && (
+                              <CheckIcon className="size-3 shrink-0" />
+                            )}
+                          </button>
+                        ))
+                      ) : selectedProviderCredential ? (
+                        <>
+                          {activeProviderModelsLoading && (
+                            <div className="px-3 py-1.5 text-muted-foreground text-xs">
+                              Fetching models...
+                            </div>
+                          )}
+                          {activeProviderModelOptions.map((modelId) => (
+                            <button
+                              key={modelId}
+                              ref={(node) => {
+                                if (node) {
+                                  providerModelItemRefs.current[modelId] = node;
+                                } else {
+                                  delete providerModelItemRefs.current[modelId];
+                                }
+                              }}
+                              className={cn(
+                                "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors",
+                                directProviderModel === modelId
+                                  ? "bg-accent text-accent-foreground"
+                                  : "hover:bg-muted",
+                              )}
+                              onClick={() => {
+                                setSelectedProviderModel(
+                                  selectedProviderCredential.id,
+                                  modelId,
+                                );
+                                setModelPickerOpen(false);
+                              }}
+                            >
+                              <span className="flex min-w-0 flex-1 items-center gap-2">
+                                <span className="min-w-0 truncate font-medium text-xs">
+                                  {modelId}
+                                </span>
+                                <ModelCapabilityBadges
+                                  label={selectedProviderCredential.label}
+                                  baseUrl={selectedProviderCredential.base_url}
+                                  model={modelId}
+                                />
+                              </span>
+                              {directProviderModel === modelId && (
+                                <CheckIcon className="size-3 shrink-0" />
+                              )}
+                            </button>
+                          ))}
+                          {providerModelError && (
+                            <div className="px-3 py-1 text-amber-600 text-xs">
+                              {providerModelError}
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <div className="px-3 py-2 text-muted-foreground text-xs">
+                          Select a provider
                         </div>
                       )}
-                    </>
-                  ) : (
-                    <div className="px-3 py-2 text-muted-foreground text-xs">
-                      Select a provider
                     </div>
-                  )}
-                </div>
-                {(claudeProviderActive ||
-                  (selectedProviderCredential && !nativeAgentEnabled)) && (
-                  <div className="shrink-0">
-                    <EffortControls
-                      effortLevel={effortLevel}
-                      setEffortLevel={setEffortLevel}
-                    />
+                    {(claudeProviderActive ||
+                      (selectedProviderCredential &&
+                        !backendUsesNativeRuntime(agentBackend))) && (
+                      <div className="shrink-0">
+                        <EffortControls
+                          effortLevel={effortLevel}
+                          setEffortLevel={setEffortLevel}
+                        />
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -2433,6 +2637,50 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
               setProviderModelOptions({});
               setProviderModelError(null);
             }}
+          />
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={cursorSetupOpen} onOpenChange={setCursorSetupOpen}>
+        <DialogContent className="max-h-[85vh] w-[min(42rem,calc(100vw-2rem))] overflow-y-auto overflow-x-hidden sm:max-w-none">
+          <DialogHeader>
+            <DialogTitle>Set up Cursor CLI</DialogTitle>
+            <DialogDescription>
+              Install and authenticate the Cursor agent CLI for this project.
+            </DialogDescription>
+          </DialogHeader>
+          <CursorSetup variant="embedded" />
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={groqSetupOpen} onOpenChange={setGroqSetupOpen}>
+        <DialogContent className="max-h-[85vh] w-[min(42rem,calc(100vw-2rem))] overflow-y-auto overflow-x-hidden sm:max-w-none">
+          <DialogHeader>
+            <DialogTitle>Set up Groq</DialogTitle>
+            <DialogDescription>
+              Configure a Groq API key for the native Groq backend.
+            </DialogDescription>
+          </DialogHeader>
+          <GroqSetup variant="embedded" />
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={ollamaSetupOpen} onOpenChange={setOllamaSetupOpen}>
+        <DialogContent className="max-h-[85vh] w-[min(36rem,calc(100vw-2rem))] overflow-y-auto overflow-x-hidden sm:max-w-none">
+          <DialogHeader>
+            <DialogTitle>Set up Ollama</DialogTitle>
+            <DialogDescription>
+              Connect a local Ollama server and pull a chat model.
+            </DialogDescription>
+          </DialogHeader>
+          <OllamaSetupHints
+            baseUrl={ollamaBaseUrl}
+            onModelsChanged={() => {
+              void refreshOllamaStatus();
+              void refreshOllamaModels();
+            }}
+            connected={Boolean(ollamaStatus?.connected) && !ollamaStatusError}
+            chatModels={ollamaStatus?.chatModels ?? 0}
           />
         </DialogContent>
       </Dialog>
@@ -2711,7 +2959,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
             {imageCompatibilityError}
           </div>
         )}
-        {nativeAgentEnabled && (ollamaStatusError || ollamaModelsError) && (
+        {isNativeOllama && (ollamaStatusError || ollamaModelsError) && (
           <div className="mx-1 mb-1 flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/8 px-2.5 py-1.5 text-destructive text-xs leading-relaxed">
             <span className="min-w-0 flex-1">
               {ollamaStatusError || ollamaModelsError}
@@ -2927,14 +3175,26 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
               type="button"
               onClick={() => setModelPickerOpen((v) => !v)}
               title={
-                nativeAgentEnabled
+                isNativeOllama
                   ? `Ollama model · ${chatModelLabel}`
-                  : `Switch provider or model · ${effortFullLabel(effortLevel)} effort`
+                  : isNativeGroq
+                    ? `Groq model · ${chatModelLabel}`
+                    : isNativeApi
+                      ? `API model · ${chatModelLabel}`
+                      : isCursorCli
+                        ? "Cursor CLI agent"
+                        : `Switch provider or model · ${effortFullLabel(effortLevel)} effort`
               }
               aria-label={
-                nativeAgentEnabled
+                isNativeOllama
                   ? `Ollama model, ${chatModelLabel}`
-                  : `Switch provider or model, ${effortFullLabel(effortLevel)} effort`
+                  : isNativeGroq
+                    ? `Groq model, ${chatModelLabel}`
+                    : isNativeApi
+                      ? `API model, ${chatModelLabel}`
+                      : isCursorCli
+                        ? "Cursor CLI agent"
+                        : `Switch provider or model, ${effortFullLabel(effortLevel)} effort`
               }
               aria-haspopup="menu"
               aria-expanded={modelPickerOpen}
@@ -2944,7 +3204,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                   "border-border/60 bg-muted/60 text-foreground",
               )}
             >
-              {nativeAgentEnabled ? (
+              {isNativeOllama ? (
                 <>
                   {ollamaIconSrc ? (
                     <img
@@ -2978,6 +3238,29 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                       Chat-only
                     </span>
                   )}
+                  <ChevronDownIcon className="size-3 shrink-0 opacity-60" />
+                </>
+              ) : isNativeGroq ? (
+                <>
+                  <SparklesIcon className="size-3.5 shrink-0" />
+                  <span className="shrink-0 truncate font-medium">Groq</span>
+                  <span className="truncate text-muted-foreground/70">
+                    · {chatModelLabel}
+                  </span>
+                  <ChevronDownIcon className="size-3 shrink-0 opacity-60" />
+                </>
+              ) : isCursorCli ? (
+                <>
+                  {cursorIconSrc ? (
+                    <img
+                      src={cursorIconSrc}
+                      alt=""
+                      className="size-3.5 shrink-0 object-contain"
+                    />
+                  ) : (
+                    <SparklesIcon className="size-3.5 shrink-0" />
+                  )}
+                  <span className="shrink-0 truncate font-medium">Cursor</span>
                   <ChevronDownIcon className="size-3 shrink-0 opacity-60" />
                 </>
               ) : selectedProviderCredential ? (

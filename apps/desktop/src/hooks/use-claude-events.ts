@@ -16,7 +16,16 @@ import { compileLatex, formatCompileError } from "@/lib/latex-compiler";
 import { resolveActiveCompileTarget } from "@/lib/compile-root-preference";
 import { createLogger } from "@/lib/debug/logger";
 import { getChatLabels } from "@/lib/chat-labels";
+import {
+  backendShowsSessionHistory,
+  backendUsesNativeRuntime,
+} from "@/lib/agent-backend";
 import { completeSemanticTurn } from "@/lib/semantic-layer-bridge";
+import {
+  heartbeatPhaseFromMessage,
+  isStreamHeartbeat,
+  streamActivityPhaseFromMessage,
+} from "@/lib/claude-stream-heartbeat";
 
 const log = createLogger("claude-event");
 
@@ -193,10 +202,16 @@ export function useClaudeEvents() {
 
       // Only process messages if this tab is still streaming
       const tab = chatStore.tabs.find((t) => t.id === tabId);
+      if (isStreamHeartbeat(msg)) {
+        if (tab?.isStreaming) {
+          chatStore._noteStreamActivity(tabId, heartbeatPhaseFromMessage(msg));
+        }
+        return;
+      }
       if (!tab?.isStreaming) return;
 
       // Streaming activity — reset the idle watchdog.
-      chatStore._armStreamWatchdog(tabId);
+      chatStore._noteStreamActivity(tabId, streamActivityPhaseFromMessage(msg));
 
       const count = (msgCountRef.current.get(tabId) ?? 0) + 1;
       msgCountRef.current.set(tabId, count);
@@ -385,16 +400,15 @@ export function useClaudeEvents() {
         !chatStore._cancelledTabs.has(tabId)
       ) {
         const isDirectProvider = directProviderTabRef.current.get(tabId);
-        const nativeAgentEnabled =
-          useSettingsStore.getState().nativeAgentEnabled;
-        const chatLabels = getChatLabels(nativeAgentEnabled);
+        const agentBackend = useSettingsStore.getState().agentBackend;
+        const chatLabels = getChatLabels(agentBackend);
         if (count === 0) {
           const isWindows = navigator.userAgent.includes("Windows");
           chatStore._setError(
             tabId,
             isDirectProvider
               ? "AI provider request failed to start. Check the provider API key, Base URL, model name, and model access."
-              : nativeAgentEnabled
+              : backendUsesNativeRuntime(agentBackend)
                 ? chatLabels.processFailedStart
                 : isWindows
                   ? (chatLabels.processFailedStartWindows ??
@@ -406,9 +420,7 @@ export function useClaudeEvents() {
             tabId,
             isDirectProvider
               ? "AI provider request stopped unexpectedly. Check the provider API key, model access, Base URL, tool-call support, or rate limits."
-              : nativeAgentEnabled
-                ? chatLabels.processExited
-                : chatLabels.processExited,
+              : chatLabels.processExited,
           );
         }
       }
@@ -421,7 +433,12 @@ export function useClaudeEvents() {
       directProviderTabRef.current.delete(tabId);
 
       const completedSessionId = tab.sessionId;
-      chatStore._setStreaming(tabId, false);
+      const userCancelled = chatStore._cancelledTabs.has(tabId);
+      chatStore._stopStreaming(tabId, {
+        reconcileTools: !success && !userCancelled,
+        stopBackend: false,
+        clearSemantic: false,
+      });
       void completeSemanticTurn(
         tabId,
         useClaudeChatStore.getState().tabs.find((t) => t.id === tabId)
@@ -452,8 +469,12 @@ export function useClaudeEvents() {
       // The native agent has no CLI session JSONL — its session_id is just the
       // tab id — so skip CLI-only title generation (it would read a non-existent
       // session on every native turn and never produce a title).
-      const nativeAgentEnabled = useSettingsStore.getState().nativeAgentEnabled;
-      if (projectPath && completedSessionId && !nativeAgentEnabled) {
+      const agentBackend = useSettingsStore.getState().agentBackend;
+      if (
+        projectPath &&
+        completedSessionId &&
+        backendShowsSessionHistory(agentBackend)
+      ) {
         void (async () => {
           try {
             const title = await invoke<string | null>(
@@ -479,7 +500,7 @@ export function useClaudeEvents() {
       if (projectPath) {
         try {
           const snapshotLabel = getChatLabels(
-            useSettingsStore.getState().nativeAgentEnabled,
+            useSettingsStore.getState().agentBackend,
           ).snapshotAfterEdit;
           await useHistoryStore
             .getState()
@@ -583,6 +604,8 @@ export function useClaudeEvents() {
           if (!cancelled) {
             const { tab_id: tabId, data: payload } = event.payload;
             log.warn(`[${tabId}] stderr: ${payload}`);
+            const chatStore = useClaudeChatStore.getState();
+            const tab = chatStore.tabs.find((t) => t.id === tabId);
             if (
               payload.includes("Error") ||
               payload.includes("error") ||
@@ -598,22 +621,35 @@ export function useClaudeEvents() {
                 : null;
             if (providerMessage) {
               setUserVisibleError(tabId, providerMessage);
+              if (tab?.isStreaming) {
+                chatStore._stopStreaming(tabId, {
+                  error: providerMessage,
+                  reconcileTools: true,
+                  stopBackend: true,
+                });
+              }
             }
             // Surface critical stderr messages to the user UI (only if no error is already set)
             if (
-              !useSettingsStore.getState().nativeAgentEnabled &&
+              !backendUsesNativeRuntime(
+                useSettingsStore.getState().agentBackend,
+              ) &&
               (payload.includes("git-bash") ||
                 payload.includes("git bash") ||
                 payload.includes("bash.exe")) &&
-              !useClaudeChatStore.getState().tabs.find((t) => t.id === tabId)
-                ?.error
+              !tab?.error
             ) {
-              useClaudeChatStore
-                .getState()
-                ._setError(
-                  tabId,
-                  "Claude Code requires git-bash on Windows. Please install Git for Windows or set the CLAUDE_CODE_GIT_BASH_PATH environment variable.",
-                );
+              const gitBashError =
+                "Claude Code requires git-bash on Windows. Please install Git for Windows or set the CLAUDE_CODE_GIT_BASH_PATH environment variable.";
+              if (tab?.isStreaming) {
+                chatStore._stopStreaming(tabId, {
+                  error: gitBashError,
+                  reconcileTools: true,
+                  stopBackend: true,
+                });
+              } else {
+                chatStore._setError(tabId, gitBashError);
+              }
             }
           }
         },

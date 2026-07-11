@@ -1027,8 +1027,8 @@ function CommentRow({ comment, isFocused, isActive }: CommentRowProps) {
 }
 
 function AgentAuthorName({ author }: { author: string }) {
-  const nativeAgentEnabled = useSettingsStore((s) => s.nativeAgentEnabled);
-  return displayAgentAuthor(author, nativeAgentEnabled);
+  const agentBackend = useSettingsStore((s) => s.agentBackend);
+  return displayAgentAuthor(author, agentBackend);
 }
 
 function AuthorChip({
@@ -1039,12 +1039,12 @@ function AuthorChip({
   small?: boolean;
 }) {
   const chatLabels = useChatLabels();
-  const nativeAgentEnabled = useSettingsStore((s) => s.nativeAgentEnabled);
+  const agentBackend = useSettingsStore((s) => s.agentBackend);
   const isAgent = author === "claude";
   const initial = isAgent
     ? chatLabels.agentAuthorInitial
     : (author.charAt(0) || "?").toUpperCase();
-  const displayName = displayAgentAuthor(author, nativeAgentEnabled);
+  const displayName = displayAgentAuthor(author, agentBackend);
   return (
     <span
       className={cn(

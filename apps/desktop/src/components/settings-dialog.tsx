@@ -38,10 +38,22 @@ import { useOllamaStatus } from "@/hooks/use-ollama-status";
 import { OllamaSetupHints } from "@/components/ollama-setup-hints";
 import { useUvSetupStore } from "@/stores/uv-setup-store";
 import { useSettingsStore } from "@/stores/settings-store";
+import {
+  AGENT_BACKENDS,
+  type AgentBackend,
+  isNativeApiBackend,
+  isNativeGroqBackend,
+  isNativeOllamaBackend,
+  isNativeOpenAiCompatBackend,
+  isCursorCliBackend,
+} from "@/lib/agent-backend";
+import { GROQ_DEFAULT_MODEL } from "@/stores/groq-setup-store";
 import { useSpacesStore } from "@/stores/spaces-store";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { ClaudeSetup } from "./claude-setup";
+import { GroqSetup } from "./groq-setup";
+import { CursorSetup } from "./cursor-setup";
 import { cn } from "@/lib/utils";
 
 type SettingsDetailSection =
@@ -129,10 +141,15 @@ export function SettingsDialog({ open, appVersion }: SettingsDialogProps) {
   const [settingsDetailSection, setSettingsDetailSection] =
     useState<SettingsDetailSection>("provider");
   const [settingsSearchQuery, setSettingsSearchQuery] = useState("");
-  const nativeAgentEnabled = useSettingsStore((s) => s.nativeAgentEnabled);
-  const setNativeAgentEnabled = useSettingsStore(
-    (s) => s.setNativeAgentEnabled,
+  const agentBackend = useSettingsStore((s) => s.agentBackend);
+  const setAgentBackend = useSettingsStore((s) => s.setAgentBackend);
+  const nativeGroqModel = useSettingsStore((s) => s.nativeGroqModel);
+  const setNativeGroqModel = useSettingsStore((s) => s.setNativeGroqModel);
+  const cursorAcpPreferred = useSettingsStore((s) => s.cursorAcpPreferred);
+  const setCursorAcpPreferred = useSettingsStore(
+    (s) => s.setCursorAcpPreferred,
   );
+  const nativeAgentEnabled = isNativeOllamaBackend(agentBackend);
   const aiAssistEnabled = useSettingsStore((s) => s.aiAssistEnabled);
   const nativeNumCtx = useSettingsStore((s) => s.nativeNumCtx);
   const setNativeNumCtx = useSettingsStore((s) => s.setNativeNumCtx);
@@ -293,41 +310,44 @@ export function SettingsDialog({ open, appVersion }: SettingsDialogProps) {
             icon={KeyRoundIcon}
             contentClassName="p-0"
           >
-            <div className="flex items-start gap-3 border-border/60 border-b p-4">
-              <div className="min-w-0 flex-1">
-                <label
-                  htmlFor="native-agent-toggle"
-                  className="cursor-pointer font-medium text-sm"
+            <div className="border-border/60 border-b p-4">
+              <label
+                htmlFor="agent-backend-select"
+                className="font-medium text-sm"
+              >
+                Agent backend
+              </label>
+              <p className="mt-0.5 mb-3 text-muted-foreground text-xs">
+                Choose which runtime powers chat: local Ollama, Groq API, Claude
+                Code CLI, or Cursor CLI.{" "}
+                <a
+                  href="https://github.com/bharathvbcr/DevPrism/blob/main/docs/NATIVE_AGENT.md"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-foreground underline underline-offset-2 hover:text-primary"
                 >
-                  Native local agent (no Claude CLI)
-                </label>
-                <p className="mt-0.5 text-muted-foreground text-xs">
-                  Run the agent fully offline, talking directly to your local
-                  Ollama model — no Claude Code CLI or proxy required. Make sure
-                  Ollama is running with a model installed (
-                  <code className="rounded bg-muted px-1">
-                    ollama pull llama3
-                  </code>
-                  ). Cloud providers below are used only when this is off.{" "}
-                  <a
-                    href="https://github.com/bharathvbcr/DevPrism/blob/main/docs/NATIVE_AGENT.md"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-foreground underline underline-offset-2 hover:text-primary"
-                  >
-                    Learn more
-                  </a>
-                </p>
-              </div>
-              <Switch
-                id="native-agent-toggle"
-                checked={nativeAgentEnabled}
-                onCheckedChange={setNativeAgentEnabled}
-                aria-label="Native local agent"
-                className="mt-0.5"
-              />
+                  Learn more
+                </a>
+              </p>
+              <select
+                id="agent-backend-select"
+                value={agentBackend}
+                onChange={(e) =>
+                  setAgentBackend(e.target.value as AgentBackend)
+                }
+                className="h-9 w-full max-w-md rounded-md border border-input bg-background px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+              >
+                {AGENT_BACKENDS.map((backend) => (
+                  <option key={backend.id} value={backend.id}>
+                    {backend.label}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-2 text-muted-foreground text-xs">
+                {AGENT_BACKENDS.find((b) => b.id === agentBackend)?.description}
+              </p>
             </div>
-            {nativeAgentEnabled && (
+            {isNativeOllamaBackend(agentBackend) && (
               <div className="flex flex-wrap items-end gap-4 border-border/60 border-b px-4 py-3">
                 <label className="flex min-w-[12rem] flex-1 flex-col gap-1">
                   <span className="text-muted-foreground text-xs">
@@ -438,7 +458,51 @@ export function SettingsDialog({ open, appVersion }: SettingsDialogProps) {
                 </p>
               </div>
             )}
-            {nativeAgentEnabled &&
+            {isNativeOpenAiCompatBackend(agentBackend) && (
+              <div className="flex flex-wrap items-end gap-4 border-border/60 border-b px-4 py-3">
+                <label className="flex min-w-[12rem] flex-1 flex-col gap-1">
+                  <span className="text-muted-foreground text-xs">
+                    {isNativeGroqBackend(agentBackend)
+                      ? "Groq chat model"
+                      : "API chat model"}
+                  </span>
+                  <input
+                    type="text"
+                    value={nativeGroqModel ?? ""}
+                    placeholder={
+                      isNativeGroqBackend(agentBackend)
+                        ? GROQ_DEFAULT_MODEL
+                        : "Uses credential model when empty"
+                    }
+                    onChange={(e) => setNativeGroqModel(e.target.value || null)}
+                    className="h-8 w-full min-w-0 rounded-md border border-input bg-background px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                  />
+                </label>
+                <p className="text-muted-foreground/70 text-xs">
+                  {isNativeGroqBackend(agentBackend)
+                    ? "Requires a Groq API key in the provider setup below. Install the optional groq-code-cli for terminal use."
+                    : "Uses the selected OpenAI-compatible credential (Groq, OpenRouter, Gemini, …) from provider setup below."}
+                </p>
+              </div>
+            )}
+            {agentBackend === "cursor-cli" && (
+              <div className="flex items-start gap-3 border-border/60 border-b px-4 py-3">
+                <div className="min-w-0 flex-1">
+                  <div className="font-medium text-sm">Prefer ACP protocol</div>
+                  <p className="mt-0.5 text-muted-foreground text-xs">
+                    Use Cursor&apos;s ACP client when available; fall back to
+                    stream-json if ACP fails to start.
+                  </p>
+                </div>
+                <Switch
+                  checked={cursorAcpPreferred}
+                  onCheckedChange={setCursorAcpPreferred}
+                  aria-label="Prefer Cursor ACP"
+                  className="mt-0.5"
+                />
+              </div>
+            )}
+            {isNativeOllamaBackend(agentBackend) &&
               settingsDetailSection === "provider" &&
               (settingsOllamaModelsError ||
                 !settingsOllamaStatus?.connected ||
@@ -479,6 +543,19 @@ export function SettingsDialog({ open, appVersion }: SettingsDialogProps) {
                 <ChevronRightIcon className="size-3.5" />
               </Button>
             </div>
+            {isNativeGroqBackend(agentBackend) && (
+              <GroqSetup variant="embedded" />
+            )}
+            {isNativeApiBackend(agentBackend) && (
+              <p className="border-border/60 border-b px-4 py-3 text-muted-foreground text-xs">
+                Add a Groq, OpenRouter, or Gemini credential below, then select
+                it in the chat composer. Native API talks to that endpoint
+                directly (no Claude CLI).
+              </p>
+            )}
+            {isCursorCliBackend(agentBackend) && (
+              <CursorSetup variant="embedded" />
+            )}
             <ClaudeSetup variant="embedded" />
           </SettingsPanel>
         ) : settingsDetailSection === "environment" ? (

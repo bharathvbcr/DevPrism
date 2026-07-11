@@ -55,6 +55,7 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useProjectStore } from "@/stores/project-store";
+import { useCareerStore } from "@/stores/career-store";
 import {
   useSpacesStore,
   type Space,
@@ -84,6 +85,11 @@ import { compileLatex } from "@/lib/latex-compiler";
 import { getMupdfClient } from "@/lib/mupdf/mupdf-client";
 import { FSA_SCHEME } from "@/lib/browser-project/constants";
 import { getPersistedFsaFolderName } from "@/lib/browser-project/fsa-persistence";
+import {
+  deleteProjectDialogCopy,
+  deleteProjectFromApp,
+  projectDeleteKind,
+} from "@/lib/project-delete";
 import { exists, join, scanProjectFolder } from "@/lib/tauri/fs";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -307,6 +313,7 @@ export function ProjectPicker() {
   const [searchQuery, setSearchQuery] = useState("");
   const [removeProjectTarget, setRemoveProjectTarget] =
     useState<RecentProject | null>(null);
+  const [deletingProject, setDeletingProject] = useState(false);
   const [spaceDialog, setSpaceDialog] = useState<{
     editingId: string | null;
     name: string;
@@ -440,6 +447,30 @@ export function ProjectPicker() {
         title: "Failed to open project",
         message: err instanceof Error ? err.message : String(err),
       });
+    }
+  };
+
+  const removeProjectDialog = removeProjectTarget
+    ? deleteProjectDialogCopy(
+        projectDeleteKind(removeProjectTarget.path),
+        removeProjectTarget.name,
+      )
+    : null;
+
+  const handleConfirmRemoveProject = async () => {
+    if (!removeProjectTarget || deletingProject) return;
+    setDeletingProject(true);
+    try {
+      await deleteProjectFromApp(removeProjectTarget.path);
+      setRemoveProjectTarget(null);
+    } catch (err) {
+      console.warn("Failed to delete project:", removeProjectTarget.path, err);
+      setPickerError({
+        title: "Failed to delete project",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setDeletingProject(false);
     }
   };
 
@@ -1051,6 +1082,17 @@ export function ProjectPicker() {
           >
             All Projects
           </ProjectNavButton>
+
+          {isTauri() && (
+            <ProjectNavButton
+              active={false}
+              collapsed={isSidebarCollapsed}
+              icon={BriefcaseIcon}
+              onClick={() => useCareerStore.getState().openCareer()}
+            >
+              Career
+            </ProjectNavButton>
+          )}
 
           {!isSidebarCollapsed && (
             <div className="mt-2 flex flex-col gap-0.5">
@@ -1732,35 +1774,40 @@ export function ProjectPicker() {
       <Dialog
         open={!!removeProjectTarget}
         onOpenChange={(open) => {
-          if (!open) setRemoveProjectTarget(null);
+          if (!open && !deletingProject) setRemoveProjectTarget(null);
         }}
       >
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
-            <DialogTitle>Remove Project</DialogTitle>
+            <DialogTitle>
+              {removeProjectDialog?.title ?? "Remove project"}
+            </DialogTitle>
             <DialogDescription>
-              Remove "{removeProjectTarget?.name ?? "this project"}" from All
-              Projects? The project files will stay on disk.
+              {removeProjectDialog?.description ??
+                "Remove this project from your project list?"}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button
               variant="outline"
               onClick={() => setRemoveProjectTarget(null)}
+              disabled={deletingProject}
             >
               Cancel
             </Button>
             <Button
               variant="destructive"
-              onClick={() => {
-                if (!removeProjectTarget) return;
-                removeRecentProject(removeProjectTarget.path);
-                assignProject(removeProjectTarget.path, null);
-                setRemoveProjectTarget(null);
-              }}
-              disabled={!removeProjectTarget}
+              onClick={() => void handleConfirmRemoveProject()}
+              disabled={!removeProjectTarget || deletingProject}
             >
-              Remove
+              {deletingProject ? (
+                <>
+                  <Loader2Icon className="mr-2 size-4 animate-spin" />
+                  {removeProjectDialog?.action ?? "Remove"}…
+                </>
+              ) : (
+                (removeProjectDialog?.action ?? "Remove")
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -2287,6 +2334,16 @@ function ProjectPreviewCard({
               <DropdownMenuItem onClick={onCreateSpace}>
                 <PlusIcon className="size-3.5" />
                 <span className="flex-1">New space…</span>
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onClick={onRemove}
+                className="text-destructive focus:text-destructive"
+              >
+                <Trash2Icon className="size-3.5" />
+                {projectDeleteKind(project.path) === "fsa"
+                  ? "Remove project"
+                  : "Delete project"}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>

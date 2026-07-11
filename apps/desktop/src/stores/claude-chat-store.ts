@@ -15,6 +15,19 @@ import {
   clearSemanticTurn,
 } from "@/lib/semantic-layer-bridge";
 import { getChatLabels } from "@/lib/chat-labels";
+import {
+  type AgentBackend,
+  backendUsesNativeRuntime,
+  CURSOR_CLI_PROVIDER_ID,
+  GROQ_DEFAULT_MODEL,
+  GROQ_PROVIDER_BASE,
+  isGroqBaseUrl,
+  isNativeApiBackend,
+  isNativeGroqBackend,
+  isNativeOllamaBackend,
+  isNativeOpenAiCompatBackend,
+  isOllamaBaseUrl,
+} from "@/lib/agent-backend";
 import { createLogger } from "@/lib/debug/logger";
 import { recordPersonalizationEvent } from "@/lib/personalization";
 import { buildCompileStateContext } from "@/lib/latex-compiler";
@@ -25,6 +38,7 @@ import { usePersonalizationStore } from "./personalization-store";
 
 const log = createLogger("claude");
 export const CLAUDE_CODE_PROVIDER_ID = "__claude-code__";
+export { CURSOR_CLI_PROVIDER_ID };
 export const SELECTED_PROVIDER_CREDENTIAL_STORAGE_KEY =
   "claude-prism:selected-provider-credential-id";
 
@@ -157,6 +171,8 @@ export interface TabState {
   messages: ClaudeStreamMessage[];
   isStreaming: boolean;
   streamingStartedAt: number | null;
+  /** Last heartbeat phase while streaming (tool, chat, ask_user, …). */
+  streamingPhase: string | null;
   error: string | null;
   totalInputTokens: number;
   totalOutputTokens: number;
@@ -173,6 +189,7 @@ const TAB_FIELDS = [
   "messages",
   "isStreaming",
   "streamingStartedAt",
+  "streamingPhase",
   "error",
   "totalInputTokens",
   "totalOutputTokens",
@@ -194,6 +211,7 @@ function makeDefaultTab(
     messages: [],
     isStreaming: false,
     streamingStartedAt: null,
+    streamingPhase: null,
     error: null,
     totalInputTokens: 0,
     totalOutputTokens: 0,
@@ -685,6 +703,7 @@ interface ClaudeChatState {
   sessionId: string | null;
   isStreaming: boolean;
   streamingStartedAt: number | null;
+  streamingPhase: string | null;
   error: string | null;
   totalInputTokens: number;
   totalOutputTokens: number;
@@ -776,6 +795,8 @@ interface ClaudeChatState {
    * replaced by `newText` for edit-and-resend / regenerate).
    */
   resendFromMessage: (messageIndex: number, newText?: string) => Promise<void>;
+  /** Re-send the last user message after a stream error (no duplicate bubble). */
+  retryLastPrompt: (tabId?: string) => Promise<void>;
   clearMessages: () => void;
   newSession: () => void;
   resetForProject: (projectPath: string | null) => void;
@@ -796,11 +817,28 @@ interface ClaudeChatState {
   _setSessionTitle: (sessionId: string, title: string) => void;
   _setStreaming: (tabId: string, streaming: boolean) => void;
   _setError: (tabId: string, error: string | null) => void;
-  /** (Re)arm the idle stream watchdog for a tab — call on send and on each
-   * streaming message so an active stream never trips it. */
-  _armStreamWatchdog: (tabId: string) => void;
-  /** Clear a tab's idle stream watchdog — call on completion / stop / close. */
+  /** Arm the bootstrap watchdog when a turn starts (before the first event). */
+  _beginStreamWatchdog: (tabId: string) => void;
+  /** Reset the idle watchdog after streaming activity (tokens, tools, heartbeats). */
+  _noteStreamActivity: (tabId: string, phase?: string | null) => void;
+  /** Internal: schedule bootstrap or idle stream stall detection. */
+  _armStreamWatchdogInternal: (
+    tabId: string,
+    mode: "bootstrap" | "idle",
+  ) => void;
+  /** Clear a tab's stream watchdog timers and activity tracking. */
   _clearStreamWatchdog: (tabId: string) => void;
+  /** Stop streaming, reconcile dangling tool spinners, and optionally kill the backend. */
+  _stopStreaming: (
+    tabId: string,
+    options?: {
+      error?: string | null;
+      stopBackend?: boolean;
+      reconcileTools?: boolean;
+      /** When false, leave the semantic turn for completeSemanticTurn (normal complete path). */
+      clearSemantic?: boolean;
+    },
+  ) => void;
   /** Tabs the user explicitly stopped, so an unexpected stream end on THAT tab
    * isn't misclassified as a crash. Keyed per-tab because multiple tabs stream
    * concurrently (a store-level boolean cross-contaminated them). */
@@ -816,14 +854,94 @@ const cancelledWithout = (tabs: Set<string>, id: string) => {
   return next;
 };
 
-// Idle stream watchdog: if a streaming tab goes silent this long (no delta, no
-// completion — a dropped backend or a missed `claude-complete`), recover the tab
-// instead of spinning forever. It's ARMED on send and RESET on every streaming
-// message, so an actively-generating long local-model turn never trips it — only
-// a genuinely stalled backend does. The backend's own idle timeouts (Ollama 90s,
-// proxy 300s) are the first line; this is the frontend backstop.
+// Stream watchdog: recover tabs when the backend goes silent without completing.
+// Bootstrap covers model load + pre-invoke work before the first event; idle covers
+// gaps between events once a turn is underway. Backend heartbeats during long tool
+// runs and AskUser waits reset the idle timer so false positives are rare.
+export const STREAM_STALLED_ERROR =
+  "Your message was received, but the AI produced no output for several minutes. Send again or start a new chat.";
+
+const STREAM_BOOTSTRAP_MS = 300_000;
 const STREAM_IDLE_MS = 180_000;
+/** Longer idle budget while tool_use blocks await results (CLI path has no heartbeats). */
+export const STREAM_TOOL_IDLE_MS = 600_000;
 const streamWatchdogs = new Map<string, ReturnType<typeof setTimeout>>();
+const streamHasActivity = new Set<string>();
+const streamLastActivityAt = new Map<string, number>();
+const PREP_HEARTBEAT_MS = 30_000;
+
+/** Recover the raw user prompt from a displayed user message (strip context label). */
+export function recoverPromptFromUserMessage(msg: ClaudeStreamMessage): string {
+  const raw = msg.message?.content;
+  const text = Array.isArray(raw)
+    ? raw
+        .filter((b) => b.type === "text")
+        .map((b) => b.text ?? "")
+        .join("\n")
+    : typeof raw === "string"
+      ? raw
+      : "";
+  const firstBreak = text.indexOf("\n");
+  if (firstBreak > 0) {
+    const firstLine = text.slice(0, firstBreak).trim();
+    if (firstLine.startsWith("@") || firstLine.startsWith("~@")) {
+      return text.slice(firstBreak + 1).trim();
+    }
+  }
+  return text.trim();
+}
+
+function findLastUserMessageIndex(messages: ClaudeStreamMessage[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.type !== "user" || !msg.message?.content) continue;
+    const blocks = msg.message.content;
+    if (
+      Array.isArray(blocks) &&
+      blocks.every((b) => b.type === "tool_result")
+    ) {
+      continue;
+    }
+    return i;
+  }
+  return -1;
+}
+
+function findPendingToolUseIds(messages: ClaudeStreamMessage[]): string[] {
+  const resultIds = new Set<string>();
+  const toolUseIds: string[] = [];
+  for (const msg of messages) {
+    if (msg.type === "user" && msg.message?.content) {
+      for (const block of msg.message.content) {
+        if (block.type === "tool_result" && block.tool_use_id) {
+          resultIds.add(block.tool_use_id);
+        }
+      }
+    }
+    if (msg.type === "assistant" && msg.message?.content) {
+      for (const block of msg.message.content) {
+        if (block.type === "tool_use" && block.id) {
+          toolUseIds.push(block.id);
+        }
+      }
+    }
+  }
+  return toolUseIds.filter((id) => !resultIds.has(id));
+}
+
+async function killStreamBackend(tabId: string, backend: AgentBackend) {
+  try {
+    if (backendUsesNativeRuntime(backend)) {
+      await invoke("stop_native_agent", { tabId });
+    } else if (backend === "cursor-cli") {
+      await invoke("cancel_cursor_agent", { tabId });
+    } else {
+      await invoke("cancel_claude_execution", { tabId });
+    }
+  } catch {
+    // UI already moved to a stopped state; stale output is ignored.
+  }
+}
 
 export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
   // Projected fields (initialized from default tab)
@@ -831,6 +949,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
   sessionId: null,
   isStreaming: false,
   streamingStartedAt: null,
+  streamingPhase: null,
   error: null,
   _cancelledTabs: new Set(),
   totalInputTokens: 0,
@@ -1012,7 +1131,9 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     const activeFile = docState.files.find(
       (f) => f.id === docState.activeFileId,
     );
-    const nativeMode = useSettingsStore.getState().nativeAgentEnabled;
+    const nativeMode = backendUsesNativeRuntime(
+      useSettingsStore.getState().agentBackend,
+    );
     let contextLabel: string | null = null;
 
     if (contextOverride) {
@@ -1068,6 +1189,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         sessionProviderKey: requestProviderKey,
         isStreaming: true,
         streamingStartedAt,
+        streamingPhase: null,
         error: null,
         pendingTemporaryFilePaths: temporaryFilePaths,
       };
@@ -1079,129 +1201,149 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       };
     });
 
-    // Arm the idle watchdog now that the tab is streaming; it's reset on every
-    // streaming message and cleared on completion.
-    get()._armStreamWatchdog(activeTabId);
-
-    // Flush unsaved edits to disk so Claude reads the latest content
-    if (docState.files.some((f) => f.isDirty)) {
-      log.debug("saving dirty files...");
-      await docState.saveAllFiles();
-      log.debug("saveAllFiles done");
-    }
-
-    // Trigger automatic personalization extraction in the background
-    const activeDoc = docState.files.find(
-      (f) => f.id === docState.activeFileId,
-    );
-    if (activeDoc?.content) {
-      usePersonalizationStore
-        .getState()
-        .analyzeLaTeXContent(activeDoc.relativePath, activeDoc.content);
-    }
-    const updatedMessages = [...(activeTab?.messages ?? []), userMessage];
-    void usePersonalizationStore
-      .getState()
-      .analyzeChatConversation(updatedMessages);
-
-    // Snapshot before agent edit
-    if (projectPath) {
-      try {
-        log.debug("creating snapshot...");
-        const snapshotLabel = getChatLabels(
-          useSettingsStore.getState().nativeAgentEnabled,
-        ).snapshotBeforeEdit;
-        await useHistoryStore
-          .getState()
-          .createSnapshot(projectPath, snapshotLabel);
-        log.debug("snapshot done");
-      } catch {
-        /* snapshot failure should not block the agent */
-      }
-    }
-
-    // Build prompt with full context for Claude
-    let prompt = userPrompt;
-    if (activeFile) {
-      const selRange = docState.selectionRange;
-      const selectedText =
-        selRange && activeFile.content
-          ? activeFile.content.slice(selRange.start, selRange.end)
-          : null;
-      let ctx = `[Currently open file: ${activeFile.relativePath}]`;
-      if (contextOverride) {
-        ctx += `\n[Selection: ${contextOverride.label}]`;
-        ctx += `\n[Selected text:\n${contextOverride.selectedText}\n]`;
-      } else if (selectedText && selRange) {
-        const content = activeFile.content ?? "";
-        const startLC = offsetToLineCol(content, selRange.start);
-        const endLC = offsetToLineCol(content, selRange.end);
-        ctx += `\n[Selection: @${activeFile.relativePath}:${startLC.line}:${startLC.col}-${endLC.line}:${endLC.col}]`;
-        ctx += `\n[Selected text:\n${selectedText}\n]`;
-      }
-      prompt = `${ctx}\n\n${userPrompt}`;
-    }
-
-    if (switchingDirectProviderToClaudeCode) {
-      const priorContext = buildProviderSwitchContext(
-        activeTab?.messages ?? [],
-      );
-      if (priorContext) {
-        prompt = `${priorContext}\n\n${prompt}`;
-      }
-    }
-
-    const chatContextChunks = [
-      buildCompileStateContext(),
-      buildBibliographyContext(),
-    ].filter((c): c is string => Boolean(c?.trim()));
-    const compileStatePrompt = chatContextChunks.join("\n\n") || null;
-    const semanticConfig = resolveSemanticConfig();
-    const compressorHandledContext =
-      semanticConfig.enabled &&
-      semanticConfig.compressorEnabled &&
-      chatContextChunks.length > 0;
-
-    if (!compressorHandledContext && compileStatePrompt) {
-      prompt = `${compileStatePrompt}\n\n${prompt}`;
-    }
-
-    log.info("invoking CLI", {
-      promptLength: prompt.length,
-      mode: resumeSessionId ? "resume" : "new",
-    });
+    // Arm the bootstrap watchdog once the tab is streaming; it switches to the
+    // idle timer on the first backend event (including heartbeats during tools).
+    get()._beginStreamWatchdog(activeTabId);
+    set((s) => applyTabUpdate(s, activeTabId, { streamingPhase: "prep" }));
+    const prepHeartbeat = setInterval(() => {
+      const tab = get().tabs.find((t) => t.id === activeTabId);
+      if (!tab?.isStreaming || tab.streamingPhase !== "prep") return;
+      set((s) => applyTabUpdate(s, activeTabId, { streamingPhase: "prep" }));
+    }, PREP_HEARTBEAT_MS);
 
     try {
+      // Flush unsaved edits to disk so Claude reads the latest content
+      if (docState.files.some((f) => f.isDirty)) {
+        log.debug("saving dirty files...");
+        await docState.saveAllFiles();
+        log.debug("saveAllFiles done");
+      }
+
+      // Trigger automatic personalization extraction in the background
+      const activeDoc = docState.files.find(
+        (f) => f.id === docState.activeFileId,
+      );
+      if (activeDoc?.content) {
+        usePersonalizationStore
+          .getState()
+          .analyzeLaTeXContent(activeDoc.relativePath, activeDoc.content);
+      }
+      const updatedMessages = [...(activeTab?.messages ?? []), userMessage];
+      void usePersonalizationStore
+        .getState()
+        .analyzeChatConversation(updatedMessages);
+
+      // Snapshot before agent edit
+      if (projectPath) {
+        try {
+          log.debug("creating snapshot...");
+          const snapshotLabel = getChatLabels(
+            useSettingsStore.getState().agentBackend,
+          ).snapshotBeforeEdit;
+          await useHistoryStore
+            .getState()
+            .createSnapshot(projectPath, snapshotLabel);
+          log.debug("snapshot done");
+        } catch {
+          /* snapshot failure should not block the agent */
+        }
+      }
+
+      // Build prompt with full context for Claude
+      let prompt = userPrompt;
+      if (activeFile) {
+        const selRange = docState.selectionRange;
+        const selectedText =
+          selRange && activeFile.content
+            ? activeFile.content.slice(selRange.start, selRange.end)
+            : null;
+        let ctx = `[Currently open file: ${activeFile.relativePath}]`;
+        if (contextOverride) {
+          ctx += `\n[Selection: ${contextOverride.label}]`;
+          ctx += `\n[Selected text:\n${contextOverride.selectedText}\n]`;
+        } else if (selectedText && selRange) {
+          const content = activeFile.content ?? "";
+          const startLC = offsetToLineCol(content, selRange.start);
+          const endLC = offsetToLineCol(content, selRange.end);
+          ctx += `\n[Selection: @${activeFile.relativePath}:${startLC.line}:${startLC.col}-${endLC.line}:${endLC.col}]`;
+          ctx += `\n[Selected text:\n${selectedText}\n]`;
+        }
+        prompt = `${ctx}\n\n${userPrompt}`;
+      }
+
+      if (switchingDirectProviderToClaudeCode) {
+        const priorContext = buildProviderSwitchContext(
+          activeTab?.messages ?? [],
+        );
+        if (priorContext) {
+          prompt = `${priorContext}\n\n${prompt}`;
+        }
+      }
+
+      const chatContextChunks = [
+        buildCompileStateContext(),
+        buildBibliographyContext(),
+      ].filter((c): c is string => Boolean(c?.trim()));
+      const compileStatePrompt = chatContextChunks.join("\n\n") || null;
+      const semanticConfig = resolveSemanticConfig();
+      const compressorHandledContext =
+        semanticConfig.enabled &&
+        semanticConfig.compressorEnabled &&
+        chatContextChunks.length > 0;
+
+      if (!compressorHandledContext && compileStatePrompt) {
+        prompt = `${compileStatePrompt}\n\n${prompt}`;
+      }
+
+      log.info("invoking CLI", {
+        promptLength: prompt.length,
+        mode: resumeSessionId ? "resume" : "new",
+      });
+
       syncSemanticLayerConfig();
 
-      if (useSettingsStore.getState().nativeAgentEnabled) {
-        // DevPrism native runtime: talk directly to a local Ollama model, no
-        // Claude CLI. Keeps multi-turn memory per tab in the Rust runtime and
-        // emits the same events as the CLI path, so the UI is unchanged. Use the
-        // configured Ollama (OpenAI-compatible) credential's base URL + model
-        // when available; otherwise the runtime defaults to localhost:11434 and
-        // the first installed model.
+      const agentBackend = useSettingsStore.getState().agentBackend;
+      const ns = useSettingsStore.getState();
+
+      if (
+        isNativeOllamaBackend(agentBackend) ||
+        isNativeOpenAiCompatBackend(agentBackend)
+      ) {
         const creds = useClaudeSetupStore.getState().openAiCredentials ?? [];
         const isOllama = (c?: { base_url?: string | null }) =>
-          /:11434|localhost|127\.0\.0\.1/.test(c?.base_url ?? "");
+          isOllamaBaseUrl(c?.base_url);
+        const isGroq = (c?: { base_url?: string | null }) =>
+          isGroqBaseUrl(c?.base_url);
         const selected = creds.find((c) => c.id === providerCredentialId);
-        const cred =
+        const ollamaCred =
           (selected && isOllama(selected) ? selected : undefined) ??
           creds.find(isOllama);
-        const ns = useSettingsStore.getState();
-        const nativeModel =
-          ns.nativeOllamaModel?.trim() ||
-          (cred
-            ? selectedProviderModels[cred.id]?.trim() || cred.model?.trim()
-            : null) ||
+        const groqCred =
+          (selected && isGroq(selected) ? selected : undefined) ??
+          creds.find(isGroq);
+        // native-api: any non-Ollama OpenAI-compat credential (Gemini, OpenRouter, Groq, …)
+        const apiCred =
+          (selected && !isOllama(selected) ? selected : undefined) ??
+          creds.find((c) => !isOllama(c)) ??
           null;
-        // Native conveys the open file + selection via the structured channel
-        // below (-> the runtime's system prompt, rebuilt fresh each turn), so use
-        // the RAW user prompt here instead of the CLI path's `[Currently open
-        // file]` ctx block. That keeps a single selection-context path and avoids
-        // a stale selection getting persisted into the runtime's history.
-        // First native turn for this tab is still seeded with the visible
-        // conversation so the local model isn't blind to context the user can see.
+        const openaiCred = isNativeGroqBackend(agentBackend)
+          ? groqCred
+          : isNativeApiBackend(agentBackend)
+            ? apiCred
+            : null;
+        const nativeModel = isNativeOpenAiCompatBackend(agentBackend)
+          ? ns.nativeGroqModel?.trim() ||
+            (openaiCred
+              ? selectedProviderModels[openaiCred.id]?.trim() ||
+                openaiCred.model?.trim()
+              : null) ||
+            (isNativeGroqBackend(agentBackend) ? GROQ_DEFAULT_MODEL : null)
+          : ns.nativeOllamaModel?.trim() ||
+            (ollamaCred
+              ? selectedProviderModels[ollamaCred.id]?.trim() ||
+                ollamaCred.model?.trim()
+              : null) ||
+            null;
         let nativePrompt = userPrompt;
         if (!nativeSeededTabs.has(activeTabId)) {
           const priorContext = buildProviderSwitchContext(
@@ -1209,29 +1351,18 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
           );
           if (priorContext) nativePrompt = `${priorContext}\n\n${userPrompt}`;
         }
-        nativeSeededTabs.add(activeTabId);
-        // The file the user currently has open and any selected text, so deictic
-        // prompts ("fix this paragraph", "edit this file", "the selection")
-        // resolve to the precise span without them naming a path. Prefer the
-        // toolbar's explicit context (it survives even when the toolbar clears the
-        // live selection on dismiss); else the current editor selection. Bounded
-        // here; the Rust side truncates further and flags it.
-        const docState = useDocumentStore.getState();
-        const activeDoc = docState.files.find(
-          (f) => f.id === docState.activeFileId,
+        const docStateNative = useDocumentStore.getState();
+        const activeDoc = docStateNative.files.find(
+          (f) => f.id === docStateNative.activeFileId,
         );
-        const activeFile = activeDoc?.relativePath ?? null;
-        const sel = docState.selectionRange;
+        const activeFilePath = activeDoc?.relativePath ?? null;
+        const sel = docStateNative.selectionRange;
         const liveSelText =
           activeDoc?.content && sel && sel.end > sel.start
             ? activeDoc.content.slice(sel.start, sel.end)
             : null;
         const rawSelection = contextOverride?.selectedText ?? liveSelText;
         const selection = rawSelection ? rawSelection.slice(0, 4000) : null;
-        // 1-based line range of the selection, so the model can Read the
-        // surrounding region and edit in context. Keep the line source consistent
-        // with the *text* source: for an explicit toolbar selection locate its
-        // (unique) occurrence; otherwise use the live editor offsets.
         let selectionStartLine: number | null = null;
         let selectionEndLine: number | null = null;
         const selContent = activeDoc?.content;
@@ -1252,14 +1383,70 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
           selectionEndLine = offsetToLineCol(selContent, sel.end).line;
         }
 
-        const nativeContextChunks = chatContextChunks;
-        const compressorHandledNativeContext = compressorHandledContext;
-
         const prepared = await prepareChatSemanticInference(
           {
             prompt: nativePrompt,
             defaultModel: nativeModel,
-            contextChunks: nativeContextChunks,
+            contextChunks: chatContextChunks,
+          },
+          aiEmbed,
+        );
+
+        if (prepared.cachedResponse != null) {
+          await invoke("deliver_cached_native_reply", {
+            tabId: activeTabId,
+            response: prepared.cachedResponse,
+          });
+          nativeSeededTabs.add(activeTabId);
+          log.info(
+            `sendPrompt complete (semantic cache) in ${(performance.now() - sendStart).toFixed(0)}ms`,
+          );
+          return;
+        }
+
+        trackSemanticTurn(activeTabId, {
+          prompt: prepared.prompt,
+          system: prepared.system,
+        });
+
+        const useOpenAiCompat = isNativeOpenAiCompatBackend(agentBackend);
+        await invoke("run_native_agent", {
+          projectPath,
+          prompt: prepared.prompt,
+          tabId: activeTabId,
+          model: prepared.model || nativeModel || null,
+          baseUrl: useOpenAiCompat
+            ? openaiCred?.base_url ||
+              (isNativeGroqBackend(agentBackend) ? GROQ_PROVIDER_BASE : null)
+            : ollamaCred?.base_url || null,
+          images: nativeImages.length ? nativeImages : null,
+          numCtx: ns.nativeNumCtx ?? null,
+          temperature: ns.nativeTemperature ?? null,
+          keepAlive: ns.nativeKeepAlive || null,
+          effortLevel,
+          activeFile: activeFilePath,
+          selection,
+          selectionStartLine,
+          selectionEndLine,
+          personalizationPrompt: null,
+          compileStatePrompt: compressorHandledContext
+            ? null
+            : compileStatePrompt,
+          chatOnly: useOpenAiCompat ? false : resolveNativeChatOnlyFlag(),
+          chatProvider: useOpenAiCompat ? "openai-compat" : "ollama",
+          apiKey: null,
+          providerCredentialId: useOpenAiCompat
+            ? (openaiCred?.id ?? providerCredentialId)
+            : (ollamaCred?.id ?? providerCredentialId),
+        });
+        nativeSeededTabs.add(activeTabId);
+      } else if (agentBackend === "cursor-cli") {
+        const prepared = await prepareChatSemanticInference(
+          {
+            prompt,
+            defaultModel: selectedModel,
+            contextChunks: chatContextChunks,
+            skipRouter: true,
           },
           aiEmbed,
         );
@@ -1279,27 +1466,22 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
           prompt: prepared.prompt,
           system: prepared.system,
         });
+        prompt = prepared.prompt;
 
-        await invoke("run_native_agent", {
+        const cursorArgs = {
           projectPath,
-          prompt: prepared.prompt,
+          prompt,
           tabId: activeTabId,
-          model: prepared.model || nativeModel || null,
-          baseUrl: cred?.base_url || null,
-          images: nativeImages.length ? nativeImages : null,
-          numCtx: ns.nativeNumCtx ?? null,
-          temperature: ns.nativeTemperature ?? null,
-          keepAlive: ns.nativeKeepAlive || null,
-          activeFile,
-          selection,
-          selectionStartLine,
-          selectionEndLine,
-          personalizationPrompt: null,
-          compileStatePrompt: compressorHandledNativeContext
-            ? null
-            : compileStatePrompt,
-          chatOnly: resolveNativeChatOnlyFlag(),
-        });
+          useAcp: ns.cursorAcpPreferred,
+        };
+        if (resumeSessionId) {
+          await invoke("resume_cursor_agent", {
+            ...cursorArgs,
+            sessionId: resumeSessionId,
+          });
+        } else {
+          await invoke("execute_cursor_agent", cursorArgs);
+        }
       } else {
         const prepared = await prepareChatSemanticInference(
           {
@@ -1362,13 +1544,12 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         `sendPrompt failed after ${(performance.now() - sendStart).toFixed(0)}ms`,
         { error: String(err) },
       );
-      set((s) =>
-        applyTabUpdate(s, activeTabId, {
-          isStreaming: false,
-          streamingStartedAt: null,
-          error: err?.message || String(err),
-        }),
-      );
+      get()._stopStreaming(activeTabId, {
+        error: err?.message || String(err),
+        reconcileTools: true,
+      });
+    } finally {
+      clearInterval(prepHeartbeat);
     }
   },
 
@@ -1511,8 +1692,14 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     });
 
     try {
-      if (useSettingsStore.getState().nativeAgentEnabled) {
+      const backend = useSettingsStore.getState().agentBackend;
+      if (backendUsesNativeRuntime(backend)) {
         await invoke("stop_native_agent", { tabId });
+        set((s) => ({
+          _cancelledTabs: cancelledWith(s._cancelledTabs, tabId),
+        }));
+      } else if (backend === "cursor-cli") {
+        await invoke("cancel_cursor_agent", { tabId });
         set((s) => ({
           _cancelledTabs: cancelledWith(s._cancelledTabs, tabId),
         }));
@@ -1568,24 +1755,17 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       is_error: false,
       result: "Stopped.",
     } as ClaudeStreamMessage);
+    get()._stopStreaming(activeTabId, {
+      stopBackend: true,
+      reconcileTools: true,
+    });
     set((s) =>
       applyTabUpdate(s, activeTabId, {
-        isStreaming: false,
-        streamingStartedAt: null,
         queuedGuidance: [],
         forceQueuedGuidanceOnComplete: false,
         forcedQueuedGuidanceId: null,
       }),
     );
-    try {
-      if (useSettingsStore.getState().nativeAgentEnabled) {
-        await invoke("stop_native_agent", { tabId: activeTabId });
-      } else {
-        await invoke("cancel_claude_execution", { tabId: activeTabId });
-      }
-    } catch {
-      // The UI has already moved to a stopped state; stale output is ignored.
-    }
   },
 
   resendFromMessage: async (messageIndex, newText) => {
@@ -1596,28 +1776,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     const target = tab.messages[messageIndex];
     if (!target || target.type !== "user") return;
 
-    // Recover the prompt text, dropping a leading context-label line if present.
-    const recoverPrompt = (): string => {
-      const raw = target.message?.content;
-      const text = Array.isArray(raw)
-        ? raw
-            .filter((b) => b.type === "text")
-            .map((b) => b.text ?? "")
-            .join("\n")
-        : typeof raw === "string"
-          ? raw
-          : "";
-      const firstBreak = text.indexOf("\n");
-      if (firstBreak > 0) {
-        const firstLine = text.slice(0, firstBreak).trim();
-        if (firstLine.startsWith("@") || firstLine.startsWith("~@")) {
-          return text.slice(firstBreak + 1);
-        }
-      }
-      return text;
-    };
-
-    const text = (newText ?? recoverPrompt()).trim();
+    const text = (newText ?? recoverPromptFromUserMessage(target)).trim();
     if (!text) return;
 
     // Drop the target user message and everything after it, then resend.
@@ -1629,8 +1788,33 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     });
   },
 
+  retryLastPrompt: async (tabId) => {
+    const state = get();
+    const id = tabId ?? state.activeTabId;
+    const tab = state.tabs.find((t) => t.id === id);
+    if (!tab || tab.isStreaming) return;
+
+    const lastUserIdx = findLastUserMessageIndex(tab.messages);
+    if (lastUserIdx < 0) return;
+
+    set((s) => applyTabUpdate(s, id, { error: null }));
+
+    const wasActive = state.activeTabId === id;
+    if (!wasActive) {
+      get().setActiveTab(id);
+    }
+    await get().resendFromMessage(lastUserIdx);
+  },
+
   clearMessages: () => {
     const { activeTabId } = get();
+    const activeTab = get().tabs.find((t) => t.id === activeTabId);
+    if (activeTab?.isStreaming) {
+      get()._stopStreaming(activeTabId, {
+        stopBackend: true,
+        reconcileTools: true,
+      });
+    }
     // Also clear the native runtime's per-tab conversation memory.
     nativeSeededTabs.delete(activeTabId);
     // Allow a fresh AI title for the next conversation in this reused tab.
@@ -1642,7 +1826,9 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       applyTabUpdate(s, activeTabId, {
         messages: [],
         error: null,
+        isStreaming: false,
         streamingStartedAt: null,
+        streamingPhase: null,
         totalInputTokens: 0,
         totalOutputTokens: 0,
         queuedGuidance: [],
@@ -1659,6 +1845,17 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       state.activeProjectPath === projectPath &&
       state.tabs.every((tab) => tab.projectPath === projectPath);
     if (tabsAlreadyScoped) return;
+
+    for (const tab of state.tabs) {
+      if (tab.isStreaming) {
+        get()._stopStreaming(tab.id, {
+          stopBackend: true,
+          reconcileTools: true,
+        });
+      } else {
+        get()._clearStreamWatchdog(tab.id);
+      }
+    }
 
     const id = nextTabId();
     const tab = makeDefaultTab(id, projectPath);
@@ -1725,6 +1922,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     // new conversation (mirrors clearMessages / closeTab).
     nativeSeededTabs.delete(activeTabId);
     aiTitleRefinedTabs.delete(activeTabId);
+    get()._clearStreamWatchdog(activeTabId);
     void Promise.resolve(
       invoke("clear_native_session", { tabId: activeTabId }),
     ).catch(() => {});
@@ -1741,6 +1939,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         error: null,
         isStreaming: false,
         streamingStartedAt: null,
+        streamingPhase: null,
         totalInputTokens: 0,
         totalOutputTokens: 0,
         title: "New Chat",
@@ -1830,6 +2029,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         error: null,
         isStreaming: false,
         streamingStartedAt: null,
+        streamingPhase: null,
         totalInputTokens: 0,
         totalOutputTokens: 0,
         title: sessionTitle ?? "New Chat",
@@ -1976,6 +2176,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         sessionId: newActive.sessionId,
         isStreaming: newActive.isStreaming,
         streamingStartedAt: newActive.streamingStartedAt,
+        streamingPhase: newActive.streamingPhase,
         error: newActive.error,
         totalInputTokens: newActive.totalInputTokens,
         totalOutputTokens: newActive.totalOutputTokens,
@@ -2004,6 +2205,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       sessionId: targetTab.sessionId,
       isStreaming: targetTab.isStreaming,
       streamingStartedAt: targetTab.streamingStartedAt,
+      streamingPhase: targetTab.streamingPhase,
       error: targetTab.error,
       totalInputTokens: targetTab.totalInputTokens,
       totalOutputTokens: targetTab.totalOutputTokens,
@@ -2094,6 +2296,9 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
   },
 
   _setStreaming: (tabId: string, streaming: boolean) => {
+    if (!streaming) {
+      get()._clearStreamWatchdog(tabId);
+    }
     set((state) => {
       const tab = state.tabs.find((t) => t.id === tabId);
       return applyTabUpdate(state, tabId, {
@@ -2101,6 +2306,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         streamingStartedAt: streaming
           ? (tab?.streamingStartedAt ?? Date.now())
           : null,
+        streamingPhase: streaming ? (tab?.streamingPhase ?? null) : null,
       });
     });
   },
@@ -2109,21 +2315,63 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     set((state) => applyTabUpdate(state, tabId, { error }));
   },
 
-  _armStreamWatchdog: (tabId) => {
+  _beginStreamWatchdog: (tabId) => {
+    streamHasActivity.delete(tabId);
+    get()._armStreamWatchdogInternal(tabId, "bootstrap");
+  },
+
+  _noteStreamActivity: (tabId, phase) => {
+    const tab = get().tabs.find((t) => t.id === tabId);
+    if (!tab?.isStreaming) return;
+    streamHasActivity.add(tabId);
+    const now = Date.now();
+    const prevAt = streamLastActivityAt.get(tabId);
+    streamLastActivityAt.set(tabId, now);
+    if (phase) {
+      set((state) => applyTabUpdate(state, tabId, { streamingPhase: phase }));
+    }
+    const elapsedMs = tab.streamingStartedAt ? now - tab.streamingStartedAt : 0;
+    log.debug("stream activity", {
+      tab: tabId,
+      phase: phase ?? tab.streamingPhase ?? "event",
+      elapsedMs,
+      sinceLastMs: prevAt ? now - prevAt : null,
+    });
+    get()._armStreamWatchdogInternal(tabId, "idle");
+  },
+
+  _armStreamWatchdogInternal: (tabId: string, mode: "bootstrap" | "idle") => {
     get()._clearStreamWatchdog(tabId);
+    const tab = get().tabs.find((t) => t.id === tabId);
+    const hasPendingTools = tab
+      ? findPendingToolUseIds(tab.messages).length > 0
+      : false;
+    const delay =
+      mode === "bootstrap"
+        ? STREAM_BOOTSTRAP_MS
+        : hasPendingTools
+          ? STREAM_TOOL_IDLE_MS
+          : STREAM_IDLE_MS;
     const handle = setTimeout(() => {
       streamWatchdogs.delete(tabId);
-      const tab = get().tabs.find((t) => t.id === tabId);
-      if (!tab?.isStreaming) return; // already finished or gone
-      set((state) =>
-        applyTabUpdate(state, tabId, {
-          isStreaming: false,
-          streamingStartedAt: null,
-          error:
-            "The AI stopped responding (no activity for a while). Send again or start a new chat.",
-        }),
-      );
-    }, STREAM_IDLE_MS);
+      streamHasActivity.delete(tabId);
+      const currentTab = get().tabs.find((t) => t.id === tabId);
+      if (!currentTab?.isStreaming) return;
+      const lastAt = streamLastActivityAt.get(tabId);
+      log.warn(`stream watchdog tripped for tab ${tabId} (${mode})`, {
+        pendingTools: hasPendingTools,
+        elapsedMs: currentTab.streamingStartedAt
+          ? Date.now() - currentTab.streamingStartedAt
+          : null,
+        lastActivityMs: lastAt ? Date.now() - lastAt : null,
+      });
+      streamLastActivityAt.delete(tabId);
+      get()._stopStreaming(tabId, {
+        error: STREAM_STALLED_ERROR,
+        stopBackend: true,
+        reconcileTools: true,
+      });
+    }, delay);
     streamWatchdogs.set(tabId, handle);
   },
 
@@ -2132,6 +2380,74 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     if (handle !== undefined) {
       clearTimeout(handle);
       streamWatchdogs.delete(tabId);
+    }
+    streamHasActivity.delete(tabId);
+  },
+
+  _stopStreaming: (tabId, options = {}) => {
+    const {
+      error,
+      stopBackend = false,
+      reconcileTools = false,
+      clearSemantic = true,
+    } = options;
+    get()._clearStreamWatchdog(tabId);
+    streamLastActivityAt.delete(tabId);
+
+    if (reconcileTools) {
+      const tab = get().tabs.find((t) => t.id === tabId);
+      const pending = tab ? findPendingToolUseIds(tab.messages) : [];
+      for (const toolUseId of pending) {
+        get()._appendMessage(tabId, {
+          type: "user",
+          message: {
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: toolUseId,
+                content: "(cancelled)",
+                is_error: true,
+              },
+            ],
+          },
+        });
+      }
+    }
+
+    set((state) =>
+      applyTabUpdate(state, tabId, {
+        isStreaming: false,
+        streamingStartedAt: null,
+        streamingPhase: null,
+        ...(error !== undefined ? { error } : {}),
+      }),
+    );
+
+    if (error) {
+      const tab = get().tabs.find((t) => t.id === tabId);
+      const lastUserIdx = tab ? findLastUserMessageIndex(tab.messages) : -1;
+      const lastUser =
+        lastUserIdx >= 0 && tab ? tab.messages[lastUserIdx] : null;
+      const prompt =
+        lastUser?.type === "user" ? recoverPromptFromUserMessage(lastUser) : "";
+      if (prompt && tab && !tab.draft.input.trim()) {
+        set((state) => ({
+          tabs: state.tabs.map((t) =>
+            t.id === tabId ? { ...t, draft: { ...t.draft, input: prompt } } : t,
+          ),
+          ...(tabId === state.activeTabId
+            ? { pendingComposerInput: prompt }
+            : {}),
+        }));
+      }
+    }
+
+    if (clearSemantic) {
+      clearSemanticTurn(tabId);
+    }
+
+    if (stopBackend) {
+      void killStreamBackend(tabId, useSettingsStore.getState().agentBackend);
     }
   },
 }));

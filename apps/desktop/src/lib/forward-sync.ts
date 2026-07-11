@@ -1,4 +1,8 @@
-import { useDocumentStore, resolveTexRoot } from "@/stores/document-store";
+import {
+  useDocumentStore,
+  resolveTexRoot,
+  getCurrentPdfRootId,
+} from "@/stores/document-store";
 import { synctexForward } from "@/lib/latex-compiler";
 import {
   getCompileRootPreference,
@@ -33,6 +37,7 @@ export async function triggerForwardSync(options?: {
   const preferredRoot = getCompileRootPreference(projectRoot);
   if (preferredRoot && preferredRoot !== editorRootId) {
     setCompileRootPreference(projectRoot, editorRootId);
+    useDocumentStore.getState().setPreviewRoot(editorRootId);
     showWorkspaceInfo(
       "Preview switched",
       "SyncTeX now follows the active document.",
@@ -62,7 +67,7 @@ export async function triggerForwardSync(options?: {
   }
 
   state.setForwardSyncPulse({
-    rootFileId: editorRootId,
+    rootFileId: getCurrentPdfRootId() ?? editorRootId,
     page: result.page,
     x: result.x,
     y: result.y,

@@ -95,7 +95,6 @@ import {
   SparklesIcon,
   FileTextIcon,
 } from "lucide-react";
-import { ClaudeChatDrawer } from "@/components/claude-chat/claude-chat-drawer";
 import { ProposedChangesPanel } from "@/components/claude-chat/proposed-changes-panel";
 import { ImagePreview } from "./image-preview";
 import { filterImagePaths, insertDroppedImages } from "./image-drop";
@@ -868,7 +867,7 @@ export function LatexEditor() {
                         canUseAiAssist()
                           ? "Fix with AI"
                           : getChatLabels(
-                              useSettingsStore.getState().nativeAgentEnabled,
+                              useSettingsStore.getState().agentBackend,
                             ).fixWithChat,
                       apply: (v: EditorView, from: number, _to: number) => {
                         const line = v.state.doc.lineAt(from);
@@ -2445,7 +2444,7 @@ export function LatexEditor() {
           </div>
         </div>
       )}
-      {/* Main content area — single wrapper keeps ClaudeChatDrawer stable */}
+      {/* Main content area */}
       <div
         ref={isPdf || isImage ? undefined : parentRef}
         className="relative flex min-h-0 flex-1 flex-col overflow-hidden"
@@ -2629,8 +2628,6 @@ export function LatexEditor() {
             )}
           </>
         )}
-        {/* Chat drawer — single stable instance across all file types */}
-        <ClaudeChatDrawer />
       </div>
       {/* Text-editor-only bottom panels */}
       {!isPdf && !isImage && !isLargeFileNotLoaded && activeFileChange && (

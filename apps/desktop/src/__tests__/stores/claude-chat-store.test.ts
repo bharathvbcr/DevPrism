@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CLAUDE_CODE_PROVIDER_ID,
   SELECTED_PROVIDER_CREDENTIAL_STORAGE_KEY,
+  STREAM_STALLED_ERROR,
+  STREAM_TOOL_IDLE_MS,
   loadSelectedProviderCredentialId,
   offsetToLineCol,
   useClaudeChatStore,
@@ -307,9 +309,10 @@ describe("queued guidance", () => {
 });
 
 describe("stream idle watchdog", () => {
+  const STREAM_BOOTSTRAP_MS = 300_000;
   const STREAM_IDLE_MS = 180_000;
 
-  function seedStreamingTab() {
+  function seedStreamingTab(messages = useClaudeChatStore.getState().messages) {
     useClaudeChatStore.setState({
       isStreaming: true,
       tabs: [
@@ -320,9 +323,10 @@ describe("stream idle watchdog", () => {
           sessionId: null,
           providerKey: CLAUDE_CODE_PROVIDER_ID,
           sessionProviderKey: null,
-          messages: [],
+          messages,
           isStreaming: true,
           streamingStartedAt: 0,
+          streamingPhase: null,
           error: null,
           totalInputTokens: 0,
           totalOutputTokens: 0,
@@ -346,26 +350,151 @@ describe("stream idle watchdog", () => {
     useClaudeChatStore.getState().tabs.find((t) => t.id === "tab-wd");
 
   it("recovers a silent streaming tab after the idle timeout", () => {
-    useClaudeChatStore.getState()._armStreamWatchdog("tab-wd");
+    const store = useClaudeChatStore.getState();
+    store._beginStreamWatchdog("tab-wd");
+    store._noteStreamActivity("tab-wd");
     vi.advanceTimersByTime(STREAM_IDLE_MS + 1);
     expect(tab()?.isStreaming).toBe(false);
-    expect(tab()?.error).toMatch(/stopped responding/i);
+    expect(tab()?.error).toBe(STREAM_STALLED_ERROR);
+  });
+
+  it("uses the longer bootstrap timeout before the first event", () => {
+    const store = useClaudeChatStore.getState();
+    store._beginStreamWatchdog("tab-wd");
+    vi.advanceTimersByTime(STREAM_IDLE_MS + 1);
+    expect(tab()?.isStreaming).toBe(true);
+    vi.advanceTimersByTime(STREAM_BOOTSTRAP_MS - STREAM_IDLE_MS);
+    expect(tab()?.isStreaming).toBe(false);
+    expect(tab()?.error).toBe(STREAM_STALLED_ERROR);
   });
 
   it("does not fire once cleared", () => {
     const store = useClaudeChatStore.getState();
-    store._armStreamWatchdog("tab-wd");
+    store._beginStreamWatchdog("tab-wd");
     store._clearStreamWatchdog("tab-wd");
-    vi.advanceTimersByTime(STREAM_IDLE_MS + 1);
+    vi.advanceTimersByTime(STREAM_BOOTSTRAP_MS + 1);
     expect(tab()?.isStreaming).toBe(true);
   });
 
   it("re-arming resets the countdown so an active stream never trips", () => {
     const store = useClaudeChatStore.getState();
-    store._armStreamWatchdog("tab-wd");
+    store._beginStreamWatchdog("tab-wd");
+    store._noteStreamActivity("tab-wd");
     vi.advanceTimersByTime(STREAM_IDLE_MS - 1000);
-    store._armStreamWatchdog("tab-wd"); // simulated streaming activity → reset
-    vi.advanceTimersByTime(STREAM_IDLE_MS - 1000); // not enough since the reset
+    store._noteStreamActivity("tab-wd");
+    vi.advanceTimersByTime(STREAM_IDLE_MS - 1000);
     expect(tab()?.isStreaming).toBe(true);
+  });
+
+  it("reconciles dangling tool spinners when a stall is recovered", () => {
+    seedStreamingTab([
+      {
+        type: "assistant",
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "tool-1",
+              name: "Bash",
+              input: { command: "sleep 999" },
+            },
+          ],
+        },
+      },
+    ]);
+    const store = useClaudeChatStore.getState();
+    store._stopStreaming("tab-wd", {
+      error: STREAM_STALLED_ERROR,
+      reconcileTools: true,
+    });
+    const results = tab()?.messages.flatMap(
+      (msg) => msg.message?.content ?? [],
+    );
+    expect(results).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "tool_result",
+          tool_use_id: "tool-1",
+          content: "(cancelled)",
+          is_error: true,
+        }),
+      ]),
+    );
+    expect(tab()?.isStreaming).toBe(false);
+  });
+
+  it("uses a longer idle timeout while tool_use blocks are pending", () => {
+    seedStreamingTab([
+      {
+        type: "assistant",
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "tool-1",
+              name: "Bash",
+              input: { command: "sleep 999" },
+            },
+          ],
+        },
+      },
+    ]);
+    const store = useClaudeChatStore.getState();
+    store._beginStreamWatchdog("tab-wd");
+    store._noteStreamActivity("tab-wd");
+    vi.advanceTimersByTime(STREAM_IDLE_MS + 1);
+    expect(tab()?.isStreaming).toBe(true);
+    vi.advanceTimersByTime(STREAM_TOOL_IDLE_MS - STREAM_IDLE_MS);
+    expect(tab()?.isStreaming).toBe(false);
+    expect(tab()?.error).toBe(STREAM_STALLED_ERROR);
+  });
+
+  it("records heartbeat phase on the streaming tab", () => {
+    const store = useClaudeChatStore.getState();
+    store._noteStreamActivity("tab-wd", "tool");
+    expect(tab()?.streamingPhase).toBe("tool");
+  });
+
+  it("records thinking phase on the streaming tab", () => {
+    const store = useClaudeChatStore.getState();
+    store._noteStreamActivity("tab-wd", "thinking");
+    expect(tab()?.streamingPhase).toBe("thinking");
+  });
+
+  it("stays non-streaming after stall recovery (stale complete guard)", () => {
+    const store = useClaudeChatStore.getState();
+    store._stopStreaming("tab-wd", {
+      error: STREAM_STALLED_ERROR,
+      reconcileTools: true,
+    });
+    expect(tab()?.isStreaming).toBe(false);
+    // handleComplete early-returns when isStreaming is already false.
+    store._setStreaming("tab-wd", false);
+    expect(tab()?.isStreaming).toBe(false);
+    expect(tab()?.error).toBe(STREAM_STALLED_ERROR);
+  });
+
+  it("restores composer draft when a stream fails with an empty draft", () => {
+    seedStreamingTab([
+      {
+        type: "user",
+        message: { content: [{ type: "text", text: "fix typos" }] },
+      },
+    ]);
+    const store = useClaudeChatStore.getState();
+    store._stopStreaming("tab-wd", {
+      error: STREAM_STALLED_ERROR,
+      reconcileTools: true,
+    });
+    expect(tab()?.draft.input).toBe("fix typos");
+    expect(useClaudeChatStore.getState().pendingComposerInput).toBe(
+      "fix typos",
+    );
+  });
+
+  it("records prep phase during pre-invoke work", () => {
+    const store = useClaudeChatStore.getState();
+    store._noteStreamActivity("tab-wd", "prep");
+    expect(tab()?.streamingPhase).toBe("prep");
   });
 });

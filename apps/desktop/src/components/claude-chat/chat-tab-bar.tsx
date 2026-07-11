@@ -1,6 +1,7 @@
 import { useCallback, useRef, useEffect } from "react";
 import { PlusIcon, XIcon } from "lucide-react";
 import { useChatLabels } from "@/lib/chat-labels";
+import { streamPhaseShortLabel } from "@/lib/claude-stream-heartbeat";
 import { useClaudeChatStore, type TabState } from "@/stores/claude-chat-store";
 import { SessionSelector } from "./session-selector";
 import { cn } from "@/lib/utils";
@@ -91,7 +92,6 @@ export function ChatTabBar({ enabled = true }: { enabled?: boolean }) {
             key={tab.id}
             tab={tab}
             isActive={tab.id === activeTabId}
-            isStreaming={tab.isStreaming}
             isLastTab={tabs.length <= 1}
             onClick={() => setActiveTab(tab.id)}
             onClose={(e) => handleClose(e, tab.id)}
@@ -116,18 +116,22 @@ export function ChatTabBar({ enabled = true }: { enabled?: boolean }) {
 function TabButton({
   tab,
   isActive,
-  isStreaming,
   isLastTab,
   onClick,
   onClose,
 }: {
   tab: TabState;
   isActive: boolean;
-  isStreaming: boolean;
   isLastTab: boolean;
   onClick: () => void;
   onClose: (e: React.MouseEvent) => void;
 }) {
+  const isStreaming = tab.isStreaming;
+  const phaseHint = isStreaming
+    ? streamPhaseShortLabel(tab.streamingPhase)
+    : null;
+  const tabTitle = phaseHint ? `${tab.title} — ${phaseHint}` : tab.title;
+
   return (
     <div
       className={cn(
@@ -141,6 +145,7 @@ function TabButton({
         type="button"
         data-tab-id={tab.id}
         onClick={onClick}
+        title={tabTitle}
         className="flex min-w-0 flex-1 items-center gap-1.5"
       >
         {/* Streaming indicator */}
@@ -151,6 +156,11 @@ function TabButton({
           </span>
         )}
         <span className="truncate">{tab.title}</span>
+        {phaseHint && !isActive && (
+          <span className="shrink-0 text-[10px] text-muted-foreground/70">
+            {phaseHint}
+          </span>
+        )}
       </button>
       {/* Close button — hidden for the last remaining tab or when streaming on this tab */}
       {!isLastTab && !isStreaming && (

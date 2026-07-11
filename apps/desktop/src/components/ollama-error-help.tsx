@@ -2,6 +2,10 @@ import { type FC } from "react";
 import { classifyOllamaError } from "@/lib/ollama";
 import { useClaudeChatStore } from "@/stores/claude-chat-store";
 import { useSettingsStore } from "@/stores/settings-store";
+import {
+  isNativeOllamaBackend,
+  isNativeOpenAiCompatBackend,
+} from "@/lib/agent-backend";
 import { Button } from "@/components/ui/button";
 import { XIcon } from "lucide-react";
 
@@ -14,15 +18,28 @@ export const OllamaErrorHelp: FC<OllamaErrorHelpProps> = ({
   error,
   onRetry,
 }) => {
-  const nativeAgentEnabled = useSettingsStore((s) => s.nativeAgentEnabled);
+  const agentBackend = useSettingsStore((s) => s.agentBackend);
+  const isNativeOllama = isNativeOllamaBackend(agentBackend);
+  const isNativeOpenAiCompat = isNativeOpenAiCompatBackend(agentBackend);
   const requestModelPicker = useClaudeChatStore((s) => s.requestModelPicker);
   const clearError = useClaudeChatStore((s) => s._setError);
   const activeTabId = useClaudeChatStore((s) => s.activeTabId);
 
-  if (!nativeAgentEnabled) {
+  const classified = classifyOllamaError(error);
+
+  if (!isNativeOllama) {
     return (
       <div className="flex items-start gap-2">
-        <p className="min-w-0 flex-1">{error}</p>
+        <div className="min-w-0 flex-1 space-y-2">
+          <p>{classified.message}</p>
+          {classified.kind === "auth" && (
+            <p className="text-[11px] text-muted-foreground leading-relaxed">
+              {isNativeOpenAiCompat
+                ? "Check your provider API key in Settings → Provider, then retry."
+                : "Check your provider API key in Settings, then retry."}
+            </p>
+          )}
+        </div>
         <div className="flex shrink-0 gap-2">
           {onRetry && (
             <Button
@@ -50,11 +67,14 @@ export const OllamaErrorHelp: FC<OllamaErrorHelpProps> = ({
     );
   }
 
-  const classified = classifyOllamaError(error);
-
   return (
     <div className="space-y-2">
       <p>{classified.message}</p>
+      {classified.kind === "auth" && (
+        <p className="text-[11px] text-muted-foreground leading-relaxed">
+          Check your provider API key in Settings → Provider, then retry.
+        </p>
+      )}
       {classified.kind === "unreachable" && (
         <p className="text-[11px] text-muted-foreground leading-relaxed">
           Make sure the Ollama app is running, then retry. If it stopped
@@ -67,6 +87,13 @@ export const OllamaErrorHelp: FC<OllamaErrorHelpProps> = ({
           The model likely ran out of memory or its runner wedged. Try a smaller
           model or a lower context size (Settings → Native agent), or run{" "}
           <code>ollama ps</code> to check what's loaded, then retry.
+        </p>
+      )}
+      {classified.kind === "stream_stalled" && (
+        <p className="text-[11px] text-muted-foreground leading-relaxed">
+          The assistant stopped responding mid-turn. Your message is still in
+          the chat — try sending again, or start a new chat if it keeps
+          happening.
         </p>
       )}
       <div className="flex flex-wrap gap-2">
@@ -83,6 +110,7 @@ export const OllamaErrorHelp: FC<OllamaErrorHelpProps> = ({
         )}
         {(classified.kind === "unreachable" ||
           classified.kind === "stalled" ||
+          classified.kind === "stream_stalled" ||
           classified.kind === "empty") &&
           onRetry && (
             <Button

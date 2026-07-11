@@ -1,10 +1,10 @@
 mod cache;
-mod math;
+pub(crate) mod math;
 mod router;
 
+use crate::native_agent::ollama;
 use cache::{cache_key_for, CacheLookupResult, SemanticCache};
 use router::route_query;
-use crate::native_agent::ollama;
 use serde::{Deserialize, Serialize};
 use std::sync::{OnceLock, RwLock};
 use std::time::Duration;
@@ -152,10 +152,7 @@ pub fn semantic_cache_clear() -> Result<(), String> {
 }
 
 pub fn current_config() -> SemanticLayerConfig {
-    config_lock()
-        .read()
-        .map(|g| g.clone())
-        .unwrap_or_default()
+    config_lock().read().map(|g| g.clone()).unwrap_or_default()
 }
 
 /// Pre-inference semantic pass for the anthropic proxy path. Fail-open.
@@ -257,7 +254,10 @@ fn apply_router(
     base
 }
 
-async fn embed_texts(config: &SemanticLayerConfig, texts: &[String]) -> Result<Vec<Vec<f32>>, String> {
+async fn embed_texts(
+    config: &SemanticLayerConfig,
+    texts: &[String],
+) -> Result<Vec<Vec<f32>>, String> {
     let model = match ollama::first_embedding_model(&config.ollama_base_url).await {
         Some(m) => m,
         None => {
@@ -323,12 +323,7 @@ mod tests {
         config.cache_enabled = true;
         sync_semantic_layer_config(config).unwrap();
 
-        semantic_cache_store(
-            "key".to_string(),
-            vec![1.0, 0.0, 0.0],
-            "stored".to_string(),
-        )
-        .unwrap();
+        semantic_cache_store("key".to_string(), vec![1.0, 0.0, 0.0], "stored".to_string()).unwrap();
 
         let hit = semantic_cache_lookup(vec![1.0, 0.0, 0.0], "key".to_string()).unwrap();
         assert!(hit.hit);

@@ -4,6 +4,7 @@ import {
   FileTextIcon,
   FolderIcon,
   HomeIcon,
+  BriefcaseIcon,
   FolderPlusIcon,
   ImageIcon,
   PlusIcon,
@@ -53,6 +54,7 @@ import {
   type DragEndEvent,
 } from "@dnd-kit/core";
 import { useDocumentStore, type ProjectFile } from "@/stores/document-store";
+import { useCareerStore } from "@/stores/career-store";
 import { useVariantsStore } from "@/stores/variants-store";
 import { dispatchOpenSettings } from "@/lib/home-flow-events";
 import { useHistoryStore } from "@/stores/history-store";
@@ -593,6 +595,7 @@ export function Sidebar({
   const moveFile = useDocumentStore((s) => s.moveFile);
   const moveFolder = useDocumentStore((s) => s.moveFolder);
   const closeProject = useDocumentStore((s) => s.closeProject);
+  const openCareer = useCareerStore((s) => s.openCareer);
   const refreshFiles = useDocumentStore((s) => s.refreshFiles);
   const projectRoot = useDocumentStore((s) => s.projectRoot);
   const folders = useDocumentStore((s) => s.folders);
@@ -1690,7 +1693,7 @@ export function Sidebar({
           );
         })}
       </div>
-      <div className="flex h-9 w-full items-center justify-center border-sidebar-border border-t">
+      <div className="flex h-9 w-full items-center justify-center gap-1 border-sidebar-border border-t">
         <Button
           variant="ghost"
           size="icon"
@@ -1700,6 +1703,16 @@ export function Sidebar({
           aria-label="Close Project"
         >
           <HomeIcon className="size-3.5" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-7 transition-transform duration-300 ease-in-out hover:scale-105"
+          onClick={() => openCareer()}
+          title="Career database"
+          aria-label="Career database"
+        >
+          <BriefcaseIcon className="size-3.5" />
         </Button>
       </div>
     </div>
@@ -1730,7 +1743,7 @@ export function Sidebar({
         <div className="flex h-full flex-col bg-sidebar text-sidebar-foreground">
           {/* Header — padded top for macOS overlay titlebar */}
           <div className="grid h-[calc(var(--workspace-topbar-height)+var(--titlebar-height))] grid-cols-[2rem_minmax(0,1fr)_2rem] items-center gap-2 border-sidebar-border border-b px-3">
-            <div className="flex items-center justify-start">
+            <div className="flex items-center justify-start gap-0.5">
               <Button
                 variant="ghost"
                 size="icon"
@@ -1740,6 +1753,16 @@ export function Sidebar({
                 aria-label="Close Project"
               >
                 <HomeIcon className="size-3.5" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-6 transition-all duration-150 ease-out hover:scale-105"
+                onClick={() => openCareer()}
+                title="Career database"
+                aria-label="Career database"
+              >
+                <BriefcaseIcon className="size-3.5" />
               </Button>
             </div>
             <button

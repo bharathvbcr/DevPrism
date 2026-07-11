@@ -32,34 +32,34 @@ description: "Skill for the Semantic-layer area of DevPrism. 35 symbols across 1
 
 Start here when exploring this area:
 
-- **`aiCompleteStream`** (Function) — `apps/desktop/src/lib/ai-assist.ts:156`
-- **`explainCompileErrorsStream`** (Function) — `apps/desktop/src/lib/ai-assist.ts:421`
-- **`completeSemanticTurn`** (Function) — `apps/desktop/src/lib/semantic-layer-bridge.ts:151`
+- **`aiCompleteStream`** (Function) — `apps/desktop/src/lib/ai-assist.ts:153`
+- **`explainCompileErrorsStream`** (Function) — `apps/desktop/src/lib/ai-assist.ts:418`
+- **`completeSemanticTurn`** (Function) — `apps/desktop/src/lib/semantic-layer-bridge.ts:152`
 - **`cacheKeyFor`** (Function) — `apps/desktop/src/lib/semantic-layer/cache.ts:21`
-- **`formatCompressedContext`** (Function) — `apps/desktop/src/lib/semantic-layer/compressor.ts:58`
+- **`formatCompressedContext`** (Function) — `apps/desktop/src/lib/semantic-layer/compressor.ts:56`
 
 ## Key Symbols
 
 | Symbol | Type | File | Line |
 |--------|------|------|------|
-| `aiCompleteStream` | Function | `apps/desktop/src/lib/ai-assist.ts` | 156 |
-| `explainCompileErrorsStream` | Function | `apps/desktop/src/lib/ai-assist.ts` | 421 |
-| `completeSemanticTurn` | Function | `apps/desktop/src/lib/semantic-layer-bridge.ts` | 151 |
+| `aiCompleteStream` | Function | `apps/desktop/src/lib/ai-assist.ts` | 153 |
+| `explainCompileErrorsStream` | Function | `apps/desktop/src/lib/ai-assist.ts` | 418 |
+| `completeSemanticTurn` | Function | `apps/desktop/src/lib/semantic-layer-bridge.ts` | 152 |
 | `cacheKeyFor` | Function | `apps/desktop/src/lib/semantic-layer/cache.ts` | 21 |
-| `formatCompressedContext` | Function | `apps/desktop/src/lib/semantic-layer/compressor.ts` | 58 |
+| `formatCompressedContext` | Function | `apps/desktop/src/lib/semantic-layer/compressor.ts` | 56 |
 | `resolveSemanticConfig` | Function | `apps/desktop/src/lib/semantic-layer/config.ts` | 42 |
 | `prepareSemanticInference` | Function | `apps/desktop/src/lib/semantic-layer/pipeline.ts` | 142 |
-| `storeSemanticCache` | Function | `apps/desktop/src/lib/semantic-layer/pipeline.ts` | 248 |
+| `storeSemanticCache` | Function | `apps/desktop/src/lib/semantic-layer/pipeline.ts` | 252 |
 | `runWithSemanticLayer` | Function | `apps/desktop/src/lib/semantic-layer/run-with-semantic-layer.ts` | 19 |
 | `prepareChatSemanticInference` | Function | `apps/desktop/src/lib/semantic-layer/run-with-semantic-layer.ts` | 56 |
 | `isTauri` | Function | `apps/desktop/src/lib/runtime/is-tauri.ts` | 1 |
 | `syncSemanticLayerConfig` | Function | `apps/desktop/src/lib/semantic-layer-bridge.ts` | 18 |
 | `maybeAutoEnableSemanticLayer` | Function | `apps/desktop/src/lib/semantic-layer-bridge.ts` | 49 |
-| `watchSemanticLayerConfigSync` | Function | `apps/desktop/src/lib/semantic-layer-bridge.ts` | 73 |
-| `clearSemanticCache` | Function | `apps/desktop/src/lib/semantic-layer/pipeline.ts` | 268 |
+| `watchSemanticLayerConfigSync` | Function | `apps/desktop/src/lib/semantic-layer-bridge.ts` | 74 |
+| `clearSemanticCache` | Function | `apps/desktop/src/lib/semantic-layer/pipeline.ts` | 272 |
 | `effectiveHitThreshold` | Function | `apps/desktop/src/lib/semantic-layer/config.ts` | 57 |
-| `semanticRank` | Function | `apps/desktop/src/lib/ai-assist.ts` | 230 |
-| `semanticRankTemplates` | Function | `apps/desktop/src/lib/ai-assist.ts` | 677 |
+| `semanticRank` | Function | `apps/desktop/src/lib/ai-assist.ts` | 227 |
+| `semanticRankTemplates` | Function | `apps/desktop/src/lib/ai-assist.ts` | 674 |
 | `selectChunksMmr` | Function | `apps/desktop/src/lib/semantic-layer/compressor.ts` | 11 |
 | `cosineSimilarity` | Function | `apps/desktop/src/lib/semantic-layer/math.ts` | 1 |
 
@@ -82,8 +82,7 @@ Start here when exploring this area:
 
 | Area | Connections |
 |------|-------------|
-| Components | 3 calls |
-| Claude-chat | 1 calls |
+| Claude-chat | 4 calls |
 | Workspace | 1 calls |
 
 ## How to Explore

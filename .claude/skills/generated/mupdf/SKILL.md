@@ -61,7 +61,6 @@ Start here when exploring this area:
 | Flow | Type | Steps |
 |------|------|-------|
 | `CloseProject → CreateClient` | cross_community | 4 |
-| `Handle → CreateClient` | cross_community | 4 |
 
 ## Connected Areas
 

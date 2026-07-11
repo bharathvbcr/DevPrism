@@ -1,11 +1,11 @@
 ---
 name: editor
-description: "Skill for the Editor area of DevPrism. 230 symbols across 38 files."
+description: "Skill for the Editor area of DevPrism. 239 symbols across 41 files."
 ---
 
 # Editor
 
-230 symbols | 38 files | Cohesion: 73%
+239 symbols | 41 files | Cohesion: 73%
 
 ## When to Use
 
@@ -17,7 +17,7 @@ description: "Skill for the Editor area of DevPrism. 230 symbols across 38 files
 
 | File | Symbols |
 |------|---------|
-| `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | getActiveFileContent, spellCheckExtension, LatexEditor, clearJumpRequest, setIsCompiling (+42) |
+| `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | getActiveFileContent, spellCheckExtension, LatexEditor, clearJumpRequest, setIsCompiling (+44) |
 | `apps/desktop/src/components/workspace/editor/editor-toolbar.tsx` | OpenEditorIcon, getOpenEditorButtonClassName, FileBreadcrumb, renderCrumb, SaveStatus (+17) |
 | `apps/desktop/src/lib/resume-bullets.ts` | bulletCountSuccessMessage, clampResumeBulletCount, suggestedBulletTargets, buildBulletCountInstruction, countLatexItems (+10) |
 | `apps/desktop/src/components/workspace/editor/comments-extension.ts` | formatRelTime, el, dispatch, renderTooltipBody, mkBtn (+10) |
@@ -26,7 +26,7 @@ description: "Skill for the Editor area of DevPrism. 230 symbols across 38 files
 | `apps/desktop/src/components/workspace/editor/image-drop.ts` | filterImagePaths, captionAndLabel, isSvgPath, buildFigureSnippet, insertDroppedImages (+6) |
 | `apps/desktop/src/lib/ai-assist.ts` | suggestCitations, extractGrammarSpan, checkGrammar, aiParseLimits, clamp (+5) |
 | `apps/desktop/src/components/workspace/editor/latex-autocomplete.ts` | latexAutocomplete, fnv1a, parseSignature, getParsed, collectBibEntries (+3) |
-| `apps/desktop/src/components/workspace/editor/ai-grammar-extension.ts` | aiGrammarExtension, cacheKey, grammarLinter, update, refresh (+1) |
+| `apps/desktop/src/lib/inline-edit.ts` | canUseDirectInlineTransform, runInlineEdit, inlineEditUsesNativeTransform, inlineEditSuccessMessage, applyLintLineFix (+2) |
 
 ## Entry Points
 
@@ -47,16 +47,16 @@ Start here when exploring this area:
 | `bibtex` | Function | `apps/desktop/src/components/workspace/editor/lang-bibtex.ts` | 323 |
 | `latexAutocomplete` | Function | `apps/desktop/src/components/workspace/editor/latex-autocomplete.ts` | 240 |
 | `latexStyling` | Function | `apps/desktop/src/components/workspace/editor/latex-styling-extension.ts` | 84 |
-| `LatexEditor` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 204 |
-| `clearJumpRequest` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 215 |
-| `setIsCompiling` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 217 |
-| `setPdfData` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 218 |
-| `setCompileError` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 219 |
-| `saveAllFiles` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 220 |
-| `loadFileContent` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 247 |
-| `goToChunk` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 414 |
-| `isOverEditor` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 1197 |
-| `handleHistoryAddLabel` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 2264 |
+| `LatexEditor` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 203 |
+| `clearJumpRequest` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 214 |
+| `setIsCompiling` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 216 |
+| `setPdfData` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 217 |
+| `setCompileError` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 218 |
+| `saveAllFiles` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 219 |
+| `loadFileContent` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 246 |
+| `goToChunk` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 413 |
+| `isOverEditor` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 1196 |
+| `handleHistoryAddLabel` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 2263 |
 | `ToolbarGroup` | Function | `apps/desktop/src/components/ui/toolbar-group.tsx` | 10 |
 | `EditorToolbar` | Function | `apps/desktop/src/components/workspace/editor/editor-toolbar.tsx` | 251 |
 | `setVimMode` | Function | `apps/desktop/src/components/workspace/editor/editor-toolbar.tsx` | 261 |
@@ -75,20 +75,21 @@ Start here when exploring this area:
 | `HandleToolbarAction → IsOllamaEndpoint` | cross_community | 5 |
 | `HandleToolbarAction → AcquireAiSlot` | cross_community | 5 |
 | `HandleToolbarAction → ReleaseAiSlot` | cross_community | 5 |
-| `ClaudeChatDrawer → GetCompileRootPreference` | cross_community | 5 |
-| `DeleteFile → ParseBrowserRoot` | cross_community | 5 |
+| `LatexEditor → ResolveTexRoot` | cross_community | 4 |
+| `EditorToolbar → IsOllamaEndpoint` | cross_community | 4 |
 
 ## Connected Areas
 
 | Area | Connections |
 |------|-------------|
-| Workspace | 50 calls |
+| Workspace | 48 calls |
 | Ui | 17 calls |
-| Cluster_345 | 5 calls |
-| Preview | 5 calls |
+| Preview | 6 calls |
+| Cluster_354 | 5 calls |
 | Browser-project | 4 calls |
-| Claude-chat | 3 calls |
-| Cluster_318 | 3 calls |
+| Cluster_324 | 3 calls |
+| Claude-chat | 2 calls |
+| Components | 2 calls |
 
 ## How to Explore
 

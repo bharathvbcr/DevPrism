@@ -98,6 +98,27 @@ describe("classifyOllamaError", () => {
     ).toMatchObject({ kind: "already_running" });
   });
 
+  it("classifies auth failures by code", () => {
+    expect(
+      classifyOllamaError("[E_AUTH] Groq API key is missing or invalid."),
+    ).toMatchObject({
+      kind: "auth",
+      message: "Groq API key is missing or invalid.",
+    });
+    expect(
+      classifyOllamaError("[E_AUTH] Groq API key is missing or invalid.")
+        .message,
+    ).not.toContain("[E_AUTH]");
+  });
+
+  it("prefers E_AUTH code over unreachable prose in the same message", () => {
+    expect(
+      classifyOllamaError(
+        "[E_AUTH] Could not reach Groq at https://api.groq.com",
+      ),
+    ).toMatchObject({ kind: "auth" });
+  });
+
   it("falls back to generic for unrecognized errors", () => {
     expect(classifyOllamaError("Something odd happened.")).toMatchObject({
       kind: "generic",
@@ -119,5 +140,18 @@ describe("classifyOllamaError", () => {
     );
     expect(c.kind).toBe("empty");
     expect(c.message).not.toContain("[E_OLLAMA_EMPTY]");
+  });
+
+  it("classifies frontend stream stall separately from Ollama token stall", () => {
+    expect(
+      classifyOllamaError(
+        "Your message was received, but the AI produced no output for several minutes. Send again or start a new chat.",
+      ),
+    ).toMatchObject({ kind: "stream_stalled" });
+    expect(
+      classifyOllamaError(
+        "[E_OLLAMA_STALLED] Ollama stopped emitting tokens for 90s",
+      ),
+    ).toMatchObject({ kind: "stalled" });
   });
 });

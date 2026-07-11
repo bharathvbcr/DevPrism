@@ -77,6 +77,11 @@
 2. Use `gitnexus` map/query/context to find canonical owner(s).
 3. Inspect only the owning boundary first, then touch the smallest surface.
 
+## Feature design docs
+
+- Career platform (schema, RAG, refactor spec): [`CAREER_PLATFORM_DESIGN.md`](./CAREER_PLATFORM_DESIGN.md)
+- Career DB + JD resume synthesis (pipeline companion): [`RESUME_SYNTHESIS.md`](./RESUME_SYNTHESIS.md)
+
 ## Canonical Source-of-Truth Reminder
 
 - Treat generated directories (`node_modules`, `dist`, `target`, compiled assets, binaries) as non-authoritative.

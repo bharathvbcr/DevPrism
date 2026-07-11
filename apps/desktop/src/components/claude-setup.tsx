@@ -86,6 +86,14 @@ const OPENAI_COMPATIBLE_PRESETS: OpenAICompatiblePreset[] = [
     apiKeyOptional: true,
   },
   {
+    id: "groq",
+    label: "Groq",
+    baseUrl: "https://api.groq.com/openai/v1",
+    model: "llama-3.3-70b-versatile",
+    note: "Groq OpenAI-compatible API for Native Groq / Native API backends. Optional groq-code-cli for terminal use.",
+    badge: "Groq",
+  },
+  {
     id: "openai",
     label: "OpenAI",
     baseUrl: "https://api.openai.com",
@@ -97,7 +105,7 @@ const OPENAI_COMPATIBLE_PRESETS: OpenAICompatiblePreset[] = [
     label: "OpenRouter",
     baseUrl: "https://openrouter.ai/api/v1",
     model: "",
-    note: "OpenRouter OpenAI-compatible endpoint. Use a model id like openai/gpt-4o or anthropic/claude-3.5-sonnet.",
+    note: "OpenRouter OpenAI-compatible endpoint for Claude Code proxy or Native API. Use a model id like openai/gpt-4o or anthropic/claude-3.5-sonnet.",
     badge: "OR",
   },
   {
@@ -130,10 +138,19 @@ const OPENAI_COMPATIBLE_PRESETS: OpenAICompatiblePreset[] = [
   },
   {
     id: "gemini",
-    label: "Gemini OpenAI",
+    label: "Gemini (AI Studio API key)",
     baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
-    model: "",
-    note: "Google Gemini OpenAI-compatible endpoint.",
+    model: "gemini-3.5-flash",
+    note: "A plain AI Studio API key works with this endpoint. Billing is managed at ai.studio.",
+  },
+  {
+    id: "vertex",
+    label: "Vertex AI (Google Cloud)",
+    baseUrl:
+      "https://aiplatform.googleapis.com/v1/projects/YOUR_PROJECT_ID/locations/global/endpoints/openapi",
+    model: "google/gemini-3.5-flash",
+    note: "Replace YOUR_PROJECT_ID and enable the Vertex AI API. DevPrism mints the access token from gcloud automatically.",
+    apiKeyOptional: true,
   },
 ];
 
@@ -268,9 +285,19 @@ function normalizePresetBaseUrl(url: string) {
     .toLowerCase();
 }
 
+function geminiPresetIdForBaseUrl(url: string) {
+  const lower = url.toLowerCase();
+  if (lower.includes("aiplatform.googleapis.com")) return "vertex";
+  if (lower.includes("generativelanguage.googleapis.com")) return "gemini";
+  return null;
+}
+
 function findOpenAiPresetIdForBaseUrl(baseUrl?: string | null) {
   const normalized = normalizePresetBaseUrl(baseUrl ?? "");
   if (!normalized) return null;
+
+  const geminiPresetId = geminiPresetIdForBaseUrl(normalized);
+  if (geminiPresetId) return geminiPresetId;
 
   return (
     OPENAI_COMPATIBLE_PRESETS.find(
@@ -798,7 +825,9 @@ export function ClaudeSetup({
               placeholder={
                 selectedProvider === "openai-compatible"
                   ? apiKeyOptional
-                    ? "Optional for local Ollama"
+                    ? activeCardId === "vertex"
+                      ? "Optional — minted from gcloud"
+                      : "Optional for local Ollama"
                     : "sk-..."
                   : "sk-ant-... or provider key"
               }
@@ -814,7 +843,9 @@ export function ClaudeSetup({
             <p className="text-muted-foreground text-xs">
               {selectedProvider === "openai-compatible"
                 ? apiKeyOptional
-                  ? "Ollama runs locally and normally does not require an API key."
+                  ? activeCardId === "vertex"
+                    ? "DevPrism mints a Google Cloud access token from gcloud automatically."
+                    : "Ollama runs locally and normally does not require an API key."
                   : "Use the API key from your model provider."
                 : "Anthropic keys start with sk-ant-. Claude-compatible proxies can use their own key format."}
             </p>
@@ -881,7 +912,11 @@ export function ClaudeSetup({
                     ? "Qwen runs through its native Anthropic-compatible Claude Code route."
                     : activeCardId === "moonshot"
                       ? "Kimi runs through its native Anthropic-compatible Claude Code route."
-                      : "Use either the API root or a full /chat/completions URL."
+                      : activeCardId === "gemini"
+                        ? "Use an AI Studio API key. Billing for this endpoint is managed at ai.studio."
+                        : activeCardId === "vertex"
+                          ? "Replace YOUR_PROJECT_ID. DevPrism mints the access token from gcloud automatically. Model ids look like google/gemini-3.5-flash."
+                          : "Use either the API root or a full /chat/completions URL."
                 : "Leave blank for Anthropic direct API."}
             </p>
           </div>
@@ -1048,7 +1083,9 @@ export function ClaudeSetup({
                 : "Saving..."
               : selectedProvider === "openai-compatible"
                 ? apiKeyOptional
-                  ? "Verify & Use Local Provider"
+                  ? activeCardId === "vertex"
+                    ? "Verify & Use Vertex AI"
+                    : "Verify & Use Local Provider"
                   : "Verify & Use API Key"
                 : "Use API Key"}
           </Button>

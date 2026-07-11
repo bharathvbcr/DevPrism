@@ -82,7 +82,6 @@ function snapshotTypeBadgeColor(message: string): string {
 // ─── Panel ───
 
 export function HistoryPanel({ maxHeight }: { maxHeight?: string }) {
-  const _nativeAgentEnabled = useSettingsStore((s) => s.nativeAgentEnabled);
   const projectRoot = useDocumentStore((s) => s.projectRoot);
   const snapshots = useHistoryStore((s) => s.snapshots);
   const isLoading = useHistoryStore((s) => s.isLoading);
@@ -406,7 +405,7 @@ function SnapshotRow({
   onExportTrackedTex: () => void;
   onPreviewTrackedPdf: () => void;
 }) {
-  const nativeAgentEnabled = useSettingsStore((s) => s.nativeAgentEnabled);
+  const agentBackend = useSettingsStore((s) => s.agentBackend);
   const hasFiles = snapshot.changed_files.length > 0;
 
   return (
@@ -430,7 +429,7 @@ function SnapshotRow({
                     snapshotTypeBadgeColor(snapshot.message),
                   )}
                 >
-                  {snapshotTypeLabel(snapshot.message, nativeAgentEnabled)}
+                  {snapshotTypeLabel(snapshot.message, agentBackend)}
                 </span>
                 <span className="text-muted-foreground text-xs">
                   {formatRelativeTime(snapshot.timestamp)}

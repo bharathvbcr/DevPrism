@@ -53,7 +53,7 @@ DevPrism is a **fully local** alternative — your files are stored on your disk
 
 | | OpenAI Prism | DevPrism |
 |---|:---:|:---:|
-| AI Model | GPT-5.2 (cloud) | **Local via Ollama (llama3, qwen, mistral, …) — cloud optional** |
+| AI Model | GPT-5.2 (cloud) | **Local Ollama, Groq, Claude Code, or Cursor CLI** |
 | Privacy | Files uploaded to cloud | **Runs offline; no data leaves your machine by default** |
 | Runtime | Browser (cloud) | **Native desktop (Tauri 2 + Rust)** |
 | LaTeX | Cloud compilation | **Tectonic (embedded, offline)** |
@@ -101,17 +101,20 @@ DevPrism also ships its own **bundled, fully-offline skill packages** — `resum
   <img src="./assets/demo/scientific.webp" alt="Scientific Skills" width="700" />
 </p>
 
-### Quick Start with Templates & Project Wizard
-Pick a template (paper, thesis, presentation, poster, letter, etc.), give it a name, optionally describe what you're writing — DevPrism sets up the project and generates initial content with AI. Drag & drop reference files (PDF, BIB, images) and start writing immediately.
+### Visual Template Gallery & Project Wizard
+Pick a template (paper, thesis, presentation, poster, letter, etc.) in the redesigned visual **Template Gallery** that groups templates by category (Papers, Presentations, Posters, CVs, Letters, Books, Reports, Newsletters). The gallery provides tags, package dependencies, bibliography indicators, and full source code previews. Give the project a name, describe what you're writing, and DevPrism will set up the workspace and generate initial content with AI. Drag & drop reference files (PDF, BIB, images) and start writing immediately.
 
 <p align="center">
   <img src="./assets/demo/starter.webp" alt="Template Gallery & Project Wizard" width="700" />
 </p>
 
-### Local-First AI Assistant
-Chat with a model running locally on your machine via **Ollama** — DevPrism auto-detects your installed models, so there's no hardcoded default and no API key required. Prefer a cloud model? Pick Anthropic, OpenAI, or any OpenAI-compatible endpoint in Settings. Persistent sessions, tool use (file edit, bash, search), adjustable reasoning effort, and extensible slash commands.
+### Flexible Agent Backends (Local & Cloud)
+Configure your active assistant in **Settings → Provider → Agent backend**:
 
-Turn on the **native local agent** (Settings → Provider) to run the whole agentic loop in-process against Ollama with **no Claude CLI and no proxy** — fully offline and self-contained, with its own Rust tools (Read/Write/Edit/LS/Grep/Glob/Bash), conversation memory, vision support, and tunable `num_ctx`/temperature. See [docs/NATIVE_AGENT.md](docs/NATIVE_AGENT.md).
+- **Native Ollama** (Local): Runs the entire agent loop in-process against Ollama with **no external CLI or proxy** — fully offline. Uses native Rust tools (Read, Write, Edit, LS, Grep, Glob, Bash), supports vision, and allows configuring parameters like context window (`num_ctx`) and temperature. See [docs/NATIVE_AGENT.md](docs/NATIVE_AGENT.md).
+- **Native Groq** (Cloud): Uses the Groq OpenAI-compatible API for high-speed cloud inference. Default model is `llama-3.3-70b-versatile` (configurable in Settings).
+- **Claude Code**: Integrates Anthropic's Claude Code CLI with stream-json output, supporting persistent session history.
+- **Cursor CLI**: Spawns the headless Cursor CLI (`agent`) via the Agent Control Protocol (ACP) over stdio with a stream-json fallback. See [docs/CURSOR_CLI.md](docs/CURSOR_CLI.md).
 
 ### Project Spaces
 Group related projects into named **spaces** (e.g. *PhD Papers*, *Job Applications*) — each with its own color, default model, and attached skills. Filter the project picker by space, move projects between spaces, and one-click install a space's skills into all its projects.
@@ -138,7 +141,7 @@ Press `⌘X` to enter capture mode, drag to select any region in the PDF — the
 </p>
 
 ### Live PDF Preview
-Native MuPDF rendering with SyncTeX support — click a position in the PDF to jump to the corresponding source line. Supports zoom, text selection, and capture.
+Native MuPDF rendering with SyncTeX support — click a position in the PDF to jump to the corresponding source line. Supports high-precision text selection/quad extraction (using the MuPDF client) to ensure visual highlights align perfectly on the page, interactive zoom controls, and capture.
 
 ### Editor
 CodeMirror 6 with LaTeX/BibTeX syntax highlighting, real-time error linting, find & replace (regex), and multi-file project support with auto-save.

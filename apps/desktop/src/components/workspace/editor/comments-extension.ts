@@ -134,8 +134,8 @@ function dispatch(name: string, detail: unknown) {
 }
 
 function renderTooltipBody(comments: Comment[]): HTMLElement {
-  const nativeAgentEnabled = useSettingsStore.getState().nativeAgentEnabled;
-  const chatLabels = getChatLabels(nativeAgentEnabled);
+  const agentBackend = useSettingsStore.getState().agentBackend;
+  const chatLabels = getChatLabels(agentBackend);
   const root = el("div", "cmp-tooltip");
   for (const c of comments) {
     const isAgent = c.author === "claude";

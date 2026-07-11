@@ -12,6 +12,7 @@ import {
 } from "@/lib/chat-drawer-events";
 import { requestCompile } from "@/lib/compile-events";
 import { dispatchOpenSettings } from "@/lib/home-flow-events";
+import { useCareerStore } from "@/stores/career-store";
 import {
   RECOMMENDED_EMBED_MODEL,
   getOllamaBaseUrl,
@@ -60,6 +61,22 @@ function buildActions(): PaletteAction[] {
   const toggleHint = (on: boolean) => (on ? "On" : "Off");
 
   const actions: PaletteAction[] = [
+    {
+      id: "open-career-database",
+      label: "Open Career database",
+      keywords: [
+        "career",
+        "resume",
+        "synthesis",
+        "jd",
+        "job description",
+        "persona",
+        "experience blocks",
+        "knowledge base",
+      ],
+      hint: "Career",
+      run: () => useCareerStore.getState().openCareer(),
+    },
     {
       id: "open-scholarlm-research",
       label: "ScholarLM: Research a question",

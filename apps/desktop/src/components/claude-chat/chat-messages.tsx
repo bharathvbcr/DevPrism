@@ -35,6 +35,7 @@ import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useChatLabels } from "@/lib/chat-labels";
+import { isNativeOllamaBackend } from "@/lib/agent-backend";
 import { NativeOllamaEmptyState } from "./native-ollama-empty-state";
 import { ChatStarterChips } from "./chat-starter-chips";
 import { buildChatStarterPromptsFromStore } from "@/lib/chat-starter-prompts";
@@ -46,52 +47,68 @@ import {
   ToolGroupWidget,
   groupAssistantToolBlocks,
 } from "./tool-widgets";
+import { streamPhaseLabel } from "@/lib/claude-stream-heartbeat";
 
 // ─── Streaming Indicator (isolated to prevent re-render storms) ───
 
-const StreamingIndicator: FC<{ startedAt: number | null }> = memo(
-  ({ startedAt }) => {
-    const calculateElapsed = () =>
-      startedAt ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000)) : 0;
+const PHASE_DOT_CLASS: Record<string, string> = {
+  thinking: "bg-violet-400/70 animate-pulse",
+  chat: "bg-sky-400/70 animate-bounce",
+  tool: "bg-amber-400/70 animate-bounce",
+  ask_user: "bg-emerald-400/70 animate-pulse",
+  prep: "bg-muted-foreground/40 animate-pulse",
+  retry: "bg-orange-400/70 animate-pulse",
+};
 
-    const [elapsed, setElapsed] = useState(calculateElapsed);
+const StreamingIndicator: FC<{
+  startedAt: number | null;
+  phase: string | null;
+}> = memo(({ startedAt, phase }) => {
+  const calculateElapsed = () =>
+    startedAt ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000)) : 0;
 
-    useEffect(() => {
+  const [elapsed, setElapsed] = useState(calculateElapsed);
+
+  useEffect(() => {
+    setElapsed(calculateElapsed());
+    const timer = setInterval(() => {
       setElapsed(calculateElapsed());
-      const timer = setInterval(() => {
-        setElapsed(calculateElapsed());
-      }, 1000);
-      return () => clearInterval(timer);
-    }, [startedAt]);
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [startedAt]);
 
-    return (
-      <div className="flex items-center gap-1.5 px-1 py-1.5 text-muted-foreground">
-        <div className="flex gap-0.5">
-          <span
-            className="size-1.5 animate-bounce rounded-full bg-muted-foreground/50"
-            style={{ animationDelay: "0ms" }}
-          />
-          <span
-            className="size-1.5 animate-bounce rounded-full bg-muted-foreground/50"
-            style={{ animationDelay: "150ms" }}
-          />
-          <span
-            className="size-1.5 animate-bounce rounded-full bg-muted-foreground/50"
-            style={{ animationDelay: "300ms" }}
-          />
-        </div>
-        <span className="text-sm">
-          {elapsed >= 15 ? "Still working…" : "Thinking…"}
-          {elapsed >= 1 && (
-            <span className="ml-1 text-muted-foreground/60 text-xs">
-              {elapsed}s
-            </span>
-          )}
-        </span>
+  const statusLabel = streamPhaseLabel(phase, elapsed);
+  const dotClass =
+    (phase && PHASE_DOT_CLASS[phase]) ||
+    "bg-muted-foreground/50 animate-bounce";
+
+  return (
+    <div className="flex items-center gap-1.5 px-1 py-1.5 text-muted-foreground">
+      <div className="flex gap-0.5">
+        <span
+          className={`size-1.5 rounded-full ${dotClass}`}
+          style={{ animationDelay: "0ms" }}
+        />
+        <span
+          className={`size-1.5 rounded-full ${dotClass}`}
+          style={{ animationDelay: "150ms" }}
+        />
+        <span
+          className={`size-1.5 rounded-full ${dotClass}`}
+          style={{ animationDelay: "300ms" }}
+        />
       </div>
-    );
-  },
-);
+      <span className="text-sm">
+        {statusLabel}
+        {elapsed >= 1 && (
+          <span className="ml-1 text-muted-foreground/60 text-xs tabular-nums">
+            {elapsed}s
+          </span>
+        )}
+      </span>
+    </div>
+  );
+});
 
 const EMPTY_PENDING_GUIDANCE: QueuedGuidance[] = [];
 const THREAD_MAX_WIDTH = "max-w-[44rem]";
@@ -344,6 +361,7 @@ export const ChatMessages: FC = () => {
   const messages = useClaudeChatStore((s) => s.messages) ?? [];
   const isStreaming = useClaudeChatStore((s) => s.isStreaming);
   const streamingStartedAt = useClaudeChatStore((s) => s.streamingStartedAt);
+  const streamingPhase = useClaudeChatStore((s) => s.streamingPhase);
   const queuedGuidance =
     useClaudeChatStore(
       (s) => s.tabs.find((tab) => tab.id === s.activeTabId)?.queuedGuidance,
@@ -356,7 +374,8 @@ export const ChatMessages: FC = () => {
   const shouldAutoScrollRef = useRef(true);
   const userHasScrolledRef = useRef(false);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
-  const nativeAgentEnabled = useSettingsStore((s) => s.nativeAgentEnabled);
+  const agentBackend = useSettingsStore((s) => s.agentBackend);
+  const isNativeOllama = isNativeOllamaBackend(agentBackend);
   const chatLabels = useChatLabels();
   const activeTabId = useClaudeChatStore((s) => s.activeTabId);
   const saveDraft = useClaudeChatStore((s) => s.saveDraft);
@@ -483,7 +502,7 @@ export const ChatMessages: FC = () => {
         {displayMessages.length === 0 &&
           pendingGuidance.length === 0 &&
           !isStreaming &&
-          (nativeAgentEnabled ? (
+          (isNativeOllama ? (
             <NativeOllamaEmptyState />
           ) : (
             <div className="mx-auto flex h-full max-w-md flex-col items-center justify-center gap-3 px-6 text-center">
@@ -531,7 +550,10 @@ export const ChatMessages: FC = () => {
 
         {isStreaming && (
           <div className={cn("mx-auto w-full px-2", THREAD_MAX_WIDTH)}>
-            <StreamingIndicator startedAt={streamingStartedAt} />
+            <StreamingIndicator
+              startedAt={streamingStartedAt}
+              phase={streamingPhase}
+            />
           </div>
         )}
 
@@ -597,6 +619,7 @@ const MessageBubble: FC<{
           toolResultMap={toolResultMap}
           regenerateIndex={precedingUserIndex}
           canRegenerate={isLast && !isStreaming}
+          streamingActive={isStreaming && isLast}
         />
       );
     }
@@ -873,7 +896,14 @@ const AssistantMessage: FC<{
   toolResultMap: Map<string, ContentBlock>;
   regenerateIndex: number;
   canRegenerate: boolean;
-}> = ({ message, toolResultMap, regenerateIndex, canRegenerate }) => {
+  streamingActive?: boolean;
+}> = ({
+  message,
+  toolResultMap,
+  regenerateIndex,
+  canRegenerate,
+  streamingActive = false,
+}) => {
   const content = message.message?.content;
   const blocks = Array.isArray(content) ? content : [];
 
@@ -934,6 +964,7 @@ const AssistantMessage: FC<{
                 key={idx}
                 thinking={block.thinking}
                 signature={block.signature}
+                streaming={streamingActive}
               />
             );
           }

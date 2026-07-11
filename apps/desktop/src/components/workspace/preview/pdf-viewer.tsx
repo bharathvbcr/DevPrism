@@ -32,7 +32,13 @@ import {
 } from "@/stores/annotation-store";
 import { createLogger } from "@/lib/debug/logger";
 import { APP_VISIBILITY_RESTORED } from "@/lib/debug/log-store";
-import type { PageSize, Rect } from "@/lib/mupdf/types";
+import type { PageSize, Rect, StructuredTextData } from "@/lib/mupdf/types";
+import {
+  mergeClientRectsToQuads,
+  quadsFromStructuredText,
+  isSelectionInPdfTextLayer,
+  type PdfTextQuad,
+} from "@/lib/pdf-text-selection";
 
 const log = createLogger("pdf-viewer");
 
@@ -213,7 +219,7 @@ export interface PdfTextSelection {
   pdfY: number;
   /** Per-line quads of the selection in PDF page-space points:
    *  [ulx, uly, urx, ury, llx, lly, lrx, lry]. Used for highlighting. */
-  quads: number[][];
+  quads: PdfTextQuad[];
 }
 
 const EMPTY_HIGHLIGHTS: PdfHighlight[] = [];
@@ -249,6 +255,8 @@ interface PdfViewerProps {
   onSynctexClick?: (page: number, x: number, y: number) => void;
   forwardPulse?: ForwardSyncPulse | null;
   onTextSelect?: (selection: PdfTextSelection | null) => void;
+  /** Mirror of the active PDF text selection — drives the pre-highlight overlay. */
+  selectionForOverlay?: PdfTextSelection | null;
   onFirstPageSize?: (width: number, height: number) => void;
   onContainerResize?: (width: number, height: number) => void;
   onCurrentPageChange?: (page: number) => void;
@@ -273,6 +281,7 @@ export function PdfViewer({
   onSynctexClick,
   forwardPulse = null,
   onTextSelect,
+  selectionForOverlay = null,
   onFirstPageSize,
   onContainerResize,
   onCurrentPageChange,
@@ -317,6 +326,7 @@ export function PdfViewer({
   synctexClickRef.current = onSynctexClick;
   const textSelectRef = useRef(onTextSelect);
   textSelectRef.current = onTextSelect;
+  const clearTextSelectionRef = useRef<() => void>(() => {});
 
   // Scroll preservation across recompile
   const isFirstLoad = useRef(true);
@@ -455,6 +465,7 @@ export function PdfViewer({
 
   // ── Full-document text search ──────────────────────────────────────────
   const [searchOpen, setSearchOpen] = useState(false);
+  const pageTextCacheRef = useRef<Map<number, StructuredTextData>>(new Map());
   const [searchQuery, setSearchQuery] = useState("");
   const [searchMatches, setSearchMatches] = useState<
     { pageIndex: number; rect: Rect }[]
@@ -783,6 +794,7 @@ export function PdfViewer({
     if (syncResult) {
       docIdRef.current = syncResult.docId;
       setPageSizes(syncResult.pageSizes);
+      pageTextCacheRef.current.clear();
       setLoadGen((g) => g + 1);
       setLoading(false);
 
@@ -818,6 +830,8 @@ export function PdfViewer({
 
         docIdRef.current = docId;
         setPageSizes(sizes);
+        pageTextCacheRef.current.clear();
+        textSelectRef.current?.(null);
         setLoadGen((g) => g + 1);
         setLoading(false);
 
@@ -958,6 +972,7 @@ export function PdfViewer({
     if (!container) return;
 
     let selectionTimer: ReturnType<typeof setTimeout> | null = null;
+    let selectionGen = 0;
 
     const cancelPendingSelection = () => {
       if (selectionTimer !== null) {
@@ -966,109 +981,140 @@ export function PdfViewer({
       }
     };
 
+    const publishSelection = (selection: PdfTextSelection | null) => {
+      textSelectRef.current?.(selection);
+    };
+
+    const resolveSelectionQuads = async (
+      gen: number,
+      pageIndex: number,
+      selectedText: string,
+      range: Range,
+      pageRect: DOMRect,
+      scale: number,
+    ): Promise<PdfTextQuad[]> => {
+      const quads = mergeClientRectsToQuads(
+        range.getClientRects(),
+        pageRect,
+        scale,
+      );
+      if (quads.length > 0) return quads;
+
+      let textData = pageTextCacheRef.current.get(pageIndex);
+      if (!textData) {
+        const docId = docIdRef.current;
+        if (docId <= 0) return quads;
+        try {
+          textData = (await getMupdfClient().getPageText(
+            docId,
+            pageIndex,
+          )) as StructuredTextData;
+          if (gen !== selectionGen) return [];
+          pageTextCacheRef.current.set(pageIndex, textData);
+        } catch {
+          return quads;
+        }
+      }
+
+      return quadsFromStructuredText(textData, selectedText);
+    };
+
     const handleMouseDown = () => {
       cancelPendingSelection();
     };
 
     const handleMouseUp = () => {
       if (captureMode) return;
-      const cb = textSelectRef.current;
-      if (!cb) return;
+      if (!textSelectRef.current) return;
 
       cancelPendingSelection();
 
       selectionTimer = setTimeout(() => {
-        selectionTimer = null;
+        void (async () => {
+          selectionTimer = null;
+          const gen = ++selectionGen;
 
-        const sel = window.getSelection();
-        const text = sel?.toString().trim();
-        if (!text || text.length < 2) {
-          cb(null);
-          return;
-        }
+          const sel = window.getSelection();
+          const text = sel?.toString().trim();
+          if (!text || text.length < 2 || !sel || sel.rangeCount === 0) {
+            publishSelection(null);
+            return;
+          }
 
-        const anchorEl = sel?.anchorNode?.parentElement;
-        if (!anchorEl?.closest(".mupdf-text-layer")) {
-          cb(null);
-          return;
-        }
+          if (!isSelectionInPdfTextLayer(sel)) {
+            publishSelection(null);
+            return;
+          }
 
-        const pageEl = anchorEl.closest(".mupdf-page") as HTMLElement | null;
-        const pageNum = pageEl
-          ? parseInt(pageEl.getAttribute("data-page-number") || "1", 10)
-          : 1;
+          const anchorEl = sel.anchorNode?.parentElement;
+          const pageEl = (anchorEl?.closest(".mupdf-page") ??
+            sel.focusNode?.parentElement?.closest(
+              ".mupdf-page",
+            )) as HTMLElement | null;
+          const pageNum = pageEl
+            ? parseInt(pageEl.getAttribute("data-page-number") || "1", 10)
+            : 1;
+          const pageIndex = pageNum - 1;
 
-        const range = sel!.getRangeAt(0);
-        const rect = range.getBoundingClientRect();
+          const range = sel.getRangeAt(0);
+          const rect = range.getBoundingClientRect();
 
-        let pdfX = 0;
-        let pdfY = 0;
-        const quads: number[][] = [];
-        if (pageEl) {
-          const pageRect = pageEl.getBoundingClientRect();
-          const currentScale = scaleRef.current;
-          pdfX = (rect.left - pageRect.left) / currentScale;
-          pdfY = (rect.top - pageRect.top) / currentScale;
-
-          // getClientRects() yields one rect per span, so a single visual line
-          // can arrive as several overlapping rects. Keep only rects whose
-          // centre is on this page (selections can span pages), then merge
-          // rects that share a line into one bar — otherwise the multiply
-          // overlay stacks into dark bands and the export gets duplicate quads.
-          const lines: {
-            top: number;
-            bottom: number;
-            left: number;
-            right: number;
-          }[] = [];
-          for (const r of Array.from(range.getClientRects())) {
-            if (r.width < 1 || r.height < 1) continue;
-            const cy = r.top + r.height / 2;
-            if (cy < pageRect.top - 1 || cy > pageRect.bottom + 1) continue;
-            const tol = r.height * 0.5;
-            const sameLine = lines.find(
-              (l) =>
-                Math.abs(l.top - r.top) < tol &&
-                Math.abs(l.bottom - r.bottom) < tol,
+          let pdfX = 0;
+          let pdfY = 0;
+          let quads: PdfTextQuad[] = [];
+          if (pageEl) {
+            const pageRect = pageEl.getBoundingClientRect();
+            const currentScale = scaleRef.current;
+            pdfX = (rect.left - pageRect.left) / currentScale;
+            pdfY = (rect.top - pageRect.top) / currentScale;
+            quads = mergeClientRectsToQuads(
+              range.getClientRects(),
+              pageRect,
+              currentScale,
             );
-            if (sameLine) {
-              sameLine.top = Math.min(sameLine.top, r.top);
-              sameLine.bottom = Math.max(sameLine.bottom, r.bottom);
-              sameLine.left = Math.min(sameLine.left, r.left);
-              sameLine.right = Math.max(sameLine.right, r.right);
-            } else {
-              lines.push({
-                top: r.top,
-                bottom: r.bottom,
-                left: r.left,
-                right: r.right,
-              });
+          }
+
+          const selection: PdfTextSelection = {
+            text,
+            pageNumber: pageNum,
+            position: { top: rect.bottom, left: rect.left },
+            pdfX,
+            pdfY,
+            quads,
+          };
+
+          if (quads.length === 0 && pageEl) {
+            const pageRect = pageEl.getBoundingClientRect();
+            const resolved = await resolveSelectionQuads(
+              gen,
+              pageIndex,
+              text,
+              range,
+              pageRect,
+              scaleRef.current,
+            );
+            if (gen !== selectionGen) return;
+            if (resolved.length > 0) {
+              publishSelection({ ...selection, quads: resolved });
+              return;
             }
           }
-          for (const l of lines) {
-            const x = (l.left - pageRect.left) / currentScale;
-            const y = (l.top - pageRect.top) / currentScale;
-            const w = (l.right - l.left) / currentScale;
-            const h = (l.bottom - l.top) / currentScale;
-            quads.push([x, y, x + w, y, x, y + h, x + w, y + h]);
-          }
-        }
 
-        cb({
-          text,
-          pageNumber: pageNum,
-          position: { top: rect.bottom, left: rect.left },
-          pdfX,
-          pdfY,
-          quads,
-        });
-      }, 300);
+          publishSelection(selection);
+        })();
+      }, 150);
     };
 
     container.addEventListener("mousedown", handleMouseDown);
     container.addEventListener("mouseup", handleMouseUp);
+    clearTextSelectionRef.current = () => {
+      selectionGen++;
+      textSelectRef.current?.(null);
+    };
     return () => {
       cancelPendingSelection();
+      selectionGen++;
+      clearTextSelectionRef.current = () => {};
       container.removeEventListener("mousedown", handleMouseDown);
       container.removeEventListener("mouseup", handleMouseUp);
     };
@@ -1124,8 +1170,7 @@ export function PdfViewer({
     if (!container) return;
 
     const handleScroll = () => {
-      const cb = textSelectRef.current;
-      if (cb) cb(null);
+      clearTextSelectionRef.current();
     };
 
     container.addEventListener("scroll", handleScroll, { passive: true });
@@ -1687,6 +1732,13 @@ export function PdfViewer({
               darkMode={darkMode}
               highlights={highlightsByPage?.get(i)}
               annotations={annotationsByPage?.get(i)}
+              selectionOverlay={
+                selectionForOverlay &&
+                selectionForOverlay.quads.length > 0 &&
+                selectionForOverlay.pageNumber - 1 === i
+                  ? selectionForOverlay.quads
+                  : undefined
+              }
               onRemoveAnnotation={handleRemoveAnnotation}
               onUpdateNote={handleUpdateNote}
             />

@@ -1,4 +1,21 @@
+import "@testing-library/jest-dom/vitest";
 import { vi } from "vitest";
+import { cleanup } from "@testing-library/react";
+import { afterEach } from "vitest";
+
+afterEach(() => {
+  cleanup();
+});
+
+// Radix UI (Select, ScrollArea, etc.) expects browser layout APIs.
+class ResizeObserverStub {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+vi.stubGlobal("ResizeObserver", ResizeObserverStub);
+
+Element.prototype.scrollIntoView = vi.fn();
 
 const storageData = new Map<string, string>();
 const mockStorage = {

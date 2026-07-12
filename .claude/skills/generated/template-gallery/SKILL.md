@@ -1,11 +1,11 @@
 ---
 name: template-gallery
-description: "Skill for the Template-gallery area of DevPrism. 33 symbols across 8 files."
+description: "Skill for the Template-gallery area of DevPrism. 31 symbols across 8 files."
 ---
 
 # Template-gallery
 
-33 symbols | 8 files | Cohesion: 73%
+31 symbols | 8 files | Cohesion: 71%
 
 ## When to Use
 
@@ -17,12 +17,12 @@ description: "Skill for the Template-gallery area of DevPrism. 33 symbols across
 
 | File | Symbols |
 |------|---------|
-| `apps/desktop/src/components/template-gallery/template-preview.tsx` | closePreview, addRecentProject, setLastProjectFolder, openProject, handleChooseFolder (+4) |
+| `apps/desktop/src/components/template-gallery/template-preview.tsx` | addRecentProject, setLastProjectFolder, openProject, handleChooseFolder, handleCreate (+3) |
 | `apps/desktop/src/components/template-gallery/template-gallery.tsx` | TemplateGallery, setSearchQuery, reset, handleKeyDown, GroupedGrid (+2) |
 | `apps/desktop/src/components/template-gallery/template-card.tsx` | getFallbackThumbnail, TemplateCard, openPreview, thumbnailUrl, failed |
-| `apps/desktop/src/lib/template-registry.ts` | getAllTemplates, getTemplateSkeleton, getTemplatesByCategory, getCategories |
+| `apps/desktop/src/lib/template-registry.ts` | getAllTemplates, getTemplatesByCategory, getCategories |
 | `apps/desktop/src/stores/template-store.ts` | useTemplateStore, reset |
-| `apps/desktop/src/lib/project-attachments.ts` | isPdfPath, buildReferenceFilesSection |
+| `apps/desktop/src/lib/project-name.ts` | normalizeProjectName, getProjectNameError |
 | `apps/desktop/src/components/template-gallery/category-sidebar.tsx` | CategorySidebar, setSelectedCategory |
 | `apps/desktop/src/lib/template-preview-cache.ts` | getThumbnail, isThumbnailFailed |
 
@@ -50,16 +50,16 @@ Start here when exploring this area:
 | `getAllTemplates` | Function | `apps/desktop/src/lib/template-registry.ts` | 3222 |
 | `useTemplateStore` | Function | `apps/desktop/src/stores/template-store.ts` | 40 |
 | `reset` | Function | `apps/desktop/src/stores/template-store.ts` | 65 |
-| `closePreview` | Function | `apps/desktop/src/components/template-gallery/template-preview.tsx` | 75 |
 | `addRecentProject` | Function | `apps/desktop/src/components/template-gallery/template-preview.tsx` | 117 |
 | `setLastProjectFolder` | Function | `apps/desktop/src/components/template-gallery/template-preview.tsx` | 119 |
 | `openProject` | Function | `apps/desktop/src/components/template-gallery/template-preview.tsx` | 120 |
 | `handleChooseFolder` | Function | `apps/desktop/src/components/template-gallery/template-preview.tsx` | 425 |
 | `handleCreate` | Function | `apps/desktop/src/components/template-gallery/template-preview.tsx` | 438 |
-| `buildReferenceFilesSection` | Function | `apps/desktop/src/lib/project-attachments.ts` | 41 |
-| `getTemplateSkeleton` | Function | `apps/desktop/src/lib/template-registry.ts` | 3265 |
+| `normalizeProjectName` | Function | `apps/desktop/src/lib/project-name.ts` | 0 |
+| `getProjectNameError` | Function | `apps/desktop/src/lib/project-name.ts` | 4 |
 | `CategorySidebar` | Function | `apps/desktop/src/components/template-gallery/category-sidebar.tsx` | 45 |
 | `setSelectedCategory` | Function | `apps/desktop/src/components/template-gallery/category-sidebar.tsx` | 47 |
+| `getTemplatesByCategory` | Function | `apps/desktop/src/lib/template-registry.ts` | 3230 |
 
 ## Execution Flows
 
@@ -71,22 +71,23 @@ Start here when exploring this area:
 | `HandleCreate → BrowserRootPath` | cross_community | 6 |
 | `HandleCreate → RelativeFromBrowserAbsolute` | cross_community | 6 |
 | `TemplateGallery → IsOllamaEndpoint` | cross_community | 6 |
+| `TemplateGallery → ThrowIfAborted` | cross_community | 5 |
+| `TemplateGallery → IsCliProviderId` | cross_community | 5 |
 | `TemplateGallery → AcquireAiSlot` | cross_community | 5 |
-| `TemplateGallery → ReleaseAiSlot` | cross_community | 5 |
 | `HandleCreate → IsBrowserProjectPath` | cross_community | 4 |
-| `TemplateGallery → CosineSimilarity` | cross_community | 4 |
 
 ## Connected Areas
 
 | Area | Connections |
 |------|-------------|
-| Workspace | 6 calls |
-| Components | 3 calls |
+| Career | 4 calls |
 | Browser-project | 3 calls |
-| Cluster_367 | 2 calls |
-| Cluster_362 | 1 calls |
+| Components | 3 calls |
+| Mupdf | 3 calls |
+| Workspace | 2 calls |
+| Cluster_405 | 1 calls |
 | Semantic-layer | 1 calls |
-| Cluster_324 | 1 calls |
+| Cluster_320 | 1 calls |
 
 ## How to Explore
 

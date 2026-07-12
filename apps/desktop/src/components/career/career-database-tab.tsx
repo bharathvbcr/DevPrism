@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   FileUpIcon,
   Loader2Icon,
@@ -7,6 +7,8 @@ import {
   Trash2Icon,
   UserRoundIcon,
   BriefcaseIcon,
+  BookOpenIcon,
+  SparklesIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -45,11 +47,23 @@ export function CareerDatabaseTab() {
     (s) => s.refreshMissingBlockEmbeddings,
   );
   const saving = useCareerStore((s) => s.saving);
+  const setActiveTab = useCareerStore((s) => s.setActiveTab);
+  const resumeImportRequested = useCareerStore((s) => s.resumeImportRequested);
+  const acknowledgeResumeImportRequest = useCareerStore(
+    (s) => s.acknowledgeResumeImportRequest,
+  );
 
   const [pane, setPane] = useState<DatabasePane>("blocks");
   const [importOpen, setImportOpen] = useState(false);
   const [embeddingBusy, setEmbeddingBusy] = useState(false);
   const [embedProgress, setEmbedProgress] = useState<IngestProgressItem[]>([]);
+
+  useEffect(() => {
+    if (!resumeImportRequested) return;
+    setPane("blocks");
+    setImportOpen(true);
+    acknowledgeResumeImportRequest();
+  }, [resumeImportRequested, acknowledgeResumeImportRequest]);
 
   const selectedBlock = useMemo(
     () => blocks.find((b) => b.id === selectedBlockId) ?? null,
@@ -361,6 +375,12 @@ export function CareerDatabaseTab() {
                 }}
               />
             </div>
+          ) : blocks.length === 0 ? (
+            <FirstRunGuide
+              onImport={() => setImportOpen(true)}
+              onKnowledge={() => setActiveTab("knowledge")}
+              onSynthesize={() => setActiveTab("synthesize")}
+            />
           ) : (
             <EmptyEditor hint="Select or create an experience block." />
           )
@@ -409,6 +429,94 @@ function EmptyEditor({ hint }: { hint: string }) {
   return (
     <div className="flex h-full min-h-[200px] items-center justify-center text-muted-foreground text-sm">
       {hint}
+    </div>
+  );
+}
+
+function FirstRunGuide({
+  onImport,
+  onKnowledge,
+  onSynthesize,
+}: {
+  onImport: () => void;
+  onKnowledge: () => void;
+  onSynthesize: () => void;
+}) {
+  const steps = [
+    {
+      n: 1,
+      title: "Import resume",
+      detail:
+        "Extract experience blocks from a LaTeX resume into your database.",
+      icon: FileUpIcon,
+      actionLabel: "Import resume",
+      onAction: onImport,
+    },
+    {
+      n: 2,
+      title: "Add knowledge",
+      detail:
+        "Ingest papers, notes, or evidence so synthesis can ground bullets.",
+      icon: BookOpenIcon,
+      actionLabel: "Open Knowledge",
+      onAction: onKnowledge,
+    },
+    {
+      n: 3,
+      title: "Synthesize",
+      detail: "Paste a job description and generate a tailored resume variant.",
+      icon: SparklesIcon,
+      actionLabel: "Open Synthesize",
+      onAction: onSynthesize,
+    },
+  ] as const;
+
+  return (
+    <div className="mx-auto flex h-full max-w-lg flex-col justify-center gap-6 py-6">
+      <div className="space-y-1 text-center">
+        <h2 className="font-medium text-base">Get started with Career</h2>
+        <p className="text-muted-foreground text-sm">
+          Three steps to tailor a resume from your experience database.
+        </p>
+      </div>
+      <ol className="space-y-3">
+        {steps.map((step) => {
+          const Icon = step.icon;
+          return (
+            <li
+              key={step.n}
+              className="flex gap-3 rounded-lg border border-border/60 bg-background/60 p-3"
+            >
+              <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-muted font-medium text-xs">
+                {step.n}
+              </span>
+              <div className="min-w-0 flex-1 space-y-2">
+                <div className="flex items-start gap-2">
+                  <Icon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+                  <div className="min-w-0 space-y-0.5">
+                    <p className="font-medium text-sm leading-snug">
+                      {step.title}
+                    </p>
+                    <p className="text-muted-foreground text-xs leading-relaxed">
+                      {step.detail}
+                    </p>
+                  </div>
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={step.n === 1 ? "default" : "outline"}
+                  className="gap-1.5"
+                  onClick={step.onAction}
+                >
+                  <Icon className="size-3.5" />
+                  {step.actionLabel}
+                </Button>
+              </div>
+            </li>
+          );
+        })}
+      </ol>
     </div>
   );
 }

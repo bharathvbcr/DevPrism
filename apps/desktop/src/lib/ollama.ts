@@ -1,6 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { OpenAiCompatibleCredentialInfo } from "@/stores/claude-setup-store";
-import { useSettingsStore } from "@/stores/settings-store";
 
 export interface OllamaModelInfo {
   name: string;
@@ -22,12 +21,6 @@ export interface OllamaModelCapabilities {
   vision?: boolean | null;
   /** Max context window from /api/show model_info; null/undefined when unknown. */
   contextLength?: number | null;
-}
-
-export interface OllamaRunningModel {
-  name: string;
-  sizeBytes?: number | null;
-  sizeVramBytes?: number | null;
 }
 
 export interface OllamaPullProgress {
@@ -109,36 +102,6 @@ export async function getOllamaStatus(
 ): Promise<OllamaStatus> {
   return invoke<OllamaStatus>("ollama_status", {
     baseUrl: baseUrl?.trim() || null,
-  });
-}
-
-export async function getRunningOllamaModels(
-  baseUrl?: string | null,
-): Promise<OllamaRunningModel[]> {
-  return invoke<OllamaRunningModel[]>("ollama_ps", {
-    baseUrl: baseUrl?.trim() || null,
-  });
-}
-
-export async function deleteOllamaModel(
-  model: string,
-  baseUrl?: string | null,
-): Promise<void> {
-  await invoke("delete_ollama_model", {
-    baseUrl: baseUrl?.trim() || null,
-    model: model.trim(),
-  });
-}
-
-export async function copyOllamaModel(
-  source: string,
-  destination: string,
-  baseUrl?: string | null,
-): Promise<void> {
-  await invoke("copy_ollama_model", {
-    baseUrl: baseUrl?.trim() || null,
-    source: source.trim(),
-    destination: destination.trim(),
   });
 }
 
@@ -320,13 +283,4 @@ export function formatOllamaModelSize(bytes?: number | null): string | null {
   if (gb >= 1) return `${gb.toFixed(1)} GB`;
   const mb = bytes / (1024 * 1024);
   return `${Math.round(mb)} MB`;
-}
-
-/** Read native sampling settings for display or invoke payloads. */
-export function getNativeSamplingSettings() {
-  const ns = useSettingsStore.getState();
-  return {
-    numCtx: ns.nativeNumCtx ?? null,
-    temperature: ns.nativeTemperature ?? null,
-  };
 }

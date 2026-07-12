@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   BookOpenIcon,
+  Loader2Icon,
   PlusIcon,
+  SparklesIcon,
   Trash2Icon,
   LockIcon,
   XIcon,
 } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -25,15 +28,19 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { canUseAiAssist } from "@/lib/ai-assist";
 import {
   BLOCK_KINDS,
   SENIORITY_LEVELS,
   clampSkillLevel,
+  distillFactsFromNotes,
   formatCommaList,
   listKbChunks,
+  newBlockFact,
   newBullet,
   newSkillTag,
   parseCommaList,
+  type BlockFact,
   type BlockKind,
   type Bullet,
   type ExperienceBlock,
@@ -70,9 +77,14 @@ export function BlockEditor({
   saving: boolean;
   onSave: (block: ExperienceBlock) => void | Promise<void>;
 }) {
-  const [draft, setDraft] = useState<ExperienceBlock>(block);
+  const [draft, setDraft] = useState<ExperienceBlock>(() => ({
+    ...block,
+    facts: block.facts ?? [],
+  }));
   const [kbChunks, setKbChunks] = useState<KbChunkRow[]>([]);
   const [kbLoading, setKbLoading] = useState(false);
+  const [distilling, setDistilling] = useState(false);
+  const [factPreview, setFactPreview] = useState<BlockFact[] | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -123,6 +135,47 @@ export function BlockEditor({
     }));
   };
 
+  const updateFact = (factId: string, patch: Partial<BlockFact>) => {
+    setDraft((prev) => ({
+      ...prev,
+      facts: (prev.facts ?? []).map((f) =>
+        f.id === factId ? { ...f, ...patch } : f,
+      ),
+    }));
+  };
+
+  const handleDistillNotes = async () => {
+    const notes = (draft.notes ?? "").trim();
+    if (!notes) {
+      toast.error("Paste raw notes in the scratchpad first.");
+      return;
+    }
+    if (!canUseAiAssist()) {
+      toast.error("Enable an AI provider in Settings to distill notes.");
+      return;
+    }
+    setDistilling(true);
+    setFactPreview(null);
+    try {
+      const facts = await distillFactsFromNotes(notes);
+      setFactPreview(facts);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDistilling(false);
+    }
+  };
+
+  const applyFactPreview = () => {
+    if (!factPreview?.length) return;
+    setDraft((prev) => ({
+      ...prev,
+      facts: [...(prev.facts ?? []), ...factPreview],
+    }));
+    setFactPreview(null);
+    toast.success(`Added ${factPreview.length} fact(s) to draft`);
+  };
+
   return (
     <form
       className="space-y-4"
@@ -147,6 +200,20 @@ export function BlockEditor({
             }
             return { ...b, variants };
           }),
+          facts: (draft.facts ?? [])
+            .map((f) => ({
+              ...f,
+              text: f.text.trim(),
+              skills: f.skills.map((s) => s.trim()).filter(Boolean),
+              metrics: f.metrics
+                .map((m) => ({
+                  value: m.value.trim(),
+                  kind: m.kind.trim() || "metric",
+                }))
+                .filter((m) => m.value.length > 0),
+            }))
+            .filter((f) => f.text.length > 0),
+          notes: draft.notes?.trim() ? draft.notes.trim() : undefined,
         };
         void onSave(cleaned);
       }}
@@ -477,6 +544,180 @@ export function BlockEditor({
             </div>
           ))}
         </div>
+      </div>
+
+      <div className="space-y-3 rounded-md border border-border/50 bg-muted/10 p-3">
+        <div className="flex items-center justify-between gap-2">
+          <div>
+            <Label>Knowledge / raw points</Label>
+            <p className="mt-0.5 text-[11px] text-muted-foreground">
+              Fact pool for synthesis — dump raw details here; AI distills them
+              into tailored bullets per JD.
+            </p>
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="shrink-0 gap-1"
+            onClick={() =>
+              update("facts", [...(draft.facts ?? []), newBlockFact()])
+            }
+          >
+            <PlusIcon className="size-3.5" />
+            Add fact
+          </Button>
+        </div>
+
+        <Field label="Notes scratchpad">
+          <Textarea
+            value={draft.notes ?? ""}
+            onChange={(e) => update("notes", e.target.value)}
+            placeholder="Paste raw notes, metrics, ownership details…"
+            rows={3}
+            className="font-mono text-xs"
+          />
+        </Field>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            className="gap-1.5"
+            disabled={distilling || !(draft.notes ?? "").trim()}
+            onClick={() => void handleDistillNotes()}
+          >
+            {distilling ? (
+              <Loader2Icon className="size-3.5 animate-spin" />
+            ) : (
+              <SparklesIcon className="size-3.5" />
+            )}
+            Distill with AI
+          </Button>
+          {!canUseAiAssist() ? (
+            <span className="text-[11px] text-muted-foreground">
+              AI provider required in Settings.
+            </span>
+          ) : null}
+        </div>
+
+        {factPreview && factPreview.length > 0 ? (
+          <div className="space-y-2 rounded-md border border-border/60 bg-background/80 p-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-medium text-xs">
+                Preview · {factPreview.length} fact
+                {factPreview.length === 1 ? "" : "s"}
+              </span>
+              <div className="flex gap-1.5">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 text-[11px]"
+                  onClick={() => setFactPreview(null)}
+                >
+                  Discard
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  className="h-7 text-[11px]"
+                  onClick={applyFactPreview}
+                >
+                  Apply to draft
+                </Button>
+              </div>
+            </div>
+            <ul className="space-y-1.5">
+              {factPreview.map((fact) => (
+                <li
+                  key={fact.id}
+                  className="rounded border border-border/40 px-2 py-1.5 text-xs"
+                >
+                  <p className="leading-snug">{fact.text}</p>
+                  {(fact.skills.length > 0 || fact.metrics.length > 0) && (
+                    <p className="mt-1 text-[10px] text-muted-foreground">
+                      {fact.skills.length > 0
+                        ? `skills: ${fact.skills.join(", ")}`
+                        : ""}
+                      {fact.skills.length > 0 && fact.metrics.length > 0
+                        ? " · "
+                        : ""}
+                      {fact.metrics.length > 0
+                        ? `metrics: ${fact.metrics.map((m) => m.value).join(", ")}`
+                        : ""}
+                    </p>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+
+        {(draft.facts ?? []).length === 0 ? (
+          <p className="text-muted-foreground text-xs">No facts yet.</p>
+        ) : (
+          <div className="space-y-2">
+            {(draft.facts ?? []).map((fact, index) => (
+              <div
+                key={fact.id}
+                className="space-y-2 rounded-md border border-border/40 bg-background/60 p-2.5"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] text-muted-foreground">
+                    Fact {index + 1}
+                    {fact.source !== "manual" ? ` · ${fact.source}` : ""}
+                  </span>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="ghost"
+                    className="size-7 text-destructive"
+                    onClick={() =>
+                      update(
+                        "facts",
+                        (draft.facts ?? []).filter((f) => f.id !== fact.id),
+                      )
+                    }
+                  >
+                    <Trash2Icon className="size-3.5" />
+                  </Button>
+                </div>
+                <Textarea
+                  value={fact.text}
+                  onChange={(e) =>
+                    updateFact(fact.id, { text: e.target.value })
+                  }
+                  placeholder="Raw detail point…"
+                  rows={2}
+                />
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <Input
+                    value={formatCommaList(fact.skills)}
+                    onChange={(e) =>
+                      updateFact(fact.id, {
+                        skills: parseCommaList(e.target.value),
+                      })
+                    }
+                    placeholder="Skills (e.g. python, k8s)"
+                  />
+                  <Input
+                    value={fact.metrics.map((m) => m.value).join(", ")}
+                    onChange={(e) =>
+                      updateFact(fact.id, {
+                        metrics: parseCommaList(e.target.value).map(
+                          (value) => ({ value, kind: "metric" }),
+                        ),
+                      })
+                    }
+                    placeholder="Metrics (e.g. 40%, 2M users)"
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="flex justify-end pt-2">

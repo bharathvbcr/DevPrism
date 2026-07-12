@@ -1,6 +1,6 @@
 import {
-  escapeResumeText,
   escapeAndValidateSlot,
+  escapeHrefUrl,
 } from "@/lib/resume-synthesis/latex-escape";
 import type {
   HeaderFields,
@@ -63,7 +63,7 @@ function esc(text: string, canonical?: string): string {
 }
 
 function renderHref(url: string, label: string): string {
-  const safeUrl = escapeResumeText(url.trim());
+  const safeUrl = escapeHrefUrl(url);
   const safeLabel = esc(label);
   return `\\href{${safeUrl}}{${safeLabel}}`;
 }
@@ -102,7 +102,7 @@ function renderHeader(header: HeaderFields, slots: SlotLineRange[]): string {
   }
   if (header.email.trim()) {
     contactParts.push(
-      `\\href{mailto:${escapeResumeText(header.email.trim())}}{${esc(header.email)}}`,
+      `\\href{mailto:${escapeHrefUrl(header.email)}}{${esc(header.email)}}`,
     );
   }
   if (header.phone.trim()) {
@@ -618,6 +618,63 @@ export function setSlotPlainText(
   }
   if (slotId === "header:fullName") {
     next.header.fullName = plain;
+    return next;
+  }
+  if (slotId === "header:contact") {
+    // Canonical plain is "city · email · phone" (any subset). Re-parse
+    // heuristically so compile-repair can restore the slot.
+    const parts = plain
+      .split(/\s*[·•|]\s*/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    let cityRegion = "";
+    let email = "";
+    let phone = "";
+    for (const p of parts) {
+      if (p.includes("@")) email = p;
+      else if (/^[\d\s.+()-]+$/.test(p) || /^\+?\d/.test(p.replace(/\s/g, "")))
+        phone = p;
+      else if (!cityRegion) cityRegion = p;
+      else if (!phone) phone = p;
+    }
+    next.header.cityRegion = cityRegion;
+    next.header.email = email;
+    next.header.phone = phone;
+    return next;
+  }
+  if (slotId === "header:links") {
+    // Canonical plain is "label-or-url · …" for linkedin/github/portfolio.
+    // Restore labels (and URLs when a part looks like a URL) in slot order.
+    const parts = plain
+      .split(/\s*[·•|]\s*/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const slots: Array<{
+      urlKey: "linkedinUrl" | "githubUrl" | "portfolioUrl";
+      labelKey: "linkedinLabel" | "githubLabel" | "portfolioLabel";
+    }> = [
+      { urlKey: "linkedinUrl", labelKey: "linkedinLabel" },
+      { urlKey: "githubUrl", labelKey: "githubLabel" },
+      { urlKey: "portfolioUrl", labelKey: "portfolioLabel" },
+    ];
+    let i = 0;
+    for (const { urlKey, labelKey } of slots) {
+      const existing = next.header[urlKey]?.trim();
+      if (!existing && i >= parts.length) continue;
+      const part = parts[i++];
+      if (!part) continue;
+      if (
+        /^https?:\/\//i.test(part) ||
+        /linkedin\.com|github\.com/i.test(part)
+      ) {
+        next.header[urlKey] = part;
+        next.header[labelKey] = undefined;
+      } else if (existing) {
+        next.header[labelKey] = part;
+      } else {
+        next.header[urlKey] = part;
+      }
+    }
     return next;
   }
   const skillMatch = /^skills:(\d+)$/.exec(slotId);

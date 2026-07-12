@@ -837,13 +837,3 @@ function CategoryDetail({
     </div>
   );
 }
-
-// ─── Helper ───
-
-export function shouldShowOnboarding(): boolean {
-  return localStorage.getItem(STORAGE_KEY) !== "true";
-}
-
-export function resetOnboardingFlag(): void {
-  localStorage.removeItem(STORAGE_KEY);
-}

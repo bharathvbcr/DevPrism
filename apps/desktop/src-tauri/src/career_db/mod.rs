@@ -56,6 +56,24 @@ pub struct Bullet {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct BlockFact {
+    pub id: String,
+    pub text: String,
+    #[serde(default)]
+    pub skills: Vec<String>,
+    #[serde(default)]
+    pub metrics: Vec<BulletMetric>,
+    #[serde(default = "default_fact_source")]
+    pub source: String,
+    pub created_at: String,
+}
+
+fn default_fact_source() -> String {
+    "manual".into()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExperienceBlock {
     pub id: String,
     pub kind: String,
@@ -71,6 +89,12 @@ pub struct ExperienceBlock {
     pub seniority_level: String,
     #[serde(default)]
     pub bullets: Vec<Bullet>,
+    /// Raw knowledge pool for JD-tailored distillation.
+    #[serde(default)]
+    pub facts: Vec<BlockFact>,
+    /// Free-form scratchpad; distill input for AI fact extraction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub embedding_text: Option<String>,
     pub updated_at: String,
@@ -239,7 +263,7 @@ fn upsert_block_blocking(conn: &Connection, block: &ExperienceBlock) -> Result<(
 }
 
 fn delete_block_blocking(conn: &Connection, id: &str) -> Result<(), String> {
-    // Collect child bullet ids from block JSON before deleting the row.
+    // Collect child bullet + fact ids from block JSON before deleting the row.
     let block_json: Option<String> = conn
         .query_row(
             "SELECT json FROM blocks WHERE id = ?1",
@@ -257,6 +281,15 @@ fn delete_block_blocking(conn: &Connection, id: &str) -> Result<(), String> {
                     if let Some(bid) = bullet.get("id").and_then(|v| v.as_str()) {
                         if !bid.is_empty() {
                             owner_ids.push(bid.to_string());
+                        }
+                    }
+                }
+            }
+            if let Some(facts) = value.get("facts").and_then(|v| v.as_array()) {
+                for fact in facts {
+                    if let Some(fid) = fact.get("id").and_then(|v| v.as_str()) {
+                        if !fid.is_empty() {
+                            owner_ids.push(fid.to_string());
                         }
                     }
                 }
@@ -547,6 +580,22 @@ pub async fn career_list_kb_chunks(
     .map_err(|e| format!("career_list_kb_chunks task failed: {e}"))?
 }
 
+/// Count of KB chunks with no embedding row (for readiness / badges).
+#[tauri::command]
+pub async fn career_count_kb_chunks_missing_embeddings(
+    state: tauri::State<'_, CareerDbState>,
+    source_id: Option<String>,
+) -> Result<u32, String> {
+    let state = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        state.with_conn(|c| {
+            ingest::count_kb_chunks_missing_embeddings(c, source_id.as_deref())
+        })
+    })
+    .await
+    .map_err(|e| format!("career_count_kb_chunks_missing_embeddings task failed: {e}"))?
+}
+
 #[tauri::command]
 pub async fn career_delete_kb_source(
     state: tauri::State<'_, CareerDbState>,
@@ -655,6 +704,8 @@ mod tests {
                 evidence_refs: vec![],
                 locked: false,
             }],
+            facts: vec![],
+            notes: None,
             embedding_text: Some("Engineer Acme mlops Built X".into()),
             updated_at: "1700000000000".into(),
         };
@@ -709,7 +760,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_block_removes_bullet_embeddings() {
+    fn delete_block_removes_bullet_and_fact_embeddings() {
         let _ = vectors::ensure_sqlite_vec_registered();
         let state = test_state();
         let block = ExperienceBlock {
@@ -733,6 +784,15 @@ mod tests {
                 evidence_refs: vec![],
                 locked: false,
             }],
+            facts: vec![BlockFact {
+                id: "fact_orphan".into(),
+                text: "Raw point about Y".into(),
+                skills: vec![],
+                metrics: vec![],
+                source: "manual".into(),
+                created_at: "1700000000000".into(),
+            }],
+            notes: None,
             embedding_text: Some("Eng Acme Built Y".into()),
             updated_at: "1700000000000".into(),
         };
@@ -756,6 +816,12 @@ mod tests {
                             model: "test".into(),
                             vec: vec![0.0, 1.0],
                         },
+                        EmbeddingItem {
+                            owner_id: "fact_orphan".into(),
+                            owner_kind: "fact".into(),
+                            model: "test".into(),
+                            vec: vec![0.5, 0.5],
+                        },
                     ],
                 )
             })
@@ -768,7 +834,7 @@ mod tests {
         let remaining: i64 = state
             .with_conn(|c| {
                 c.query_row(
-                    "SELECT COUNT(*) FROM embeddings WHERE owner_id IN ('exp_del', 'bullet_orphan')",
+                    "SELECT COUNT(*) FROM embeddings WHERE owner_id IN ('exp_del', 'bullet_orphan', 'fact_orphan')",
                     [],
                     |r| r.get(0),
                 )

@@ -3,6 +3,8 @@ import type { ExperienceBlock } from "@/lib/career/types";
 import { ATS_RESUME_TEMPLATE } from "@/lib/resume-templates";
 import {
   assertBudgetInvariants,
+  budgetFromTemplate,
+  BUDGET_FIXED_OVERHEAD_LINES,
   cosineSimilarity,
   estimateBlockLines,
   knapsackSelect,
@@ -44,6 +46,7 @@ function makeBlock(
         locked: false,
       },
     ],
+    facts: [],
     updatedAt: "2024-01-01T00:00:00.000Z",
     ...partial,
   };
@@ -61,9 +64,37 @@ function makeBlock(
 }
 
 describe("estimateBlockLines", () => {
-  it("counts header + bullets", () => {
+  it("counts header + wrapped bullet lines", () => {
     const s = makeBlock("a");
+    // Short bullets → 1 wrapped line each → 2 header + 2 bullets
     expect(estimateBlockLines(s.block)).toBe(2 + s.block.bullets.length);
+  });
+
+  it("estimates wrap from long bullet character length", () => {
+    const long = "x".repeat(200);
+    const s = makeBlock("a", {
+      bullets: [
+        {
+          id: "a_long",
+          canonical: long,
+          variants: {},
+          metrics: [],
+          evidenceRefs: [],
+          locked: false,
+        },
+      ],
+    });
+    expect(estimateBlockLines(s.block)).toBeGreaterThan(3);
+  });
+});
+
+describe("budgetFromTemplate overhead", () => {
+  it("subtracts fixed overhead from totalLines", () => {
+    const b = budgetFromTemplate(ATS_RESUME_TEMPLATE.budget);
+    expect(b.totalLines).toBe(
+      ATS_RESUME_TEMPLATE.budget.totalLines - BUDGET_FIXED_OVERHEAD_LINES,
+    );
+    expect(b.totalLines).toBeLessThan(ATS_RESUME_TEMPLATE.budget.totalLines);
   });
 });
 
@@ -123,6 +154,34 @@ describe("knapsackSelect budget invariants", () => {
     expect(selected.some((s) => s.block.id === "mid")).toBe(true);
     expect(uncoveredMustHaves).toEqual([]);
     expect(swaps.length).toBeGreaterThan(0);
+  });
+
+  it("reverts a must-have swap that would uncover another must-have", () => {
+    const scored = [
+      makeBlock("both", {
+        score: 0.9,
+        skills: [
+          { name: "Python", level: 5 },
+          { name: "SQL", level: 4 },
+        ],
+      }),
+      makeBlock("onlyC", {
+        score: 0.5,
+        skills: [{ name: "Rust", level: 5 }],
+      }),
+    ];
+    const { selected, swaps, uncoveredMustHaves } = knapsackSelect(
+      scored,
+      {
+        totalLines: 40,
+        perBullet: 140,
+        blocksPerSection: { experience: 1 },
+      },
+      ["Python", "SQL", "Rust"],
+    );
+    expect(selected.map((s) => s.block.id)).toEqual(["both"]);
+    expect(swaps).toEqual([]);
+    expect(uncoveredMustHaves).toContain("Rust");
   });
 
   it("is deterministic for the same scored input order", () => {

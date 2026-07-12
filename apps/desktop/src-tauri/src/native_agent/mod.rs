@@ -318,8 +318,8 @@ fn cancels() -> &'static Mutex<HashMap<String, CancelHandle>> {
     C.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Separate cancel registry for one-shot `ai_complete` / `ai_complete_stream`
-/// requests (keyed by frontend-generated request id).
+/// Separate cancel registry for one-shot `ai_complete` / `ai_complete_stream` /
+/// `ai_embed` requests (keyed by frontend-generated request id).
 fn ai_request_cancels() -> &'static Mutex<HashMap<String, CancelHandle>> {
     static A: OnceLock<Mutex<HashMap<String, CancelHandle>>> = OnceLock::new();
     A.get_or_init(|| Mutex::new(HashMap::new()))
@@ -839,12 +839,17 @@ pub async fn run_native_agent(
         Some(m) if !m.trim().is_empty() => m,
         _ if use_openai => "llama-3.3-70b-versatile".to_string(),
         _ => match ollama::first_installed_model(&base).await {
-            Some(m) => m,
-            None => {
+            Ok(Some(m)) => m,
+            Ok(None) => {
                 let msg = format!(
                     "[E_NO_MODEL] No Ollama model is available at {}. Start Ollama and run `ollama pull llama3` (or another model).",
                     ollama::native_base(&base)
                 );
+                emit_result(&window, &tab_id, false, &msg);
+                finish(&window, &tab_id, false);
+                return Err(msg);
+            }
+            Err(msg) => {
                 emit_result(&window, &tab_id, false, &msg);
                 finish(&window, &tab_id, false);
                 return Err(msg);
@@ -1594,13 +1599,14 @@ async fn complete_chat_messages(
     let model = match model {
         Some(m) if !m.trim().is_empty() => m,
         _ => match ollama::first_installed_model(&base).await {
-            Some(m) => m,
-            None => {
+            Ok(Some(m)) => m,
+            Ok(None) => {
                 return Err(format!(
                     "[E_NO_MODEL] No Ollama model is available at {}. Start Ollama and pull a chat model.",
                     ollama::native_base(&base)
                 ));
             }
+            Err(e) => return Err(e),
         },
     };
     let mut client = ollama::OllamaClient::new(&base, &model, num_ctx, temperature);
@@ -1835,7 +1841,8 @@ async fn ai_complete_inner(
     Ok(out)
 }
 
-/// Cooperatively cancel an in-flight `ai_complete` / `ai_complete_stream`.
+/// Cooperatively cancel an in-flight `ai_complete` / `ai_complete_stream` /
+/// `ai_embed`.
 #[tauri::command]
 pub fn ai_cancel_request(request_id: String) {
     let id = request_id.trim();
@@ -1853,50 +1860,112 @@ pub fn ai_cancel_request(request_id: String) {
 /// Embed one or more texts. Prefers an OpenAI-compat credential that exposes
 /// `/embeddings` (Gemini, OpenAI) when `provider_credential_id` is set;
 /// otherwise uses a local Ollama embedding model (e.g. `nomic-embed-text`).
+/// When `request_id` is set, `ai_cancel_request` aborts the in-flight HTTP call
+/// via the shared cancel registry (same pattern as `ai_complete`).
 #[tauri::command]
 pub async fn ai_embed(
     texts: Vec<String>,
     model: Option<String>,
     base_url: Option<String>,
     provider_credential_id: Option<String>,
+    request_id: Option<String>,
 ) -> Result<Vec<Vec<f32>>, String> {
     if texts.is_empty() {
         return Ok(Vec::new());
     }
 
-    if let Some(cred_id) = provider_credential_id
+    let cancel = request_id
         .as_deref()
         .map(str::trim)
         .filter(|id| !id.is_empty())
+        .map(register_ai_request_cancel);
+    let cancel_parts = cancel.as_ref().map(clone_cancel_parts);
+
+    let result = ai_embed_inner(
+        texts,
+        model,
+        base_url,
+        provider_credential_id,
+        cancel_parts,
+    )
+    .await;
+
+    if let Some(id) = request_id.as_deref().map(str::trim).filter(|id| !id.is_empty()) {
+        take_ai_request_cancel(id);
+    }
+    result
+}
+
+async fn ai_embed_inner(
+    texts: Vec<String>,
+    model: Option<String>,
+    base_url: Option<String>,
+    provider_credential_id: Option<String>,
+    cancel_parts: Option<(Arc<AtomicBool>, Arc<Notify>)>,
+) -> Result<Vec<Vec<f32>>, String> {
+    if cancel_parts
+        .as_ref()
+        .is_some_and(|(f, _)| f.load(Ordering::Relaxed))
     {
-        if let Ok(Some(cred)) = crate::claude::stored_openai_compatible_credential(Some(cred_id)) {
-            if let Some(client) = openai_compat::embedding_client_for_credential(
-                &cred.base_url,
-                &cred.api_key,
-                model.as_deref(),
-            ) {
-                return client.embeddings(&texts).await;
-            }
-        }
+        return Err("cancelled".into());
     }
 
-    let base = base_url.unwrap_or_else(|| "http://localhost:11434".to_string());
-    let model = match model {
-        Some(m) if !m.trim().is_empty() => m,
-        _ => match ollama::first_embedding_model(&base).await {
-            Some(m) => m,
-            None => {
-                return Err(format!(
-                    "No embedding model is installed at {}. Pull one, e.g. \
-                     `ollama pull nomic-embed-text`.",
-                    ollama::native_base(&base)
-                ));
+    let work = async {
+        if let Some(cred_id) = provider_credential_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            if let Ok(Some(cred)) =
+                crate::claude::stored_openai_compatible_credential(Some(cred_id))
+            {
+                if let Some(client) = openai_compat::embedding_client_for_credential(
+                    &cred.base_url,
+                    &cred.api_key,
+                    model.as_deref(),
+                ) {
+                    return client.embeddings(&texts).await;
+                }
             }
-        },
+        }
+
+        let base = base_url.unwrap_or_else(|| "http://localhost:11434".to_string());
+        let model = match model {
+            Some(m) if !m.trim().is_empty() => m,
+            _ => match ollama::first_embedding_model(&base).await {
+                Ok(Some(m)) => m,
+                Ok(None) => {
+                    return Err(format!(
+                        "[E_NO_MODEL] No embedding model is installed at {}. Pull one, e.g. \
+                         `ollama pull nomic-embed-text`.",
+                        ollama::native_base(&base)
+                    ));
+                }
+                Err(e) => return Err(e),
+            },
+        };
+
+        let client = ollama::OllamaClient::new(&base, &model, None, None);
+        client.embed(&texts).await
     };
 
-    let client = ollama::OllamaClient::new(&base, &model, None, None);
-    client.embed(&texts).await
+    let vectors = if let Some((_, notify)) = cancel_parts.as_ref() {
+        tokio::select! {
+            _ = notify.notified() => return Err("cancelled".into()),
+            result = work => result?,
+        }
+    } else {
+        work.await?
+    };
+
+    if cancel_parts
+        .as_ref()
+        .is_some_and(|(f, _)| f.load(Ordering::Relaxed))
+    {
+        return Err("cancelled".into());
+    }
+
+    Ok(vectors)
 }
 
 /// Streaming variant of `ai_complete`: text fragments are forwarded over the
@@ -1995,13 +2064,58 @@ async fn ai_complete_stream_inner(
     messages.push(json!({ "role": "user", "content": user }));
 
     if let Some(cred_id) = cred_id {
-        let work = crate::claude::complete_openai_compatible_chat(
-            Some(cred_id),
-            messages,
-            model.as_deref(),
+        let mut credential = crate::claude::stored_openai_compatible_credential(Some(cred_id))?
+            .ok_or_else(|| "No provider credential configured.".to_string())?;
+        if let Some(m) = model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+            credential.model = m.to_string();
+        }
+
+        // Anthropic-native roots (DeepSeek / Qwen / Moonshot) must stay on the
+        // one-shot Anthropic Messages path — OpenAiCompatClient hits the wrong URL.
+        if crate::claude::uses_native_anthropic_route(&credential) {
+            let work = crate::claude::complete_openai_compatible_chat(
+                Some(cred_id),
+                messages,
+                model.as_deref(),
+                temperature,
+            );
+            let content = if let Some((_, notify)) = cancel_parts.as_ref() {
+                tokio::select! {
+                    _ = notify.notified() => return Err("cancelled".into()),
+                    result = work => result?,
+                }
+            } else {
+                work.await?
+            };
+            let out = strip_inline_fences(&content);
+            if out.is_empty() {
+                return Err("The model returned an empty response.".into());
+            }
+            let _ = on_chunk.send(out.clone());
+            return Ok(out);
+        }
+
+        let client = openai_compat::OpenAiCompatClient::new(
+            &credential.base_url,
+            &credential.model,
+            &credential.api_key,
+            num_ctx,
             temperature,
         );
-        let content = if let Some((_, notify)) = cancel_parts.as_ref() {
+        let cancel_flag = cancel_parts.as_ref().map(|(f, _)| Arc::clone(f));
+        let messages_json = json!(messages);
+        let empty_tools = json!([]);
+        let work = client.chat(&messages_json, &empty_tools, |_, frag| {
+            if cancel_flag
+                .as_ref()
+                .is_some_and(|f| f.load(Ordering::Relaxed))
+            {
+                return;
+            }
+            let _ = on_chunk.send(frag.to_string());
+        });
+
+        let turn = if let Some((_, notify)) = cancel_parts.as_ref() {
             tokio::select! {
                 _ = notify.notified() => return Err("cancelled".into()),
                 result = work => result?,
@@ -2009,11 +2123,29 @@ async fn ai_complete_stream_inner(
         } else {
             work.await?
         };
+
+        if cancel_parts
+            .as_ref()
+            .is_some_and(|(f, _)| f.load(Ordering::Relaxed))
+        {
+            return Err("cancelled".into());
+        }
+
+        if !turn.tool_calls.is_empty() {
+            return Err("Expected text only, but the model returned tool calls.".into());
+        }
+
+        // Match complete_openai_compatible_chat: prefer content, fall back to
+        // reasoning/thinking when the model returns an empty content field.
+        let content = if turn.content.trim().is_empty() {
+            turn.thinking
+        } else {
+            turn.content
+        };
         let out = strip_inline_fences(&content);
         if out.is_empty() {
             return Err("The model returned an empty response.".into());
         }
-        let _ = on_chunk.send(out.clone());
         return Ok(out);
     }
 
@@ -2021,13 +2153,14 @@ async fn ai_complete_stream_inner(
     let model = match model {
         Some(m) if !m.trim().is_empty() => m,
         _ => match ollama::first_installed_model(&base).await {
-            Some(m) => m,
-            None => {
+            Ok(Some(m)) => m,
+            Ok(None) => {
                 return Err(format!(
                     "[E_NO_MODEL] No Ollama model is available at {}. Start Ollama and pull a chat model.",
                     ollama::native_base(&base)
                 ));
             }
+            Err(e) => return Err(e),
         },
     };
 
@@ -2102,13 +2235,14 @@ pub async fn ai_caption(
     let mut resolved_model = match model.clone() {
         Some(m) if !m.trim().is_empty() => m,
         _ => match ollama::first_installed_model(&base).await {
-            Some(m) => m,
-            None => {
+            Ok(Some(m)) => m,
+            Ok(None) => {
                 return Err(format!(
-                    "No Ollama model is available at {}.",
+                    "[E_NO_MODEL] No Ollama model is available at {}.",
                     ollama::native_base(&base)
                 ));
             }
+            Err(e) => return Err(e),
         },
     };
 
@@ -2119,14 +2253,15 @@ pub async fn ai_caption(
     let client = ollama::OllamaClient::new(&base, &resolved_model, num_ctx, Some(caption_temp));
     if client.supports_vision().await == Some(false) {
         match ollama::first_vision_model(&base).await {
-            Some(vm) => resolved_model = vm,
-            None => {
+            Ok(Some(vm)) => resolved_model = vm,
+            Ok(None) => {
                 return Err(format!(
                     "The model '{}' has no vision support and no vision-capable model is \
                      installed. Pull one, e.g. `ollama pull llava` (or llama3.2-vision, qwen2.5vl).",
                     resolved_model
                 ));
             }
+            Err(e) => return Err(e),
         }
     }
 
@@ -2456,6 +2591,56 @@ mod tests {
         assert!(wait_for_answer("native_ask-missing-tab_0_0")
             .await
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn ai_embed_cancel_registry_aborts_before_http() {
+        // Pre-cancelled requestId must short-circuit without hitting the network.
+        let id = "embed-cancel-precheck";
+        let handle = register_ai_request_cancel(id);
+        ai_cancel_request(id.to_string());
+        assert!(handle.flag.load(Ordering::Relaxed));
+
+        let err = ai_embed_inner(
+            vec!["hello".into()],
+            None,
+            Some("http://127.0.0.1:9".into()),
+            None,
+            Some(clone_cancel_parts(&handle)),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, "cancelled");
+        take_ai_request_cancel(id);
+    }
+
+    #[tokio::test]
+    async fn ai_embed_cancel_notify_aborts_in_flight() {
+        // Mid-call cancel via Notify must win over a hanging future.
+        let id = "embed-cancel-inflight";
+        let handle = register_ai_request_cancel(id);
+        let parts = clone_cancel_parts(&handle);
+        let notify = Arc::clone(&handle.notify);
+        let flag = Arc::clone(&handle.flag);
+
+        let cancel_task = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            flag.store(true, Ordering::Relaxed);
+            notify.notify_waiters();
+        });
+
+        let hang = async {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            Ok::<Vec<Vec<f32>>, String>(vec![])
+        };
+
+        let result = tokio::select! {
+            _ = parts.1.notified() => Err("cancelled".to_string()),
+            r = hang => r,
+        };
+        let _ = cancel_task.await;
+        assert_eq!(result.unwrap_err(), "cancelled");
+        take_ai_request_cancel(id);
     }
 
     #[test]

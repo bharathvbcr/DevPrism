@@ -134,7 +134,7 @@ export function PublicationImportWizard({
       })),
     );
     try {
-      await commitBlocks(chosen, {
+      const commit = await commitBlocks(chosen, {
         onProgress: ({ current, total, label, phase }) => {
           setCommitProgress((prev) =>
             prev.map((item, idx) => {
@@ -170,11 +170,25 @@ export function PublicationImportWizard({
         },
       });
       setCommitProgress((prev) =>
-        prev.map((item) => ({ ...item, status: "done" as const })),
+        prev.map((item) => ({
+          ...item,
+          status:
+            commit.deferredEmbeddings > 0
+              ? ("deferred" as const)
+              : ("done" as const),
+          error:
+            commit.deferredEmbeddings > 0 ? commit.deferredError : undefined,
+        })),
       );
-      toast.success(
-        `Saved ${chosen.length} publication${chosen.length === 1 ? "" : "s"}`,
-      );
+      if (commit.deferredEmbeddings > 0) {
+        toast.warning(
+          `Saved ${commit.saved} publication${commit.saved === 1 ? "" : "s"}, but embeddings were deferred for ${commit.deferredEmbeddings}. Pull an embedding model, then embed from Database.`,
+        );
+      } else {
+        toast.success(
+          `Saved ${commit.saved} publication${commit.saved === 1 ? "" : "s"}`,
+        );
+      }
       handleClose(false);
     } catch {
       toast.error("Failed to save publication blocks");

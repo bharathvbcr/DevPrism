@@ -46,7 +46,7 @@ function throwIfAborted(signal?: AbortSignal): void {
   throw new DOMException("AI request cancelled", "AbortError");
 }
 
-/** Best-effort cancel of an in-flight `ai_complete` / `ai_complete_stream`. */
+/** Best-effort cancel of an in-flight `ai_complete` / `ai_complete_stream` / `ai_embed`. */
 export async function aiCancelRequest(requestId: string): Promise<void> {
   try {
     await invoke("ai_cancel_request", { requestId });
@@ -130,25 +130,26 @@ export function resolveAiProvider(): AiProviderConfig {
 }
 
 /**
- * Whether one-shot AI assist is available for the selected chat provider.
- * Claude Code / Cursor use CLI print-mode; embeddings still need Ollama/cloud.
+ * Whether one-shot AI assist is available for the resolved chat provider.
+ * Aligns with `resolveAiProvider()`: a stale selected credential falls back to
+ * Ollama instead of reporting "no provider". Claude Code / Cursor use CLI
+ * print-mode; embeddings still need Ollama/cloud.
  */
 export function canUseAiAssist(): boolean {
   if (!useSettingsStore.getState().aiAssistEnabled) return false;
 
-  const providerId = useClaudeChatStore.getState().selectedProviderCredentialId;
-  if (isCliProviderId(providerId)) return true;
-
-  if (providerId && !isCliProviderId(providerId)) {
-    const creds = useClaudeSetupStore.getState().openAiCredentials ?? [];
-    return creds.some((c) => c.id === providerId);
+  const provider = resolveAiProvider();
+  if (provider.backend === "claude-code" || provider.backend === "cursor-cli") {
+    return true;
   }
+  if (provider.backend === "openai-compat") {
+    return Boolean(provider.providerCredentialId);
+  }
+  // Ollama path (including fallback when selected credential is missing).
   return (
     useSettingsStore.getState().nativeAgentEnabled ||
-    !!resolveOllamaCredential(
-      useClaudeSetupStore.getState().openAiCredentials ?? [],
-      providerId,
-    )
+    Boolean(provider.providerCredentialId) ||
+    Boolean(provider.model)
   );
 }
 
@@ -255,8 +256,9 @@ export async function aiComplete(options: {
 
 /**
  * Streaming one-shot completion. Forwards text fragments to `onChunk` as they
- * arrive (local Ollama streams token-by-token; credential / CLI paths may
- * deliver one chunk). Resolves with the full accumulated text.
+ * arrive (Ollama and OpenAI-compat stream token-by-token; Anthropic-native /
+ * CLI paths may deliver one chunk). Resolves with the full accumulated text.
+ * Shares the same concurrency gate as {@link aiComplete}.
  */
 export async function aiCompleteStream(
   options: {
@@ -274,7 +276,9 @@ export async function aiCompleteStream(
   const provider = resolveAiProvider();
   const requestId = newAiRequestId();
   const unbind = bindAbortToRequest(options.signal, requestId);
+  await acquireAiSlot();
   try {
+    throwIfAborted(options.signal);
     const { result } = await runWithSemanticLayer(
       {
         prompt: options.prompt,
@@ -317,12 +321,17 @@ export async function aiCompleteStream(
     return result;
   } finally {
     unbind();
+    releaseAiSlot();
   }
 }
 
 /** Embed texts with a local Ollama embedding model, or an OpenAI-compat
  * credential that exposes `/embeddings` (Gemini / OpenAI) when one is selected.
- * One vector per input. CLI chat backends never embed — always Ollama/cloud. */
+ * One vector per input. CLI chat backends never embed — always Ollama/cloud.
+ *
+ * AbortSignal cancels mid-call via `requestId` + Rust `ai_cancel_request`
+ * (same registry as `ai_complete` / `ai_complete_stream`).
+ */
 export async function aiEmbed(
   texts: string[],
   signal?: AbortSignal,
@@ -347,10 +356,12 @@ export async function aiEmbed(
     )
       ? selected
       : null;
+  const requestId = newAiRequestId();
+  const unbind = bindAbortToRequest(signal, requestId);
   await acquireAiSlot();
   try {
     throwIfAborted(signal);
-    return await invoke<number[][]>("ai_embed", {
+    const vectors = await invoke<number[][]>("ai_embed", {
       texts,
       // Embedding uses a dedicated embed model, not the chat model; let the
       // backend pick an installed embedding model / provider default when none
@@ -358,8 +369,15 @@ export async function aiEmbed(
       model: null,
       baseUrl,
       providerCredentialId: cloudEmbedCred?.id ?? null,
+      requestId,
     });
+    throwIfAborted(signal);
+    return vectors;
+  } catch (err) {
+    throwIfAborted(signal);
+    mapInvokeAbortError(err);
   } finally {
+    unbind();
     releaseAiSlot();
   }
 }

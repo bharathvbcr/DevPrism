@@ -9,7 +9,7 @@ import {
   vectorSearch as careerVectorSearch,
 } from "@/lib/career";
 import { computeEmbeddingText, newCareerId } from "@/lib/career/block-helpers";
-import type { ExperienceBlock, Persona } from "@/lib/career/types";
+import type { BlockFact, ExperienceBlock, Persona } from "@/lib/career/types";
 import { aiEmbed } from "@/lib/ai-assist";
 import {
   getResumeTemplate,
@@ -27,18 +27,28 @@ import { rewriteBlock } from "./rewrite";
 import {
   bulletCoversSkill,
   coversSkill,
+  cosineSimilarity,
+  DEFAULT_MAX_BULLETS_PER_BLOCK,
   knapsackSelect,
   mmrSelect,
   sectionForBlock,
   trimSelectedBullets,
 } from "./selection";
-import { scoreBlocks } from "./scoring";
+import { skillsMatch, textCoversSkill, scoreBlocks } from "./scoring";
+import { analyzeMustHaveGaps } from "./gap-analysis";
 import type {
+  BlockEvidenceSummary,
+  BlockFactEvidenceSummary,
+  BulletFallbackSummary,
+  BulletProvenance,
+  GapAnalysis,
   JdFacets,
+  JDProfile,
   MatchReport,
   MustHaveCoverage,
   RewriteBlockProgress,
   RewrittenBlockDraft,
+  RunEvent,
   ScoredBlock,
   StageTimingsMs,
   SynthesisDeps,
@@ -48,6 +58,7 @@ import type {
 } from "./types";
 import {
   blockRewriteLabel,
+  coalesceRunEventsForPersistence,
   formatRewriteBlockDetail,
   initBlockProgress,
 } from "./synthesis-ux";
@@ -59,6 +70,98 @@ function emit(
   onProgress?.(stage);
 }
 
+function emitEvent(
+  onEvent: ((e: RunEvent) => void) | undefined,
+  event: RunEvent,
+) {
+  onEvent?.(event);
+}
+
+/** Count AI-kept vs canonical fallback bullets for MatchReport honesty. */
+export function summarizeRewriteHonesty(drafts: RewrittenBlockDraft[]): {
+  aiRewrittenCount: number;
+  canonicalFallbackCount: number;
+  bulletFallbackReasons: BulletFallbackSummary[];
+  blockEvidence: BlockEvidenceSummary[];
+  blockFacts: BlockFactEvidenceSummary[];
+  bulletProvenance: BulletProvenance[];
+} {
+  let aiRewrittenCount = 0;
+  let canonicalFallbackCount = 0;
+  const bulletFallbackReasons: BulletFallbackSummary[] = [];
+  const blockEvidence: BlockEvidenceSummary[] = drafts.map((d) => ({
+    blockId: d.block.id,
+    title: d.block.title,
+    org: d.block.org,
+    chunks: [...d.evidence],
+  }));
+  const blockFacts: BlockFactEvidenceSummary[] = drafts.map((d) => ({
+    blockId: d.block.id,
+    title: d.block.title,
+    org: d.block.org,
+    facts: [...(d.rankedFacts ?? [])],
+  }));
+  const bulletProvenance: BulletProvenance[] = [];
+
+  for (const d of drafts) {
+    const factText = new Map(
+      (d.rankedFacts ?? []).map((f) => [f.id, f.text] as const),
+    );
+    for (const b of d.bullets) {
+      const sourceFactIds = b.sourceFactIds ?? [];
+      const sourceBulletId = b.sourceBulletId ?? null;
+      const factOnly =
+        !sourceBulletId &&
+        sourceFactIds.length > 0 &&
+        !d.block.bullets.some((c) => c.id === b.id);
+
+      if (
+        !b.usedCanonical ||
+        sourceFactIds.length > 0 ||
+        sourceBulletId != null
+      ) {
+        bulletProvenance.push({
+          blockId: d.block.id,
+          bulletId: b.id,
+          sourceFactIds,
+          sourceBulletId,
+          factOnly: factOnly || undefined,
+          evidenceSnippets: [
+            ...sourceFactIds
+              .map((id) => factText.get(id))
+              .filter((t): t is string => !!t)
+              .map((t) => t.slice(0, 120)),
+            ...d.evidence.slice(0, 2).map((e) => e.slice(0, 120)),
+          ].slice(0, 4),
+        });
+      }
+
+      if (b.usedCanonical) {
+        canonicalFallbackCount += 1;
+        const reason = b.fallbackReason ?? "llm-failed";
+        if (reason) {
+          bulletFallbackReasons.push({
+            blockId: d.block.id,
+            bulletId: b.id,
+            reason,
+          });
+        }
+      } else {
+        aiRewrittenCount += 1;
+      }
+    }
+  }
+
+  return {
+    aiRewrittenCount,
+    canonicalFallbackCount,
+    bulletFallbackReasons,
+    blockEvidence,
+    blockFacts,
+    bulletProvenance,
+  };
+}
+
 /** Throws a DOMException named AbortError when the signal is aborted. */
 export function throwIfAborted(signal?: AbortSignal) {
   if (!signal?.aborted) return;
@@ -68,8 +171,7 @@ export function throwIfAborted(signal?: AbortSignal) {
 
 export function isAbortError(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
-  const e = err as { name?: string; message?: string };
-  return e.name === "AbortError" || /cancelled|aborted/i.test(e.message ?? "");
+  return (err as { name?: string }).name === "AbortError";
 }
 
 function hashJd(text: string): string {
@@ -128,7 +230,7 @@ function recordTiming(
 
 async function embedFacets(
   jdText: string,
-  profile: Awaited<ReturnType<typeof analyzeJobDescription>>,
+  profile: import("./types").JDProfile,
   embed: (texts: string[]) => Promise<number[][]>,
   onFacetProgress?: (detail: string, index: number, total: number) => void,
 ): Promise<JdFacets> {
@@ -136,11 +238,12 @@ async function embedFacets(
   const texts = [facets.full, facets.responsibilities, facets.qualifications];
   const total = texts.length;
   try {
-    // Embed as a batch, but report per-facet substeps for progress UX.
-    onFacetProgress?.("embedding facet 1/3", 1, total);
-    onFacetProgress?.("embedding facet 2/3", 2, total);
-    onFacetProgress?.("embedding facet 3/3", 3, total);
-    const vectors = await embed(texts);
+    const vectors: number[][] = [];
+    for (let i = 0; i < texts.length; i++) {
+      const [vec] = await embed([texts[i]!]);
+      vectors.push(vec ?? []);
+      onFacetProgress?.(`embedded facet ${i + 1}/${total}`, i + 1, total);
+    }
     if (vectors.length < 3 || !vectors[0]?.length) {
       return {
         full: null,
@@ -158,6 +261,7 @@ async function embedFacets(
       semanticMatchingDisabled: false,
     };
   } catch (err) {
+    if (isAbortError(err)) throw err;
     const message = err instanceof Error ? err.message : String(err);
     return {
       full: null,
@@ -173,10 +277,12 @@ async function embeddingScoresByBlock(
   facets: JdFacets,
   blockIds: string[],
   vectorSearch: SynthesisDeps["vectorSearch"],
-): Promise<Map<string, number>> {
+): Promise<{ map: Map<string, number>; allSearchesFailed: boolean }> {
   const map = new Map<string, number>();
   for (const id of blockIds) map.set(id, 0);
-  if (facets.semanticMatchingDisabled) return map;
+  if (facets.semanticMatchingDisabled) {
+    return { map, allSearchesFailed: false };
+  }
 
   const queries = [
     facets.full,
@@ -184,7 +290,10 @@ async function embeddingScoresByBlock(
     facets.qualifications,
   ].filter((v): v is number[] => Array.isArray(v) && v.length > 0);
 
+  let attempts = 0;
+  let failures = 0;
   for (const q of queries) {
+    attempts += 1;
     try {
       const hits = await vectorSearch(q, Math.max(blockIds.length, 32), {
         ownerKind: "block",
@@ -196,10 +305,13 @@ async function embeddingScoresByBlock(
         if (s > prev) map.set(hit.ownerId, s);
       }
     } catch {
-      // ignore per-facet search failures
+      failures += 1;
     }
   }
-  return map;
+  return {
+    map,
+    allSearchesFailed: attempts > 0 && failures === attempts,
+  };
 }
 
 /**
@@ -241,7 +353,114 @@ async function embeddingScoresByBullet(
 }
 
 /**
+ * Retrieve top-k facts for a selected block ranked by JD-facet cosine
+ * plus must-have keyword/skill boost. Falls back to local ranking when
+ * embeddings are disabled.
+ */
+const FACT_RETRIEVAL_K = 8;
+const MUST_HAVE_FACT_BOOST = 0.18;
+
+function factMetaBlockId(meta: unknown): string | null {
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return null;
+  const blockId = (meta as Record<string, unknown>).blockId;
+  return typeof blockId === "string" ? blockId : null;
+}
+
+export async function retrieveBlockFacts(
+  block: ExperienceBlock,
+  profile: JDProfile,
+  facets: JdFacets,
+  vectorSearch: SynthesisDeps["vectorSearch"],
+  signal?: AbortSignal,
+  topK: number = FACT_RETRIEVAL_K,
+): Promise<BlockFact[]> {
+  throwIfAborted(signal);
+  const facts = block.facts ?? [];
+  if (facts.length === 0) return [];
+
+  const scores = new Map<string, number>();
+  for (const f of facts) {
+    let boost = 0;
+    for (const skill of profile.mustHaveSkills) {
+      if (
+        f.skills.some((s) => skillsMatch(s, skill)) ||
+        textCoversSkill(f.text, skill)
+      ) {
+        boost += MUST_HAVE_FACT_BOOST;
+      }
+    }
+    scores.set(f.id, boost);
+  }
+
+  if (!facets.semanticMatchingDisabled) {
+    const queries = [
+      facets.full,
+      facets.responsibilities,
+      facets.qualifications,
+    ].filter((v): v is number[] => Array.isArray(v) && v.length > 0);
+
+    const factIds = new Set(facts.map((f) => f.id));
+    for (const q of queries) {
+      try {
+        throwIfAborted(signal);
+        const hits = await vectorSearch(q, Math.max(facts.length, 24), {
+          ownerKind: "fact",
+        });
+        for (const hit of hits) {
+          if (!factIds.has(hit.ownerId)) continue;
+          const metaBlock = factMetaBlockId(hit.meta);
+          if (metaBlock && metaBlock !== block.id) continue;
+          const s = Math.min(1, Math.max(0, hit.score));
+          scores.set(hit.ownerId, (scores.get(hit.ownerId) ?? 0) + s);
+        }
+      } catch (err) {
+        if (isAbortError(err)) throw err;
+        // ignore per-facet search failures
+      }
+    }
+  }
+
+  return [...facts]
+    .sort((a, b) => (scores.get(b.id) ?? 0) - (scores.get(a.id) ?? 0))
+    .slice(0, topK);
+}
+
+/** Minimum cosine similarity of a chunk to block text to attach as evidence. */
+const EVIDENCE_BLOCK_SIM_FLOOR = 0.32;
+
+function chunkLinkedToBlock(
+  text: string,
+  meta: unknown,
+  block: ScoredBlock["block"],
+): boolean {
+  const hay = text.toLowerCase();
+  const title = block.title?.trim().toLowerCase();
+  const org = block.org?.trim().toLowerCase();
+  if (title && title.length >= 3 && hay.includes(title)) return true;
+  if (org && org.length >= 2 && hay.includes(org)) return true;
+
+  if (meta && typeof meta === "object" && !Array.isArray(meta)) {
+    const m = meta as Record<string, unknown>;
+    const sourceTitle =
+      typeof m.sourceTitle === "string" ? m.sourceTitle.toLowerCase() : "";
+    if (title && sourceTitle.includes(title)) return true;
+    if (org && sourceTitle.includes(org)) return true;
+    const path = Array.isArray(m.headingPath)
+      ? m.headingPath
+          .filter((p): p is string => typeof p === "string")
+          .join(" ")
+          .toLowerCase()
+      : "";
+    if (title && path.includes(title)) return true;
+    if (org && path.includes(org)) return true;
+  }
+  return false;
+}
+
+/**
  * Retrieve top evidence chunks for a block using embedding-based MMR.
+ * Scopes to chunks linked to the block (title/org/meta) or similar to block
+ * text — not merely JD-similar — so critic grounding stays trustworthy.
  * Falls back to score-ordered unique texts when embed fails.
  */
 async function retrieveEvidence(
@@ -249,24 +468,62 @@ async function retrieveEvidence(
   facets: JdFacets,
   vectorSearch: SynthesisDeps["vectorSearch"],
   embed: SynthesisDeps["embed"],
+  signal?: AbortSignal,
 ): Promise<string[]> {
+  throwIfAborted(signal);
   if (facets.semanticMatchingDisabled || !facets.full) {
     return [];
   }
   try {
-    const hits = await vectorSearch(facets.full, 12, { ownerKind: "chunk" });
+    const hits = await vectorSearch(facets.full, 16, { ownerKind: "chunk" });
+    throwIfAborted(signal);
     if (hits.length === 0) return [];
 
-    // Prefer chunks that mention the block title/org.
-    const ranked = [...hits].sort((a, b) => {
-      const boost = (t: string) => {
-        const hay = t.toLowerCase();
-        let s = 0;
-        if (block.title && hay.includes(block.title.toLowerCase())) s += 2;
-        if (block.org && hay.includes(block.org.toLowerCase())) s += 1;
-        return s;
-      };
-      return boost(b.text) + b.score - (boost(a.text) + a.score);
+    const linked = hits.filter((h) =>
+      chunkLinkedToBlock(h.text, h.meta, block),
+    );
+
+    // Similarity floor against block text for unlinked but still relevant chunks.
+    let similar: typeof hits = [];
+    const unlinked = hits.filter((h) => !linked.includes(h));
+    if (unlinked.length > 0) {
+      try {
+        const blockText = [
+          block.title,
+          block.org,
+          ...block.bullets.map((b) => b.canonical),
+        ]
+          .filter(Boolean)
+          .join("\n")
+          .slice(0, 2000);
+        throwIfAborted(signal);
+        const vecs = await embed(
+          [blockText, ...unlinked.map((h) => h.text.trim())],
+          signal,
+        );
+        throwIfAborted(signal);
+        if (vecs.length === unlinked.length + 1 && vecs[0]?.length) {
+          const blockVec = vecs[0]!;
+          similar = unlinked.filter((_h, i) => {
+            const v = vecs[i + 1];
+            if (!v?.length) return false;
+            return cosineSimilarity(blockVec, v) >= EVIDENCE_BLOCK_SIM_FLOOR;
+          });
+        }
+      } catch (err) {
+        if (isAbortError(err)) throw err;
+        // Keep only metadata-linked chunks when block-similarity embed fails.
+      }
+    }
+
+    const scoped = [...linked, ...similar];
+    if (scoped.length === 0) return [];
+
+    // Prefer linked chunks, then JD score.
+    const ranked = [...scoped].sort((a, b) => {
+      const linkBoost = (h: (typeof hits)[number]) =>
+        chunkLinkedToBlock(h.text, h.meta, block) ? 2 : 0;
+      return linkBoost(b) + b.score - (linkBoost(a) + a.score);
     });
 
     const candidates = ranked
@@ -278,7 +535,12 @@ async function retrieveEvidence(
     if (candidates.length === 0) return [];
 
     try {
-      const vecs = await embed(candidates.map((c) => c.text));
+      throwIfAborted(signal);
+      const vecs = await embed(
+        candidates.map((c) => c.text),
+        signal,
+      );
+      throwIfAborted(signal);
       if (
         vecs.length === candidates.length &&
         vecs.every((v) => v.length > 0)
@@ -294,7 +556,8 @@ async function retrieveEvidence(
         );
         return selected;
       }
-    } catch {
+    } catch (err) {
+      if (isAbortError(err)) throw err;
       // Fall through to score-ordered unique texts.
     }
 
@@ -311,34 +574,106 @@ async function retrieveEvidence(
       if (selected.length >= 3) break;
     }
     return selected;
-  } catch {
+  } catch (err) {
+    if (isAbortError(err)) throw err;
     return [];
   }
 }
 
 function buildSkillsGroups(
   drafts: RewrittenBlockDraft[],
-  profile: Awaited<ReturnType<typeof analyzeJobDescription>>,
+  profile: Awaited<ReturnType<typeof analyzeJobDescription>>["profile"],
 ): SkillGroup[] {
-  const names = new Set<string>();
+  const jdAsked = [
+    ...profile.mustHaveSkills,
+    ...profile.niceToHaveSkills,
+    ...profile.atsKeywords,
+  ];
+  const names: string[] = [];
+  const seen = new Set<string>();
+  const push = (raw: string) => {
+    const name = raw.trim();
+    if (!name) return;
+    const key = name.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    names.push(name);
+  };
+
+  // Prefer block skill tags that the JD actually asks for.
   for (const d of drafts) {
     for (const s of d.block.skills) {
-      if (s.name.trim()) names.add(s.name.trim());
+      if (!s.name.trim()) continue;
+      const asked = jdAsked.some(
+        (j) => skillsMatch(s.name, j) || textCoversSkill(s.name, j),
+      );
+      if (asked) push(s.name);
     }
   }
-  for (const k of profile.atsKeywords.slice(0, 12)) {
-    if (k.trim()) names.add(k.trim());
-  }
-  const items = [...names].slice(0, 24).join(", ");
+
+  // Cap — do not dump the full ATS keyword list.
+  const items = names.slice(0, 14).join(", ");
   if (!items) return [];
   return [{ label: "Skills", items }];
+}
+
+const SUMMARY_SYSTEM = `You write a 2-line professional resume summary.
+Return ONLY JSON: {"summary": string}
+Rules:
+- Exactly 1–2 short sentences (≤ 280 chars total).
+- Ground every claim in the provided selected experience (org/title/bullets/skills).
+- No "Targeting …" or "Emphasis:" meta phrasing.
+- Plain text only — no LaTeX, no markdown.
+- Output ONLY JSON.`;
+
+function validateSummaryOut(value: unknown): value is { summary: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  return typeof (value as { summary?: unknown }).summary === "string";
+}
+
+/**
+ * LLM-drafted 2-line summary grounded in selected blocks.
+ * On failure, returns undefined so the summary section is omitted.
+ */
+async function draftSummary(
+  drafts: RewrittenBlockDraft[],
+  profile: Awaited<ReturnType<typeof analyzeJobDescription>>["profile"],
+  llm: SynthesisDeps["llmJson"],
+  signal?: AbortSignal,
+): Promise<string | undefined> {
+  if (drafts.length === 0) return undefined;
+  const payload = drafts.map((d) => ({
+    title: d.block.title,
+    org: d.block.org,
+    skills: d.block.skills.map((s) => s.name),
+    bullets: d.bullets.map((b) => b.text).slice(0, 3),
+  }));
+  try {
+    const out = await llm<{ summary: string }>({
+      system: SUMMARY_SYSTEM,
+      prompt: [
+        `Target role: ${profile.roleTitle} (${profile.seniority})`,
+        `Selected experience JSON:\n${JSON.stringify(payload)}`,
+      ].join("\n\n"),
+      temperature: 0.3,
+      validate: validateSummaryOut,
+      label: "summary",
+      signal,
+    });
+    const summary = out.summary.trim().replace(/\s+/g, " ");
+    if (!summary || /^targeting\b/i.test(summary)) return undefined;
+    return summary.slice(0, 280);
+  } catch {
+    return undefined;
+  }
 }
 
 function draftsToContent(
   drafts: RewrittenBlockDraft[],
   header: HeaderFields,
-  profile: Awaited<ReturnType<typeof analyzeJobDescription>>,
-  sectionOrder: SectionKind[],
+  profile: Awaited<ReturnType<typeof analyzeJobDescription>>["profile"],
+  _sectionOrder: SectionKind[],
+  summary?: string,
 ): ResumeContent {
   const bySection: Partial<Record<SectionKind, RenderedBlock[]>> = {};
 
@@ -358,19 +693,10 @@ function draftsToContent(
     (bySection[section] ??= []).push(rendered);
   }
 
-  const summaryBits = [
-    profile.roleTitle ? `Targeting ${profile.roleTitle}.` : "",
-    profile.toneSignals.length
-      ? `Emphasis: ${profile.toneSignals.slice(0, 4).join(", ")}.`
-      : "",
-  ]
-    .filter(Boolean)
-    .join(" ");
-
   return {
     header,
-    summary: summaryBits || undefined,
-    canonicalSummary: summaryBits || undefined,
+    summary: summary || undefined,
+    canonicalSummary: summary || undefined,
     skills: buildSkillsGroups(drafts, profile),
     experience: bySection.experience ?? [],
     projects: bySection.projects,
@@ -451,7 +777,7 @@ export function buildMustHaveCoverage(
 function buildMatchReport(
   scored: ScoredBlock[],
   selectedIds: Set<string>,
-  profile: Awaited<ReturnType<typeof analyzeJobDescription>>,
+  profile: import("./types").JDProfile,
   facets: JdFacets,
   critique: MatchReport["critique"],
   repairs: string[],
@@ -459,6 +785,13 @@ function buildMatchReport(
   extras?: {
     stageTimingsMs?: StageTimingsMs;
     mustHaveCoverage?: MustHaveCoverage[];
+    aiRewrittenCount?: number;
+    canonicalFallbackCount?: number;
+    bulletFallbackReasons?: BulletFallbackSummary[];
+    blockEvidence?: BlockEvidenceSummary[];
+    blockFacts?: BlockFactEvidenceSummary[];
+    bulletProvenance?: BulletProvenance[];
+    gapAnalysis?: GapAnalysis;
   },
 ): MatchReport {
   const notices = [...extraNotices];
@@ -480,6 +813,13 @@ function buildMatchReport(
     repairs,
     stageTimingsMs: extras?.stageTimingsMs,
     mustHaveCoverage: extras?.mustHaveCoverage,
+    aiRewrittenCount: extras?.aiRewrittenCount,
+    canonicalFallbackCount: extras?.canonicalFallbackCount,
+    bulletFallbackReasons: extras?.bulletFallbackReasons,
+    blockEvidence: extras?.blockEvidence,
+    blockFacts: extras?.blockFacts,
+    bulletProvenance: extras?.bulletProvenance,
+    gapAnalysis: extras?.gapAnalysis,
   };
 }
 
@@ -493,6 +833,7 @@ function defaultDeps(): SynthesisDeps {
         ownerId: h.ownerId,
         score: h.score,
         text: h.text,
+        meta: h.meta,
       }));
     },
     saveRun: careerSaveRun,
@@ -503,6 +844,7 @@ function defaultDeps(): SynthesisDeps {
       const result = await compileWithRepairLoop(template, content, {
         sectionOrder: options?.sectionOrder,
         onAttempt: options?.onAttempt,
+        signal: options?.signal,
       });
       return {
         tex: result.tex,
@@ -531,12 +873,22 @@ export async function synthesizeResume(
     personaId,
     templateId,
     onProgress,
+    onEvent,
     header,
     signal,
     deps: depOverrides,
   } = options;
   const deps: SynthesisDeps = { ...defaultDeps(), ...depOverrides };
   const stageTimingsMs: StageTimingsMs = {};
+  const runEvents: RunEvent[] = [];
+  const pushEvent = (event: RunEvent) => {
+    runEvents.push(event);
+    emitEvent(onEvent, event);
+  };
+
+  /** Always skip semantic cache for synthesis LLM calls. */
+  const llm: SynthesisDeps["llmJson"] = (opts) =>
+    deps.llmJson({ ...opts, skipSemanticCache: true });
 
   const template = getResumeTemplate(templateId);
   if (!template) {
@@ -544,14 +896,32 @@ export async function synthesizeResume(
   }
 
   throwIfAborted(signal);
+  pushEvent({
+    type: "stage-start",
+    stage: "analyzing",
+    at: Date.now(),
+    detail: "Extracting skills, domains, and ATS keywords…",
+  });
   emit(onProgress, {
     id: "analyzing",
     label: "Analyzing job description",
     detail: "Extracting skills, domains, and ATS keywords…",
     progress: 0.05,
+    llmCall: {
+      label: "JD analysis",
+      startedAt: Date.now(),
+      charsReceived: 0,
+    },
   });
 
   const tAnalyze = startTimer();
+  // Attach live timings on every emit from stage 1 onward.
+  const withTimings = (
+    partial: MatchReport | undefined,
+  ): MatchReport | undefined => {
+    if (!partial) return undefined;
+    return { ...partial, stageTimingsMs: { ...stageTimingsMs } };
+  };
   const personas = await deps.listPersonas();
   throwIfAborted(signal);
   const persona: Persona | undefined = personas.find((p) => p.id === personaId);
@@ -559,9 +929,9 @@ export async function synthesizeResume(
     throw new Error(`Persona not found: ${personaId}`);
   }
 
-  const profile = await analyzeJobDescription(jdText, {
+  const analysis = await analyzeJobDescription(jdText, {
     llmJson: (opts) =>
-      deps.llmJson({
+      llm({
         ...opts,
         signal,
         streamComplete: deps.streamComplete
@@ -571,7 +941,7 @@ export async function synthesizeResume(
                 onChunk(fragment);
               })
           : undefined,
-        onStreamPreview: (preview) => {
+        onStreamPreview: (preview, raw) => {
           throwIfAborted(signal);
           emit(onProgress, {
             id: "analyzing",
@@ -579,44 +949,64 @@ export async function synthesizeResume(
             detail: "Extracting skills, domains, and ATS keywords…",
             progress: 0.08,
             streamPreview: preview,
+            llmCall: {
+              label: "JD analysis",
+              startedAt: tAnalyze,
+              charsReceived: raw.length,
+            },
           });
         },
       }),
   });
+  const profile = analysis.profile;
   recordTiming(stageTimingsMs, "analyzing", tAnalyze);
+  pushEvent({
+    type: "stage-finish",
+    stage: "analyzing",
+    at: Date.now(),
+    durationMs: stageTimingsMs.analyzing ?? 0,
+    detail: `${profile.mustHaveSkills.length} must-have skills`,
+  });
+  if (analysis.extractionEmpty) {
+    pushEvent({ type: "jd-extraction-empty", at: Date.now() });
+  }
   throwIfAborted(signal);
 
+  pushEvent({
+    type: "stage-start",
+    stage: "scoring",
+    at: Date.now(),
+    detail: "Embedding JD facets…",
+  });
   emit(onProgress, {
     id: "scoring",
     label: "Scoring experience blocks",
     detail: `JD profile ready — ${profile.mustHaveSkills.length} must-have skills`,
     progress: 0.2,
-    partialReport: undefined,
   });
-
-  // Attach live timings on every subsequent emit via helper.
-  const withTimings = (
-    partial: MatchReport | undefined,
-  ): MatchReport | undefined => {
-    if (!partial) return undefined;
-    return { ...partial, stageTimingsMs: { ...stageTimingsMs } };
-  };
 
   const tScore = startTimer();
   const facets = await embedFacets(
     jdText,
     profile,
     (texts) => deps.embed(texts, signal),
-    (detail) => {
+    (detail, index, total) => {
       throwIfAborted(signal);
       emit(onProgress, {
         id: "scoring",
         label: "Scoring experience blocks",
         detail,
-        progress: 0.22,
+        progress: 0.2 + 0.05 * (index / Math.max(1, total)),
       });
     },
   );
+  if (facets.semanticMatchingDisabled) {
+    pushEvent({
+      type: "embeddings-disabled",
+      reason: facets.notice ?? "Embeddings unavailable",
+      at: Date.now(),
+    });
+  }
   throwIfAborted(signal);
   const blocks = await deps.listBlocks();
   // Ensure embeddingText is populated for any downstream use
@@ -633,11 +1023,22 @@ export async function synthesizeResume(
     progress: 0.25,
   });
 
-  const embeddingByBlock = await embeddingScoresByBlock(
-    facets,
-    blocks.map((b) => b.id),
-    deps.vectorSearch,
-  );
+  const { map: embeddingByBlock, allSearchesFailed } =
+    await embeddingScoresByBlock(
+      facets,
+      blocks.map((b) => b.id),
+      deps.vectorSearch,
+    );
+  if (allSearchesFailed && !facets.semanticMatchingDisabled) {
+    facets.semanticMatchingDisabled = true;
+    facets.notice =
+      "Semantic matching disabled — all block vector searches failed. Using tag-only scoring.";
+    pushEvent({
+      type: "embeddings-disabled",
+      reason: facets.notice,
+      at: Date.now(),
+    });
+  }
   throwIfAborted(signal);
   const scored = scoreBlocks(
     blocks,
@@ -647,8 +1048,20 @@ export async function synthesizeResume(
     facets,
   );
   recordTiming(stageTimingsMs, "scoring", tScore);
+  pushEvent({
+    type: "stage-finish",
+    stage: "scoring",
+    at: Date.now(),
+    durationMs: stageTimingsMs.scoring ?? 0,
+    detail: `${scored.length} candidates`,
+  });
   throwIfAborted(signal);
 
+  pushEvent({
+    type: "stage-start",
+    stage: "selecting",
+    at: Date.now(),
+  });
   emit(onProgress, {
     id: "selecting",
     label: "Selecting blocks under page budget",
@@ -678,7 +1091,15 @@ export async function synthesizeResume(
   });
   recordTiming(stageTimingsMs, "selecting", tSelect);
 
-  const notices: string[] = [];
+  const notices: string[] = [...analysis.notices];
+  if (facets.notice) {
+    notices.push(facets.notice);
+  }
+  if (analysis.extractionEmpty) {
+    notices.push(
+      "JD extraction degraded: empty must-have skills and ATS keywords.",
+    );
+  }
   if (uncoveredMustHaves.length > 0) {
     notices.push(
       `Uncovered must-have skills: ${uncoveredMustHaves.join(", ")}`,
@@ -698,6 +1119,18 @@ export async function synthesizeResume(
     selected.map((s) => s.block),
     null,
   );
+
+  // Stage 3b — gap analysis (pure TS). KB snippets enriched after evidence.
+  let gapAnalysis = analyzeMustHaveGaps({
+    mustHaveSkills: profile.mustHaveSkills,
+    selectedBlocks: selected.map((s) => s.block),
+    poolBlocks: scored.map((s) => s.block),
+    kbChunks: [],
+  });
+  if (gapAnalysis.summary) {
+    notices.push(gapAnalysis.summary);
+  }
+
   const partialReport = buildMatchReport(
     scored,
     selectedIdsEarly,
@@ -709,9 +1142,21 @@ export async function synthesizeResume(
     {
       stageTimingsMs: { ...stageTimingsMs },
       mustHaveCoverage: earlyCoverage,
+      gapAnalysis,
     },
   );
 
+  pushEvent({
+    type: "stage-finish",
+    stage: "selecting",
+    at: Date.now(),
+    durationMs: stageTimingsMs.selecting ?? 0,
+    detail: `Selected ${selected.length} of ${scored.length}${
+      gapAnalysis.missingCount
+        ? ` · ${gapAnalysis.missingCount} must-have(s) missing`
+        : ""
+    }`,
+  });
   emit(onProgress, {
     id: "selecting",
     label: "Selecting blocks under page budget",
@@ -721,6 +1166,12 @@ export async function synthesizeResume(
   });
 
   throwIfAborted(signal);
+  pushEvent({
+    type: "stage-start",
+    stage: "evidence",
+    at: Date.now(),
+    detail: `Fetching evidence for ${selected.length} selected blocks…`,
+  });
   emit(onProgress, {
     id: "evidence",
     label: "Retrieving knowledge-base evidence",
@@ -731,19 +1182,73 @@ export async function synthesizeResume(
 
   const tEvidence = startTimer();
   const evidenceByBlock = new Map<string, string[]>();
+  const factsByBlock = new Map<string, BlockFact[]>();
+  let evidenceDone = 0;
+  const evidenceTotal = Math.max(1, selected.length);
   await Promise.all(
     selected.map(async (s) => {
       throwIfAborted(signal);
-      const ev = await retrieveEvidence(
-        s.block,
-        facets,
-        deps.vectorSearch,
-        (texts) => deps.embed(texts, signal),
-      );
+      const [ev, facts] = await Promise.all([
+        retrieveEvidence(
+          s.block,
+          facets,
+          deps.vectorSearch,
+          (texts, sig) => deps.embed(texts, sig ?? signal),
+          signal,
+        ),
+        retrieveBlockFacts(s.block, profile, facets, deps.vectorSearch, signal),
+      ]);
       evidenceByBlock.set(s.block.id, ev);
+      factsByBlock.set(s.block.id, facts);
+      evidenceDone += 1;
+      emit(onProgress, {
+        id: "evidence",
+        label: "Retrieving knowledge-base evidence",
+        detail: `Evidence ${evidenceDone}/${selected.length} blocks…`,
+        progress: 0.45 + 0.08 * (evidenceDone / evidenceTotal),
+        partialReport: withTimings(partialReport),
+      });
+      if (ev.length === 0 && facts.length === 0) {
+        pushEvent({
+          type: "evidence-empty",
+          blockId: s.block.id,
+          reason: facets.semanticMatchingDisabled
+            ? "Embeddings disabled — KB/fact vector search skipped"
+            : "No knowledge-base chunks or ranked facts for this block",
+          at: Date.now(),
+        });
+      }
     }),
   );
+
+  // Enrich gap analysis with KB evidence texts.
+  const kbChunks = [...evidenceByBlock.values()].flat();
+  gapAnalysis = analyzeMustHaveGaps({
+    mustHaveSkills: profile.mustHaveSkills,
+    selectedBlocks: selected.map((s) => s.block),
+    poolBlocks: scored.map((s) => s.block),
+    kbChunks,
+  });
+  partialReport.gapAnalysis = gapAnalysis;
+
   recordTiming(stageTimingsMs, "evidence", tEvidence);
+  const emptyEvidenceCount = selected.filter(
+    (s) => (evidenceByBlock.get(s.block.id) ?? []).length === 0,
+  ).length;
+  const factsRetrieved = selected.reduce(
+    (n, s) => n + (factsByBlock.get(s.block.id) ?? []).length,
+    0,
+  );
+  pushEvent({
+    type: "stage-finish",
+    stage: "evidence",
+    at: Date.now(),
+    durationMs: stageTimingsMs.evidence ?? 0,
+    detail:
+      emptyEvidenceCount === selected.length && factsRetrieved === 0
+        ? "No KB evidence or facts for any selected block"
+        : `${selected.length - emptyEvidenceCount}/${selected.length} blocks grounded · ${factsRetrieved} facts ranked`,
+  });
   throwIfAborted(signal);
 
   const blockProgress: RewriteBlockProgress[] = initBlockProgress(
@@ -753,6 +1258,11 @@ export async function synthesizeResume(
     })),
   );
 
+  pushEvent({
+    type: "stage-start",
+    stage: "rewriting",
+    at: Date.now(),
+  });
   emit(onProgress, {
     id: "rewriting",
     label: "Rewriting selected blocks",
@@ -767,61 +1277,111 @@ export async function synthesizeResume(
 
   const tRewrite = startTimer();
   const rewritten: RewrittenBlockDraft[] = [];
+  const rewriteStart = 0.55;
+  const rewriteEnd = 0.82;
+  const rewriteSpan = rewriteEnd - rewriteStart;
   for (let i = 0; i < selected.length; i++) {
     throwIfAborted(signal);
     const s = selected[i]!;
     const label = blockRewriteLabel(s.block.org, s.block.title);
     const detail = formatRewriteBlockDetail(label, i + 1, selected.length);
+    const blockStartedAt = Date.now();
     blockProgress[i] = {
       ...blockProgress[i]!,
       status: "active",
       streamPreview: undefined,
     };
+    pushEvent({
+      type: "block-rewrite-start",
+      blockId: s.block.id,
+      label,
+      index: i + 1,
+      total: selected.length,
+      at: Date.now(),
+    });
     emit(onProgress, {
       id: "rewriting",
       label: "Rewriting selected blocks",
       detail,
-      progress: 0.55 + 0.18 * (i / Math.max(1, selected.length)),
+      progress: rewriteStart + rewriteSpan * (i / Math.max(1, selected.length)),
       blockProgress: blockProgress.map((b) => ({ ...b })),
       partialReport: withTimings(partialReport),
+      llmCall: {
+        label: `Rewrite · ${label}`,
+        startedAt: blockStartedAt,
+        charsReceived: 0,
+      },
     });
     try {
-      rewritten.push(
-        await rewriteBlock(
-          s,
-          profile,
-          persona,
-          evidenceByBlock.get(s.block.id) ?? [],
-          template.budget.perBullet,
-          {
-            llmJson: (opts) => deps.llmJson({ ...opts, signal }),
-            streamComplete: deps.streamComplete
-              ? (opts, onChunk) =>
-                  deps.streamComplete!({ ...opts, signal }, (fragment) => {
-                    throwIfAborted(signal);
-                    onChunk(fragment);
-                  })
-              : undefined,
-            onStreamPreview: (preview) => {
-              throwIfAborted(signal);
-              blockProgress[i] = {
-                ...blockProgress[i]!,
-                status: "active",
-                streamPreview: preview,
-              };
-              emit(onProgress, {
-                id: "rewriting",
-                label: "Rewriting selected blocks",
-                detail,
-                progress:
-                  0.55 + 0.18 * ((i + 0.5) / Math.max(1, selected.length)),
-                blockProgress: blockProgress.map((b) => ({ ...b })),
-                partialReport: withTimings(partialReport),
-              });
-            },
+      const rankedFacts = factsByBlock.get(s.block.id) ?? s.block.facts ?? [];
+      const draft = await rewriteBlock(
+        s,
+        profile,
+        persona,
+        evidenceByBlock.get(s.block.id) ?? [],
+        template.budget.perBullet,
+        {
+          rankedFacts,
+          maxBullets: DEFAULT_MAX_BULLETS_PER_BLOCK,
+          llmJson: (opts) => llm({ ...opts, signal }),
+          streamComplete: deps.streamComplete
+            ? (opts, onChunk) =>
+                deps.streamComplete!({ ...opts, signal }, (fragment) => {
+                  throwIfAborted(signal);
+                  onChunk(fragment);
+                })
+            : undefined,
+          onStreamPreview: (preview, raw) => {
+            throwIfAborted(signal);
+            blockProgress[i] = {
+              ...blockProgress[i]!,
+              status: "active",
+              streamPreview: preview,
+            };
+            // Live preview only — do not push per-token events into the log.
+            const charFrac = Math.min(1, raw.length / 900);
+            emit(onProgress, {
+              id: "rewriting",
+              label: "Rewriting selected blocks",
+              detail,
+              progress:
+                rewriteStart +
+                rewriteSpan *
+                  ((i + 0.15 + 0.7 * charFrac) / Math.max(1, selected.length)),
+              blockProgress: blockProgress.map((b) => ({ ...b })),
+              partialReport: withTimings({
+                ...partialReport,
+                gapAnalysis,
+              }),
+              llmCall: {
+                label: `Rewrite · ${label}`,
+                startedAt: blockStartedAt,
+                charsReceived: raw.length,
+              },
+            });
           },
-        ),
+        },
       );
+      rewritten.push(draft);
+      for (const b of draft.bullets) {
+        if (b.usedCanonical && b.fallbackReason) {
+          pushEvent({
+            type: "bullet-fallback",
+            blockId: s.block.id,
+            bulletId: b.id,
+            reason: b.fallbackReason,
+            at: Date.now(),
+          });
+        }
+      }
+      const fallbackCount = draft.bullets.filter((b) => b.usedCanonical).length;
+      pushEvent({
+        type: "block-rewrite-done",
+        blockId: s.block.id,
+        at: Date.now(),
+        fallbackCount,
+        bulletCount: draft.bullets.length,
+      });
       blockProgress[i] = {
         ...blockProgress[i]!,
         status: "done",
@@ -834,30 +1394,77 @@ export async function synthesizeResume(
         ...blockProgress[i]!,
         status: "error",
       };
-      rewritten.push({
+      const fallbackDraft: RewrittenBlockDraft = {
         block: s.block,
         bullets: s.block.bullets.map((b) => ({
           id: b.id,
           text: b.canonical,
           usedCanonical: true,
+          fallbackReason: b.locked
+            ? ("locked" as const)
+            : ("llm-failed" as const),
+          sourceFactIds: [],
+          sourceBulletId: b.id,
         })),
         evidence: evidenceByBlock.get(s.block.id) ?? [],
+        rankedFacts: (factsByBlock.get(s.block.id) ?? []).map((f) => ({
+          id: f.id,
+          text: f.text,
+        })),
         score: s.score,
         components: s.components,
+      };
+      rewritten.push(fallbackDraft);
+      for (const b of fallbackDraft.bullets) {
+        if (b.fallbackReason) {
+          pushEvent({
+            type: "bullet-fallback",
+            blockId: s.block.id,
+            bulletId: b.id,
+            reason: b.fallbackReason,
+            at: Date.now(),
+          });
+        }
+      }
+      pushEvent({
+        type: "block-rewrite-done",
+        blockId: s.block.id,
+        at: Date.now(),
+        fallbackCount: fallbackDraft.bullets.length,
+        bulletCount: fallbackDraft.bullets.length,
+      });
+      pushEvent({
+        type: "error",
+        message: err instanceof Error ? err.message : String(err),
+        at: Date.now(),
+        stage: "rewriting",
       });
     }
     emit(onProgress, {
       id: "rewriting",
       label: "Rewriting selected blocks",
       detail,
-      progress: 0.55 + 0.18 * ((i + 1) / Math.max(1, selected.length)),
+      progress:
+        rewriteStart + rewriteSpan * ((i + 1) / Math.max(1, selected.length)),
       blockProgress: blockProgress.map((b) => ({ ...b })),
       partialReport: withTimings(partialReport),
     });
   }
   recordTiming(stageTimingsMs, "rewriting", tRewrite);
+  pushEvent({
+    type: "stage-finish",
+    stage: "rewriting",
+    at: Date.now(),
+    durationMs: stageTimingsMs.rewriting ?? 0,
+    detail: `${rewritten.length} blocks`,
+  });
   throwIfAborted(signal);
 
+  pushEvent({
+    type: "stage-start",
+    stage: "critic",
+    at: Date.now(),
+  });
   emit(onProgress, {
     id: "critic",
     label: "Critiquing and repairing draft",
@@ -872,7 +1479,7 @@ export async function synthesizeResume(
   const tCritic = startTimer();
   const critique = await runCritic(rewritten, profile, {
     llmJson: (opts) =>
-      deps.llmJson({
+      llm({
         ...opts,
         signal,
         streamComplete: deps.streamComplete
@@ -882,7 +1489,7 @@ export async function synthesizeResume(
                 onChunk(fragment);
               })
           : undefined,
-        onStreamPreview: (preview) => {
+        onStreamPreview: (preview, raw) => {
           throwIfAborted(signal);
           emit(onProgress, {
             id: "critic",
@@ -890,6 +1497,11 @@ export async function synthesizeResume(
             detail: "Running grounding + ATS critic…",
             progress: 0.76,
             streamPreview: preview,
+            llmCall: {
+              label: "Critic",
+              startedAt: tCritic,
+              charsReceived: raw.length,
+            },
             partialReport: withTimings({
               ...partialReport,
               critique: null,
@@ -898,6 +1510,13 @@ export async function synthesizeResume(
         },
       }),
   });
+  if (critique.llmSkipped) {
+    pushEvent({
+      type: "critic-skipped",
+      reason: "LLM critic failed — using programmatic ATS coverage only",
+      at: Date.now(),
+    });
+  }
   throwIfAborted(signal);
   const finalDrafts = await repairFlagged(
     rewritten,
@@ -906,7 +1525,7 @@ export async function synthesizeResume(
     persona,
     template.budget.perBullet,
     {
-      llmJson: (opts) => deps.llmJson({ ...opts, signal }),
+      llmJson: (opts) => llm({ ...opts, signal }),
       maxRetries: 2,
       onProgress: (detail, attempt) => {
         throwIfAborted(signal);
@@ -923,9 +1542,39 @@ export async function synthesizeResume(
       },
     },
   );
+  // Emit fallbacks introduced during critic repair.
+  for (const d of finalDrafts) {
+    const before = rewritten.find((r) => r.block.id === d.block.id);
+    for (const b of d.bullets) {
+      if (!b.usedCanonical || !b.fallbackReason) continue;
+      const prev = before?.bullets.find((x) => x.id === b.id);
+      if (prev?.usedCanonical && prev.fallbackReason === b.fallbackReason) {
+        continue;
+      }
+      pushEvent({
+        type: "bullet-fallback",
+        blockId: d.block.id,
+        bulletId: b.id,
+        reason: b.fallbackReason,
+        at: Date.now(),
+      });
+    }
+  }
   recordTiming(stageTimingsMs, "critic", tCritic);
+  pushEvent({
+    type: "stage-finish",
+    stage: "critic",
+    at: Date.now(),
+    durationMs: stageTimingsMs.critic ?? 0,
+    detail: `ATS ${Math.round(critique.atsCoveragePct)}%`,
+  });
   throwIfAborted(signal);
 
+  pushEvent({
+    type: "stage-start",
+    stage: "assembling",
+    at: Date.now(),
+  });
   emit(onProgress, {
     id: "assembling",
     label: "Assembling LaTeX and verifying compile",
@@ -944,17 +1593,37 @@ export async function synthesizeResume(
     email: "",
     phone: "",
   };
+  const summary = await draftSummary(
+    finalDrafts,
+    profile,
+    (opts) => llm({ ...opts, signal }),
+    signal,
+  );
+  throwIfAborted(signal);
+  if (!summary) {
+    notices.push(
+      "Summary omitted — LLM draft failed; using experience-only resume.",
+    );
+  }
   const content = draftsToContent(
     finalDrafts,
     contentHeader,
     profile,
     persona.sectionOrder as SectionKind[],
+    summary,
   );
 
   const compileResult = await deps.compile(template, content, {
     sectionOrder: persona.sectionOrder as SectionKind[],
+    signal,
     onAttempt: (detail, attempt) => {
       throwIfAborted(signal);
+      pushEvent({
+        type: attempt === 0 ? "compile-attempt" : "compile-retry",
+        attempt,
+        detail,
+        at: Date.now(),
+      });
       emit(onProgress, {
         id: "assembling",
         label: "Assembling LaTeX and verifying compile",
@@ -971,6 +1640,15 @@ export async function synthesizeResume(
     },
   });
   recordTiming(stageTimingsMs, "assembling", tAssemble);
+  pushEvent({
+    type: "stage-finish",
+    stage: "assembling",
+    at: Date.now(),
+    durationMs: stageTimingsMs.assembling ?? 0,
+    detail: compileResult.result.success
+      ? "Compile verified"
+      : "Compile needs review",
+  });
   throwIfAborted(signal);
 
   const selectedIds = new Set(finalDrafts.map((d) => d.block.id));
@@ -987,6 +1665,7 @@ export async function synthesizeResume(
         : "uncovered";
   }
 
+  const honesty = summarizeRewriteHonesty(finalDrafts);
   const report = buildMatchReport(
     scored,
     selectedIds,
@@ -998,23 +1677,34 @@ export async function synthesizeResume(
     {
       stageTimingsMs: { ...stageTimingsMs },
       mustHaveCoverage,
+      gapAnalysis,
+      ...honesty,
     },
   );
 
   const runId = newCareerId("run");
+  let persistedRunId: string | null = runId;
   try {
     await deps.saveRun({
       id: runId,
       jdHash: hashJd(jdText),
       personaId,
       templateId,
-      // Persist tex alongside MatchReport for rematerialization.
-      reportJson: { ...report, tex: compileResult.tex },
+      // Persist tex + coalesced events + compile status for rematerialization / activity replay.
+      reportJson: {
+        ...report,
+        tex: compileResult.tex,
+        events: coalesceRunEventsForPersistence(runEvents),
+        compileOk: compileResult.result.success,
+        compileSummary: compileResult.result.summary,
+      },
       createdAt: Date.now(),
     });
   } catch {
-    notices.push("Could not persist synthesis run to career DB.");
-    report.notices = [...report.notices, ...notices.slice(-1)];
+    persistedRunId = null;
+    const notice = "Could not persist synthesis run to career DB.";
+    notices.push(notice);
+    report.notices = [...report.notices, notice];
   }
 
   emit(onProgress, {
@@ -1028,7 +1718,7 @@ export async function synthesizeResume(
   });
 
   return {
-    runId,
+    runId: persistedRunId,
     tex: compileResult.tex,
     content: compileResult.content,
     report,

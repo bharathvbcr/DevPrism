@@ -3317,6 +3317,9 @@ pub async fn complete_claude_print(
     cancel_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     cancel_notify: Option<std::sync::Arc<tokio::sync::Notify>>,
 ) -> Result<String, String> {
+    /// Hard ceiling for Claude Code `-p` (print) completions used by synthesis/assist.
+    const PRINT_TIMEOUT_SECS: u64 = 300;
+
     let user = prompt.trim();
     if user.is_empty() {
         return Err("Prompt is empty.".into());
@@ -3376,12 +3379,22 @@ pub async fn complete_claude_print(
             .map_err(|e| format!("Failed to read Claude Code output: {e}"))
     };
 
+    let deadline = tokio::time::sleep(std::time::Duration::from_secs(PRINT_TIMEOUT_SECS));
+    tokio::pin!(deadline);
+
     let outcome = if let Some(notify) = cancel_notify {
         tokio::select! {
             _ = notify.notified() => {
                 let _ = child.kill().await;
                 let _ = child.wait().await;
                 Err("cancelled".into())
+            }
+            _ = &mut deadline => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                Err(format!(
+                    "[E_CLI_TIMEOUT] Claude Code print mode timed out after {PRINT_TIMEOUT_SECS}s."
+                ))
             }
             read = read_stdout => {
                 read?;
@@ -3400,19 +3413,30 @@ pub async fn complete_claude_print(
             }
         }
     } else {
-        read_stdout.await?;
-        let status = child
-            .wait()
-            .await
-            .map_err(|e| format!("Claude Code wait failed: {e}"))?;
-        if !status.success() {
-            let preview = String::from_utf8_lossy(&buf);
-            return Err(format!(
-                "Claude Code exited with status {status}. Output: {}",
-                preview.chars().take(400).collect::<String>()
-            ));
+        tokio::select! {
+            _ = &mut deadline => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                Err(format!(
+                    "[E_CLI_TIMEOUT] Claude Code print mode timed out after {PRINT_TIMEOUT_SECS}s."
+                ))
+            }
+            read = read_stdout => {
+                read?;
+                let status = child
+                    .wait()
+                    .await
+                    .map_err(|e| format!("Claude Code wait failed: {e}"))?;
+                if !status.success() {
+                    let preview = String::from_utf8_lossy(&buf);
+                    return Err(format!(
+                        "Claude Code exited with status {status}. Output: {}",
+                        preview.chars().take(400).collect::<String>()
+                    ));
+                }
+                extract_claude_print_result(&String::from_utf8_lossy(&buf))
+            }
         }
-        extract_claude_print_result(&String::from_utf8_lossy(&buf))
     };
 
     if cancel_flag
@@ -3631,7 +3655,11 @@ fn apply_native_anthropic_provider_env(
     cmd.env_remove("CLAUDE_MODEL");
 }
 
-fn uses_native_anthropic_route(credential: &StoredOpenAiCompatibleCredential) -> bool {
+/// True when this credential talks Anthropic Messages API (DeepSeek / Qwen /
+/// Moonshot Anthropic roots) rather than OpenAI `/chat/completions`.
+pub(crate) fn uses_native_anthropic_route(
+    credential: &StoredOpenAiCompatibleCredential,
+) -> bool {
     native_anthropic_base_url(credential).is_some()
 }
 

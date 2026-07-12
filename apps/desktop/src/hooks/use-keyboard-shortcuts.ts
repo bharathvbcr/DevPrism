@@ -1,10 +1,7 @@
 import { useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getAppZoomAction, shouldHandleAppZoomShortcut } from "@/lib/app-zoom";
-import {
-  CHAT_DRAWER_OPEN_EVENT,
-  CHAT_DRAWER_TOGGLE_EVENT,
-} from "@/lib/chat-drawer-events";
+import { openChatDrawer, toggleChatDrawer } from "@/lib/chat-drawer-events";
 import { useDocumentStore } from "@/stores/document-store";
 
 export function useKeyboardShortcuts() {
@@ -74,11 +71,7 @@ export function useKeyboardShortcuts() {
           return;
         }
         e.preventDefault();
-        window.dispatchEvent(
-          new CustomEvent(CHAT_DRAWER_OPEN_EVENT, {
-            detail: { focusComposer: true },
-          }),
-        );
+        openChatDrawer({ focusComposer: true });
         return;
       }
 
@@ -90,7 +83,7 @@ export function useKeyboardShortcuts() {
         e.key.toLowerCase() === "j"
       ) {
         e.preventDefault();
-        window.dispatchEvent(new CustomEvent(CHAT_DRAWER_TOGGLE_EVENT));
+        toggleChatDrawer();
       }
     };
 

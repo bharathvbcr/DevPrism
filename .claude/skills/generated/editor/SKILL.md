@@ -1,11 +1,11 @@
 ---
 name: editor
-description: "Skill for the Editor area of DevPrism. 239 symbols across 41 files."
+description: "Skill for the Editor area of DevPrism. 247 symbols across 44 files."
 ---
 
 # Editor
 
-239 symbols | 41 files | Cohesion: 73%
+247 symbols | 44 files | Cohesion: 71%
 
 ## When to Use
 
@@ -17,14 +17,14 @@ description: "Skill for the Editor area of DevPrism. 239 symbols across 41 files
 
 | File | Symbols |
 |------|---------|
-| `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | getActiveFileContent, spellCheckExtension, LatexEditor, clearJumpRequest, setIsCompiling (+44) |
+| `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | getActiveFileContent, spellCheckExtension, LatexEditor, clearJumpRequest, setIsCompiling (+45) |
 | `apps/desktop/src/components/workspace/editor/editor-toolbar.tsx` | OpenEditorIcon, getOpenEditorButtonClassName, FileBreadcrumb, renderCrumb, SaveStatus (+17) |
 | `apps/desktop/src/lib/resume-bullets.ts` | bulletCountSuccessMessage, clampResumeBulletCount, suggestedBulletTargets, buildBulletCountInstruction, countLatexItems (+10) |
 | `apps/desktop/src/components/workspace/editor/comments-extension.ts` | formatRelTime, el, dispatch, renderTooltipBody, mkBtn (+10) |
 | `apps/desktop/src/lib/resume-bullet-suggestions.ts` | findSuggestionById, refinementSuccessMessage, recommendedBulletTarget, envHint, buildBulletRefinementInstruction (+6) |
 | `apps/desktop/src/components/workspace/editor/editor-status-bar.tsx` | compiledPageCount, countWords, stats, selectionStats, cursorBulletBlock (+6) |
+| `apps/desktop/src/lib/ai-assist.ts` | extractGrammarSpan, checkGrammar, suggestCitations, draftCommentReply, aiParseLimits (+6) |
 | `apps/desktop/src/components/workspace/editor/image-drop.ts` | filterImagePaths, captionAndLabel, isSvgPath, buildFigureSnippet, insertDroppedImages (+6) |
-| `apps/desktop/src/lib/ai-assist.ts` | suggestCitations, extractGrammarSpan, checkGrammar, aiParseLimits, clamp (+5) |
 | `apps/desktop/src/components/workspace/editor/latex-autocomplete.ts` | latexAutocomplete, fnv1a, parseSignature, getParsed, collectBibEntries (+3) |
 | `apps/desktop/src/lib/inline-edit.ts` | canUseDirectInlineTransform, runInlineEdit, inlineEditUsesNativeTransform, inlineEditSuccessMessage, applyLintLineFix (+2) |
 
@@ -57,24 +57,24 @@ Start here when exploring this area:
 | `goToChunk` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 413 |
 | `isOverEditor` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 1196 |
 | `handleHistoryAddLabel` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 2263 |
-| `ToolbarGroup` | Function | `apps/desktop/src/components/ui/toolbar-group.tsx` | 10 |
-| `EditorToolbar` | Function | `apps/desktop/src/components/workspace/editor/editor-toolbar.tsx` | 251 |
-| `setVimMode` | Function | `apps/desktop/src/components/workspace/editor/editor-toolbar.tsx` | 261 |
-| `setSpellCheck` | Function | `apps/desktop/src/components/workspace/editor/editor-toolbar.tsx` | 263 |
-| `setEditorViewMode` | Function | `apps/desktop/src/components/workspace/editor/editor-toolbar.tsx` | 266 |
+| `setSelectionRange` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 212 |
+| `buildSelectionContext` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 1587 |
+| `buildInlineEditSelection` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 1603 |
+| `dismissSelectionToolbar` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 1684 |
+| `runSelectionInlineEdit` | Function | `apps/desktop/src/components/workspace/editor/latex-editor.tsx` | 1690 |
 
 ## Execution Flows
 
 | Flow | Type | Steps |
 |------|------|-------|
-| `HandleToolbarAction → ResolveNativeOllamaModel` | cross_community | 6 |
+| `HandleToolbarAction → IsCliProviderId` | cross_community | 6 |
 | `HandleBulletAiSuggestion → CountLatexItems` | cross_community | 5 |
 | `HandleBulletAiSuggestion → SetSelectionRange` | intra_community | 5 |
 | `HandleBulletAiSuggestion → ProposeSelectionReplacement` | cross_community | 5 |
 | `HandleBulletAiSuggestion → InlineEditChatPrompt` | cross_community | 5 |
 | `HandleToolbarAction → IsOllamaEndpoint` | cross_community | 5 |
-| `HandleToolbarAction → AcquireAiSlot` | cross_community | 5 |
-| `HandleToolbarAction → ReleaseAiSlot` | cross_community | 5 |
+| `HandleToolbarAction → ThrowIfAborted` | cross_community | 5 |
+| `HandleToolbarAction → NewAiRequestId` | cross_community | 5 |
 | `LatexEditor → ResolveTexRoot` | cross_community | 4 |
 | `EditorToolbar → IsOllamaEndpoint` | cross_community | 4 |
 
@@ -82,14 +82,14 @@ Start here when exploring this area:
 
 | Area | Connections |
 |------|-------------|
-| Workspace | 48 calls |
+| Career | 32 calls |
 | Ui | 17 calls |
+| Workspace | 13 calls |
 | Preview | 6 calls |
-| Cluster_354 | 5 calls |
+| Cluster_362 | 5 calls |
+| Stores | 4 calls |
 | Browser-project | 4 calls |
-| Cluster_324 | 3 calls |
-| Claude-chat | 2 calls |
-| Components | 2 calls |
+| Cluster_320 | 3 calls |
 
 ## How to Explore
 

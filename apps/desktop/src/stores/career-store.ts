@@ -35,11 +35,21 @@ interface CareerState {
   saving: boolean;
   error: string | null;
 
+  /**
+   * One-shot flag: Database tab opens the resume import wizard when true,
+   * then acknowledges. Used by Synthesize empty-state / first-run CTAs.
+   */
+  resumeImportRequested: boolean;
+
+  /** Open Career; omit tab to restore the last active tab (else `"database"`). */
   openCareer: (tab?: CareerTab) => void;
   closeCareer: () => void;
   setActiveTab: (tab: CareerTab) => void;
   setSelectedBlockId: (id: string | null) => void;
   setSelectedPersonaId: (id: string | null) => void;
+  /** Switch to Database and ask it to open the resume import wizard. */
+  requestResumeImport: () => void;
+  acknowledgeResumeImportRequest: () => void;
 
   loadAll: () => Promise<void>;
   refreshMissingBlockEmbeddings: () => Promise<void>;
@@ -58,10 +68,16 @@ interface CareerState {
         phase: "save" | "embed" | "done";
       }) => void;
     },
-  ) => Promise<void>;
+  ) => Promise<{
+    saved: number;
+    deferredEmbeddings: number;
+    deferredError?: string;
+  }>;
 }
 
-async function embedBlockGracefully(block: ExperienceBlock): Promise<void> {
+async function embedBlockGracefully(
+  block: ExperienceBlock,
+): Promise<{ deferred: boolean; error?: string }> {
   try {
     // Persists ownerKind "block" + per-bullet "bullet" vectors.
     const result = await persistBlockEmbedding(block);
@@ -70,13 +86,16 @@ async function embedBlockGracefully(block: ExperienceBlock): Promise<void> {
         id: block.id,
         error: result.error,
       });
+      return { deferred: true, error: result.error };
     }
+    return { deferred: false };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log.warn("Block/bullet embedding failed; left for backfill", {
       id: block.id,
       error: message,
     });
+    return { deferred: true, error: message };
   }
 }
 
@@ -95,18 +114,38 @@ export const useCareerStore = create<CareerState>((set, get) => ({
   saving: false,
   error: null,
 
-  openCareer: (tab = "database") =>
-    set({ careerOpen: true, activeTab: tab, error: null }),
+  resumeImportRequested: false,
+
+  /**
+   * Open Career. With an explicit tab, switch to it; with no arg, restore the
+   * last active tab (kept in memory across closeCareer), else `"database"`.
+   */
+  openCareer: (tab) =>
+    set((state) => ({
+      careerOpen: true,
+      activeTab: tab ?? state.activeTab ?? "database",
+      error: null,
+    })),
   closeCareer: () =>
     set({
       careerOpen: false,
       selectedBlockId: null,
       selectedPersonaId: null,
       error: null,
+      resumeImportRequested: false,
+      // Keep activeTab so the next openCareer() restores the last tab.
     }),
   setActiveTab: (tab) => set({ activeTab: tab }),
   setSelectedBlockId: (id) => set({ selectedBlockId: id }),
   setSelectedPersonaId: (id) => set({ selectedPersonaId: id }),
+  requestResumeImport: () =>
+    set({
+      careerOpen: true,
+      activeTab: "database",
+      resumeImportRequested: true,
+      error: null,
+    }),
+  acknowledgeResumeImportRequest: () => set({ resumeImportRequested: false }),
 
   refreshMissingBlockEmbeddings: async () => {
     try {
@@ -242,7 +281,9 @@ export const useCareerStore = create<CareerState>((set, get) => ({
   },
 
   commitBlocks: async (blocks, options) => {
-    if (blocks.length === 0) return;
+    if (blocks.length === 0) {
+      return { saved: 0, deferredEmbeddings: 0 };
+    }
     set({ saving: true, error: null });
     try {
       const stamped = blocks.map((block) => ({
@@ -273,6 +314,8 @@ export const useCareerStore = create<CareerState>((set, get) => ({
           saving: false,
         };
       });
+      let deferredEmbeddings = 0;
+      let deferredError: string | undefined;
       for (let i = 0; i < stamped.length; i++) {
         const block = stamped[i]!;
         options?.onProgress?.({
@@ -281,7 +324,11 @@ export const useCareerStore = create<CareerState>((set, get) => ({
           label: block.title || block.org || block.id,
           phase: "embed",
         });
-        await embedBlockGracefully(block);
+        const embed = await embedBlockGracefully(block);
+        if (embed.deferred) {
+          deferredEmbeddings += 1;
+          deferredError ??= embed.error;
+        }
       }
       options?.onProgress?.({
         current: total,
@@ -290,6 +337,7 @@ export const useCareerStore = create<CareerState>((set, get) => ({
         phase: "done",
       });
       void get().refreshMissingBlockEmbeddings();
+      return { saved: total, deferredEmbeddings, deferredError };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log.error("Failed to commit imported blocks", { error: message });

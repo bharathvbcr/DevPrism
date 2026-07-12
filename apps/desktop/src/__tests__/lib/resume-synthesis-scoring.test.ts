@@ -9,6 +9,8 @@ import {
   renormalizeWeights,
   seniorityFit,
   skillOverlap,
+  skillsMatch,
+  textCoversSkill,
   weightsForFacets,
 } from "@/lib/resume-synthesis/scoring";
 import type { JDProfile, JdFacets } from "@/lib/resume-synthesis/types";
@@ -28,6 +30,7 @@ function block(partial: Partial<ExperienceBlock> = {}): ExperienceBlock {
     ],
     seniorityLevel: "senior",
     bullets: [],
+    facts: [],
     updatedAt: "2024-01-01T00:00:00.000Z",
     ...partial,
   };
@@ -84,10 +87,26 @@ describe("skillOverlap", () => {
     expect(full).toBeGreaterThan(0.9);
   });
 
-  it("matches fuzzy substrings", () => {
+  it("matches multi-token skills by tokens, not bare substrings", () => {
     expect(
       skillOverlap([{ name: "PyTorch Lightning", level: 3 }], ["pytorch"], []),
     ).toBeGreaterThan(0);
+    // Java must not match JavaScript
+    expect(skillOverlap([{ name: "JavaScript", level: 3 }], ["Java"], [])).toBe(
+      0,
+    );
+    // Go must not match Cargo
+    expect(skillOverlap([{ name: "Cargo", level: 3 }], ["Go"], [])).toBe(0);
+  });
+});
+
+describe("skillsMatch / textCoversSkill", () => {
+  it("rejects Java⊂JavaScript and Go⊂Cargo", () => {
+    expect(skillsMatch("Java", "JavaScript")).toBe(false);
+    expect(textCoversSkill("Built tooling with Cargo", "Go")).toBe(false);
+    expect(textCoversSkill("Shipped Go microservices", "Go")).toBe(true);
+    expect(textCoversSkill("Used Java for backends", "Java")).toBe(true);
+    expect(textCoversSkill("Used JavaScript for UI", "Java")).toBe(false);
   });
 });
 

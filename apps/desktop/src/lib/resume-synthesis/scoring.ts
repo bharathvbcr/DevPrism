@@ -64,29 +64,150 @@ export function weightsForFacets(facets: JdFacets): ScoreWeights {
   return { ...DEFAULT_WEIGHTS };
 }
 
-function normSkill(s: string): string {
+/** Strip to lowercase alphanumeric (+ # . for C++/Node.js). */
+export function normSkill(s: string): string {
   return s
     .trim()
     .toLowerCase()
-    .replace(/[^a-z0-9+#.]/g, "");
+    .replace(/[^a-z0-9+#.]+/g, "");
 }
 
-/** Exact + fuzzy (substring) skill overlap; must-have counts 2×. */
+/**
+ * Small alias map (canonical form → aliases). Matching is bidirectional.
+ * Deliberately omits dangerous short overlaps (e.g. go↛cargo, java↛javascript).
+ */
+const SKILL_ALIASES: Record<string, readonly string[]> = {
+  javascript: ["js"],
+  typescript: ["ts"],
+  python: ["py"],
+  golang: ["go"],
+  kubernetes: ["k8s"],
+  postgresql: ["postgres"],
+  "c++": ["cpp", "cplusplus"],
+  "c#": ["csharp"],
+  "node.js": ["nodejs", "node"],
+  react: ["reactjs"],
+  "machine learning": ["ml"],
+  "deep learning": ["dl"],
+};
+
+function aliasCanonicals(): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const [canon, aliases] of Object.entries(SKILL_ALIASES)) {
+    const c = normSkill(canon);
+    map.set(c, c);
+    for (const a of aliases) {
+      map.set(normSkill(a), c);
+    }
+  }
+  return map;
+}
+
+const ALIAS_TO_CANON = aliasCanonicals();
+
+/** Resolve a skill name to its alias-canonical form when known. */
+export function canonicalSkillKey(s: string): string {
+  const n = normSkill(s);
+  if (!n) return "";
+  return ALIAS_TO_CANON.get(n) ?? n;
+}
+
+/** Tokenize a skill into normalized word tokens (keeps #+.). */
+export function skillTokens(s: string): string[] {
+  return s
+    .trim()
+    .toLowerCase()
+    .split(/[^a-z0-9+#.]+/)
+    .map((t) => t.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Token / word-boundary skill match (no bare substring).
+ * - Exact after normalize + alias canonicalization
+ * - Multi-token: all target tokens appear as tokens in the haystack skill
+ * - Does NOT match Java⊂JavaScript or Go⊂Cargo
+ */
+export function skillsMatch(a: string, b: string): boolean {
+  const ca = canonicalSkillKey(a);
+  const cb = canonicalSkillKey(b);
+  if (!ca || !cb) return false;
+  if (ca === cb) return true;
+
+  const ta = skillTokens(a).map(
+    (t) => ALIAS_TO_CANON.get(normSkill(t)) ?? normSkill(t),
+  );
+  const tb = skillTokens(b).map(
+    (t) => ALIAS_TO_CANON.get(normSkill(t)) ?? normSkill(t),
+  );
+  if (ta.length === 0 || tb.length === 0) return false;
+
+  // Single-token equality after alias (already covered by ca===cb for most cases)
+  if (ta.length === 1 && tb.length === 1) {
+    return ta[0] === tb[0];
+  }
+
+  // Shorter token list must be a contiguous or subset match of the longer.
+  const [needle, hay] = ta.length <= tb.length ? [ta, tb] : [tb, ta];
+  if (needle.every((t) => hay.includes(t))) {
+    // Reject when a single short token is a prefix of a longer token in hay
+    // (already prevented by token equality). Allow "pytorch" ⊆ "pytorch lightning".
+    return true;
+  }
+  return false;
+}
+
+/**
+ * True when `skill` appears in free text with word-boundary matching
+ * (and alias variants). Avoids Go⊂Cargo / Java⊂JavaScript false positives.
+ */
+export function textCoversSkill(text: string, skill: string): boolean {
+  const hay = text.trim().toLowerCase();
+  if (!hay || !skill.trim()) return false;
+
+  const variants = new Set<string>();
+  const push = (s: string) => {
+    const t = s.trim().toLowerCase();
+    if (t) variants.add(t);
+  };
+  push(skill);
+  const key = canonicalSkillKey(skill);
+  if (key) {
+    for (const [canon, aliases] of Object.entries(SKILL_ALIASES)) {
+      if (
+        normSkill(canon) === key ||
+        aliases.some((a) => normSkill(a) === key)
+      ) {
+        push(canon);
+        for (const a of aliases) push(a);
+      }
+    }
+  }
+
+  for (const v of variants) {
+    const escaped = v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // Word boundary that also treats non-alphanumeric as edges (C++, Node.js).
+    const re = new RegExp(`(^|[^a-z0-9+#])${escaped}([^a-z0-9+.]|$)`, "i");
+    if (re.test(hay)) return true;
+  }
+  return false;
+}
+
+/** Exact + token/alias skill overlap; must-have counts 2×. */
 export function skillOverlap(
   blockSkills: SkillTag[],
   mustHave: string[],
   niceToHave: string[],
   personaWeights?: Record<string, number>,
 ): number {
-  const names = blockSkills.map((s) => normSkill(s.name)).filter(Boolean);
+  const names = blockSkills.map((s) => s.name).filter((n) => n.trim());
   if (names.length === 0 && mustHave.length === 0 && niceToHave.length === 0) {
     return 0;
   }
 
   const matchOne = (target: string): boolean => {
-    const t = normSkill(target);
-    if (!t) return false;
-    return names.some((n) => n === t || n.includes(t) || t.includes(n));
+    if (!target.trim()) return false;
+    return names.some((n) => skillsMatch(n, target));
   };
 
   let hits = 0;
@@ -94,14 +215,22 @@ export function skillOverlap(
   for (const s of mustHave) {
     weight += 2;
     if (matchOne(s)) {
-      const boost = personaWeights?.[s] ?? personaWeights?.[normSkill(s)] ?? 1;
+      const boost =
+        personaWeights?.[s] ??
+        personaWeights?.[normSkill(s)] ??
+        personaWeights?.[canonicalSkillKey(s)] ??
+        1;
       hits += 2 * Math.max(0.5, boost);
     }
   }
   for (const s of niceToHave) {
     weight += 1;
     if (matchOne(s)) {
-      const boost = personaWeights?.[s] ?? personaWeights?.[normSkill(s)] ?? 1;
+      const boost =
+        personaWeights?.[s] ??
+        personaWeights?.[normSkill(s)] ??
+        personaWeights?.[canonicalSkillKey(s)] ??
+        1;
       hits += 1 * Math.max(0.5, boost);
     }
   }

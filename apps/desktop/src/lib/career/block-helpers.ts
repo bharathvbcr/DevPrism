@@ -1,4 +1,5 @@
 import type {
+  BlockFact,
   BlockKind,
   Bullet,
   ExperienceBlock,
@@ -43,12 +44,6 @@ export function isSeniorityLevel(value: unknown): value is SeniorityLevel {
   );
 }
 
-export function isSectionKind(value: unknown): value is SectionKind {
-  return (
-    typeof value === "string" && (SECTION_KINDS as string[]).includes(value)
-  );
-}
-
 export function newCareerId(prefix: string): string {
   const rand =
     typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -68,6 +63,21 @@ export function newBullet(canonical = ""): Bullet {
   };
 }
 
+export function newBlockFact(
+  text = "",
+  overrides: Partial<BlockFact> = {},
+): BlockFact {
+  return {
+    id: newCareerId("fct"),
+    text,
+    skills: [],
+    metrics: [],
+    source: "manual",
+    createdAt: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
 export function createEmptyBlock(
   overrides: Partial<ExperienceBlock> = {},
 ): ExperienceBlock {
@@ -82,6 +92,7 @@ export function createEmptyBlock(
     skills: [],
     seniorityLevel: "senior",
     bullets: [newBullet()],
+    facts: [],
     updatedAt: new Date().toISOString(),
     ...overrides,
   };
@@ -116,7 +127,7 @@ export function createEmptyPersona(overrides: Partial<Persona> = {}): Persona {
   };
 }
 
-/** Dense-text used for embeddings: title + org + domains + canonical bullets. */
+/** Dense-text used for embeddings: title + org + domains + bullets + facts. */
 export function computeEmbeddingText(block: ExperienceBlock): string {
   const parts = [
     block.title,
@@ -124,6 +135,7 @@ export function computeEmbeddingText(block: ExperienceBlock): string {
     ...block.domains,
     ...block.skills.map((s) => s.name),
     ...block.bullets.map((b) => b.canonical),
+    ...(block.facts ?? []).map((f) => f.text),
   ];
   return parts
     .map((p) => p.trim())
@@ -155,10 +167,6 @@ export function clampSkillLevel(value: number): SkillTag["level"] {
 
 export function parseSkillsList(raw: string): SkillTag[] {
   return parseCommaList(raw).map((name) => newSkillTag(name));
-}
-
-export function formatSkillsList(skills: SkillTag[]): string {
-  return skills.map((s) => s.name).join(", ");
 }
 
 export { BLOCK_KINDS, SENIORITY_LEVELS, SECTION_KINDS };

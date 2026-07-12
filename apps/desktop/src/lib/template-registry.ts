@@ -50,29 +50,6 @@ export const CATEGORY_LABELS: Record<TemplateCategory, string> = {
   starter: "Starter",
 };
 
-export const SUBCATEGORY_LABELS: Record<TemplateSubcategory, string> = {
-  papers: "Papers",
-  theses: "Theses & Dissertations",
-  presentations: "Presentations",
-  posters: "Posters",
-  cv: "CV & Resume",
-  letters: "Letters",
-  reports: "Reports",
-  books: "Books",
-  newsletters: "Newsletters",
-  blank: "Blank",
-};
-
-export const CATEGORY_SUBCATEGORIES: Record<
-  TemplateCategory,
-  TemplateSubcategory[]
-> = {
-  academic: ["papers", "theses", "presentations", "posters"],
-  professional: ["cv", "letters", "reports"],
-  creative: ["books", "newsletters"],
-  starter: ["blank"],
-};
-
 // ─── Template Definitions ───
 
 const TEMPLATES: TemplateDefinition[] = [

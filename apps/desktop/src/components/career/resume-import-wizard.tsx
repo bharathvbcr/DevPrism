@@ -16,6 +16,7 @@ import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { extractBlocksFromResume, type ExperienceBlock } from "@/lib/career";
 import { canUseAiAssist } from "@/lib/ai-assist";
+import { dispatchOpenSettings } from "@/lib/home-flow-events";
 import { useCareerStore } from "@/stores/career-store";
 import { IngestProgressList, type IngestProgressItem } from "./ingest-progress";
 
@@ -104,7 +105,7 @@ export function ResumeImportWizard({
       })),
     );
     try {
-      await commitBlocks(chosen, {
+      const commit = await commitBlocks(chosen, {
         onProgress: ({ current, total, label, phase }) => {
           setCommitProgress((prev) =>
             prev.map((item, idx) => {
@@ -140,11 +141,25 @@ export function ResumeImportWizard({
         },
       });
       setCommitProgress((prev) =>
-        prev.map((item) => ({ ...item, status: "done" as const })),
+        prev.map((item) => ({
+          ...item,
+          status:
+            commit.deferredEmbeddings > 0
+              ? ("deferred" as const)
+              : ("done" as const),
+          error:
+            commit.deferredEmbeddings > 0 ? commit.deferredError : undefined,
+        })),
       );
-      toast.success(
-        `Saved ${chosen.length} block${chosen.length === 1 ? "" : "s"}`,
-      );
+      if (commit.deferredEmbeddings > 0) {
+        toast.warning(
+          `Saved ${commit.saved} block${commit.saved === 1 ? "" : "s"}, but embeddings were deferred for ${commit.deferredEmbeddings}. Pull an embedding model, then embed from Database.`,
+        );
+      } else {
+        toast.success(
+          `Saved ${commit.saved} block${commit.saved === 1 ? "" : "s"}`,
+        );
+      }
       handleClose(false);
     } catch {
       toast.error("Failed to save imported blocks");
@@ -202,10 +217,23 @@ export function ResumeImportWizard({
               className="min-h-[220px] font-mono text-xs"
             />
             {!canUseAiAssist() && (
-              <p className="text-warning-foreground text-xs">
-                AI assist is off or no provider is configured. Enable one in
-                Settings before extracting.
-              </p>
+              <div className="flex flex-wrap items-center gap-2 rounded-md border border-border/60 bg-muted/40 px-2.5 py-2">
+                <p className="min-w-0 flex-1 text-muted-foreground text-xs">
+                  AI assist is off or no provider is configured. Enable one in
+                  Settings before extracting.
+                </p>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    useCareerStore.getState().closeCareer();
+                    dispatchOpenSettings("ai");
+                  }}
+                >
+                  Open AI settings
+                </Button>
+              </div>
             )}
             {error && (
               <p className="text-destructive text-xs" role="alert">
@@ -260,6 +288,13 @@ export function ResumeImportWizard({
                             </li>
                           ))}
                       </ul>
+                      {(block.facts ?? []).length > 0 ? (
+                        <p className="text-[11px] text-muted-foreground">
+                          +{(block.facts ?? []).length} raw fact
+                          {(block.facts ?? []).length === 1 ? "" : "s"} for
+                          knowledge pool
+                        </p>
+                      ) : null}
                     </div>
                   </label>
                 ))}
@@ -292,7 +327,9 @@ export function ResumeImportWizard({
           {step === "source" ? (
             <Button
               type="button"
-              disabled={extracting || source.trim().length < 40}
+              disabled={
+                extracting || source.trim().length < 40 || !canUseAiAssist()
+              }
               onClick={() => void handleExtract()}
             >
               {extracting ? (

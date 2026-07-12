@@ -3,7 +3,10 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createEmptyBlock, type ExperienceBlock } from "@/lib/career";
 
-const commitBlocks = vi.fn(async (_blocks: ExperienceBlock[]) => {});
+const commitBlocks = vi.fn(async (blocks: ExperienceBlock[]) => ({
+  saved: blocks.length,
+  deferredEmbeddings: 0,
+}));
 const extractBlocksFromResume = vi.fn();
 
 vi.mock("@/stores/career-store", () => ({

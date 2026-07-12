@@ -53,7 +53,7 @@ Start here when exploring this area:
 | `has_deepseek` | Function | `apps/desktop/src-tauri/src/anthropic_proxy/transformers.rs` | 54 |
 | `has_streamoptions` | Function | `apps/desktop/src-tauri/src/anthropic_proxy/transformers.rs` | 58 |
 | `for_credential` | Function | `apps/desktop/src-tauri/src/anthropic_proxy/transformers.rs` | 14 |
-| `converts_openai_tool_call_to_anthropic_message` | Function | `apps/desktop/src-tauri/src/anthropic_proxy.rs` | 930 |
+| `converts_openai_tool_call_to_anthropic_message` | Function | `apps/desktop/src-tauri/src/anthropic_proxy.rs` | 935 |
 | `openai_message_text` | Function | `apps/desktop/src-tauri/src/anthropic_proxy/messages.rs` | 589 |
 | `openai_message_thinking` | Function | `apps/desktop/src-tauri/src/anthropic_proxy/messages.rs` | 613 |
 | `exit_tool_response` | Function | `apps/desktop/src-tauri/src/anthropic_proxy/messages.rs` | 634 |

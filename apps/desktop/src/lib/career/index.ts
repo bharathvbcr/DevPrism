@@ -1,18 +1,16 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
-  EmbeddingItem,
   ExperienceBlock,
-  IngestReport,
   KbChunkRow,
   KbSourceRow,
   Persona,
-  PreparedSource,
   ScoredHit,
   SearchFilter,
   SynthesisRun,
 } from "./types";
 
 export type {
+  BlockFact,
   BlockKind,
   Bullet,
   BulletMetric,
@@ -44,6 +42,10 @@ export * from "./ingest";
 export * from "./block-helpers";
 export * from "./block-embed";
 export { extractBlocksFromResume } from "./extract-resume";
+export {
+  distillFactsFromNotes,
+  parseDistilledFacts,
+} from "./distill-facts";
 
 export function listBlocks(
   missingEmbeddingsOnly = false,
@@ -73,21 +75,6 @@ export function deletePersona(id: string): Promise<void> {
   return invoke<void>("career_delete_persona", { id });
 }
 
-/** Legacy path-based ingest (minimal Rust chunker). Prefer `ingestFilePath`. */
-export function ingestSource(
-  path: string,
-  sourceType: string,
-): Promise<IngestReport> {
-  return invoke<IngestReport>("career_ingest_source", { path, sourceType });
-}
-
-/** Upsert frontend-prepared chunks with per-chunk content-hash reuse. */
-export function upsertKbSource(
-  prepared: PreparedSource,
-): Promise<IngestReport> {
-  return invoke<IngestReport>("career_upsert_kb_source", { prepared });
-}
-
 export function listKbSources(): Promise<KbSourceRow[]> {
   return invoke<KbSourceRow[]>("career_list_kb_sources");
 }
@@ -102,12 +89,17 @@ export function listKbChunks(
   });
 }
 
-export function deleteKbSource(sourceId: string): Promise<void> {
-  return invoke<void>("career_delete_kb_source", { sourceId });
+/** Count of KB chunks with no embedding row (for readiness / badges). */
+export function countKbChunksMissingEmbeddings(
+  sourceId?: string,
+): Promise<number> {
+  return invoke<number>("career_count_kb_chunks_missing_embeddings", {
+    sourceId: sourceId ?? null,
+  });
 }
 
-export function storeEmbeddings(items: EmbeddingItem[]): Promise<void> {
-  return invoke<void>("career_store_embeddings", { items });
+export function deleteKbSource(sourceId: string): Promise<void> {
+  return invoke<void>("career_delete_kb_source", { sourceId });
 }
 
 export function vectorSearch(

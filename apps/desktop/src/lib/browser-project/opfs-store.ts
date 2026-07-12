@@ -15,15 +15,6 @@ async function opfsProjectsRoot(): Promise<FileSystemDirectoryHandle> {
   return root.getDirectoryHandle("devprism-projects", { create: true });
 }
 
-export async function listOpfsProjectIds(): Promise<string[]> {
-  const root = await opfsProjectsRoot();
-  const ids: string[] = [];
-  for await (const [name] of directoryEntries(root)) {
-    ids.push(name);
-  }
-  return ids;
-}
-
 export async function getOpfsProjectDir(
   projectId: string,
   create = false,

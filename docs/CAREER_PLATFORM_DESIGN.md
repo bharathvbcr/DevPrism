@@ -1,6 +1,6 @@
 # Career Platform — System Design & Feature Spec
 
-Authoritative design document for DevPrism’s **Master Career Database** and **JD-driven Resume Synthesis**. Grounded in the working tree as of this writing; planned gap-closing refactors are marked **Planned** and must not be confused with shipped APIs.
+Authoritative design document for DevPrism’s **Master Career Database** and **JD-driven Resume Synthesis** (v2). Grounded in the working tree as of this writing; remaining gap-closing work is marked **Planned** and must not be confused with shipped APIs.
 
 **Related docs**
 
@@ -11,8 +11,10 @@ Authoritative design document for DevPrism’s **Master Career Database** and **
 
 - Project Picker → Career
 - Workspace → Command palette (“Open Career database”) or sidebar Career control
+- Space quick action “Synthesize resume” (exposed beyond resume-kind spaces)
 
-**Tabs:** Database · Knowledge · Synthesize
+**Tabs:** Database · Knowledge · Synthesize  
+`openCareer()` remembers the last active tab; an optional tab argument forces Database / Knowledge / Synthesize.
 
 ---
 
@@ -20,24 +22,24 @@ Authoritative design document for DevPrism’s **Master Career Database** and **
 
 ```mermaid
 flowchart TD
-  UI["Career UI\nDatabase · Knowledge · Synthesize"] --> DB["career.db\nSQLite via Tauri"]
+  UI["Career UI\nDatabase · Knowledge · Synthesize\nPipelineBoard always visible"] --> DB["career.db\nSQLite + sqlite-vec via Tauri"]
   UI --> Syn["synthesizeResume\norchestrator.ts"]
-  Syn --> LLM["aiComplete / aiEmbed\nOllama or OpenAI-compat"]
+  Syn --> LLM["aiComplete / aiEmbed\nOllama · OpenAI-compat · Claude Code · Cursor"]
   Syn --> Tpl["resume-templates\nslot + budget"]
   Syn --> Comp["career_verify_compile\ncompile-repair loop"]
-  DB --> Blocks[blocks]
+  DB --> Blocks["blocks\n+ facts / notes"]
   DB --> Personas[personas]
   DB --> KB[kb_sources / kb_chunks]
-  DB --> Emb[embeddings]
+  DB --> Emb["embeddings\nblock · chunk · bullet · fact"]
   DB --> Runs[synthesis_runs]
   Syn --> Mat["materializeSynthesis\n(post-pipeline)"]
 ```
 
 | Layer | Responsibility | Canonical paths |
 |-------|----------------|-----------------|
-| **1 — Data schema & ingestion** | Document-store SQLite; KB + resume ingest; SHA-1 content hashing | `career/types.ts`, `career/ingest/`, `career_db/schema.rs` |
-| **2 — Context integration** | Chunk → embed → cosine search; deferred embed + backfill | `career/ingest/embed.ts`, `block-embed.ts`, `career_db/vectors.rs` |
-| **3 — RAG / inference** | Seven-stage `synthesizeResume` → optional workspace materialize | `resume-synthesis/`, `resume-templates/` |
+| **1 — Data schema & ingestion** | Document-store SQLite; Fact Pool; KB + resume / quick-points ingest; SHA-1 content hashing | `career/types.ts`, `career/distill-facts.ts`, `career/ingest/`, `career_db/schema.rs` |
+| **2 — Context integration** | Chunk → embed → ANN (sqlite-vec) with cosine fallback; deferred embed + backfill; fact embeddings | `career/ingest/embed.ts`, `block-embed.ts`, `career_db/vectors.rs` |
+| **3 — RAG / inference** | Seven-stage `synthesizeResume` (+ stage 3b gap analysis) → optional workspace materialize | `resume-synthesis/`, `resume-templates/` |
 
 ---
 
@@ -48,7 +50,7 @@ flowchart TD
 - **DB path:** `~/Library/Application Support/DevPrism/career.db` on macOS (Tauri app-data dir on other platforms).
 - **Pattern:** Document store — full JSON in `json` / `meta_json` / `report_json`, with denormalized index columns for queries.
 - **Host:** `apps/desktop/src-tauri/src/career_db/` (`schema.rs`, `mod.rs`, `vectors.rs`, `ingest.rs`).
-- **Client types:** `apps/desktop/src/lib/career/types.ts` (mirrored by Rust serde structs).
+- **Client types:** `apps/desktop/src/lib/career/types.ts` (mirrored by Rust serde structs). Old block rows parse with `#[serde(default)]` for new fields (`facts`, `notes`) — no SQL migration for the Fact Pool.
 
 ### 1.2 SQL layout
 
@@ -56,15 +58,16 @@ Defined in `career_db/schema.rs` (`SCHEMA_SQL`):
 
 | Table | Role |
 |-------|------|
-| `blocks` | Experience / project / publication / education / leadership (`ExperienceBlock` JSON) |
+| `blocks` | Experience / project / publication / education / leadership (`ExperienceBlock` JSON, including `facts[]` / `notes`) |
 | `personas` | Targeting profiles (`ai`, `life-sciences`, `management` seeded) |
 | `kb_sources` | Ingested knowledge-base documents |
 | `kb_chunks` | Heading-aware text chunks + `meta_json` |
-| `embeddings` | f32 little-endian BLOB vectors (`owner_kind`: `block` \| `chunk` \| `bullet`) |
+| `embeddings` | f32 little-endian BLOB vectors; PK `(owner_id, model)`; `owner_kind`: `block` \| `chunk` \| `bullet` \| `fact` |
+| `vec_embeddings` | sqlite-vec virtual table (ANN index); rebuilt from `embeddings` SoT when needed |
 | `synthesis_runs` | JD hash + persona + template + match report (+ optional `.tex`) |
 
 ```sql
--- Simplified from SCHEMA_SQL
+-- Simplified from SCHEMA_SQL (current)
 CREATE TABLE blocks (
     id TEXT PRIMARY KEY,
     kind TEXT,
@@ -90,11 +93,12 @@ CREATE TABLE kb_chunks (
     meta_json TEXT
 );
 CREATE TABLE embeddings (
-    owner_id TEXT PRIMARY KEY,   -- see Planned: (owner_id, model)
+    owner_id TEXT NOT NULL,
     owner_kind TEXT,
-    model TEXT,
+    model TEXT NOT NULL,
     dim INTEGER,
-    vec BLOB
+    vec BLOB,
+    PRIMARY KEY (owner_id, model)
 );
 CREATE TABLE synthesis_runs (
     id TEXT PRIMARY KEY,
@@ -106,7 +110,8 @@ CREATE TABLE synthesis_runs (
 );
 ```
 
-Indexes today: `idx_embeddings_owner_kind`, `idx_kb_chunks_source_id`, `idx_blocks_kind`.
+Indexes today: `idx_embeddings_owner_kind`, `idx_kb_chunks_source_id`, `idx_blocks_kind`.  
+Migration: existing DBs upgrade `embeddings` from `PRIMARY KEY (owner_id)` → `(owner_id, model)` idempotently in `schema.rs`.
 
 ### 1.3 ExperienceBlock
 
@@ -121,7 +126,9 @@ Indexes today: `idx_embeddings_owner_kind`, `idx_kb_chunks_source_id`, `idx_bloc
 | `skills[{name, level 1–5, years?}]` | Tag scoring |
 | `seniorityLevel` | `ic` \| `senior` \| `lead` \| `manager` \| `director` |
 | `bullets[]` | See below |
-| `embeddingText?` | Computed: title + org + domains + canonical bullets |
+| `facts[]` | **Fact Pool** — raw ground-truth points for distillation (see §1.5) |
+| `notes?` | Free-form scratchpad; input for “Distill with AI” |
+| `embeddingText?` | Computed: title + org + domains + canonical bullets + **fact texts** |
 | `updatedAt` | ISO timestamp |
 
 ### 1.4 Bullet
@@ -135,7 +142,30 @@ Indexes today: `idx_embeddings_owner_kind`, `idx_kb_chunks_source_id`, `idx_bloc
 | `evidenceRefs[]` | KB chunk ids grounding the claim |
 | `locked` | Selectable but never re-phrased by AI |
 
-### 1.5 Persona (multi-persona model)
+### 1.5 BlockFact (Fact Pool)
+
+Raw detail points stored on each block so synthesis can distill JD-tailored bullets without inventing claims.
+
+| Field | Type / notes |
+|-------|----------------|
+| `id` | Stable id (`fct_…`) |
+| `text` | One raw detail point (ground truth) |
+| `skills[]` | Optional skill tags for must-have targeting |
+| `metrics[]` | Values that must survive verbatim when distilled |
+| `source` | `manual` \| `distilled` \| `import` |
+| `createdAt` | ISO timestamp |
+
+**Ingestion paths**
+
+| Path | Behavior |
+|------|----------|
+| Block editor | “Knowledge / raw points” — manual add; paste notes + **Distill with AI** (`distillFactsFromNotes` → `aiComplete` JSON) with preview before save |
+| Add-knowledge dialog | **Quick points** mode — paste N points, pick/create target block, AI structures into `BlockFact[]` with preview before commit; document ingest (md/pdf/opml/bibtex) unchanged |
+| Resume import wizard | Extraction may emit facts when the source has more detail than fits in bullets (`source: "import"`) |
+
+Helpers: `newBlockFact` / `computeEmbeddingText` in `block-helpers.ts`; LLM structuring in `distill-facts.ts`.
+
+### 1.6 Persona (multi-persona model)
 
 Seeded once via `INSERT OR IGNORE` in `seed_default_personas` — user edits are never overwritten on reopen.
 
@@ -152,7 +182,7 @@ Each persona stores:
 - `sectionOrder: SectionKind[]` — assembly order
 - `defaultTemplateId` — usually `ats-single-column` (UI may override from the template registry)
 
-### 1.6 Chunking policy
+### 1.7 Chunking policy
 
 Implemented in `career/ingest/chunking.ts`:
 
@@ -166,7 +196,7 @@ Implemented in `career/ingest/chunking.ts`:
 
 Per-chunk `meta.contentHash` = SHA-1 of chunk text (`sha1HexSync` in `ingest/hash.ts`). Source-level `contentHash` is SHA-1 of the document (or concatenated chunk hashes) for incremental re-ingest.
 
-### 1.7 Content-hash dedup & ingest pipeline
+### 1.8 Content-hash dedup & ingest pipeline
 
 Pipeline: `ingest/pipeline.ts` — parse → chunk → hash → `career_upsert_kb_source` → embed (with `ProcessingProgress` callbacks).
 
@@ -176,13 +206,15 @@ Pipeline: `ingest/pipeline.ts` — parse → chunk → hash → `career_upsert_k
 | PDF | `ingest/pdf.ts` | MuPDF text extraction |
 | OPML / FreeMind | `ingest/mindmap.ts` | Outline → sections |
 | BibTeX / Zotero | `ingest/zotero.ts` | One KB chunk per BibTeX entry (`sourceType: "publication"`) |
-| Pasted / wizard resume | `extract-resume.ts` | LLM extraction → draft `ExperienceBlock`s |
+| BibTeX → blocks | `publication-import-wizard.tsx` | Preview + commit `kind: "publication"` `ExperienceBlock`s |
+| Pasted / wizard resume | `extract-resume.ts` | LLM extraction → draft blocks (+ optional facts) |
+| Quick points | `add-knowledge-dialog.tsx` + `distill-facts.ts` | Paste → structured facts on a block |
 
 **Dedup behavior (exists today):**
 
 - Unchanged source `contentHash` → upsert may skip re-chunking (`IngestReport.skipped`).
 - Chunks whose text hash is unchanged can reuse embeddings; `needsEmbedding` lists chunk ids that still need vectors.
-- Embed failures **defer** (`EmbedPipelineResult.deferred`) — chunks/blocks stay stored; backfill via `backfillKbEmbeddings` / `backfillBlockEmbeddings` / `backfillBulletEmbeddings`.
+- Embed failures **defer** (`EmbedPipelineResult.deferred`) — chunks/blocks stay stored; backfill via `backfillKbEmbeddings` / `backfillBlockEmbeddings` / `backfillBulletEmbeddings` / `backfillFactEmbeddings`.
 
 **Unified progress type** (`ProcessingProgress`): phases `parse` \| `chunk` \| `hash` \| `upsert` \| `embed` \| `done` \| `error`. Progress is frontend-driven; Rust career commands are request/response only.
 
@@ -192,14 +224,14 @@ Pipeline: `ingest/pipeline.ts` — parse → chunk → hash → `career_upsert_k
 
 ### 2.1 Vector store (current)
 
-- **Table:** `embeddings` — `owner_id` PK, `owner_kind`, `model`, `dim`, `vec` (f32 LE BLOB).
+- **Table:** `embeddings` — composite PK `(owner_id, model)`, `owner_kind`, `dim`, `vec` (f32 LE BLOB).
+- **ANN index:** `vec_embeddings` (sqlite-vec vec0); populated alongside store writes; rebuilt lazily if dim/model changes.
+- **Search:** Prefer KNN `MATCH` with over-fetch + post-filter for persona/domain/kind; **brute-force cosine fallback** if the extension fails to load (`career_db/vectors.rs`).
 - **Write path:** TS `aiEmbed` → Tauri `ai_embed` → `career_store_embeddings`.
 - **Default local model:** Ollama `nomic-embed-text`.
 - **Cloud:** Gemini / OpenAI embeddings when the OpenAI-compat credential supports them (Groq does not embed).
-- **Search:** Brute-force cosine in `career_db/vectors.rs` (`vector_search`), with optional filters:
-  - `ownerKind`
-  - `personas` / `domains` / `kinds` (applied only when `owner_kind == "block"` by loading block JSON)
-- Mixed-dimension rows (wrong model) are **skipped** at query time (dim must match query).
+- **Filters:** `ownerKind`, plus `personas` / `domains` / `kinds` (applied when resolving block JSON for `owner_kind == "block"`).
+- Mixed-dimension / wrong-model rows are **skipped** at query time (search is scoped to one model; dim must match query).
 
 ### 2.2 Owner kinds
 
@@ -208,21 +240,25 @@ Pipeline: `ingest/pipeline.ts` — parse → chunk → hash → `career_upsert_k
 | `chunk` | KB ingest / `backfillKbEmbeddings` | Stage 4 evidence retrieval |
 | `block` | Block save / “Embed all blocks” / backfill | Stage 2 hybrid scoring |
 | `bullet` | Block save / `backfillBulletEmbeddings` | Stage 3 bullet trim relevance |
+| `fact` | Block save / `backfillFactEmbeddings` | Stage 4 fact ranking → stage 5 distill |
 
-### 2.3 Hit text resolution (current gaps)
+### 2.3 Hit text resolution
 
 `resolve_hit_text` in `vectors.rs`:
 
 - `chunk` → chunk text + `meta_json`
 - `block` → `embeddingText` (or title+org) + full block JSON as meta
-- **other (including `bullet`)** → empty text + null meta (**Planned** fix in Workstream 5)
+- `bullet` → bullet `canonical` + parent block meta
+- `fact` → fact `text` + parent block meta (includes fact id / block id)
+
+`career_delete_block` removes the block row **and** child bullet + fact embedding rows.
 
 ### 2.4 Deferred embedding + backfill
 
 | Path | On embed failure |
 |------|------------------|
 | KB ingest | Chunks stored; `deferred: true`; call `backfillKbEmbeddings()` |
-| Block save | Block stored; `deferred: true`; call `backfillBlockEmbeddings()` / `backfillBulletEmbeddings()` |
+| Block save | Block stored; `deferred: true`; call `backfillBlockEmbeddings()` / `backfillBulletEmbeddings()` / `backfillFactEmbeddings()` |
 | Synthesis | JD facet embed failure → `JdFacets.semanticMatchingDisabled`; tag-only scoring |
 
 ### 2.5 Source adapters (summary)
@@ -232,10 +268,10 @@ Pipeline: `ingest/pipeline.ts` — parse → chunk → hash → `career_upsert_k
 | Wiki / markdown | `.md` / paste | Heading sections → chunks |
 | PDF | File bytes via MuPDF | Page-aware text → chunks |
 | Mind map | OPML / FreeMind XML | Outline sections → chunks |
-| BibTeX | Zotero export / paste | One chunk per entry (KB only today) |
-| Resume wizard | Paste / PDF | LLM → draft blocks (Database tab) |
-
-**Note:** Knowledge-tab BibTeX ingest already calls `seedPublicationsFromBibtex` and writes **KB chunks**. It does **not** create `ExperienceBlock` rows with `kind: "publication"`. That block-level import is **Planned** (Workstream 4).
+| BibTeX (KB) | Zotero export / paste | One chunk per entry |
+| BibTeX (blocks) | Publication import wizard | `kind: "publication"` blocks + embeddings |
+| Resume wizard | Paste / PDF | LLM → draft blocks (+ facts when detail-rich) |
+| Quick points | Paste in Synthesize dialog | AI → `BlockFact[]` on target block |
 
 ---
 
@@ -243,15 +279,16 @@ Pipeline: `ingest/pipeline.ts` — parse → chunk → hash → `career_upsert_k
 
 Orchestrator: `apps/desktop/src/lib/resume-synthesis/orchestrator.ts`.  
 Structured LLM: `llmJson` → `aiComplete` (JSON mode, salvage-parse + one reprompt).  
-Rewrite prefers `aiCompleteStream` with `llmJson` fallback.
+Distill/rewrite prefers `aiCompleteStream` with `llmJson` fallback.
 
 ```mermaid
 flowchart TD
   JD[JD text] --> A["1 JD analysis\nLLM → JDProfile"]
   A --> S["2 Hybrid scoring\n0.40 emb + 0.30 skills + 0.15 persona\n+ 0.10 recency + 0.05 seniority"]
   S --> K["3 Knapsack selection\ntemplate line budget, one-per-org,\nmust-have swaps + bullet trim"]
-  K --> Ev["4 Evidence retrieval\nKB chunks + MMR"]
-  Ev --> R["5 Constrained rewrite\nstream per block; locked + metrics"]
+  K --> G["3b Gap analysis\ncovered / weak / missing must-haves\n(no extra LLM)"]
+  G --> Ev["4 Evidence\nKB chunks + MMR + ranked facts"]
+  Ev --> R["5 Distill & rewrite\nfacts + canonical + evidence → bullets\nwith provenance citations"]
   R --> C["6 Critic\nprogrammatic + LLM grounding + repair"]
   C --> T["7 Assemble + compile\nslot template, escape, repair loop"]
   T --> Persist["Persist synthesis_runs\nreport_json + tex"]
@@ -262,12 +299,13 @@ flowchart TD
 
 | Stage | Module | Typical LLM / embed | Output |
 |-------|--------|---------------------|--------|
-| 1 JD analysis | `jd-analysis.ts` | 1× `llmJson` | Must/nice skills, domains, ATS keywords, tone, facet texts |
+| 1 JD analysis | `jd-analysis.ts` | 1× `llmJson` (stream preview when available) | Must/nice skills, domains, ATS keywords, tone, facet texts |
 | 2 Hybrid score | `scoring.ts` | 1× `aiEmbed` (3 JD facets) + block vector search | Explainable component scores |
 | 3 Knapsack | `selection.ts` | Optional bullet vector search | Selected set under `ResumeTemplateBudget` |
-| 4 Evidence | orchestrator + MMR | Per-block chunk search + embed for MMR | ≤3 grounding snippets / block |
-| 5 Rewrite | `rewrite.ts` | 1× stream/`llmJson` per selected block | Plain-text bullets only |
-| 6 Critic | `critic.ts` | 1× critic + ≤2 repair rounds | Grounding / ATS coverage |
+| 3b Gap analysis | `gap-analysis.ts` | None (pure TS) | `MatchReport.gapAnalysis` — covered / weak / missing + suggestions |
+| 4 Evidence | orchestrator + MMR | Per-block chunk search + embed for MMR; fact ranking (cosine + must-have boost) | ≤3 grounding snippets / block; top-k ranked facts → `blockFacts` |
+| 5 Distill & rewrite | `rewrite.ts` | 1× stream/`llmJson` per selected block | Plain-text bullets with `sourceFactIds` / `sourceBulletId` |
+| 6 Critic | `critic.ts` | 1× critic + ≤2 repair rounds (stream preview when available) | Grounding / ATS coverage; provenance checks |
 | 7 Assemble | templates + `compile-verify.ts` | Compile loop (no LLM) | Escaped `.tex` + PDF when engine succeeds |
 
 **Post-pipeline:** `materializeSynthesis` writes `.tex` into a variant or new project. Rematerialization of a stored run reuses persisted `tex` without re-running LLM stages.
@@ -294,19 +332,32 @@ JSON contract only:
 
 Facets for embedding: full JD text, `responsibilitiesText`, `qualificationsText` (`facetsOf`).
 
-#### Stage 5 — `REWRITE_SYSTEM` (`rewrite.ts`)
+#### Stage 3b — Gap analysis (`gap-analysis.ts`)
 
-- Return `{"bullets":[{"id","text"}]}` only.
+Pure TypeScript (no LLM). For each `mustHaveSkill`, classify **covered** / **weak** / **missing** across:
+
+- selected blocks (skills, domains, bullets, facts)
+- full pool (non-selected blocks)
+- optional KB chunk text
+
+Uses `skillsMatch` / `textCoversSkill` from `scoring.ts`. Stored on `MatchReport.gapAnalysis` (`items`, `summary`, counts). UI: “What’s missing” panel with actionable suggestions (e.g. add a fact about a skill to a block).
+
+#### Stage 5 — Distill & rewrite (`rewrite.ts`)
+
+- Input per block: canonical bullets + top-ranked facts + KB evidence + JD profile + persona tone + per-bullet budget.
+- Return `{"bullets":[{"id","text","sourceFactIds","sourceBulletId"}]}` only.
+- Every bullet must cite provenance (`sourceFactIds` and/or `sourceBulletId`). May distill a bullet **from facts alone** (`sourceBulletId` null) up to the trim cap.
 - Plain text — no LaTeX, no backslashes, no `{` `}` (enforced by `hasForbiddenLatex`).
-- Preserve every `metric.value` verbatim (`metricsPreserved`); else fall back to canonical.
+- Preserve every cited `metric.value` verbatim; invalid provenance / metrics → fall back to canonical (or drop fact-only bullets).
 - Locked bullets copied exactly; character budget from template `perBullet`.
 - Persona `toneDirective` + JD tone / ATS keywords in the user prompt.
+- `MatchReport` gains `bulletProvenance`, `blockFacts`, optional `blockDiffs`.
 
 #### Stage 6 — `CRITIC_SYSTEM` (`critic.ts`)
 
 - Return `atsCoveragePct` + per-bullet `verdicts` (`grounded`, `keywordHits`, `flags`).
-- Programmatic invariants run first (metrics, LaTeX smuggling); LLM judges grounding.
-- Flagged bullets repaired (≤2 rounds) or reverted to canonical.
+- Programmatic invariants run first (metrics, LaTeX smuggling, provenance ids); LLM judges grounding.
+- Flagged bullets repaired (≤2 rounds) or reverted to canonical; fact-only distill bullets skip creative LLM repair when provenance is intact.
 
 ### 3.3 Hybrid scoring formula
 
@@ -324,7 +375,9 @@ From `scoring.ts` (`DEFAULT_WEIGHTS`):
 | \(r\) | Recency decay (half-life ~4 years from end/start date) |
 | \(n\) | Seniority fit vs JD seniority |
 
-**Degradation:** If facet embedding fails or returns empty vectors, `semanticMatchingDisabled = true`, embedding weight → 0, remaining weights **renormalized**. Evidence retrieval returns empty; rewrite still runs on canonical + JD context. UI banner via match-report notices.
+Block `embeddingText` includes fact texts, so hybrid scoring benefits from the Fact Pool without formula changes.
+
+**Degradation:** If facet embedding fails or returns empty vectors, `semanticMatchingDisabled = true`, embedding weight → 0, remaining weights **renormalized**. Evidence / fact cosine ranking degrades to keyword boosts; distill still runs on canonical + facts + JD context. UI banner via match-report notices.
 
 ### 3.4 Knapsack & bullet trim
 
@@ -342,10 +395,10 @@ Template budgets (examples):
 | `ats-single-column` | 55 | 140 |
 | `ats-two-column` | (see template) | 120 |
 
-### 3.5 Evidence MMR
+### 3.5 Evidence + fact ranking (stage 4)
 
-- Vector search `ownerKind: "chunk"`, boost hits mentioning block title/org.
-- MMR select top 3 (`λ ≈ 0.7`) when re-embed of candidates succeeds; else prefix-dedup fallback.
+- **KB:** Vector search `ownerKind: "chunk"`, boost hits mentioning block title/org; MMR select top 3 (`λ ≈ 0.7`) when re-embed of candidates succeeds; else prefix-dedup fallback.
+- **Facts:** Rank the selected block’s `facts[]` by JD-facet cosine (`ownerKind: "fact"`) + must-have keyword/skill boost; top-k feed stage 5. Stored on `MatchReport.blockFacts`.
 
 ### 3.6 LaTeX safety
 
@@ -355,141 +408,88 @@ Template budgets (examples):
 | Slot escape | `escapeAndValidateSlot` — escape then validate; fall back to canonical |
 | Preamble lock | Template `preamble` concatenated as-is; models never see or edit it |
 | Compile repair | `compileWithRepairLoop` maps engine line → slot, reverts culprit slots to canonical plain text, re-escapes; never mutates preamble/scaffolding |
-| Soft-fail path | Orchestrator emits `done` with detail “Compile needs review” when `compileOk` is false — **Planned** hardening so exhausted retries always surface as reviewable done-state rather than a thrown error (Workstream 3) |
+| Soft-fail path | Exhausted compile retries yield `compileOk: false` + orchestrator `done` with detail “Compile needs review” (reviewable tex), not a thrown hard error |
 
-### 3.7 Progress & cancellation (current vs planned)
+### 3.7 Progress, cancellation & Synthesize UX
 
-**Exists today**
+**PipelineBoard** (`synthesize/pipeline-board.tsx`) — always visible on the Synthesize tab:
+
+| State | Behavior |
+|-------|----------|
+| Idle | Seven stages with one-line descriptions (“what will happen”) |
+| Blocked | Run-blocked explainer checklist (JD length / blocks / AI readiness / persona / template) with fix CTAs — no silently disabled Run |
+| Running | Live stage highlighting, elapsed, stream preview, per-block rewrite checklist (`RunProgressView`) |
+| Done / error / cancelled | Timings + outcome badges; stored-run view supported |
+
+**Readiness**
+
+- `AiReadinessCard` never returns null — skeleton while probing (`preflight.ts` / synthesis readiness).
+- `KnowledgePanel` shows a loading state instead of a false “0 sources”.
+- Embeddings optional / degraded when semantic matching is disabled.
+
+**Results**
+
+- Per-block before/after diff cards (canonical vs tailored) with fact/evidence provenance chips.
+- “What’s missing” panel from `gapAnalysis`.
+- Auto-open the most recent stored run when the tab is idle so history is visible immediately.
+
+**Cancellation**
 
 - `AbortSignal` on `synthesizeResume`; `throwIfAborted` between stages and inside rewrite loops.
+- `aiComplete` / `aiCompleteStream` / `llmJson` honor AbortSignal mid-request via `requestId` + Tauri `ai_cancel_request`.
 - `synthesis-store.cancel()` aborts the controller; UI Cancel while `running`.
-- Live stage badges, rewrite checklist, stream preview **during rewrite only**, `stageTimingsMs` on the match report.
 - Terminal stages: `done` / `error` / `cancelled`.
-
-**Gaps (Planned — Workstream 3)**
-
-- `aiComplete` / `aiCompleteStream` / `llmJson` do **not** honor `AbortSignal` mid-request (Cancel stops between stages, not mid-LLM call).
-- JD-analysis and critic stages do not stream token previews.
-- Substep detail (e.g. “embedding facet 2/3”) is sparse outside rewrite/critic repair.
+- Live stream preview for JD analysis, distill/rewrite, and critic when the provider streams; CLI backends show a waiting panel with clearer “provider does not stream — heartbeat” copy when applicable.
 
 ### 3.8 LLM provider routing (current)
 
 `resolveAiProvider` in `ai-assist.ts`:
 
 - Honors OpenAI-compat credentials when selected.
-- **Skips** Claude Code (`CLAUDE_CODE_PROVIDER_ID`) and falls back to Ollama.
-- Cursor agent is **not** a one-shot completion backend for synthesis.
-
-Embeddings stay on Ollama/cloud regardless of chat provider.
+- Honors Claude Code and Cursor CLI providers for one-shot / stream completion (JD analysis, distill, critic).
+- Embeddings stay on Ollama/cloud regardless of chat provider (neither CLI embeds); tag-only degradation banner when embed fails.
 
 ---
 
-## 4. Refactor Spec (Gap Workstreams)
+## 4. Shipped gap workstreams (reference)
 
-These close known gaps. Acceptance criteria are testable; do not invent APIs beyond what is listed.
+The following were previously **Planned** in this doc and are now **shipped**. Acceptance checkboxes are kept for audit.
 
-### Workstream 1 — sqlite-vec ANN search
+### Workstream 1 — sqlite-vec ANN search — shipped
 
-**Rationale:** Brute-force cosine is fine at small personal-DB scale but degrades as KB + bullet embeddings grow. ANN keeps retrieval latency bounded while preserving filter semantics.
+- sqlite-vec registered on connection open; `vec_embeddings` alongside `embeddings` SoT.
+- KNN with over-fetch + post-filter; brute-force cosine fallback if extension fails.
+- Extension load failure does not break career DB open.
 
-**Scope**
+### Workstream 2 — Claude Code / Cursor as synthesis backends — shipped
 
-- Add `sqlite-vec` to `apps/desktop/src-tauri/Cargo.toml`; register extension on connection open in `career_db/mod.rs`.
-- Add `vec_embeddings` vec0 virtual table alongside `embeddings` (source of truth); populate in `career_store_embeddings`; rebuild lazily if dim/model changes.
-- Rewrite `vector_search` to KNN `MATCH` with over-fetch + post-filter for persona/domain/kind; **keep brute-force cosine as fallback** if the extension fails to load.
+- One-shot / stream via `resolveAiProvider` → `ai_complete` / `ai_complete_stream`.
+- Embeddings remain Ollama/cloud; `semanticMatchingDisabled` on embed failure.
 
-**Acceptance**
+### Workstream 3 — Mid-request cancellation + richer progress — shipped
 
-- [ ] Extension load failure does not break career DB open; search falls back to cosine.
-- [ ] Filtered KNN results match brute-force top-k ordering on a small fixture corpus (within float tolerance).
-- [ ] Existing TS/Rust vector-search tests stay green; new Rust tests cover ANN path when available.
+- Cancel registry + `ai_cancel_request`; AbortSignal honored in `aiComplete` / `aiCompleteStream` / `llmJson`.
+- Stream previews for JD analysis and critic; rewrite checklist + PipelineBoard.
+- Compile soft-fail surfaces as reviewable `done` with `compileOk: false`.
 
-### Workstream 2 — Claude Code / Cursor as synthesis backends
+### Workstream 4 — BibTeX → publication blocks — shipped
 
-**Rationale:** Users who select Claude Code or Cursor for chat currently get Ollama (or nothing) for JD analysis / rewrite / critic. Synthesis should honor the selected chat provider for completions.
+- `publication-import-wizard.tsx` preview + commit `kind: "publication"` blocks.
+- KB-only BibTeX ingest remains available on the Knowledge tab.
 
-**Scope**
+### Workstream 5 — Embedding data hygiene — shipped
 
-- One-shot adapters: Claude Code CLI print-mode (`claude -p --output-format json`) reusing `claude_process.rs` spawn plumbing; Cursor agent via existing `cursor_agent/stream_spawn.rs`.
-- Surface through `ai_complete` / `ai_complete_stream`-compatible Tauri commands.
-- Route in `resolveAiProvider` so Claude Code / Cursor are honored for JD analysis, rewrite, and critic.
-- Embeddings remain Ollama/cloud (neither CLI embeds); keep tag-only degradation banner.
+- Delete block removes block + bullet + **fact** embedding rows.
+- `resolve_hit_text` returns text for `bullet` and `fact`.
+- PK `(owner_id, model)`; search scoped per model.
 
-**Acceptance**
+### Workstream 6 — Career UI component tests — shipped
 
-- [ ] With Claude Code selected and available, synthesis stages 1/5/6 complete without falling back to Ollama solely because of provider id.
-- [ ] With Cursor selected and available, same for one-shot completion path.
-- [ ] Embed failures still set `semanticMatchingDisabled` without aborting synthesis.
-- [ ] Unit/integration tests mock the new adapters; no invented HTTP APIs.
+- Component tests under `apps/desktop/src/__tests__/components/career/` (CareerView, Synthesize tab, PipelineBoard, BlockEditor, import wizards).
 
-### Workstream 3 — Mid-request cancellation + richer progress
+### v2 Fact Pool / distill / gap / PipelineBoard — shipped
 
-**Rationale:** Cancel today only interrupts between stages. Long LLM calls feel stuck; JD/critic stages lack the rewrite stream preview.
-
-**Scope**
-
-- Cancel registry keyed by request id for `ai_complete` / `ai_complete_stream` in `native_agent/mod.rs` (mirror tab-turn `cancels()`); expose `ai_cancel_request`.
-- Honor `AbortSignal` in `aiComplete` / `aiCompleteStream` / `llmJson`.
-- Stream token previews for JD-analysis and critic (reuse `streamPreview` / stage `detail`).
-- Per-stage substep detail via `SynthesisStage.detail` (e.g. “embedding facet 2/3”, “critic repair round 1/2”).
-- Fix unreachable / brittle “Compile needs review” soft-fail so exhausted compile retries surface as reviewable `done` rather than a thrown hard error when appropriate.
-
-**Acceptance**
-
-- [ ] Cancel during an in-flight `ai_complete` aborts the host request and maps to synthesis `cancelled`.
-- [ ] Synthesize UI shows stream preview for analyzing and critic stages when streaming is available.
-- [ ] Exhausted compile retries yield `compileOk: false` + done-state with reviewable tex when the soft-fail path is intended.
-- [ ] Existing `resume-synthesis-*` tests stay green; add coverage for abort mid-call.
-
-### Workstream 4 — BibTeX → publication blocks in UI
-
-**Rationale:** BibTeX already seeds **KB chunks** from the Knowledge tab. Users also need `kind: "publication"` **blocks** for knapsack selection into the Publications section.
-
-**Scope**
-
-- Add (or extend) a BibTeX → `ExperienceBlock[]` path (preview + commit) that creates `kind: "publication"` blocks with embeddings.
-- Expose “Import publications from BibTeX” in the Knowledge tab (alongside existing BibTeX-to-KB ingest), with parse preview before commit.
-
-**Acceptance**
-
-- [ ] Parsed BibTeX entries can be committed as publication blocks visible in the Database tab.
-- [ ] Blocks receive embeddings when a provider is available (or defer + backfill).
-- [ ] Existing KB-only BibTeX ingest remains available and unchanged in behavior unless intentionally unified.
-
-### Workstream 5 — Embedding data hygiene
-
-**Rationale:** Three correctness bugs undermine retrieval quality.
-
-| Bug | Current behavior | Fix |
-|-----|------------------|-----|
-| Bullet orphans | `career_delete_block` deletes only `embeddings.owner_id = block.id`, not child bullet rows | Also delete embeddings for bullet ids in the block JSON |
-| Empty bullet hits | `resolve_hit_text` ignores `owner_kind = "bullet"` | Return bullet canonical text + parent block meta |
-| Model mix | PK is `owner_id` only — switching embed models overwrites / mixes dims | Migrate PK to `(owner_id, model)`; scope `career_vector_search` to one model per query |
-
-**Acceptance**
-
-- [ ] Deleting a block removes block + all its bullet embedding rows.
-- [ ] Bullet vector search returns non-empty `text` for known fixtures.
-- [ ] Storing embeddings under model A then B keeps both rows; search with model B never returns model A vectors.
-- [ ] Migration is idempotent on existing `career.db` files.
-
-### Workstream 6 — Career UI component tests
-
-**Rationale:** Synthesis and Career UI are high-value and currently under-tested at the component layer.
-
-**Scope**
-
-- Add `@testing-library/react` (+ `user-event`) to the desktop app’s `devDependencies` (jsdom already present).
-- Component tests for:
-  - `CareerView` — tab switching and desktop gate
-  - `CareerSynthesizeTab` — stage checklist, progress bar, stream preview, cancel (mocked `useSynthesisStore`)
-  - `BlockEditor` — save flow
-  - Import wizard commit path with mocked Tauri commands
-
-**Acceptance**
-
-- [ ] New tests run under `pnpm test` and stay green in CI.
-- [ ] Existing `career-*` and `resume-synthesis-*` suites remain green.
+Covered in §§1.5, 2.2–2.4, 3.1–3.2, 3.5, 3.7 above. Tests include distill validation, gap analysis, fact embed backfill, PipelineBoard / blocked-explainer, and Rust fact owner-kind cleanup.
 
 ---
 
@@ -502,7 +502,8 @@ These close known gaps. Acceptance criteria are testable; do not invent APIs bey
 5. Persona seed is insert-once; user persona JSON is authoritative after first edit.
 6. `synthesis_runs` store the match report (+ tex when available) for audit; blocks remain the source of truth.
 7. `materializeSynthesis` is user-triggered and post-pipeline — not part of the seven stages.
-8. Do not invent Tauri commands or HTTP endpoints in docs or code beyond what exists or is listed in §4.
+8. Distilled bullets must cite existing fact/bullet ids; metrics from cited provenance survive verbatim or the bullet falls back / is dropped.
+9. Do not invent Tauri commands or HTTP endpoints in docs or code beyond what exists in the working tree.
 
 ---
 
@@ -511,20 +512,24 @@ These close known gaps. Acceptance criteria are testable; do not invent APIs bey
 | Area | Path |
 |------|------|
 | Career UI | `apps/desktop/src/components/career/` |
+| Synthesize UX | `apps/desktop/src/components/career/synthesize/` (`PipelineBoard`, `AiReadinessCard`, `AddKnowledgeDialog`, results / gap panel) |
 | Career client + types | `apps/desktop/src/lib/career/` |
+| Fact distill (ingest) | `apps/desktop/src/lib/career/distill-facts.ts` |
 | KB ingest | `apps/desktop/src/lib/career/ingest/` |
-| Block/bullet embeddings | `apps/desktop/src/lib/career/block-embed.ts` |
+| Block/bullet/fact embeddings | `apps/desktop/src/lib/career/block-embed.ts` |
 | Synthesis pipeline | `apps/desktop/src/lib/resume-synthesis/` |
+| Gap analysis | `apps/desktop/src/lib/resume-synthesis/gap-analysis.ts` |
 | Templates | `apps/desktop/src/lib/resume-templates/` |
 | Career SQLite host | `apps/desktop/src-tauri/src/career_db/` |
 | Compile verify | `apps/desktop/src-tauri/src/career_compile.rs` |
 | Progress UI store | `apps/desktop/src/stores/synthesis-store.ts` |
+| Career tab memory | `apps/desktop/src/stores/career-store.ts` (`openCareer`) |
 | AI assist routing | `apps/desktop/src/lib/ai-assist.ts` |
 
 ---
 
-## 7. Out of scope (unless promoted into §4)
+## 7. Out of scope (unless promoted by a new design revision)
 
 - Rust-side progress event streams (progress stays TS-orchestrated).
-- Changing the seven-stage pipeline shape or hybrid weight defaults without a separate design revision.
+- Changing hybrid weight defaults without a separate design revision.
 - Cloud-hosted career DB or multi-user sync.

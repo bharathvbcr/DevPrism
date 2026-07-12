@@ -258,10 +258,10 @@ async fn embed_texts(
     config: &SemanticLayerConfig,
     texts: &[String],
 ) -> Result<Vec<Vec<f32>>, String> {
-    let model = match ollama::first_embedding_model(&config.ollama_base_url).await {
+    let model = match ollama::first_embedding_model(&config.ollama_base_url).await? {
         Some(m) => m,
         None => {
-            return Err("No embedding model installed".into());
+            return Err("[E_NO_MODEL] No embedding model installed".into());
         }
     };
     let client = ollama::OllamaClient::new(&config.ollama_base_url, &model, None, None);

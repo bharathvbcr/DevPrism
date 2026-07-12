@@ -6,9 +6,9 @@ import { cn } from "@/lib/utils";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useClaudeChatStore } from "@/stores/claude-chat-store";
 import {
-  CHAT_DRAWER_OPEN_EVENT,
-  CHAT_DRAWER_TOGGLE_EVENT,
   chatDrawerShortcutLabel,
+  openChatDrawer,
+  toggleChatDrawer,
 } from "@/lib/chat-drawer-events";
 import { requestCompile } from "@/lib/compile-events";
 import { dispatchOpenSettings } from "@/lib/home-flow-events";
@@ -75,7 +75,38 @@ function buildActions(): PaletteAction[] {
         "knowledge base",
       ],
       hint: "Career",
-      run: () => useCareerStore.getState().openCareer(),
+      run: () => useCareerStore.getState().openCareer("database"),
+    },
+    {
+      id: "synthesize-resume",
+      label: "Synthesize resume",
+      keywords: [
+        "career",
+        "synthesize",
+        "synthesis",
+        "resume",
+        "jd",
+        "job description",
+        "tailor",
+        "ats",
+      ],
+      hint: "Career",
+      run: () => useCareerStore.getState().openCareer("synthesize"),
+    },
+    {
+      id: "add-career-knowledge",
+      label: "Add career knowledge",
+      keywords: [
+        "career",
+        "knowledge",
+        "knowledge base",
+        "kb",
+        "evidence",
+        "ingest",
+        "resume",
+      ],
+      hint: "Career",
+      run: () => useCareerStore.getState().openCareer("knowledge"),
     },
     {
       id: "open-scholarlm-research",
@@ -268,7 +299,7 @@ function buildActions(): PaletteAction[] {
       ],
       hint: chatDrawerShortcutLabel("J"),
       run: () => {
-        window.dispatchEvent(new CustomEvent(CHAT_DRAWER_TOGGLE_EVENT));
+        toggleChatDrawer();
       },
     },
     {
@@ -277,11 +308,7 @@ function buildActions(): PaletteAction[] {
       keywords: ["assistant", "claude", "ai", "ask", "compose", "message"],
       hint: chatDrawerShortcutLabel("J", { shift: true }),
       run: () => {
-        window.dispatchEvent(
-          new CustomEvent(CHAT_DRAWER_OPEN_EVENT, {
-            detail: { focusComposer: true },
-          }),
-        );
+        openChatDrawer({ focusComposer: true });
       },
     },
     {

@@ -1,11 +1,11 @@
 ---
 name: browser-project
-description: "Skill for the Browser-project area of DevPrism. 118 symbols across 19 files."
+description: "Skill for the Browser-project area of DevPrism. 122 symbols across 20 files."
 ---
 
 # Browser-project
 
-118 symbols | 19 files | Cohesion: 80%
+122 symbols | 20 files | Cohesion: 80%
 
 ## When to Use
 
@@ -67,25 +67,27 @@ Start here when exploring this area:
 
 | Flow | Type | Steps |
 |------|------|-------|
+| `HandleOpenWorkspace → OpfsProjectsRoot` | cross_community | 10 |
 | `HandleCreate → OpfsProjectsRoot` | cross_community | 9 |
 | `HandleCreate → OpfsProjectsRoot` | cross_community | 9 |
+| `HandleOpenWorkspace → GetFsaDirectoryAtRelativePath` | cross_community | 8 |
 | `HandleCreate → GetFsaDirectoryAtRelativePath` | cross_community | 7 |
 | `HandleCreate → GetFsaDirectoryAtRelativePath` | cross_community | 7 |
 | `ImportDroppedBrowserFiles → OpfsProjectsRoot` | cross_community | 7 |
-| `HandleCreate → ParseBrowserRoot` | cross_community | 6 |
-| `HandleCreate → BrowserRootPath` | cross_community | 6 |
-| `HandleCreate → RelativeFromBrowserAbsolute` | cross_community | 6 |
-| `HandlePaste → ParseBrowserRoot` | cross_community | 6 |
-| `HandlePaste → BrowserRootPath` | cross_community | 6 |
+| `HandleOpenWorkspace → ParseBrowserRoot` | cross_community | 7 |
+| `HandleOpenWorkspace → BrowserRootPath` | cross_community | 7 |
+| `HandleOpenWorkspace → RelativeFromBrowserAbsolute` | cross_community | 7 |
 
 ## Connected Areas
 
 | Area | Connections |
 |------|-------------|
 | Semantic-layer | 4 calls |
-| Stores | 2 calls |
+| Stores | 4 calls |
+| Hooks | 2 calls |
+| Template-gallery | 2 calls |
 | Editor | 1 calls |
-| Hooks | 1 calls |
+| Career | 1 calls |
 
 ## How to Explore
 

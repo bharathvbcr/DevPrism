@@ -1,4 +1,4 @@
-/** Block + bullet embedding pipeline: aiEmbed → career_store_embeddings. */
+/** Block + bullet + fact embedding pipeline: aiEmbed → career_store_embeddings. */
 
 import { invoke } from "@tauri-apps/api/core";
 import { aiEmbed } from "@/lib/ai-assist";
@@ -22,6 +22,30 @@ export interface EmbedOwnerTextsOptions {
   onProgress?: (done: number, total: number) => void;
   onProcessingProgress?: (progress: ProcessingProgress) => void;
   itemLabel?: string;
+}
+
+function backfillHintForKind(ownerKind: EmbeddingOwnerKind): string {
+  switch (ownerKind) {
+    case "bullet":
+      return "backfillBulletEmbeddings()";
+    case "fact":
+      return "backfillFactEmbeddings()";
+    default:
+      return "backfillBlockEmbeddings()";
+  }
+}
+
+function kindLabelFor(ownerKind: EmbeddingOwnerKind): string {
+  switch (ownerKind) {
+    case "bullet":
+      return "Bullets";
+    case "fact":
+      return "Facts";
+    case "chunk":
+      return "Chunks";
+    default:
+      return "Blocks";
+  }
 }
 
 /**
@@ -84,11 +108,8 @@ export async function embedOwnerTexts(
     const noModel =
       /E_NO_MODEL|no embedding model|embed/i.test(message) ||
       /failed to embed/i.test(message);
-    const kindLabel = ownerKind === "bullet" ? "Bullets" : "Blocks";
-    const backfillHint =
-      ownerKind === "bullet"
-        ? "backfillBulletEmbeddings()"
-        : "backfillBlockEmbeddings()";
+    const kindLabel = kindLabelFor(ownerKind);
+    const backfillHint = backfillHintForKind(ownerKind);
     onProcessingProgress?.({
       phase: "error",
       current: embedded,
@@ -158,6 +179,30 @@ export async function embedBullets(
   });
 }
 
+export interface EmbedFactsOptions {
+  facts: { id: string; text: string }[];
+  model?: string;
+  onProgress?: (done: number, total: number) => void;
+  onProcessingProgress?: (progress: ProcessingProgress) => void;
+  itemLabel?: string;
+}
+
+/**
+ * Embed fact texts with `ownerKind: "fact"`.
+ */
+export async function embedFacts(
+  options: EmbedFactsOptions,
+): Promise<EmbedPipelineResult> {
+  return embedOwnerTexts({
+    items: options.facts,
+    ownerKind: "fact",
+    model: options.model,
+    onProgress: options.onProgress,
+    onProcessingProgress: options.onProcessingProgress,
+    itemLabel: options.itemLabel,
+  });
+}
+
 function mergeEmbedResults(
   a: EmbedPipelineResult,
   b: EmbedPipelineResult,
@@ -178,7 +223,15 @@ function bulletEmbedItems(
     .filter((b) => b.text.length > 0);
 }
 
-/** Persist block + bullet embeddings after a successful upsert. Never throws. */
+function factEmbedItems(
+  block: ExperienceBlock,
+): { id: string; text: string }[] {
+  return (block.facts ?? [])
+    .map((f) => ({ id: f.id, text: f.text.trim() }))
+    .filter((f) => f.text.length > 0);
+}
+
+/** Persist block + bullet + fact embeddings after a successful upsert. Never throws. */
 export async function persistBlockEmbedding(
   block: ExperienceBlock,
 ): Promise<EmbedPipelineResult> {
@@ -189,17 +242,27 @@ export async function persistBlockEmbedding(
     : { embedded: 0, skipped: 1, deferred: false };
 
   const bullets = bulletEmbedItems(block);
-  if (bullets.length === 0) {
-    return blockResult;
-  }
-  const bulletResult = await embedBullets({ bullets });
-  return mergeEmbedResults(blockResult, bulletResult);
+  const bulletResult =
+    bullets.length > 0
+      ? await embedBullets({ bullets })
+      : { embedded: 0, skipped: 0, deferred: false };
+
+  const facts = factEmbedItems(block);
+  const factResult =
+    facts.length > 0
+      ? await embedFacts({ facts })
+      : { embedded: 0, skipped: 0, deferred: false };
+
+  return mergeEmbedResults(
+    mergeEmbedResults(blockResult, bulletResult),
+    factResult,
+  );
 }
 
 /**
  * Embed all experience blocks that lack vectors.
  * Safe to call after installing nomic-embed-text / enabling cloud embeddings.
- * Also backfills bullet embeddings for all blocks (idempotent upsert).
+ * Also backfills bullet and fact embeddings for all blocks (idempotent upsert).
  */
 export async function backfillBlockEmbeddings(options?: {
   model?: string;
@@ -238,7 +301,20 @@ export async function backfillBlockEmbeddings(options?: {
           })
       : undefined,
   });
-  return mergeEmbedResults(withEmpty, bulletResult);
+  const factResult = await backfillFactEmbeddings({
+    model: options?.model,
+    onProcessingProgress: options?.onProcessingProgress
+      ? (p) =>
+          options.onProcessingProgress?.({
+            ...p,
+            itemLabel: p.itemLabel ?? "Embed facts",
+          })
+      : undefined,
+  });
+  return mergeEmbedResults(
+    mergeEmbedResults(withEmpty, bulletResult),
+    factResult,
+  );
 }
 
 /**
@@ -260,6 +336,28 @@ export async function backfillBulletEmbeddings(options?: {
     onProgress: options?.onProgress,
     onProcessingProgress: options?.onProcessingProgress,
     itemLabel: "Embed bullets",
+  });
+}
+
+/**
+ * Embed every fact text across all blocks (`ownerKind: "fact"`).
+ * Idempotent upsert — safe to re-run after provider install.
+ */
+export async function backfillFactEmbeddings(options?: {
+  model?: string;
+  onProgress?: (done: number, total: number) => void;
+  onProcessingProgress?: (progress: ProcessingProgress) => void;
+}): Promise<EmbedPipelineResult> {
+  const rows = await invoke<ExperienceBlock[]>("career_list_blocks", {
+    missingEmbeddingsOnly: false,
+  });
+  const facts = rows.flatMap(factEmbedItems);
+  return embedFacts({
+    facts,
+    model: options?.model,
+    onProgress: options?.onProgress,
+    onProcessingProgress: options?.onProcessingProgress,
+    itemLabel: "Embed facts",
   });
 }
 

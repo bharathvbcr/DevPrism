@@ -26,7 +26,7 @@ export type KbSourceType =
   | "markdown"
   | "pdf";
 
-export type EmbeddingOwnerKind = "block" | "chunk" | "bullet";
+export type EmbeddingOwnerKind = "block" | "chunk" | "bullet" | "fact";
 
 export interface DateRange {
   start: string;
@@ -58,6 +58,19 @@ export interface Bullet {
   locked: boolean;
 }
 
+/** Raw detail point in a block's Fact Pool (ground truth for distillation). */
+export interface BlockFact {
+  id: string;
+  /** One raw detail point (ground truth). */
+  text: string;
+  /** Optional skill tags for must-have coverage targeting. */
+  skills: string[];
+  /** Values that must survive verbatim when distilled into bullets. */
+  metrics: BulletMetric[];
+  source: "manual" | "distilled" | "import";
+  createdAt: string;
+}
+
 export interface ExperienceBlock {
   id: string;
   kind: BlockKind;
@@ -69,7 +82,11 @@ export interface ExperienceBlock {
   skills: SkillTag[];
   seniorityLevel: SeniorityLevel;
   bullets: Bullet[];
-  /** Computed: title+org+domains+canonical bullets. */
+  /** Raw knowledge pool ("10+ points") for JD-tailored distillation. */
+  facts: BlockFact[];
+  /** Free-form scratchpad; distill input for AI fact extraction. */
+  notes?: string;
+  /** Computed: title+org+domains+canonical bullets+fact texts. */
   embeddingText?: string;
   updatedAt: string;
 }

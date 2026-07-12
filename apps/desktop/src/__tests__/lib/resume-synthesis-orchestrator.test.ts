@@ -34,6 +34,7 @@ function block(id: string, skills: string[]): ExperienceBlock {
         locked: false,
       },
     ],
+    facts: [],
     updatedAt: "2024-01-01T00:00:00.000Z",
   };
 }
@@ -66,8 +67,8 @@ describe("synthesizeResume (mocked llmJson)", () => {
           if (!opts.validate(v)) throw new Error("bad profile");
           return v as T;
         }
-        if (label.startsWith("rewrite:")) {
-          const blockId = label.slice("rewrite:".length);
+        if (label.startsWith("distill:") || label.startsWith("rewrite:")) {
+          const blockId = label.slice(label.indexOf(":") + 1);
           const v = {
             bullets: [
               {
@@ -93,6 +94,11 @@ describe("synthesizeResume (mocked llmJson)", () => {
             ],
           };
           if (!opts.validate(v)) throw new Error("bad critic");
+          return v as T;
+        }
+        if (label === "summary") {
+          const v = { summary: "ML engineer shipping production systems." };
+          if (!opts.validate(v)) throw new Error("bad summary");
           return v as T;
         }
         // repair or unknown — empty valid-ish object rejected → throw
@@ -184,8 +190,8 @@ describe("synthesizeResume (mocked llmJson)", () => {
           if (!opts.validate(profile)) throw new Error("bad profile");
           return profile as T;
         }
-        if (label.startsWith("rewrite:")) {
-          const blockId = label.slice("rewrite:".length);
+        if (label.startsWith("distill:") || label.startsWith("rewrite:")) {
+          const blockId = label.slice(label.indexOf(":") + 1);
           const v = {
             bullets: [
               {
@@ -200,6 +206,11 @@ describe("synthesizeResume (mocked llmJson)", () => {
         if (label === "critic") {
           const v = { atsCoveragePct: 80, verdicts: [] };
           if (!opts.validate(v)) throw new Error("bad critic");
+          return v as T;
+        }
+        if (label === "summary") {
+          const v = { summary: "ML engineer shipping production systems." };
+          if (!opts.validate(v)) throw new Error("bad summary");
           return v as T;
         }
         throw new Error(`unexpected llmJson label: ${label}`);
@@ -281,6 +292,11 @@ describe("synthesizeResume (mocked llmJson)", () => {
         }
         if (opts.label === "critic") {
           const v = { atsCoveragePct: 50, verdicts: [] };
+          if (!opts.validate(v)) throw new Error("bad");
+          return v as T;
+        }
+        if (opts.label === "summary") {
+          const v = { summary: "Locked-bullet resume summary." };
           if (!opts.validate(v)) throw new Error("bad");
           return v as T;
         }
@@ -367,6 +383,11 @@ describe("synthesizeResume (mocked llmJson)", () => {
           if (!opts.validate(profile)) throw new Error("bad");
           return profile as T;
         }
+        if (label === "summary") {
+          const v = { summary: "ML engineer shipping production systems." };
+          if (!opts.validate(v)) throw new Error("bad summary");
+          return v as T;
+        }
         throw new Error(`unexpected llmJson label: ${label}`);
       },
     );
@@ -411,8 +432,8 @@ describe("synthesizeResume (mocked llmJson)", () => {
           if (!opts.validate(profile)) throw new Error("bad");
           return profile as T;
         }
-        if (label.startsWith("rewrite:")) {
-          const blockId = label.slice("rewrite:".length);
+        if (label.startsWith("distill:") || label.startsWith("rewrite:")) {
+          const blockId = label.slice(label.indexOf(":") + 1);
           const v = {
             bullets: [
               {
@@ -427,6 +448,11 @@ describe("synthesizeResume (mocked llmJson)", () => {
         if (label === "critic") {
           const v = { atsCoveragePct: 80, verdicts: [] };
           if (!opts.validate(v)) throw new Error("bad");
+          return v as T;
+        }
+        if (label === "summary") {
+          const v = { summary: "ML engineer shipping production systems." };
+          if (!opts.validate(v)) throw new Error("bad summary");
           return v as T;
         }
         throw new Error(`unexpected: ${label}`);
@@ -478,8 +504,8 @@ describe("synthesizeResume (mocked llmJson)", () => {
           if (!opts.validate(profile)) throw new Error("bad");
           return profile as T;
         }
-        if (label.startsWith("rewrite:")) {
-          const blockId = label.slice("rewrite:".length);
+        if (label.startsWith("distill:") || label.startsWith("rewrite:")) {
+          const blockId = label.slice(label.indexOf(":") + 1);
           const v = {
             bullets: [
               {
@@ -494,6 +520,11 @@ describe("synthesizeResume (mocked llmJson)", () => {
         if (label === "critic") {
           const v = { atsCoveragePct: 80, verdicts: [] };
           if (!opts.validate(v)) throw new Error("bad");
+          return v as T;
+        }
+        if (label === "summary") {
+          const v = { summary: "ML engineer shipping production systems." };
+          if (!opts.validate(v)) throw new Error("bad summary");
           return v as T;
         }
         throw new Error(`unexpected: ${label}`);
@@ -551,8 +582,8 @@ describe("synthesizeResume (mocked llmJson)", () => {
           if (!opts.validate(profile)) throw new Error("bad");
           return profile as T;
         }
-        if (label.startsWith("rewrite:")) {
-          const blockId = label.slice("rewrite:".length);
+        if (label.startsWith("distill:") || label.startsWith("rewrite:")) {
+          const blockId = label.slice(label.indexOf(":") + 1);
           const v = {
             bullets: [
               {
@@ -568,6 +599,11 @@ describe("synthesizeResume (mocked llmJson)", () => {
           opts.onStreamPreview?.("atsCoverage", "atsCoverage");
           const v = { atsCoveragePct: 80, verdicts: [] };
           if (!opts.validate(v)) throw new Error("bad");
+          return v as T;
+        }
+        if (label === "summary") {
+          const v = { summary: "ML engineer shipping production systems." };
+          if (!opts.validate(v)) throw new Error("bad summary");
           return v as T;
         }
         throw new Error(`unexpected: ${label}`);

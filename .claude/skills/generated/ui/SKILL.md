@@ -1,16 +1,16 @@
 ---
 name: ui
-description: "Skill for the Ui area of DevPrism. 67 symbols across 31 files."
+description: "Skill for the Ui area of DevPrism. 60 symbols across 27 files."
 ---
 
 # Ui
 
-67 symbols | 31 files | Cohesion: 44%
+60 symbols | 27 files | Cohesion: 42%
 
 ## When to Use
 
 - Working with code in `apps/`
-- Understanding how DevPrismLogo, InstallProgress, CommentsPanel work
+- Understanding how DevPrismLogo, cn, ExportMenu work
 - Modifying ui-related functionality
 
 ## Key Files
@@ -20,31 +20,29 @@ description: "Skill for the Ui area of DevPrism. 67 symbols across 31 files."
 | `apps/desktop/src/components/ui/dropdown-menu.tsx` | DropdownMenuShortcut, DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem (+3) |
 | `apps/desktop/src/components/ui/sheet.tsx` | SheetPortal, SheetOverlay, SheetContent, SheetHeader, SheetFooter (+2) |
 | `apps/desktop/src/components/ui/card.tsx` | Card, CardHeader, CardTitle, CardDescription, CardContent (+1) |
-| `apps/desktop/src/App.tsx` | LazyDebugPage, TrackChangesPdfDialog, NativeWindowThemeBridge, syncNativeTheme, App |
-| `apps/desktop/src/components/ui/tabs.tsx` | Tabs, TabsList, TabsTrigger, TabsContent |
+| `apps/desktop/src/App.tsx` | LazyDebugPage, CareerView, TrackChangesPdfDialog, NativeWindowThemeBridge, syncNativeTheme (+1) |
 | `apps/desktop/src/components/project-picker.tsx` | SpaceGlyph, formatProjectDate, ProjectPreviewCard, SpaceNavButton |
 | `apps/desktop/src/components/ui/tooltip.tsx` | TooltipProvider, Tooltip, TooltipTrigger, TooltipContent |
 | `apps/desktop/src/components/workspace/space-quick-actions.tsx` | SpaceQuickActions, sendPrompt, iconFor |
-| `apps/desktop/src/components/ui/scroll-area.tsx` | ScrollArea, ScrollBar |
 | `apps/desktop/src/components/ui/select.tsx` | SelectScrollUpButton, SelectScrollDownButton |
+| `apps/desktop/src/components/workspace/sidebar.tsx` | LayoutPaneSwitcher, LayoutToggleRow |
+| `apps/desktop/src/components/devprism-logo.tsx` | DevPrismLogo |
 
 ## Entry Points
 
 Start here when exploring this area:
 
 - **`DevPrismLogo`** (Function) — `apps/desktop/src/components/devprism-logo.tsx:11`
-- **`InstallProgress`** (Function) — `apps/desktop/src/components/scientific-skills/install-progress.tsx:43`
-- **`CommentsPanel`** (Function) — `apps/desktop/src/components/workspace/comments-panel.tsx:91`
 - **`cn`** (Function) — `apps/desktop/src/lib/utils.ts:3`
 - **`ExportMenu`** (Function) — `apps/desktop/src/components/workspace/editor/export-menu.tsx:52`
+- **`SpaceQuickActions`** (Function) — `apps/desktop/src/components/workspace/space-quick-actions.tsx:39`
+- **`sendPrompt`** (Function) — `apps/desktop/src/components/workspace/space-quick-actions.tsx:45`
 
 ## Key Symbols
 
 | Symbol | Type | File | Line |
 |--------|------|------|------|
 | `DevPrismLogo` | Function | `apps/desktop/src/components/devprism-logo.tsx` | 11 |
-| `InstallProgress` | Function | `apps/desktop/src/components/scientific-skills/install-progress.tsx` | 43 |
-| `CommentsPanel` | Function | `apps/desktop/src/components/workspace/comments-panel.tsx` | 91 |
 | `cn` | Function | `apps/desktop/src/lib/utils.ts` | 3 |
 | `ExportMenu` | Function | `apps/desktop/src/components/workspace/editor/export-menu.tsx` | 52 |
 | `SpaceQuickActions` | Function | `apps/desktop/src/components/workspace/space-quick-actions.tsx` | 39 |
@@ -52,7 +50,7 @@ Start here when exploring this area:
 | `iconFor` | Function | `apps/desktop/src/components/workspace/space-quick-actions.tsx` | 114 |
 | `TrackChangesActions` | Function | `apps/desktop/src/components/workspace/track-changes-actions.tsx` | 40 |
 | `ZoteroHeader` | Function | `apps/desktop/src/components/workspace/zotero-panel.tsx` | 171 |
-| `App` | Function | `apps/desktop/src/App.tsx` | 237 |
+| `App` | Function | `apps/desktop/src/App.tsx` | 244 |
 | `BrowserPreviewBanner` | Function | `apps/desktop/src/components/browser-preview-banner.tsx` | 5 |
 | `useKeyboardShortcuts` | Function | `apps/desktop/src/hooks/use-keyboard-shortcuts.ts` | 9 |
 | `syncPersonalizationEnabled` | Function | `apps/desktop/src/lib/personalization.ts` | 72 |
@@ -62,34 +60,36 @@ Start here when exploring this area:
 | `CardHeader` | Function | `apps/desktop/src/components/ui/card.tsx` | 19 |
 | `CardTitle` | Function | `apps/desktop/src/components/ui/card.tsx` | 31 |
 | `CardDescription` | Function | `apps/desktop/src/components/ui/card.tsx` | 46 |
+| `CardContent` | Function | `apps/desktop/src/components/ui/card.tsx` | 58 |
+| `CardFooter` | Function | `apps/desktop/src/components/ui/card.tsx` | 66 |
 
 ## Execution Flows
 
 | Flow | Type | Steps |
 |------|------|-------|
-| `App → Clear` | cross_community | 6 |
-| `App → IsTauri` | cross_community | 6 |
 | `SpaceQuickActions → IsOllamaEndpoint` | cross_community | 6 |
-| `SpaceQuickActions → ResolveSemanticConfig` | cross_community | 6 |
-| `SpaceQuickActions → EmbedText` | cross_community | 6 |
-| `SpaceQuickActions → FormatCompressedContext` | cross_community | 6 |
-| `App → IsOllamaEndpoint` | cross_community | 5 |
-| `App → ResolveSemanticConfig` | cross_community | 5 |
+| `SpaceQuickActions → AiCancelRequest` | cross_community | 6 |
+| `SpaceQuickActions → IsCliProviderId` | cross_community | 5 |
 | `SpaceQuickActions → ResolveNativeOllamaModel` | cross_community | 5 |
 | `EditorToolbar → Cn` | cross_community | 4 |
+| `CareerView → Cn` | cross_community | 4 |
+| `ScientificSkillsOnboarding → Cn` | cross_community | 4 |
+| `BibliographyPanel → Cn` | cross_community | 4 |
+| `VersionOverview → Cn` | cross_community | 4 |
+| `BlockEditor → Cn` | cross_community | 4 |
 
 ## Connected Areas
 
 | Area | Connections |
 |------|-------------|
-| Workspace | 14 calls |
+| Career | 9 calls |
 | Components | 7 calls |
 | Semantic-layer | 4 calls |
 | Stores | 4 calls |
+| Workspace | 4 calls |
 | Editor | 2 calls |
 | Browser-project | 1 calls |
 | Hooks | 1 calls |
-| Cluster_324 | 1 calls |
 
 ## How to Explore
 

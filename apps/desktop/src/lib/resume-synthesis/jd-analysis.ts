@@ -14,6 +14,9 @@ const SENIORITY: SeniorityLevel[] = [
   "director",
 ];
 
+/** Non-trivial JDs longer than this must yield skills/keywords. */
+export const JD_NONTRIVIAL_MIN_CHARS = 200;
+
 const JD_SYSTEM = `You analyze job descriptions for resume targeting.
 Return ONLY a JSON object with this exact shape:
 {
@@ -36,6 +39,7 @@ Rules:
 - responsibilitiesText: 2–6 sentence extract of core responsibilities (plain text).
 - qualificationsText: 2–6 sentence extract of qualifications / requirements (plain text).
 - Infer seniority from titles (Staff/Principal → lead, Senior → senior, Manager/Director → manager/director, else ic).
+- For substantive job descriptions, mustHaveSkills and atsKeywords MUST be non-empty.
 - Output ONLY JSON — no markdown fences, no commentary.`;
 
 function asStringArray(value: unknown): string[] {
@@ -101,36 +105,81 @@ export function validateJDProfile(value: unknown): value is JDProfile {
   return true;
 }
 
+export function isExtractionEmpty(profile: JDProfile): boolean {
+  return (
+    profile.mustHaveSkills.length === 0 && profile.atsKeywords.length === 0
+  );
+}
+
+export interface AnalyzeJobDescriptionResult {
+  profile: JDProfile;
+  /** Degradation / quality notices for the MatchReport. */
+  notices: string[];
+  /** True when a non-trivial JD still yielded empty skills + keywords. */
+  extractionEmpty: boolean;
+}
+
 export async function analyzeJobDescription(
   jdText: string,
   options?: {
     llmJson?: typeof llmJson;
   },
-): Promise<JDProfile> {
+): Promise<AnalyzeJobDescriptionResult> {
   const text = jdText.trim();
   if (!text) {
     return {
-      roleTitle: "Role",
-      seniority: "senior",
-      mustHaveSkills: [],
-      niceToHaveSkills: [],
-      domains: [],
-      atsKeywords: [],
-      toneSignals: [],
-      responsibilitiesText: "",
-      qualificationsText: "",
+      profile: {
+        roleTitle: "Role",
+        seniority: "senior",
+        mustHaveSkills: [],
+        niceToHaveSkills: [],
+        domains: [],
+        atsKeywords: [],
+        toneSignals: [],
+        responsibilitiesText: "",
+        qualificationsText: "",
+      },
+      notices: [],
+      extractionEmpty: false,
     };
   }
 
   const call = options?.llmJson ?? llmJson;
-  const raw = await call<JDProfile>({
-    system: JD_SYSTEM,
-    prompt: `Job description:\n${text.slice(0, 12000)}`,
-    temperature: 0.1,
-    validate: validateJDProfile,
-    label: "jd-analysis",
-  });
-  return normalizeJDProfile(raw, text);
+  const runOnce = async (extraInstruction?: string) => {
+    const raw = await call<JDProfile>({
+      system: JD_SYSTEM,
+      prompt: [extraInstruction, `Job description:\n${text.slice(0, 12000)}`]
+        .filter(Boolean)
+        .join("\n\n"),
+      temperature: 0.1,
+      validate: validateJDProfile,
+      label: "jd-analysis",
+    });
+    return normalizeJDProfile(raw, text);
+  };
+
+  let profile = await runOnce();
+  const notices: string[] = [];
+  let extractionEmpty = false;
+
+  if (text.length > JD_NONTRIVIAL_MIN_CHARS && isExtractionEmpty(profile)) {
+    // Reprompt once requiring non-empty skills/keywords.
+    try {
+      profile = await runOnce(
+        "IMPORTANT: The previous extraction left mustHaveSkills and atsKeywords empty. Re-extract carefully — both arrays MUST contain concrete skills/keywords from this job description.",
+      );
+    } catch {
+      // keep first profile
+    }
+    if (isExtractionEmpty(profile)) {
+      extractionEmpty = true;
+      notices.push(
+        "JD extraction returned no must-have skills or ATS keywords after retry — scoring will be degraded.",
+      );
+    }
+  }
+
+  return { profile, notices, extractionEmpty };
 }
 
 /** Build facet strings for multi-vector embedding. */

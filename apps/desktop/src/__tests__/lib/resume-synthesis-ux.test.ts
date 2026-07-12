@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   atsScoreFromReport,
   blockRewriteLabel,
+  coalesceRunEventsForPersistence,
   coverageHeatLevel,
   extractRewriteStreamPreview,
+  extractStoredCompileMeta,
   extractStoredRunTex,
   formatRewriteBlockDetail,
   formatStageMs,
@@ -14,6 +16,7 @@ import {
 import type {
   MatchReport,
   MustHaveCoverage,
+  RunEvent,
 } from "@/lib/resume-synthesis/types";
 
 function coverage(
@@ -148,5 +151,54 @@ describe("synthesis-ux helpers", () => {
       total: 2,
       status: "pending",
     });
+  });
+
+  it("coalesceRunEventsForPersistence keeps one stream preview per block", () => {
+    const events: RunEvent[] = [
+      { type: "stage-start", stage: "rewriting", at: 1 },
+      {
+        type: "block-rewrite-stream",
+        blockId: "a",
+        preview: "tok1",
+        at: 2,
+      },
+      {
+        type: "block-rewrite-stream",
+        blockId: "a",
+        preview: "tok1 tok2 final",
+        at: 3,
+      },
+      { type: "block-rewrite-done", blockId: "a", at: 4 },
+      { type: "error", message: "boom", at: 5 },
+    ];
+    const out = coalesceRunEventsForPersistence(events);
+    const streams = out.filter((e) => e.type === "block-rewrite-stream");
+    expect(streams).toHaveLength(1);
+    expect(streams[0]).toMatchObject({
+      blockId: "a",
+      preview: "tok1 tok2 final",
+    });
+    expect(out.some((e) => e.type === "error")).toBe(true);
+    expect(out.map((e) => e.type)).toEqual([
+      "stage-start",
+      "block-rewrite-done",
+      "block-rewrite-stream",
+      "error",
+    ]);
+  });
+
+  it("extractStoredCompileMeta reads compileOk from payload", () => {
+    expect(
+      extractStoredCompileMeta({
+        compileOk: false,
+        compileSummary: "needs review",
+      }),
+    ).toEqual({ compileOk: false, compileSummary: "needs review" });
+    expect(
+      extractStoredCompileMeta({
+        report: { compileOk: true },
+      }),
+    ).toEqual({ compileOk: true, compileSummary: "Compile verified" });
+    expect(extractStoredCompileMeta({ profile: {} })).toBeNull();
   });
 });

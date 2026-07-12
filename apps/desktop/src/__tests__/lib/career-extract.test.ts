@@ -35,6 +35,7 @@ describe("parseExtractedBlocks", () => {
           skills: ["python", "pytorch"],
           seniorityLevel: "senior",
           bullets: ["Built training pipelines", "Cut latency 40%"],
+          facts: ["Owned on-call for training cluster", "Migrated to Ray"],
         },
       ],
     });
@@ -48,7 +49,26 @@ describe("parseExtractedBlocks", () => {
       "Built training pipelines",
       "Cut latency 40%",
     ]);
+    expect(blocks[0].facts.map((f) => f.text)).toEqual([
+      "Owned on-call for training cluster",
+      "Migrated to Ray",
+    ]);
+    expect(blocks[0].facts.every((f) => f.source === "import")).toBe(true);
     expect(blocks[0].id).toMatch(/^exp_/);
+  });
+
+  it("defaults facts to [] when omitted (backward compatible)", () => {
+    const raw = JSON.stringify({
+      blocks: [
+        {
+          title: "Engineer",
+          org: "Lab",
+          bullets: ["Shipped X"],
+        },
+      ],
+    });
+    const blocks = parseExtractedBlocks(raw);
+    expect(blocks[0].facts).toEqual([]);
   });
 
   it("skips empty rows and tolerates alternate field names", () => {

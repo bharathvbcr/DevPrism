@@ -78,6 +78,25 @@ describe("resolveAiProvider CLI backends", () => {
     expect(cfg.providerCredentialId).toBe(CURSOR_CLI_PROVIDER_ID);
     expect(canUseAiAssist()).toBe(true);
   });
+
+  it("falls back to Ollama when selected credential is stale/missing", async () => {
+    const { useClaudeChatStore } = await import("@/stores/claude-chat-store");
+    const { useSettingsStore } = await import("@/stores/settings-store");
+    vi.mocked(useClaudeChatStore.getState).mockReturnValue({
+      selectedProviderCredentialId: "missing-cred-id",
+      selectedProviderModels: {},
+    } as never);
+    vi.mocked(useSettingsStore.getState).mockReturnValue({
+      aiAssistEnabled: true,
+      nativeAgentEnabled: true,
+      nativeNumCtx: null,
+      nativeTemperature: null,
+      nativeOllamaModel: "llama3.2",
+    } as never);
+    const cfg = resolveAiProvider();
+    expect(cfg.backend).toBe("ollama");
+    expect(canUseAiAssist()).toBe(true);
+  });
 });
 
 describe("extractProseContext", () => {

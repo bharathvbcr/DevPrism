@@ -1,5 +1,3 @@
-import { useSettingsStore } from "@/stores/settings-store";
-
 /** Which runtime powers the chat agent. */
 export type AgentBackend =
   | "native-ollama"
@@ -109,31 +107,8 @@ export function backendShowsSessionHistory(backend: AgentBackend): boolean {
   return isClaudeCodeBackend(backend) || isCursorCliBackend(backend);
 }
 
-/** @deprecated Use `agentBackend` — true when any native backend is active. */
-export function nativeAgentEnabledFromBackend(backend: AgentBackend): boolean {
-  return isNativeBackend(backend);
-}
-
-export function getAgentBackend(): AgentBackend {
-  return useSettingsStore.getState().agentBackend;
-}
-
-export function useAgentBackend(): AgentBackend {
-  return useSettingsStore((s) => s.agentBackend);
-}
-
 export function isGroqBaseUrl(baseUrl?: string | null): boolean {
   return /api\.groq\.com/i.test(baseUrl ?? "");
-}
-
-export function isOpenRouterBaseUrl(baseUrl?: string | null): boolean {
-  return /openrouter\.ai/i.test(baseUrl ?? "");
-}
-
-export function isGeminiBaseUrl(baseUrl?: string | null): boolean {
-  return /aiplatform\.googleapis\.com|generativelanguage\.googleapis\.com|googleapis\.com.*openai/i.test(
-    baseUrl ?? "",
-  );
 }
 
 /** Local Ollama-style endpoints (not cloud OpenAI-compat). */

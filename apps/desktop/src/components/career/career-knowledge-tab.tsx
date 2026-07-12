@@ -20,6 +20,7 @@ import {
   ingestFilePath,
   ingestMarkdownText,
   ingestMindmapText,
+  listKbChunks,
   listKbSources,
   seedPublicationsFromBibtex,
   type KbSourceRow,
@@ -31,6 +32,7 @@ import {
   getOllamaBaseUrl,
   resolveOllamaCredential,
 } from "@/lib/ollama";
+import { dispatchOpenSettings } from "@/lib/home-flow-events";
 import { useOllamaPullStore } from "@/stores/ollama-pull-store";
 import { useClaudeSetupStore } from "@/stores/claude-setup-store";
 import { IngestProgressList, type IngestProgressItem } from "./ingest-progress";
@@ -42,6 +44,9 @@ function fileLabel(path: string): string {
 
 export function CareerKnowledgeTab() {
   const [sources, setSources] = useState<KbSourceRow[]>([]);
+  const [missingBySource, setMissingBySource] = useState<Map<string, number>>(
+    () => new Map(),
+  );
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [pasteText, setPasteText] = useState("");
@@ -57,7 +62,16 @@ export function CareerKnowledgeTab() {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      setSources(await listKbSources());
+      const [nextSources, missingChunks] = await Promise.all([
+        listKbSources(),
+        listKbChunks(undefined, true).catch(() => []),
+      ]);
+      const counts = new Map<string, number>();
+      for (const chunk of missingChunks) {
+        counts.set(chunk.sourceId, (counts.get(chunk.sourceId) ?? 0) + 1);
+      }
+      setSources(nextSources);
+      setMissingBySource(counts);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));
     } finally {
@@ -171,8 +185,12 @@ export function CareerKnowledgeTab() {
         setNotice(
           "Chunks stored without embeddings. Install an embedding model (or configure Gemini embeddings) then backfill.",
         );
+        toast.warning(
+          `Ingested ${paths.length} source(s), but embeddings were deferred`,
+        );
+      } else {
+        toast.success(`Ingested ${paths.length} source(s)`);
       }
-      toast.success(`Ingested ${paths.length} source(s)`);
       await refresh();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));
@@ -230,9 +248,11 @@ export function CareerKnowledgeTab() {
         setNotice(
           "Chunks stored without embeddings. Install an embedding model then backfill.",
         );
+        toast.warning("Ingested content, but embeddings were deferred");
+      } else {
+        toast.success("Ingested pasted content");
       }
       setPasteText("");
-      toast.success("Ingested pasted content");
       await refresh();
     } catch (err) {
       patchItem(id, {
@@ -273,6 +293,10 @@ export function CareerKnowledgeTab() {
         setNotice(
           out.error ??
             "Still no embedding provider. Pull nomic-embed-text or use a Gemini credential.",
+        );
+        toast.warning(
+          out.error ??
+            "Embeddings still unavailable. Pull nomic-embed-text or open AI settings.",
         );
       } else {
         patchItem(id, {
@@ -365,9 +389,14 @@ export function CareerKnowledgeTab() {
 
         {notice && (
           <InlineBanner
-            kind="info"
+            kind="warning"
             title="Embeddings deferred"
             message={notice}
+            actionLabel="Pull embedding model"
+            onAction={() => void handlePullEmbed()}
+            secondaryActionLabel="AI settings"
+            onSecondaryAction={() => dispatchOpenSettings("ai")}
+            onDismiss={() => setNotice(null)}
           />
         )}
 
@@ -447,36 +476,48 @@ export function CareerKnowledgeTab() {
         ) : (
           <ScrollArea className="min-h-0 flex-1 rounded-lg border border-border/60">
             <ul className="space-y-1 p-2">
-              {sources.map((s) => (
-                <li
-                  key={s.id}
-                  className="flex items-start gap-2 rounded-md border border-border/40 px-2 py-1.5"
-                >
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate font-medium text-xs">
-                      {s.title || s.uri || s.id}
-                    </p>
-                    <div className="mt-1 flex flex-wrap gap-1">
-                      <Badge variant="outline" className="text-[10px]">
-                        {s.sourceType}
-                      </Badge>
-                      <Badge variant="secondary" className="text-[10px]">
-                        {s.chunkCount} chunks
-                      </Badge>
-                    </div>
-                  </div>
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="size-7 shrink-0 text-muted-foreground"
-                    disabled={busy}
-                    onClick={() => void handleDelete(s.id)}
-                    aria-label="Delete source"
+              {sources.map((s) => {
+                const missing = missingBySource.get(s.id) ?? 0;
+                return (
+                  <li
+                    key={s.id}
+                    className="flex items-start gap-2 rounded-md border border-border/40 px-2 py-1.5"
                   >
-                    <Trash2Icon className="size-3.5" />
-                  </Button>
-                </li>
-              ))}
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate font-medium text-xs">
+                        {s.title || s.uri || s.id}
+                      </p>
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        <Badge variant="outline" className="text-[10px]">
+                          {s.sourceType}
+                        </Badge>
+                        <Badge variant="secondary" className="text-[10px]">
+                          {s.chunkCount} chunks
+                        </Badge>
+                        {missing > 0 && (
+                          <Badge
+                            variant="destructive"
+                            className="text-[10px]"
+                            title="Chunks without embeddings"
+                          >
+                            {missing} missing embeds
+                          </Badge>
+                        )}
+                      </div>
+                    </div>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="size-7 shrink-0 text-muted-foreground"
+                      disabled={busy}
+                      onClick={() => void handleDelete(s.id)}
+                      aria-label="Delete source"
+                    >
+                      <Trash2Icon className="size-3.5" />
+                    </Button>
+                  </li>
+                );
+              })}
             </ul>
           </ScrollArea>
         )}

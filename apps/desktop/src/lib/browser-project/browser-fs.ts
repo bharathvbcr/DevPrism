@@ -30,8 +30,6 @@ import {
   writeOpfsFile,
 } from "./opfs-store";
 
-const assetUrlCache = new Map<string, string>();
-
 function splitBrowserAbsolutePath(absolutePath: string): {
   rootPath: string;
   relativePath: string;
@@ -210,28 +208,6 @@ export async function readBrowserImageAsDataUrl(
     binary += String.fromCharCode(bytes[i]!);
   }
   return `data:${mime};base64,${btoa(binary)}`;
-}
-
-export async function getBrowserAssetUrlAsync(
-  absolutePath: string,
-): Promise<string> {
-  const cached = assetUrlCache.get(absolutePath);
-  if (cached) return cached;
-  const bytes = await readBrowserFile(absolutePath);
-  const ext = absolutePath.split(".").pop()?.toLowerCase() || "bin";
-  const mimeMap: Record<string, string> = {
-    png: "image/png",
-    jpg: "image/jpeg",
-    jpeg: "image/jpeg",
-    gif: "image/gif",
-    svg: "image/svg+xml",
-    pdf: "application/pdf",
-  };
-  const mime = mimeMap[ext] ?? "application/octet-stream";
-  const blob = new Blob([bytes as BufferSource], { type: mime });
-  const url = URL.createObjectURL(blob);
-  assetUrlCache.set(absolutePath, url);
-  return url;
 }
 
 export async function getUniqueBrowserTargetName(

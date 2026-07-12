@@ -660,6 +660,7 @@ pub fn run() {
             career_db::career_upsert_kb_source,
             career_db::career_list_kb_sources,
             career_db::career_list_kb_chunks,
+            career_db::career_count_kb_chunks_missing_embeddings,
             career_db::career_delete_kb_source,
             career_db::career_store_embeddings,
             career_db::career_vector_search,

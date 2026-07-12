@@ -2,6 +2,8 @@ import { ThemeProvider, useTheme } from "next-themes";
 import { ErrorBoundary } from "react-error-boundary";
 import { Toaster } from "@/components/ui/sonner";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
+import { useUpdater } from "@/hooks/use-updater";
+import { toast } from "sonner";
 
 import { useDocumentStore } from "@/stores/document-store";
 import { useClaudeChatStore } from "@/stores/claude-chat-store";
@@ -110,6 +112,30 @@ function NativeWindowThemeBridge() {
       systemThemeQuery.removeEventListener("change", syncNativeTheme);
     };
   }, [resolvedTheme, theme]);
+
+  return null;
+}
+
+/** Desktop-only: notify when a Tauri updater release is available. */
+function UpdateNotifier() {
+  const { status, installUpdate } = useUpdater();
+  const notifiedVersion = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (status.state !== "available") return;
+    if (notifiedVersion.current === status.version) return;
+    notifiedVersion.current = status.version;
+    toast(`Update ${status.version} available`, {
+      description: status.notes?.slice(0, 140) || "A new version is ready.",
+      action: {
+        label: "Install",
+        onClick: () => {
+          void installUpdate();
+        },
+      },
+      duration: 20_000,
+    });
+  }, [status, installUpdate]);
 
   return null;
 }
@@ -296,6 +322,7 @@ export function App({ onReady }: { onReady?: () => void }) {
       <ThemeProvider attribute="class" forcedTheme="dark">
         <TooltipProvider>
           <NativeWindowThemeBridge />
+          {isTauri() ? <UpdateNotifier /> : null}
           <BrowserPreviewBanner />
           <OllamaPullBanner />
           {/* Global macOS titlebar drag region — sits above all content */}

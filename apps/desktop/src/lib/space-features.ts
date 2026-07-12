@@ -15,7 +15,10 @@ type SpaceLike = {
   kind?: SpaceKind;
 };
 
-export type SpaceQuickActionHandler = "create-cover-letter";
+export type SpaceQuickActionHandler =
+  | "create-cover-letter"
+  | "open-career-synthesize"
+  | "open-career-knowledge";
 
 export interface SpaceQuickAction {
   id: string;
@@ -145,6 +148,24 @@ export const SPACE_KIND_OPTIONS: {
   },
 ];
 
+const CAREER_SYNTHESIZE_QUICK_ACTIONS: SpaceQuickAction[] = [
+  {
+    id: "open-career-synthesize",
+    label: "Synthesize resume",
+    title:
+      "Open Career → Synthesize to tailor a resume from the Master Career DB",
+    prompt: "",
+    handler: "open-career-synthesize",
+  },
+  {
+    id: "career-knowledge",
+    label: "Career knowledge",
+    title: "Open the Career knowledge base to add evidence sources",
+    prompt: "",
+    handler: "open-career-knowledge",
+  },
+];
+
 const CONFIGS: Record<SpaceKind, SpaceFeatureConfig> = {
   resume: {
     kind: "resume",
@@ -184,9 +205,25 @@ const CONFIGS: Record<SpaceKind, SpaceFeatureConfig> = {
     },
     quickActions: [
       {
+        id: "synthesize-for-jd",
+        label: "Synthesize for this JD",
+        title:
+          "Open Career → Synthesize and pre-fill from JOB_DESCRIPTION.md when present",
+        prompt: "",
+        handler: "open-career-synthesize",
+      },
+      {
+        id: "career-knowledge",
+        label: "Career knowledge",
+        title: "Open the Career knowledge base to add evidence sources",
+        prompt: "",
+        handler: "open-career-knowledge",
+      },
+      {
         id: "match-jd",
-        label: "Match JD",
-        title: "Check this resume against the job description for keyword gaps",
+        label: "Gap analysis (chat)",
+        title:
+          "Chat-based ATS gap analysis against JOB_DESCRIPTION.md — does not run Career Synthesize",
         prompt:
           "Compare this resume against the job description in JOB_DESCRIPTION.md and report an " +
           "ATS-style match: which required skills, keywords, and qualifications are covered, which " +
@@ -289,6 +326,7 @@ const CONFIGS: Record<SpaceKind, SpaceFeatureConfig> = {
       overviewColumnTarget: "Venue / requirements",
     },
     quickActions: [
+      ...CAREER_SYNTHESIZE_QUICK_ACTIONS,
       {
         id: "submission-checklist",
         label: "Checklist",
@@ -348,6 +386,7 @@ const CONFIGS: Record<SpaceKind, SpaceFeatureConfig> = {
       overviewColumnTarget: "Program prompt",
     },
     quickActions: [
+      ...CAREER_SYNTHESIZE_QUICK_ACTIONS,
       {
         id: "tighten-statement",
         label: "Tighten",
@@ -405,6 +444,7 @@ const CONFIGS: Record<SpaceKind, SpaceFeatureConfig> = {
       overviewColumnTarget: "Audience / brief",
     },
     quickActions: [
+      ...CAREER_SYNTHESIZE_QUICK_ACTIONS,
       {
         id: "executive-summary",
         label: "Summary",
@@ -454,6 +494,7 @@ const CONFIGS: Record<SpaceKind, SpaceFeatureConfig> = {
       overviewColumnTarget: "Target",
     },
     quickActions: [
+      ...CAREER_SYNTHESIZE_QUICK_ACTIONS,
       {
         id: "proofread-doc",
         label: "Proofread",

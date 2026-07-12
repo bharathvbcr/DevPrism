@@ -57,16 +57,6 @@ export function listCompileRoots(files: ProjectFile[]): CompileRootOption[] {
   });
 }
 
-export function isStandaloneCompileRoot(
-  fileId: string,
-  files: ProjectFile[],
-): boolean {
-  const file = files.find((f) => f.id === fileId);
-  if (!file?.content || file.type !== "tex") return false;
-  if (!/\\documentclass[\s{[]/.test(file.content)) return false;
-  return resolveTexRoot(fileId, files) === fileId;
-}
-
 /** Resolve which file to compile and the root ID for caching. */
 export function resolveCompileTarget(
   activeFileId: string,
@@ -109,18 +99,6 @@ export interface ParsedCompileError {
   message: string;
   file?: string;
   line?: number | null;
-}
-
-/** Split a formatted compile error string into individual error messages. */
-export function splitCompileErrorMessages(raw: string): string[] {
-  return [
-    ...new Set(
-      raw
-        .split(/\s*!\s*/)
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0 && s !== "Compilation failed"),
-    ),
-  ];
 }
 
 /** Split a compile log into structured errors (file, line, message). */
@@ -279,16 +257,6 @@ export async function compileLatex(
   }
 
   return result;
-}
-
-export interface TexliveStatus {
-  available: boolean;
-  engines: string[];
-  version: string | null;
-}
-
-export async function detectTexlive(): Promise<TexliveStatus> {
-  return invoke<TexliveStatus>("detect_texlive");
 }
 
 export interface SynctexResult {

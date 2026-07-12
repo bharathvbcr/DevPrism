@@ -1,5 +1,5 @@
 import { FSA_SCHEME, OPFS_SCHEME, parseBrowserRoot } from "./constants";
-import { getFsaRoot, registerFsaRoot } from "./registry";
+import { getFsaRoot, registerFsaRoot, unregisterFsaRoot } from "./registry";
 
 const DB_NAME = "devprism-browser-projects";
 const DB_VERSION = 1;
@@ -83,6 +83,7 @@ export async function removePersistedFsaRoot(id: string): Promise<void> {
     tx.onerror = () => reject(tx.error);
   });
   db.close();
+  unregisterFsaRoot(id);
 }
 
 export async function getPersistedFsaFolderName(

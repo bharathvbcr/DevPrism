@@ -207,27 +207,30 @@ fn looks_like_embedding(name: &str) -> bool {
     EMBED_MARKERS.iter().any(|m| l.contains(m))
 }
 
-/// Query the Ollama server and pick a likely chat-capable installed model.
-/// `/api/tags` exposes no capability metadata, so we use a name heuristic: skip
-/// obvious embedding models (they reject `/api/chat`). Returns the first
-/// chat-capable model, or None if only embedding models (or none) are installed.
 /// Query the Ollama server and return installed model metadata from `/api/tags`.
-async fn installed_models(base_url: &str) -> Vec<(String, Option<u64>)> {
-    let url = format!("{}/api/tags", native_base(base_url));
+///
+/// Transport / HTTP failures return `[E_OLLAMA_UNREACHABLE]` so callers can
+/// distinguish "Ollama is down" from "Ollama is up but has no models".
+async fn installed_models(base_url: &str) -> Result<Vec<(String, Option<u64>)>, String> {
+    let root = native_base(base_url);
+    let url = format!("{root}/api/tags");
     let client = build_client();
-    let Ok(res) = client.get(&url).send().await else {
-        return Vec::new();
-    };
+    let res = client.get(&url).send().await.map_err(|e| {
+        format!("[E_OLLAMA_UNREACHABLE] Could not reach Ollama at {root}: {e}")
+    })?;
     if !res.status().is_success() {
-        return Vec::new();
+        return Err(format!(
+            "[E_OLLAMA_UNREACHABLE] Could not reach Ollama at {root}: HTTP {}",
+            res.status()
+        ));
     }
-    let Ok(text) = res.text().await else {
-        return Vec::new();
-    };
-    let Ok(v) = serde_json::from_str::<Value>(&text) else {
-        return Vec::new();
-    };
-    v.get("models")
+    let text = res.text().await.map_err(|e| {
+        format!("[E_OLLAMA_UNREACHABLE] Could not reach Ollama at {root}: {e}")
+    })?;
+    let v: Value = serde_json::from_str(&text).map_err(|e| {
+        format!("[E_OLLAMA_UNREACHABLE] Invalid response from Ollama at {root}: {e}")
+    })?;
+    Ok(v.get("models")
         .and_then(|m| m.as_array())
         .map(|items| {
             items
@@ -243,36 +246,42 @@ async fn installed_models(base_url: &str) -> Vec<(String, Option<u64>)> {
                 })
                 .collect()
         })
-        .unwrap_or_default()
+        .unwrap_or_default())
 }
 
-async fn installed_model_names(base_url: &str) -> Vec<String> {
-    installed_models(base_url)
-        .await
+async fn installed_model_names(base_url: &str) -> Result<Vec<String>, String> {
+    Ok(installed_models(base_url)
+        .await?
         .into_iter()
         .map(|(name, _)| name)
-        .collect()
+        .collect())
 }
 
-pub async fn first_installed_model(base_url: &str) -> Option<String> {
-    let names = installed_model_names(base_url).await;
+/// Pick a likely chat-capable installed model.
+/// `/api/tags` exposes no capability metadata, so we use a name heuristic: skip
+/// obvious embedding models (they reject `/api/chat`). Returns `Ok(None)` when
+/// Ollama is reachable but only embedding models (or none) are installed.
+/// Transport failures return `[E_OLLAMA_UNREACHABLE]`.
+pub async fn first_installed_model(base_url: &str) -> Result<Option<String>, String> {
+    let names = installed_model_names(base_url).await?;
     // Prefer a non-embedding model; fall back to the first installed model only
     // if every installed model looks like an embedding model (better to try and
     // surface a clear tool/chat error than to silently report "no model").
-    names
+    Ok(names
         .iter()
         .find(|n| !looks_like_embedding(n.as_str()))
         .or_else(|| names.first())
-        .cloned()
+        .cloned())
 }
 
 /// Pick an installed embedding-only model (the kind that serves `/api/embed`).
-/// Returns None when no embedding model is installed.
-pub async fn first_embedding_model(base_url: &str) -> Option<String> {
-    installed_model_names(base_url)
-        .await
+/// Returns `Ok(None)` when no embedding model is installed; transport failures
+/// return `[E_OLLAMA_UNREACHABLE]`.
+pub async fn first_embedding_model(base_url: &str) -> Result<Option<String>, String> {
+    Ok(installed_model_names(base_url)
+        .await?
         .into_iter()
-        .find(|n| looks_like_embedding(n.as_str()))
+        .find(|n| looks_like_embedding(n.as_str())))
 }
 
 /// Name fragments of vision-capable models, used to pick a captioning model when
@@ -288,12 +297,12 @@ const VISION_MARKERS: &[&str] = &[
     "qwen2.5-vl",
 ];
 
-/// Pick an installed vision-capable model by name heuristic, or None.
-pub async fn first_vision_model(base_url: &str) -> Option<String> {
-    installed_model_names(base_url).await.into_iter().find(|n| {
+/// Pick an installed vision-capable model by name heuristic, or `Ok(None)`.
+pub async fn first_vision_model(base_url: &str) -> Result<Option<String>, String> {
+    Ok(installed_model_names(base_url).await?.into_iter().find(|n| {
         let l = n.to_lowercase();
         VISION_MARKERS.iter().any(|m| l.contains(m))
-    })
+    }))
 }
 
 #[derive(serde::Serialize)]
@@ -348,7 +357,7 @@ pub async fn server_status(base_url: Option<String>) -> OllamaStatus {
     };
 
     let models = if connected {
-        installed_models(&base).await
+        installed_models(&base).await.unwrap_or_default()
     } else {
         Vec::new()
     };
@@ -372,10 +381,10 @@ pub async fn server_status(base_url: Option<String>) -> OllamaStatus {
 pub async fn list_models(base_url: Option<String>) -> Result<Vec<OllamaModelInfo>, String> {
     let base = base_url.unwrap_or_else(|| "http://localhost:11434".to_string());
     let root = native_base(&base);
-    let models = installed_models(&base).await;
+    let models = installed_models(&base).await?;
     if models.is_empty() {
         return Err(format!(
-            "[E_OLLAMA_UNREACHABLE] Could not reach Ollama at {root}. Start Ollama and install a chat model (e.g. `ollama pull llama3`)."
+            "[E_NO_MODEL] No Ollama model is available at {root}. Start Ollama and run `ollama pull llama3` (or another model)."
         ));
     }
     Ok(models

@@ -5,9 +5,13 @@ import {
   FilePlusIcon,
   SparklesIcon,
   Loader2Icon,
+  BookOpenIcon,
+  BriefcaseIcon,
 } from "lucide-react";
 import { useClaudeChatStore } from "@/stores/claude-chat-store";
 import { useDocumentStore } from "@/stores/document-store";
+import { useCareerStore } from "@/stores/career-store";
+import { useSynthesisStore } from "@/stores/synthesis-store";
 import { useSpaceFeatures } from "@/hooks/use-space-features";
 import { useSettingsStore } from "@/stores/settings-store";
 import {
@@ -27,6 +31,17 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+
+function readJobDescriptionFromProject(): string | null {
+  const files = useDocumentStore.getState().files;
+  const jdFile = files.find(
+    (file) =>
+      file.name.toLowerCase() === "job_description.md" ||
+      file.relativePath?.toLowerCase().endsWith("/job_description.md"),
+  );
+  const text = jdFile?.content?.trim();
+  return text && text.length > 0 ? text : null;
+}
 
 /**
  * Compact trailing control for a space's AI quick actions. Every action lives
@@ -109,15 +124,33 @@ export function SpaceQuickActions({
       void ensureCoverLetterFile();
       return;
     }
+    if (action.handler === "open-career-synthesize") {
+      const jd = readJobDescriptionFromProject();
+      if (jd) {
+        useSynthesisStore.getState().setPendingJdText(jd);
+      }
+      useCareerStore.getState().openCareer("synthesize");
+      return;
+    }
+    if (action.handler === "open-career-knowledge") {
+      useCareerStore.getState().openCareer("knowledge");
+      return;
+    }
     seedComposerInput(action.prompt);
   };
 
-  const iconFor = (action: SpaceQuickAction) =>
-    action.handler === "create-cover-letter" ? (
-      <FilePlusIcon className="size-4" />
-    ) : (
-      <WandSparklesIcon className="size-4" />
-    );
+  const iconFor = (action: SpaceQuickAction) => {
+    if (action.handler === "create-cover-letter") {
+      return <FilePlusIcon className="size-4" />;
+    }
+    if (action.handler === "open-career-synthesize") {
+      return <BriefcaseIcon className="size-4" />;
+    }
+    if (action.handler === "open-career-knowledge") {
+      return <BookOpenIcon className="size-4" />;
+    }
+    return <WandSparklesIcon className="size-4" />;
+  };
 
   const showSuggested =
     aiPredictiveActions &&

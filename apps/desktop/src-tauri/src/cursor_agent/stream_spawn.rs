@@ -162,6 +162,9 @@ pub async fn complete_cursor_print(
     cancel_flag: Option<Arc<AtomicBool>>,
     cancel_notify: Option<Arc<Notify>>,
 ) -> Result<String, String> {
+    /// Hard ceiling for Cursor CLI `-p` (print) completions used by synthesis/assist.
+    const PRINT_TIMEOUT_SECS: u64 = 300;
+
     let user = prompt.trim();
     if user.is_empty() {
         return Err("Prompt is empty.".into());
@@ -223,12 +226,22 @@ pub async fn complete_cursor_print(
             .map_err(|e| format!("Failed to read Cursor CLI output: {e}"))
     };
 
+    let deadline = tokio::time::sleep(std::time::Duration::from_secs(PRINT_TIMEOUT_SECS));
+    tokio::pin!(deadline);
+
     let outcome = if let Some(notify) = cancel_notify {
         tokio::select! {
             _ = notify.notified() => {
                 let _ = child.kill().await;
                 let _ = child.wait().await;
                 Err("cancelled".into())
+            }
+            _ = &mut deadline => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                Err(format!(
+                    "[E_CLI_TIMEOUT] Cursor CLI print mode timed out after {PRINT_TIMEOUT_SECS}s."
+                ))
             }
             read = read_stdout => {
                 read?;
@@ -252,23 +265,34 @@ pub async fn complete_cursor_print(
             }
         }
     } else {
-        read_stdout.await?;
-        let status = child
-            .wait()
-            .await
-            .map_err(|e| format!("Cursor CLI wait failed: {e}"))?;
-        if !status.success() {
-            let preview = String::from_utf8_lossy(&buf);
-            return Err(format!(
-                "Cursor CLI exited with status {status}. Output: {}",
-                preview.chars().take(400).collect::<String>()
-            ));
-        }
-        let text = String::from_utf8_lossy(&buf).trim().to_string();
-        if text.is_empty() {
-            Err("Cursor CLI returned an empty response.".into())
-        } else {
-            Ok(text)
+        tokio::select! {
+            _ = &mut deadline => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                Err(format!(
+                    "[E_CLI_TIMEOUT] Cursor CLI print mode timed out after {PRINT_TIMEOUT_SECS}s."
+                ))
+            }
+            read = read_stdout => {
+                read?;
+                let status = child
+                    .wait()
+                    .await
+                    .map_err(|e| format!("Cursor CLI wait failed: {e}"))?;
+                if !status.success() {
+                    let preview = String::from_utf8_lossy(&buf);
+                    return Err(format!(
+                        "Cursor CLI exited with status {status}. Output: {}",
+                        preview.chars().take(400).collect::<String>()
+                    ));
+                }
+                let text = String::from_utf8_lossy(&buf).trim().to_string();
+                if text.is_empty() {
+                    Err("Cursor CLI returned an empty response.".into())
+                } else {
+                    Ok(text)
+                }
+            }
         }
     };
 

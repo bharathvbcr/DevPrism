@@ -1,6 +1,7 @@
 export {
   applyBoldMarkdown,
   escapeAndValidateSlot,
+  escapeHrefUrl,
   escapeLatexSpecials,
   escapeResumeText,
   mapSmartPunctuation,
@@ -33,21 +34,29 @@ export {
 export {
   analyzeJobDescription,
   facetsOf,
+  isExtractionEmpty,
   isJDProfile,
+  JD_NONTRIVIAL_MIN_CHARS,
   normalizeJDProfile,
   validateJDProfile,
+  type AnalyzeJobDescriptionResult,
 } from "./jd-analysis";
 
 export {
   DEFAULT_WEIGHTS,
+  canonicalSkillKey,
   combineScore,
   hybridScore,
+  normSkill,
   personaAffinity,
   recencyDecay,
   renormalizeWeights,
   scoreBlocks,
   seniorityFit,
   skillOverlap,
+  skillTokens,
+  skillsMatch,
+  textCoversSkill,
   weightsForFacets,
   type ScoreWeights,
 } from "./scoring";
@@ -56,10 +65,13 @@ export {
   assertBudgetInvariants,
   budgetFromTemplate,
   bulletCoversSkill,
+  BUDGET_FIXED_OVERHEAD_LINES,
+  CHARS_PER_LINE,
   cosineSimilarity,
   coversSkill,
   DEFAULT_MAX_BULLETS_PER_BLOCK,
   estimateBlockLines,
+  estimateBulletLines,
   knapsackSelect,
   mmrSelect,
   sectionForBlock,
@@ -73,10 +85,17 @@ export {
 export {
   buildRewritePrompt,
   enforceBulletInvariants,
+  enforceFactOnlyInvariants,
   hasForbiddenLatex,
+  hasProvenance,
+  metricsFromProvenance,
   metricsPreserved,
+  metricsValuesPreserved,
+  normalizeDistillBullet,
   rewriteBlock,
+  validateDistillBlockOut,
   validateRewriteBlockOut,
+  type EnforceBulletOptions,
   type RewriteBlockOptions,
   type RewriteBlockOut,
   type RewriteBulletOut,
@@ -84,11 +103,23 @@ export {
 } from "./rewrite";
 
 export {
+  analyzeMustHaveGaps,
+  collectBlockSkillHits,
+  collectKbSkillHits,
+  gapItemsByStatus,
+  gapMissingOrWeak,
+  type AnalyzeMustHaveGapsOptions,
+} from "./gap-analysis";
+
+export {
   atsScoreFromReport,
   blockRewriteLabel,
+  coalesceRunEventsForPersistence,
   coverageHeatLabel,
   coverageHeatLevel,
   extractRewriteStreamPreview,
+  extractStoredCompileMeta,
+  extractStoredRunEvents,
   extractStoredRunTex,
   formatRewriteBlockDetail,
   formatStageMs,
@@ -99,6 +130,7 @@ export {
 } from "./synthesis-ux";
 
 export {
+  computeAtsCoveragePct,
   repairFlagged,
   repairProgrammatic,
   runCritic,
@@ -110,9 +142,24 @@ export {
 export {
   buildMustHaveCoverage,
   isAbortError,
+  retrieveBlockFacts,
+  summarizeRewriteHonesty,
   synthesizeResume,
   throwIfAborted,
 } from "./orchestrator";
+
+export {
+  checkSynthesisReadiness,
+  clearEmbedProbeCache,
+  pendingEmbedCount,
+  type DataReadiness,
+  type EmbeddingIssue,
+  type EmbeddingReadiness,
+  type ReadinessLevel,
+  type SynthesisReadiness,
+  type TextGenerationIssue,
+  type TextGenerationReadiness,
+} from "./preflight";
 
 export {
   listResumeMasterOptions,
@@ -127,8 +174,19 @@ export {
 } from "./materialize";
 
 export type {
+  BlockBulletDiff,
+  BlockEvidenceSummary,
+  BlockFactEvidenceSummary,
+  BulletFallbackReason,
+  BulletFallbackSummary,
+  BulletProvenance,
   CriticBulletVerdict,
   CriticResult,
+  GapAnalysis,
+  GapAnalysisItem,
+  GapCoverageStatus,
+  GapHit,
+  GapHitKind,
   JdFacets,
   JDProfile,
   MatchReport,
@@ -137,6 +195,7 @@ export type {
   RewriteBlockStatus,
   RewrittenBlockDraft,
   RewrittenBullet,
+  RunEvent,
   ScoreComponents,
   ScoredBlock,
   StageTimingsMs,

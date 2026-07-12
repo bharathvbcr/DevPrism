@@ -79,6 +79,8 @@ export interface LlmJsonOptions<T> {
   streamComplete?: LlmStreamComplete;
   /** Live token/text preview while streaming. */
   onStreamPreview?: (preview: string, raw: string) => void;
+  /** Bypass semantic-layer answer cache. */
+  skipSemanticCache?: boolean;
   /** Injected for tests. */
   complete?: typeof aiComplete;
 }
@@ -156,6 +158,7 @@ export async function llmJson<T>(options: LlmJsonOptions<T>): Promise<T> {
         temperature,
         format: "json",
         signal,
+        skipSemanticCache: options.skipSemanticCache,
       });
     }
 
@@ -194,6 +197,7 @@ export async function defaultStreamComplete(
       prompt: options.prompt,
       temperature: options.temperature,
       skipSemanticLayer: true,
+      skipSemanticCache: true,
       signal: options.signal,
     },
     onChunk,

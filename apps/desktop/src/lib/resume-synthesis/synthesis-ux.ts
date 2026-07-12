@@ -6,6 +6,7 @@ import type {
   MatchReport,
   MustHaveCoverage,
   RewriteBlockProgress,
+  RunEvent,
   StageTimingsMs,
   SynthesisStageId,
 } from "./types";
@@ -112,10 +113,86 @@ export function parseStoredMatchReport(json: unknown): MatchReport | null {
   if (!o.profile || typeof o.profile !== "object") return null;
   if (!Array.isArray(o.scored)) return null;
   if (!Array.isArray(o.selectedBlockIds)) return null;
-  // Strip rematerialization-only fields before casting.
-  const { tex: _tex, ...rest } = o;
+  // Strip rematerialization-only / activity fields before casting.
+  const { tex: _tex, events: _events, ...rest } = o;
   void _tex;
+  void _events;
   return rest as unknown as MatchReport;
+}
+
+/** Extract persisted RunEvent[] from a stored run payload (if present). */
+export function extractStoredRunEvents(json: unknown): RunEvent[] {
+  if (!json || typeof json !== "object" || Array.isArray(json)) return [];
+  const o = json as Record<string, unknown>;
+  if (Array.isArray(o.events)) {
+    return o.events.filter(
+      (e): e is RunEvent =>
+        !!e &&
+        typeof e === "object" &&
+        typeof (e as { type?: unknown }).type === "string",
+    );
+  }
+  if (o.report && typeof o.report === "object" && !Array.isArray(o.report)) {
+    return extractStoredRunEvents(o.report);
+  }
+  return [];
+}
+
+/** Extract persisted compile status from a stored run payload. */
+export function extractStoredCompileMeta(
+  json: unknown,
+): { compileOk: boolean; compileSummary: string } | null {
+  if (!json || typeof json !== "object" || Array.isArray(json)) return null;
+  const o = json as Record<string, unknown>;
+  if (typeof o.compileOk === "boolean") {
+    return {
+      compileOk: o.compileOk,
+      compileSummary:
+        typeof o.compileSummary === "string"
+          ? o.compileSummary
+          : o.compileOk
+            ? "Compile verified"
+            : "Compile needs review",
+    };
+  }
+  if (o.report && typeof o.report === "object" && !Array.isArray(o.report)) {
+    return extractStoredCompileMeta(o.report);
+  }
+  return null;
+}
+
+/** Cap + coalesce run events before persistence (drop token-stream noise). */
+export function coalesceRunEventsForPersistence(
+  events: RunEvent[],
+  maxEvents = 200,
+): RunEvent[] {
+  const lastPreviewByBlock = new Map<
+    string,
+    Extract<RunEvent, { type: "block-rewrite-stream" }>
+  >();
+  const kept: RunEvent[] = [];
+  for (const e of events) {
+    if (e.type === "block-rewrite-stream") {
+      lastPreviewByBlock.set(e.blockId, e);
+      continue;
+    }
+    kept.push(e);
+    if (e.type === "block-rewrite-done") {
+      const preview = lastPreviewByBlock.get(e.blockId);
+      if (preview) {
+        // Keep a single final preview snapshot per block (not per-token).
+        kept.push({
+          type: "block-rewrite-stream",
+          blockId: preview.blockId,
+          preview: preview.preview.slice(-400),
+          at: preview.at,
+        });
+        lastPreviewByBlock.delete(e.blockId);
+      }
+    }
+  }
+  if (kept.length <= maxEvents) return kept;
+  return kept.slice(kept.length - maxEvents);
 }
 
 /** Extract persisted `.tex` from a stored run payload (if present). */

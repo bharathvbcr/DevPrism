@@ -7,21 +7,6 @@ export interface VariantStatusMeta {
   color: string;
 }
 
-export const VARIANT_STATUSES: VariantStatusMeta[] = [
-  { value: "draft", label: "Draft", color: "#94a3b8" },
-  { value: "applied", label: "Applied", color: "#0ea5e9" },
-  { value: "interview", label: "Interview", color: "#a855f7" },
-  { value: "offer", label: "Offer", color: "#10b981" },
-  { value: "rejected", label: "Rejected", color: "#ef4444" },
-  { value: "archived", label: "Archived", color: "#64748b" },
-];
-
-export function variantStatusMeta(status: string): VariantStatusMeta {
-  return (
-    VARIANT_STATUSES.find((s) => s.value === status) ?? VARIANT_STATUSES[0]
-  );
-}
-
 /**
  * Best-effort name for a new version, derived from the pasted target text (a
  * job description, CFP, or program prompt). Returns "" when nothing usable is

@@ -99,6 +99,19 @@ export function escapeResumeText(input: string): string {
   return applyBoldMarkdown(escapeLatexSpecials(normalized));
 }
 
+/**
+ * Escape a URL for use inside `\href{...}{...}` (hyperref).
+ *
+ * Do NOT apply text-mode escaping (`\_`, `\%`, …) — underscores in
+ * LinkedIn/GitHub URLs must stay literal. Only `%` and `#` need escaping
+ * per hyperref rules (they start TeX comments / parameter tokens).
+ */
+export function escapeHrefUrl(input: string): string {
+  return normalizeResumePlainText(input.trim())
+    .replace(/%/g, "\\%")
+    .replace(/#/g, "\\#");
+}
+
 export type SlotValidationResult = { ok: true } | { ok: false; reason: string };
 
 function bracesBalanced(s: string): boolean {

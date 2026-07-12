@@ -1,8 +1,4 @@
-import {
-  type AgentBackend,
-  AGENT_BACKENDS,
-  isOllamaBaseUrl,
-} from "@/lib/agent-backend";
+import { type AgentBackend, isOllamaBaseUrl } from "@/lib/agent-backend";
 import { useClaudeSetupStore } from "@/stores/claude-setup-store";
 import { useCursorSetupStore } from "@/stores/cursor-setup-store";
 import { useGroqSetupStore } from "@/stores/groq-setup-store";
@@ -106,19 +102,3 @@ export function useBackendAvailability(
     openAiCredentials,
   });
 }
-
-export function backendAvailabilityLabel(
-  status: BackendAvailabilityStatus,
-): string {
-  switch (status) {
-    case "ready":
-      return "Ready";
-    case "checking":
-      return "Checking…";
-    case "needs-setup":
-      return "Set up";
-  }
-}
-
-/** Stable ordered list matching AGENT_BACKENDS. */
-export const BACKEND_AVAILABILITY_ORDER = AGENT_BACKENDS.map((b) => b.id);

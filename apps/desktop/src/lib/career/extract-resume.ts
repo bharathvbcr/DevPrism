@@ -1,9 +1,10 @@
 import { aiComplete, canUseAiAssist } from "@/lib/ai-assist";
-import type { ExperienceBlock } from "./types";
+import type { BlockFact, ExperienceBlock } from "./types";
 import {
   createEmptyBlock,
   isBlockKind,
   isSeniorityLevel,
+  newBlockFact,
   newBullet,
   newCareerId,
 } from "./block-helpers";
@@ -19,12 +20,14 @@ Return ONLY JSON of the form:
   "domains":string[],
   "skills":string[],
   "seniorityLevel":"ic"|"senior"|"lead"|"manager"|"director",
-  "bullets":string[]
+  "bullets":string[],
+  "facts":string[] (optional)
 }]}
 Rules:
 - Prefer factual content present in the source; do not invent employers or metrics.
 - Split distinct roles/projects into separate blocks.
-- Bullets are plain text (no LaTeX commands).
+- Bullets are polished resume lines (plain text, no LaTeX commands) — keep a tight set.
+- When the source has extra detail that does not fit cleanly as polished bullets (side metrics, tools, ownership notes), put those in facts[] as short raw points. Omit facts when everything fits in bullets.
 - If unsure of seniority, use "senior".
 - Return ONLY JSON — no markdown fences, no commentary.`;
 
@@ -107,6 +110,10 @@ export function parseExtractedBlocks(raw: string): ExperienceBlock[] {
     if (!title && !org) continue;
 
     const bulletTexts = asStringArray(row.bullets);
+    const factTexts = asStringArray(row.facts);
+    const facts: BlockFact[] = factTexts.map((text) =>
+      newBlockFact(text, { source: "import" }),
+    );
     const skills = asStringArray(row.skills).map((name) => ({
       name,
       level: 3 as const,
@@ -153,6 +160,7 @@ export function parseExtractedBlocks(raw: string): ExperienceBlock[] {
           bulletTexts.length > 0
             ? bulletTexts.map((t) => newBullet(t))
             : [newBullet()],
+        facts,
         personas: [],
       }),
     );

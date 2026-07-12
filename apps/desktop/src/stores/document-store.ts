@@ -27,6 +27,7 @@ import {
   resolvePreviewCompileRoot,
 } from "@/lib/compile-root-preference";
 import { clearDocCache } from "@/lib/mupdf/pdf-doc-cache";
+import { resetMupdfClient } from "@/lib/mupdf/mupdf-client";
 import { clearScrollPositionCache } from "@/components/workspace/preview/pdf-viewer";
 import { clearZoomCache } from "@/components/workspace/preview/pdf-preview";
 import { clearAllHighlights } from "@/stores/annotation-store";
@@ -75,11 +76,6 @@ export function getCurrentPdfBytes(): Uint8Array | null {
 /** Get the root file id for the currently displayed PDF, if any. */
 export function getCurrentPdfRootId(): string | null {
   return _currentPdfRootId;
-}
-
-/** Check if any PDF data exists for the current root. */
-export function hasPdfData(): boolean {
-  return _currentPdfRootId != null && _pdfBytesCache.has(_currentPdfRootId);
 }
 
 export function clearPdfBytesCache() {
@@ -584,6 +580,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
       forwardSyncPulse: null,
     }));
     await clearDocCache();
+    resetMupdfClient();
     await sleep(150);
 
     await renameProjectRootWithRetry(oldRoot, newRoot);
@@ -612,7 +609,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
       clearTimeout(autoSaveTimer);
       autoSaveTimer = null;
     }
-    void clearDocCache();
+    void clearDocCache().then(() => resetMupdfClient());
     clearScrollPositionCache();
     clearZoomCache();
     clearEditorStateCache();

@@ -181,16 +181,6 @@ export async function runInlineEdit(options: {
   return "chat";
 }
 
-/** @deprecated Use canUseDirectInlineTransform */
-export function inlineEditUsesNativeTransform(): boolean {
-  return canUseDirectInlineTransform();
-}
-
-/** Whether a cloud provider (not Claude Code) is selected for chat fallback. */
-export function inlineEditUsesDirectProvider(): boolean {
-  return canUseAiAssist();
-}
-
 export function inlineEditSuccessMessage(action: InlineEditAction): string {
   switch (action) {
     case "rephrase":

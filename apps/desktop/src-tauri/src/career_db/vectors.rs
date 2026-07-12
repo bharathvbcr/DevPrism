@@ -569,47 +569,56 @@ fn resolve_hit_text(
             Ok((text, value))
         }
         "bullet" => resolve_bullet_hit(conn, owner_id),
+        "fact" => resolve_fact_hit(conn, owner_id),
         _ => Ok((String::new(), serde_json::Value::Null)),
     }
 }
 
-fn resolve_bullet_hit(
+fn resolve_child_hit(
     conn: &Connection,
-    bullet_id: &str,
+    child_id: &str,
+    array_path: &str,
+    text_field: &str,
+    meta_key: &str,
 ) -> Result<(String, serde_json::Value), String> {
     let json: Option<String> = conn
         .query_row(
-            r#"SELECT json FROM blocks
+            &format!(
+                r#"SELECT json FROM blocks
                WHERE EXISTS (
-                 SELECT 1 FROM json_each(json_extract(blocks.json, '$.bullets')) AS b
-                 WHERE json_extract(b.value, '$.id') = ?1
+                 SELECT 1 FROM json_each(json_extract(blocks.json, '{array_path}')) AS c
+                 WHERE json_extract(c.value, '$.id') = ?1
                )
-               LIMIT 1"#,
-            params![bullet_id],
+               LIMIT 1"#
+            ),
+            params![child_id],
             |r| r.get(0),
         )
         .optional()
-        .map_err(|e| format!("Failed to find parent block for bullet {bullet_id}: {e}"))?;
+        .map_err(|e| {
+            format!("Failed to find parent block for {meta_key} {child_id}: {e}")
+        })?;
 
     let Some(json) = json else {
         return Ok((String::new(), serde_json::Value::Null));
     };
 
-    let value: serde_json::Value = serde_json::from_str(&json)
-        .map_err(|e| format!("Invalid block JSON while resolving bullet {bullet_id}: {e}"))?;
+    let value: serde_json::Value = serde_json::from_str(&json).map_err(|e| {
+        format!("Invalid block JSON while resolving {meta_key} {child_id}: {e}")
+    })?;
 
-    let bullet = value
-        .get("bullets")
+    let child = value
+        .get(array_path.trim_start_matches("$."))
         .and_then(|v| v.as_array())
         .and_then(|arr| {
             arr.iter()
-                .find(|b| b.get("id").and_then(|v| v.as_str()) == Some(bullet_id))
+                .find(|b| b.get("id").and_then(|v| v.as_str()) == Some(child_id))
                 .cloned()
         });
 
-    let text = bullet
+    let text = child
         .as_ref()
-        .and_then(|b| b.get("canonical").and_then(|v| v.as_str()))
+        .and_then(|b| b.get(text_field).and_then(|v| v.as_str()))
         .unwrap_or("")
         .to_string();
 
@@ -620,10 +629,24 @@ fn resolve_bullet_hit(
         "kind": value.get("kind"),
         "personas": value.get("personas"),
         "domains": value.get("domains"),
-        "bullet": bullet.unwrap_or(serde_json::Value::Null),
+        meta_key: child.unwrap_or(serde_json::Value::Null),
     });
 
     Ok((text, meta))
+}
+
+fn resolve_bullet_hit(
+    conn: &Connection,
+    bullet_id: &str,
+) -> Result<(String, serde_json::Value), String> {
+    resolve_child_hit(conn, bullet_id, "$.bullets", "canonical", "bullet")
+}
+
+fn resolve_fact_hit(
+    conn: &Connection,
+    fact_id: &str,
+) -> Result<(String, serde_json::Value), String> {
+    resolve_child_hit(conn, fact_id, "$.facts", "text", "fact")
 }
 
 #[cfg(test)]
@@ -729,6 +752,32 @@ mod tests {
         assert_eq!(text, "Shipped X");
         assert_eq!(meta.get("blockId").and_then(|v| v.as_str()), Some("exp_1"));
         assert_eq!(meta.get("title").and_then(|v| v.as_str()), Some("Eng"));
+    }
+
+    #[test]
+    fn resolve_fact_hit_text() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO blocks (id, kind, json, updated_at) VALUES (?1, ?2, ?3, 0)",
+            params![
+                "exp_1",
+                "experience",
+                r#"{"id":"exp_1","kind":"experience","title":"Eng","org":"Acme","dateRange":{"start":"2020-01","end":null},"personas":["ai"],"domains":[],"skills":[],"seniorityLevel":"senior","bullets":[],"facts":[{"id":"f1","text":"Cut latency 40%","skills":["latency"],"metrics":[{"value":"40%","kind":"improvement"}],"source":"manual","createdAt":"2020-01-01T00:00:00Z"}],"updatedAt":"2020-01-01T00:00:00Z"}"#
+            ],
+        )
+        .unwrap();
+
+        let (text, meta) = resolve_hit_text(&conn, "f1", "fact").unwrap();
+        assert_eq!(text, "Cut latency 40%");
+        assert_eq!(meta.get("blockId").and_then(|v| v.as_str()), Some("exp_1"));
+        assert_eq!(meta.get("title").and_then(|v| v.as_str()), Some("Eng"));
+        assert_eq!(
+            meta.get("fact")
+                .and_then(|v| v.get("text"))
+                .and_then(|v| v.as_str()),
+            Some("Cut latency 40%")
+        );
     }
 
     #[test]

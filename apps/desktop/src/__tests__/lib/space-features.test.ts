@@ -59,6 +59,14 @@ describe("spaceFeatureConfig", () => {
     });
     expect(config.variants).toBe(true);
     expect(config.variantLabels.createAction).toContain("JD");
+    expect(config.quickActions.some((a) => a.id === "synthesize-for-jd")).toBe(
+      true,
+    );
+    expect(config.quickActions.some((a) => a.id === "career-knowledge")).toBe(
+      true,
+    );
+    const matchJd = config.quickActions.find((a) => a.id === "match-jd");
+    expect(matchJd?.label.toLowerCase()).toContain("chat");
   });
 
   it("exposes manuscript quick actions", () => {
@@ -70,6 +78,29 @@ describe("spaceFeatureConfig", () => {
     });
     expect(config.quickActions.length).toBeGreaterThan(0);
     expect(config.variantLabels.createAction).toContain("submission");
+    expect(
+      config.quickActions.some((a) => a.handler === "open-career-synthesize"),
+    ).toBe(true);
+    expect(
+      config.quickActions.some((a) => a.handler === "open-career-knowledge"),
+    ).toBe(true);
+  });
+
+  it("exposes career synthesize shortcuts on general and document spaces", () => {
+    for (const kind of ["general", "statements", "report"] as const) {
+      const config = spaceFeatureConfig({
+        name: kind,
+        description: "",
+        icon: null,
+        kind,
+      });
+      expect(
+        config.quickActions.some((a) => a.handler === "open-career-synthesize"),
+      ).toBe(true);
+      expect(
+        config.quickActions.some((a) => a.handler === "open-career-knowledge"),
+      ).toBe(true);
+    }
   });
 
   it("exposes statement tailoring labels", () => {

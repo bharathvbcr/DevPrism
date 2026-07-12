@@ -39,6 +39,8 @@ export interface CompileVerifyOptions {
   ) => Promise<AgentCompileResult>;
   /** Fired before each compile attempt (0-based). */
   onAttempt?: (detail: string, attempt: number) => void;
+  /** Abort between compile attempts. */
+  signal?: AbortSignal;
 }
 
 export class SynthesisCompileError extends Error {
@@ -167,6 +169,9 @@ export async function compileWithRepairLoop(
   let lastResult: AgentCompileResult | null = null;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    if (options.signal?.aborted) {
+      throw new DOMException("Synthesis cancelled", "AbortError");
+    }
     options.onAttempt?.(
       attempt === 0
         ? "Compiling resume…"

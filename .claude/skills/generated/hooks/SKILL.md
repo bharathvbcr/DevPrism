@@ -5,7 +5,7 @@ description: "Skill for the Hooks area of DevPrism. 40 symbols across 15 files."
 
 # Hooks
 
-40 symbols | 15 files | Cohesion: 78%
+40 symbols | 15 files | Cohesion: 77%
 
 ## When to Use
 
@@ -71,9 +71,9 @@ Start here when exploring this area:
 | `ImportDroppedPaths → IsSpaceKind` | cross_community | 5 |
 | `ClaudeChatDrawer → HasThinkingBlock` | cross_community | 5 |
 | `ClaudeChatDrawer → IsNativeGroqBackend` | cross_community | 5 |
+| `ClaudeChatDrawer → IsNativeApiBackend` | cross_community | 5 |
 | `ClaudeChatDrawer → IsNativeOllamaBackend` | cross_community | 5 |
 | `ClaudeChatDrawer → IsCursorCliBackend` | cross_community | 5 |
-| `ClaudeChatDrawer → IsNativeBackend` | cross_community | 5 |
 | `VersionSwitcher → IsSpaceKind` | cross_community | 4 |
 | `VersionOverview → IsSpaceKind` | cross_community | 4 |
 | `Resolved → IsSpaceKind` | intra_community | 4 |

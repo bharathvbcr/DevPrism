@@ -9,7 +9,7 @@ import type {
   SectionKind,
 } from "@/lib/resume-templates/types";
 import type { ScoredBlock } from "./types";
-import { skillOverlap } from "./scoring";
+import { skillOverlap, skillsMatch, textCoversSkill } from "./scoring";
 
 export interface SelectionBudget {
   totalLines: number;
@@ -27,6 +27,15 @@ export interface SelectionResult {
 /** Default max bullets kept per selected block after relevance trim. */
 export const DEFAULT_MAX_BULLETS_PER_BLOCK = 4;
 
+/** Approximate printable characters per resume line (for wrap estimates). */
+export const CHARS_PER_LINE = 95;
+
+/**
+ * Fixed overhead lines reserved before knapsack packing
+ * (header + summary + skills + a few section titles).
+ */
+export const BUDGET_FIXED_OVERHEAD_LINES = 4 + 3 + 2 + 3; // header, summary, skills, ~3 section titles
+
 const KIND_TO_SECTION: Record<BlockKind, SectionKind> = {
   experience: "experience",
   project: "projects",
@@ -39,35 +48,51 @@ export function sectionForBlock(block: ExperienceBlock): SectionKind {
   return KIND_TO_SECTION[block.kind] ?? "experience";
 }
 
-/** Estimate line cost: ~2 header lines + 1 per bullet. */
-export function estimateBlockLines(block: ExperienceBlock): number {
-  return 2 + Math.max(1, block.bullets.length);
+/** Estimate wrapped lines for a single bullet from its character length. */
+export function estimateBulletLines(
+  text: string,
+  charsPerLine: number = CHARS_PER_LINE,
+): number {
+  const len = text.trim().length;
+  if (len === 0) return 1;
+  const width = Math.max(40, charsPerLine);
+  return Math.max(1, Math.ceil(len / width));
+}
+
+/**
+ * Estimate line cost: ~2 header lines + wrapped lines per bullet
+ * (not 1 line per bullet).
+ */
+export function estimateBlockLines(
+  block: ExperienceBlock,
+  options?: { charsPerLine?: number },
+): number {
+  const width = options?.charsPerLine ?? CHARS_PER_LINE;
+  const bulletLines = block.bullets.reduce(
+    (sum, b) => sum + estimateBulletLines(b.canonical, width),
+    0,
+  );
+  return 2 + Math.max(1, bulletLines || 1);
 }
 
 export function budgetFromTemplate(
   budget: ResumeTemplateBudget,
 ): SelectionBudget {
   return {
-    totalLines: budget.totalLines,
+    totalLines: Math.max(1, budget.totalLines - BUDGET_FIXED_OVERHEAD_LINES),
     perBullet: budget.perBullet,
     blocksPerSection: { ...budget.blocksPerSection },
   };
 }
 
-function normHay(s: string): string {
-  return s.trim().toLowerCase();
-}
-
 /** True when skill appears in block tags, domains, or any bullet text. */
 export function coversSkill(block: ExperienceBlock, skill: string): boolean {
-  const needle = normHay(skill);
-  if (!needle) return false;
+  if (!skill.trim()) return false;
   if (skillOverlap(block.skills, [skill], [], undefined) > 0) return true;
   if (
-    block.domains.some((d) => {
-      const hay = normHay(d);
-      return hay.includes(needle) || needle.includes(hay);
-    })
+    block.domains.some(
+      (d) => skillsMatch(d, skill) || textCoversSkill(d, skill),
+    )
   ) {
     return true;
   }
@@ -80,20 +105,57 @@ export function bulletCoversSkill(
   skill: string,
   textOverride?: string,
 ): boolean {
-  const needle = normHay(skill);
-  if (!needle) return false;
-  const hay = normHay(textOverride ?? bullet.canonical);
-  return hay.includes(needle);
+  if (!skill.trim()) return false;
+  return textCoversSkill(textOverride ?? bullet.canonical, skill);
 }
 
 function sectionCap(budget: SelectionBudget, section: SectionKind): number {
   return budget.blocksPerSection[section] ?? 3;
 }
 
+type SwapRecord = { droppedId: string; addedId: string; skill: string };
+
+/**
+ * Snapshot helpers so must-have swaps can be reverted when they uncover
+ * a previously covered skill.
+ */
+function cloneSelectionState(selected: ScoredBlock[]): {
+  selected: ScoredBlock[];
+  byOrg: Map<string, ScoredBlock>;
+  sectionCounts: Partial<Record<SectionKind, number>>;
+  lines: number;
+} {
+  const byOrg = new Map<string, ScoredBlock>();
+  const sectionCounts: Partial<Record<SectionKind, number>> = {};
+  let lines = 0;
+  for (const item of selected) {
+    const orgKey = item.block.org.trim().toLowerCase() || item.block.id;
+    byOrg.set(orgKey, item);
+    const section = sectionForBlock(item.block);
+    sectionCounts[section] = (sectionCounts[section] ?? 0) + 1;
+    lines += estimateBlockLines(item.block);
+  }
+  return { selected: [...selected], byOrg, sectionCounts, lines };
+}
+
+function coveredMustHaves(
+  selected: ScoredBlock[],
+  mustHaveSkills: string[],
+): Set<string> {
+  const covered = new Set<string>();
+  for (const skill of mustHaveSkills) {
+    if (selected.some((s) => coversSkill(s.block, skill))) {
+      covered.add(skill);
+    }
+  }
+  return covered;
+}
+
 /**
  * Greedy knapsack: sort by score, take while line + per-section caps allow.
  * Enforce ≤1 block per org unless the challenger scores ≥ gap above the incumbent.
- * Then ensure must-have coverage via swaps.
+ * Then ensure must-have coverage via swaps (re-verified so swaps never uncover
+ * previously covered must-haves).
  */
 export function knapsackSelect(
   scored: ScoredBlock[],
@@ -111,9 +173,9 @@ export function knapsackSelect(
     (a, c) => c.score - a.score || a.block.id.localeCompare(c.block.id),
   );
 
-  const selected: ScoredBlock[] = [];
-  const byOrg = new Map<string, ScoredBlock>();
-  const sectionCounts: Partial<Record<SectionKind, number>> = {};
+  let selected: ScoredBlock[] = [];
+  let byOrg = new Map<string, ScoredBlock>();
+  let sectionCounts: Partial<Record<SectionKind, number>> = {};
   let lines = 0;
 
   const tryAdd = (item: ScoredBlock): boolean => {
@@ -154,12 +216,14 @@ export function knapsackSelect(
   }
 
   // Must-have coverage: if a skill is uncovered, swap in the best covering block.
-  const swaps: Array<{ droppedId: string; addedId: string; skill: string }> =
-    [];
+  const swaps: SwapRecord[] = [];
   const selectedIds = () => new Set(selected.map((s) => s.block.id));
 
   for (const skill of mustHaveSkills) {
     if (selected.some((s) => coversSkill(s.block, skill))) continue;
+
+    const coveredBefore = coveredMustHaves(selected, mustHaveSkills);
+    const snapshot = cloneSelectionState(selected);
 
     const candidates = sorted.filter(
       (s) => !selectedIds().has(s.block.id) && coversSkill(s.block, skill),
@@ -174,43 +238,64 @@ export function knapsackSelect(
       (s) => sectionForBlock(s.block) === section,
     );
     const pool = sameSection.length > 0 ? sameSection : selected;
+    let swapApplied: SwapRecord | null = null;
+
     if (pool.length === 0) {
       // Room under cap? try direct add
       if (tryAdd(best)) {
-        swaps.push({ droppedId: "", addedId: best.block.id, skill });
+        swapApplied = { droppedId: "", addedId: best.block.id, skill };
       }
-      continue;
-    }
-    const drop = [...pool].sort((a, c) => a.score - c.score)[0]!;
-    if (best.score + 0.05 < drop.score && coversSkill(drop.block, skill)) {
-      // Drop already somehow covers — skip
-      continue;
-    }
-
-    const dropIdx = selected.findIndex((s) => s.block.id === drop.block.id);
-    if (dropIdx < 0) continue;
-
-    const dropSection = sectionForBlock(drop.block);
-    sectionCounts[dropSection] = Math.max(
-      0,
-      (sectionCounts[dropSection] ?? 1) - 1,
-    );
-    lines -= estimateBlockLines(drop.block);
-    selected.splice(dropIdx, 1);
-    byOrg.delete(drop.block.org.trim().toLowerCase() || drop.block.id);
-
-    if (tryAdd(best)) {
-      swaps.push({
-        droppedId: drop.block.id,
-        addedId: best.block.id,
-        skill,
-      });
     } else {
-      // Restore drop if add failed
-      tryAdd(drop);
+      const drop = [...pool].sort((a, c) => a.score - c.score)[0]!;
+      if (best.score + 0.05 < drop.score && coversSkill(drop.block, skill)) {
+        // Drop already somehow covers — skip
+        continue;
+      }
+
+      const dropIdx = selected.findIndex((s) => s.block.id === drop.block.id);
+      if (dropIdx < 0) continue;
+
+      const dropSection = sectionForBlock(drop.block);
+      sectionCounts[dropSection] = Math.max(
+        0,
+        (sectionCounts[dropSection] ?? 1) - 1,
+      );
+      lines -= estimateBlockLines(drop.block);
+      selected.splice(dropIdx, 1);
+      byOrg.delete(drop.block.org.trim().toLowerCase() || drop.block.id);
+
+      if (tryAdd(best)) {
+        swapApplied = {
+          droppedId: drop.block.id,
+          addedId: best.block.id,
+          skill,
+        };
+      } else {
+        // Restore drop if add failed
+        tryAdd(drop);
+      }
     }
+
+    if (!swapApplied) continue;
+
+    // Re-verify: every previously covered must-have must still be covered.
+    const uncoveredNow = [...coveredBefore].filter(
+      (s) => !selected.some((x) => coversSkill(x.block, s)),
+    );
+    if (uncoveredNow.length > 0) {
+      // Revert uncovering swap
+      selected = snapshot.selected;
+      byOrg = snapshot.byOrg;
+      sectionCounts = snapshot.sectionCounts;
+      lines = snapshot.lines;
+      continue;
+    }
+
+    swaps.push(swapApplied);
   }
 
+  // Final pass: ensure swap set didn't leave any must-have worse than start of swaps.
+  // (Individual swaps already verified; recompute uncovered for the report.)
   const uncoveredMustHaves = mustHaveSkills.filter(
     (skill) => !selected.some((s) => coversSkill(s.block, skill)),
   );
@@ -228,6 +313,7 @@ export function assertBudgetInvariants(
   selected: ScoredBlock[],
   budget: SelectionBudget | ResumeTemplateBudget,
 ): { ok: boolean; violations: string[] } {
+  // Same resolution as knapsackSelect: page totalLines minus fixed overhead.
   const b = budgetFromTemplate(budget as ResumeTemplateBudget);
   const violations: string[] = [];
   const sectionCounts: Partial<Record<SectionKind, number>> = {};

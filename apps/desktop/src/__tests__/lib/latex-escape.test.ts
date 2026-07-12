@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyBoldMarkdown,
   escapeAndValidateSlot,
+  escapeHrefUrl,
   escapeLatexSpecials,
   escapeResumeText,
   mapSmartPunctuation,
@@ -91,6 +92,27 @@ describe("escapeResumeText", () => {
 
   it("handles smart quotes then escapes", () => {
     expect(escapeResumeText("\u201CML\u201D & AI")).toBe("``ML'' \\& AI");
+  });
+});
+
+describe("escapeHrefUrl", () => {
+  it("keeps underscores literal (LinkedIn/GitHub)", () => {
+    expect(escapeHrefUrl("https://linkedin.com/in/jane_doe")).toBe(
+      "https://linkedin.com/in/jane_doe",
+    );
+    expect(escapeHrefUrl("https://github.com/org/my_repo")).toBe(
+      "https://github.com/org/my_repo",
+    );
+  });
+
+  it("escapes % and # only", () => {
+    expect(escapeHrefUrl("https://example.com/a%20b#frag")).toBe(
+      "https://example.com/a\\%20b\\#frag",
+    );
+  });
+
+  it("does not apply text-mode underscore escaping", () => {
+    expect(escapeHrefUrl("https://x.com/a_b")).not.toContain("\\_");
   });
 });
 

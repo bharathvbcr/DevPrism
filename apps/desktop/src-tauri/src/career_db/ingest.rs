@@ -639,6 +639,35 @@ pub fn chunks_missing_embeddings(
     Ok(out)
 }
 
+/// Count KB chunks that have no embedding row (for readiness / badges).
+pub fn count_kb_chunks_missing_embeddings(
+    conn: &Connection,
+    source_id: Option<&str>,
+) -> Result<u32, String> {
+    let (sql, params_owned): (&str, Option<String>) = match source_id {
+        Some(sid) => (
+            "SELECT COUNT(*) FROM kb_chunks c
+             WHERE c.source_id = ?1
+               AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.owner_id = c.id)",
+            Some(sid.to_string()),
+        ),
+        None => (
+            "SELECT COUNT(*) FROM kb_chunks c
+             WHERE NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.owner_id = c.id)",
+            None,
+        ),
+    };
+    let count: i64 = match params_owned.as_deref() {
+        Some(sid) => conn
+            .query_row(sql, params![sid], |r| r.get(0))
+            .map_err(|e| format!("Failed to count missing KB embeddings: {e}"))?,
+        None => conn
+            .query_row(sql, [], |r| r.get(0))
+            .map_err(|e| format!("Failed to count missing KB embeddings: {e}"))?,
+    };
+    Ok(count.max(0) as u32)
+}
+
 pub fn delete_kb_source(conn: &Connection, source_id: &str) -> Result<(), String> {
     let ids = list_chunk_ids(conn, source_id)?;
     delete_chunks_and_embeddings(conn, &ids)?;
@@ -659,6 +688,32 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         super::super::schema::init_schema(&conn).unwrap();
         conn
+    }
+
+    #[test]
+    fn count_missing_embeddings_matches_list() {
+        let conn = mem_conn();
+        let prepared = PreparedSource {
+            uri: "/tmp/notes.md".into(),
+            source_type: "markdown".into(),
+            title: "notes".into(),
+            content_hash: "notes_hash_v1".into(),
+            chunks: vec![
+                PreparedChunk {
+                    text: "alpha".into(),
+                    meta: serde_json::json!({ "contentHash": content_hash(b"alpha") }),
+                },
+                PreparedChunk {
+                    text: "beta".into(),
+                    meta: serde_json::json!({ "contentHash": content_hash(b"beta") }),
+                },
+            ],
+        };
+        upsert_prepared_source(&conn, &prepared).unwrap();
+        let listed = chunks_missing_embeddings(&conn, None).unwrap();
+        let counted = count_kb_chunks_missing_embeddings(&conn, None).unwrap();
+        assert_eq!(counted as usize, listed.len());
+        assert!(counted >= 2);
     }
 
     #[test]

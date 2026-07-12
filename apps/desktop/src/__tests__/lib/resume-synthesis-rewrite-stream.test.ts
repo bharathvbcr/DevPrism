@@ -45,6 +45,7 @@ function scored(): ScoredBlock {
         locked: false,
       },
     ],
+    facts: [],
     updatedAt: "2024-01-01T00:00:00.000Z",
   };
   return {
@@ -109,5 +110,32 @@ describe("rewriteBlock streaming", () => {
     expect(streamComplete).toHaveBeenCalled();
     expect(llmJson).toHaveBeenCalled();
     expect(out.bullets[0]!.text).toContain("40%");
+  });
+
+  it("rethrows AbortError from streamComplete instead of canonical fallback", async () => {
+    const streamComplete = vi.fn(async () => {
+      throw new DOMException("cancelled", "AbortError");
+    });
+    const llmJson = vi.fn();
+
+    await expect(
+      rewriteBlock(scored(), profile, persona, [], 200, {
+        llmJson: llmJson as never,
+        streamComplete,
+      }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(llmJson).not.toHaveBeenCalled();
+  });
+
+  it("rethrows AbortError from llmJson instead of canonical fallback", async () => {
+    const llmJson = vi.fn(async () => {
+      throw new DOMException("cancelled", "AbortError");
+    });
+
+    await expect(
+      rewriteBlock(scored(), profile, persona, [], 200, {
+        llmJson: llmJson as never,
+      }),
+    ).rejects.toMatchObject({ name: "AbortError" });
   });
 });

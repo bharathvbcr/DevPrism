@@ -1,7 +1,7 @@
-import { browserRootPath, type ImportedProject } from "./constants";
+import { browserRootPath } from "./constants";
 import { persistFsaRoot } from "./fsa-persistence";
 import { registerPickedFolder } from "./fsa-store";
-import { importLooseFiles, importZipFile } from "./import";
+import { importLooseFiles } from "./import";
 
 type WindowWithDirectoryPicker = Window & {
   showDirectoryPicker?: (options?: {
@@ -47,33 +47,6 @@ function pickFolderViaHiddenInput(): Promise<string | null> {
       void importLooseFiles(files)
         .then((project) => resolve(project.path))
         .catch(reject);
-    });
-
-    input.addEventListener("cancel", () => {
-      input.remove();
-      resolve(null);
-    });
-
-    input.click();
-  });
-}
-
-export async function pickBrowserZipFile(): Promise<ImportedProject | null> {
-  return new Promise((resolve, reject) => {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = ".zip,application/zip";
-    input.style.display = "none";
-    document.body.appendChild(input);
-
-    input.addEventListener("change", () => {
-      const file = input.files?.[0];
-      input.remove();
-      if (!file) {
-        resolve(null);
-        return;
-      }
-      void importZipFile(file).then(resolve).catch(reject);
     });
 
     input.addEventListener("cancel", () => {

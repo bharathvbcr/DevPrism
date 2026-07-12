@@ -2,13 +2,18 @@ import { mkdir } from "@tauri-apps/plugin-fs";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   createFileOnDisk,
+  deleteFolderFromDisk,
   exists,
   join,
   readTexFileContent,
   scanProjectFolder,
   writeTexFileContent,
 } from "@/lib/tauri/fs";
-import { createVariant, type VariantInfo } from "@/lib/tauri/variants";
+import {
+  createVariant,
+  deleteVariant,
+  type VariantInfo,
+} from "@/lib/tauri/variants";
 import { normalizeProjectName, getProjectNameError } from "@/lib/project-name";
 import { suggestVersionName } from "@/lib/variant-status";
 import { useCareerStore } from "@/stores/career-store";
@@ -161,6 +166,37 @@ function assignProjectToResumeSpace(projectPath: string, masterPath?: string) {
   }
 }
 
+function unassignProject(projectPath: string) {
+  try {
+    useSpacesStore.getState().assignProject(projectPath, null);
+  } catch {
+    // best-effort
+  }
+}
+
+/**
+ * Best-effort rollback after a mid-flight materialize failure:
+ * delete created variant or folder and unassign from spaces.
+ */
+async function rollbackMaterialize(state: {
+  masterPath: string | null;
+  variant: VariantInfo | null;
+  projectPath: string | null;
+  createdNewFolder: boolean;
+}): Promise<void> {
+  const { masterPath, variant, projectPath, createdNewFolder } = state;
+  try {
+    if (variant && masterPath) {
+      await deleteVariant(masterPath, variant.id);
+    } else if (createdNewFolder && projectPath) {
+      await deleteFolderFromDisk(projectPath);
+    }
+  } catch {
+    // best-effort
+  }
+  if (projectPath) unassignProject(projectPath);
+}
+
 export interface MaterializeOptions {
   result: SynthesisResult;
   jdText: string;
@@ -182,6 +218,9 @@ export interface MaterializeResult {
  * Write synthesis output into a variant (preferred) or a new resume project,
  * open it in the workspace, and register a proposed-change merge review when
  * there is a prior baseline.
+ *
+ * On mid-flight failure after creating a variant/folder, best-effort rolls back
+ * (delete variant/folder, unassign space) before rethrowing.
  */
 export async function materializeSynthesis(
   options: MaterializeOptions,
@@ -190,95 +229,112 @@ export async function materializeSynthesis(
     options.versionName.trim() || versionNameFromJd(options.jdText);
   const tex = options.result.tex;
 
-  let projectPath: string;
+  let projectPath: string | null = null;
   let variant: VariantInfo | null = null;
   let oldContent = "";
   let texRelativePath = "resume.tex";
-  let texAbsolutePath: string;
+  let texAbsolutePath: string | null = null;
+  let createdNewFolder = false;
+  const masterPath = options.masterProjectPath;
 
-  if (options.masterProjectPath) {
-    const master = options.masterProjectPath;
-    if (!(await exists(master))) {
-      throw new Error("Master resume project folder no longer exists.");
-    }
-    variant = await createVariant(master, versionName, options.jdText, "draft");
-    projectPath = variant.path;
-    assignProjectToResumeSpace(projectPath, master);
+  try {
+    if (masterPath) {
+      if (!(await exists(masterPath))) {
+        throw new Error("Master resume project folder no longer exists.");
+      }
+      variant = await createVariant(
+        masterPath,
+        versionName,
+        options.jdText,
+        "draft",
+      );
+      projectPath = variant.path;
+      assignProjectToResumeSpace(projectPath, masterPath);
 
-    const existing = await findMainTex(projectPath);
-    if (existing) {
-      texRelativePath = existing.relativePath;
-      texAbsolutePath = existing.absolutePath;
-      oldContent = existing.content;
+      const existing = await findMainTex(projectPath);
+      if (existing) {
+        texRelativePath = existing.relativePath;
+        texAbsolutePath = existing.absolutePath;
+        oldContent = existing.content;
+      } else {
+        texAbsolutePath = await createFileOnDisk(projectPath, "resume.tex", "");
+        texRelativePath = "resume.tex";
+        oldContent = "";
+      }
+      await writeTexFileContent(texAbsolutePath, tex);
     } else {
-      texAbsolutePath = await createFileOnDisk(projectPath, "resume.tex", "");
+      let parent = options.parentFolder?.trim() || null;
+      if (!parent) {
+        parent = useProjectStore.getState().lastProjectFolder;
+      }
+      if (!parent) {
+        const selected = await openDialog({
+          directory: true,
+          multiple: false,
+          title: "Choose folder for new resume project",
+        });
+        parent = typeof selected === "string" ? selected : null;
+      }
+      if (!parent) {
+        throw new Error("Choose a folder for the new resume project.");
+      }
+
+      const folderName =
+        normalizeProjectName(slugFromVersionName(versionName)) ||
+        "tailored-resume";
+      const nameError = getProjectNameError(folderName);
+      if (nameError) throw new Error(nameError);
+
+      projectPath = await join(parent, folderName);
+      if (await exists(projectPath)) {
+        // Disambiguate with a short suffix.
+        projectPath = await join(
+          parent,
+          `${folderName}-${Date.now().toString(36)}`,
+        );
+      }
+      await mkdir(projectPath, { recursive: true });
+      createdNewFolder = true;
+      texAbsolutePath = await createFileOnDisk(projectPath, "resume.tex", tex);
       texRelativePath = "resume.tex";
       oldContent = "";
+      assignProjectToResumeSpace(projectPath);
+      useProjectStore.getState().setLastProjectFolder(parent);
     }
-    await writeTexFileContent(texAbsolutePath, tex);
-  } else {
-    let parent = options.parentFolder?.trim() || null;
-    if (!parent) {
-      parent = useProjectStore.getState().lastProjectFolder;
-    }
-    if (!parent) {
-      const selected = await openDialog({
-        directory: true,
-        multiple: false,
-        title: "Choose folder for new resume project",
+
+    useProjectStore.getState().addRecentProject(projectPath, versionName);
+    useCareerStore.getState().closeCareer();
+    await useDocumentStore.getState().openProject(projectPath);
+    await useVariantsStore.getState().sync(projectPath);
+
+    let usedProposedChange = false;
+    // Merge review is most useful when we overwrote a master snapshot in a variant.
+    if (variant && oldContent !== tex && texAbsolutePath) {
+      useProposedChangesStore.getState().addChange({
+        id: `synthesis-${options.result.runId ?? "unsaved"}`,
+        filePath: texRelativePath,
+        absolutePath: texAbsolutePath,
+        oldContent:
+          oldContent.length > 0 ? oldContent : "% (empty master snapshot)\n",
+        newContent: tex,
+        toolName: "Write",
       });
-      parent = typeof selected === "string" ? selected : null;
-    }
-    if (!parent) {
-      throw new Error("Choose a folder for the new resume project.");
+      usedProposedChange = true;
     }
 
-    const folderName =
-      normalizeProjectName(slugFromVersionName(versionName)) ||
-      "tailored-resume";
-    const nameError = getProjectNameError(folderName);
-    if (nameError) throw new Error(nameError);
-
-    projectPath = await join(parent, folderName);
-    if (await exists(projectPath)) {
-      // Disambiguate with a short suffix.
-      projectPath = await join(
-        parent,
-        `${folderName}-${Date.now().toString(36)}`,
-      );
-    }
-    await mkdir(projectPath, { recursive: true });
-    texAbsolutePath = await createFileOnDisk(projectPath, "resume.tex", tex);
-    texRelativePath = "resume.tex";
-    oldContent = "";
-    assignProjectToResumeSpace(projectPath);
-    useProjectStore.getState().setLastProjectFolder(parent);
-  }
-
-  useProjectStore.getState().addRecentProject(projectPath, versionName);
-  useCareerStore.getState().closeCareer();
-  await useDocumentStore.getState().openProject(projectPath);
-  await useVariantsStore.getState().sync(projectPath);
-
-  let usedProposedChange = false;
-  // Merge review is most useful when we overwrote a master snapshot in a variant.
-  if (variant && oldContent !== tex) {
-    useProposedChangesStore.getState().addChange({
-      id: `synthesis-${options.result.runId}`,
-      filePath: texRelativePath,
-      absolutePath: texAbsolutePath,
-      oldContent:
-        oldContent.length > 0 ? oldContent : "% (empty master snapshot)\n",
-      newContent: tex,
-      toolName: "Write",
+    return {
+      projectPath,
+      texRelativePath,
+      variant,
+      usedProposedChange,
+    };
+  } catch (err) {
+    await rollbackMaterialize({
+      masterPath,
+      variant,
+      projectPath,
+      createdNewFolder,
     });
-    usedProposedChange = true;
+    throw err;
   }
-
-  return {
-    projectPath,
-    texRelativePath,
-    variant,
-    usedProposedChange,
-  };
 }

@@ -657,6 +657,7 @@ pub fn command_handler(
             latex::synctex_edit,
             latex::synctex_forward,
             latex::detect_texlive,
+            latex::latex_build_report,
             career_typst::career_typst_compile,
             career_typst::career_typst_compile_project,
             career_typst::career_typst_fonts,

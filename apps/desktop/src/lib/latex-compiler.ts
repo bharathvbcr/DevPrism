@@ -182,6 +182,57 @@ export async function compileLatex(
   return result;
 }
 
+/** One reason a build can paginate differently from another toolchain. */
+export interface LatexFidelityNote {
+  code: string;
+  message: string;
+}
+
+/** What the last compile of a project actually did. */
+export interface LatexBuildReport {
+  /** Engine that typeset the document, e.g. "Tectonic (XeTeX)". */
+  engine: string;
+  /** Engine the document asked for via `% !TEX program`, if any. */
+  requestedEngine: string | null;
+  /** Pages in the produced PDF, as reported by the engine. */
+  pages: number | null;
+  fidelity: LatexFidelityNote[];
+}
+
+/** Raw shape returned by Rust (serde keeps snake_case field names). */
+interface RawLatexBuildReport {
+  engine: string;
+  requested_engine: string | null;
+  pages: number | null;
+  fidelity: LatexFidelityNote[];
+}
+
+/**
+ * Why this build may not match Overleaf: the bundled engine is XeTeX, most other
+ * toolchains default to pdfLaTeX, and the two break lines differently. Returns
+ * `null` when the project has not been compiled yet.
+ */
+export async function getLatexBuildReport(
+  projectDir: string,
+): Promise<LatexBuildReport | null> {
+  try {
+    const raw = await invoke<RawLatexBuildReport | null>("latex_build_report", {
+      projectDir,
+    });
+    if (!raw) return null;
+    return {
+      engine: raw.engine,
+      requestedEngine: raw.requested_engine,
+      pages: raw.pages,
+      fidelity: raw.fidelity ?? [],
+    };
+  } catch (error) {
+    // Diagnostics must never break a successful compile.
+    log.warn(`Failed to read build report: ${formatCompileError(error)}`);
+    return null;
+  }
+}
+
 export interface SynctexResult {
   file: string;
   line: number;

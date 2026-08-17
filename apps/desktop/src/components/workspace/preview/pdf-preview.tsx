@@ -133,6 +133,8 @@ import {
   synctexEdit,
   formatCompileError,
   buildCompileFixPrompt,
+  getLatexBuildReport,
+  type LatexBuildReport,
 } from "@/lib/latex-compiler";
 import {
   listCompileRoots,
@@ -218,6 +220,55 @@ function getCompileRootPresentation(root: CompileRootOption): {
     subtitle: root.targetPath,
     kind: "other",
   };
+}
+
+/**
+ * Sits next to the page count, because that is where a page count that
+ * disagrees with Overleaf is noticed.
+ *
+ * The bundled engine is XeTeX; Overleaf and most `latexmk` setups default to
+ * pdfLaTeX. They break lines differently — most consequentially, `microtype`
+ * only performs font expansion under pdfTeX/LuaTeX — so the same source can run
+ * a page longer here. That is a property of the engine, not something the app
+ * can typeset away, so the badge names the cause rather than hiding it.
+ */
+export function PaginationFidelityBadge({
+  report,
+}: {
+  report: LatexBuildReport | null;
+}) {
+  if (!report || report.fidelity.length === 0) return null;
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
+          title="Page count may differ from other LaTeX toolchains"
+          aria-label={`Pagination notice: ${report.fidelity.length} reason${
+            report.fidelity.length === 1 ? "" : "s"
+          } this build may differ from other LaTeX toolchains`}
+        >
+          <AlertCircleIcon className="size-3.5" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-96 space-y-2 text-sm">
+        <p className="font-medium">Pagination may differ elsewhere</p>
+        <p className="text-muted-foreground text-xs">
+          Typeset with {report.engine}
+          {report.pages !== null ? ` · ${report.pages} pages` : ""}
+          {report.requestedEngine
+            ? ` · document requests ${report.requestedEngine}`
+            : ""}
+        </p>
+        <ul className="list-disc space-y-1.5 pl-4 text-muted-foreground text-xs">
+          {report.fidelity.map((note) => (
+            <li key={note.code}>{note.message}</li>
+          ))}
+        </ul>
+      </PopoverContent>
+    </Popover>
+  );
 }
 
 function CompileRootIcon({
@@ -365,6 +416,9 @@ export function PdfPreview() {
   // fragments can't repopulate the panel after a retry / new compile.
   const explainRequestRef = useRef(0);
   const [numPages, setNumPages] = useState<number>(0);
+  /** Engine + fidelity notes for the last successful compile (see the badge
+   *  next to the page count). */
+  const [buildReport, setBuildReport] = useState<LatexBuildReport | null>(null);
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [pageInputValue, setPageInputValue] = useState<string>("1");
   const [isEditingPage, setIsEditingPage] = useState(false);
@@ -1285,6 +1339,14 @@ export function PdfPreview() {
         texlive,
       );
       setPdfData(data, rootId);
+      // Why this build may not paginate like Overleaf. Best-effort: a missing
+      // report must never turn a successful compile into a failed one. Typst
+      // has no such report, and reusing a stale LaTeX one would misattribute it.
+      setBuildReport(
+        targetEngine === "latex"
+          ? await getLatexBuildReport(state.projectRoot)
+          : null,
+      );
     } catch (error) {
       setCompileError(formatCompileError(error), rootId);
     } finally {
@@ -2255,6 +2317,7 @@ export function PdfPreview() {
               >
                 {numPages}
               </span>
+              <PaginationFidelityBadge report={buildReport} />
             </div>
             <Button
               variant="ghost"

@@ -35,6 +35,23 @@ use std::os::windows::process::CommandExt;
 struct BuildInfo {
     work_dir: PathBuf,
     main_file_name: String,
+    report: LatexBuildReport,
+}
+
+/// What the last compile of a project actually did, for the UI and the agent.
+///
+/// Page count lives here because "why is this one page longer than Overleaf?"
+/// is only answerable next to the engine that produced it.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct LatexBuildReport {
+    /// Engine that typeset the document, e.g. `Tectonic (XeTeX)`.
+    pub engine: String,
+    /// Engine the document asked for via `% !TEX program`, if any.
+    pub requested_engine: Option<String>,
+    /// Pages in the produced PDF, read from the engine log.
+    pub pages: Option<u32>,
+    /// Reasons this build can differ from the same source built elsewhere.
+    pub fidelity: Vec<LatexFidelityNote>,
 }
 
 #[derive(Clone)]
@@ -189,6 +206,199 @@ pub fn parse_structured_latex_errors(log: &str) -> Vec<LatexCompileErrorItem> {
     out
 }
 
+/// A reason this build can paginate differently from the same source typeset
+/// somewhere else.
+///
+/// Overleaf (and most `latexmk` setups) default to **pdfLaTeX**; the bundled
+/// engine is **XeTeX** (Tectonic), which cannot be swapped out. The two lay text
+/// out differently, and the difference is cumulative — most visibly, `microtype`
+/// only performs font expansion under pdfTeX/LuaTeX, so under XeTeX every line
+/// is set at its natural width and a document that just fits N pages elsewhere
+/// can spill onto N+1 here. That is a real property of the engine, not a bug we
+/// can fix in the typesetter, so the honest thing is to say so.
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+pub struct LatexFidelityNote {
+    /// Stable identifier — matched by tests and the UI, never shown verbatim.
+    pub code: String,
+    /// One human-readable sentence, including what to do about it.
+    pub message: String,
+}
+
+impl LatexFidelityNote {
+    fn new(code: &str, message: impl Into<String>) -> Self {
+        Self {
+            code: code.to_string(),
+            message: message.into(),
+        }
+    }
+}
+
+/// What actually typeset the document, for reporting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ActualEngine {
+    /// Bundled Tectonic — always XeTeX-based.
+    TectonicXetex,
+    /// A TeX Live binary the user has installed.
+    Texlive(TexEngine),
+}
+
+impl ActualEngine {
+    fn label(self) -> &'static str {
+        match self {
+            ActualEngine::TectonicXetex => "Tectonic (XeTeX)",
+            ActualEngine::Texlive(TexEngine::Latex) => "TeX Live pdfLaTeX",
+            ActualEngine::Texlive(TexEngine::XeLaTeX) => "TeX Live XeLaTeX",
+            ActualEngine::Texlive(TexEngine::LuaLaTeX) => "TeX Live LuaLaTeX",
+        }
+    }
+
+    /// True when this engine applies pdfTeX-style font expansion (microtype's
+    /// `expansion` feature). XeTeX does not implement it at all.
+    fn has_font_expansion(self) -> bool {
+        matches!(
+            self,
+            ActualEngine::Texlive(TexEngine::Latex) | ActualEngine::Texlive(TexEngine::LuaLaTeX)
+        )
+    }
+}
+
+/// Strip TeX comments so package scans don't match commented-out lines.
+/// `\%` is an escaped percent and does not start a comment.
+fn strip_tex_comments(content: &str) -> String {
+    let mut out = String::with_capacity(content.len());
+    for line in content.lines() {
+        let bytes = line.as_bytes();
+        let mut end = line.len();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'\\' {
+                // Skip the escaped character, whatever it is.
+                i += 2;
+                continue;
+            }
+            if bytes[i] == b'%' {
+                end = i;
+                break;
+            }
+            i += 1;
+        }
+        out.push_str(&line[..end]);
+        out.push('\n');
+    }
+    out
+}
+
+/// Does the source load `name` via `\usepackage` / `\RequirePackage`?
+/// Handles option brackets and comma-separated package lists.
+fn source_loads_package(content: &str, name: &str) -> bool {
+    let stripped = strip_tex_comments(content);
+    for keyword in ["\\usepackage", "\\RequirePackage"] {
+        let mut rest = stripped.as_str();
+        while let Some(pos) = rest.find(keyword) {
+            rest = &rest[pos + keyword.len()..];
+            // Skip an optional `[...]` option group.
+            let after_opts = match rest.trim_start().strip_prefix('[') {
+                Some(inner) => match inner.find(']') {
+                    Some(close) => &inner[close + 1..],
+                    None => continue,
+                },
+                None => rest,
+            };
+            let Some(open) = after_opts.trim_start().strip_prefix('{') else {
+                continue;
+            };
+            let Some(close) = open.find('}') else { continue };
+            if open[..close]
+                .split(',')
+                .any(|pkg| pkg.trim().eq_ignore_ascii_case(name))
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Page count from the engine's `Output written on … (N pages, …)` line.
+fn parse_output_pages(log: &str) -> Option<u32> {
+    let idx = log.rfind("Output written on")?;
+    let tail = &log[idx..];
+    let open = tail.find('(')?;
+    let after = &tail[open + 1..];
+    let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() || !after[digits.len()..].trim_start().starts_with("page") {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// Build the list of reasons this compile may not match another toolchain.
+///
+/// `source` is the pristine project source (not the build-dir copy), `log` the
+/// engine log for this run.
+pub(crate) fn collect_fidelity_notes(
+    source: &str,
+    log: &str,
+    actual: ActualEngine,
+    requested: Option<TexEngine>,
+) -> Vec<LatexFidelityNote> {
+    let mut notes = Vec::new();
+
+    if let Some(req) = requested {
+        let honoured = match actual {
+            ActualEngine::Texlive(e) => e == req,
+            ActualEngine::TectonicXetex => req == TexEngine::XeLaTeX,
+        };
+        if !honoured {
+            notes.push(LatexFidelityNote::new(
+                "engine-substituted",
+                format!(
+                    "This document requests {} (`% !TEX program`), but it was typeset with {}. \
+                     Install TeX Live and switch the compiler to TeX Live in Settings to build it \
+                     with the engine it was written for — line breaks and page count can differ \
+                     between engines.",
+                    req.program_name(),
+                    actual.label()
+                ),
+            ));
+        }
+    }
+
+    // microtype's font expansion is pdfTeX/LuaTeX-only. Under XeTeX microtype
+    // still does character protrusion, but every line is set at its natural
+    // width, so text occupies more lines than the same source on Overleaf.
+    let microtype_active =
+        log.contains("microtype-xetex.def") || source_loads_package(source, "microtype");
+    if microtype_active && !actual.has_font_expansion() {
+        notes.push(LatexFidelityNote::new(
+            "microtype-expansion-unavailable",
+            format!(
+                "`microtype` font expansion is not available under {} — it is a pdfTeX/LuaTeX \
+                 feature. Character protrusion still applies, but lines are set at their natural \
+                 width, so this build can run longer (often exactly one page longer) than the same \
+                 source compiled with pdfLaTeX on Overleaf.",
+                actual.label()
+            ),
+        ));
+    }
+
+    if let Some(line) = log
+        .lines()
+        .find(|l| l.contains("Font shape") && l.contains("undefined"))
+    {
+        notes.push(LatexFidelityNote::new(
+            "font-substituted",
+            format!(
+                "A requested font was unavailable and the engine substituted another, which \
+                 changes text metrics and therefore line and page breaks: {}",
+                line.trim()
+            ),
+        ));
+    }
+
+    notes
+}
+
 /// Result of a synchronous agent-side compile (no PDF bytes — check success only).
 #[derive(Debug, serde::Serialize)]
 pub struct AgentCompileResult {
@@ -245,21 +455,36 @@ pub fn agent_compile_project(
         .to_string();
     let pdf_path = work_dir.join(format!("{}.pdf", main_file_name));
     let log_path = work_dir.join(format!("{}.log", main_file_name));
+    // Both, so this run is never judged by the previous run's log (see the
+    // matching comment in `compile_latex_inner`).
     let _ = std::fs::remove_file(&pdf_path);
+    let _ = std::fs::remove_file(&log_path);
 
-    let main_tex_content = std::fs::read_to_string(&main_tex_path).unwrap_or_default();
-    let engine = detect_tex_engine(&main_tex_content);
+    // Read the pristine project source, not the build copy a previous compile
+    // spliced the XeTeX shim into.
+    let main_tex_content = std::fs::read_to_string(project_dir.join(&main_rel))
+        .unwrap_or_else(|_| {
+            strip_xetex_compat_input(&std::fs::read_to_string(&main_tex_path).unwrap_or_default())
+        });
+    let requested_engine = detect_tex_engine(&main_tex_content);
 
-    let compile_result = if use_texlive {
-        compile_with_texlive(&work_dir, &main_rel, engine, &main_tex_content)
-    } else if matches!(engine, Some(TexEngine::LuaLaTeX)) {
-        Err(
-            "This document requires LuaLaTeX, which Tectonic does not support. \
-             Enable TeX Live in settings or remove the magic comment."
-                .into(),
-        )
+    let resolved = resolve_backend(use_texlive, requested_engine, &main_tex_content, &|name| {
+        find_texlive_binary(name).is_ok()
+    });
+    let compile_result = if let Some(err) = resolved.hard_error {
+        Err(err)
+    } else if resolved.use_texlive {
+        compile_with_texlive(&work_dir, &main_rel, resolved.engine, &main_tex_content)
     } else {
         compile_with_tectonic_subprocess(&work_dir, &main_rel)
+    };
+    // Same safety net as the UI path: never let honouring the magic comment turn
+    // a building document into a failing one.
+    let compile_result = if resolved.use_texlive && !use_texlive && !pdf_path.exists() {
+        let _ = std::fs::remove_file(&log_path);
+        compile_with_tectonic_subprocess(&work_dir, &main_rel)
+    } else {
+        compile_result
     };
 
     if pdf_path.exists() {
@@ -316,11 +541,22 @@ pub fn agent_compile_project(
     }
 }
 
-#[derive(Debug, PartialEq)]
-enum TexEngine {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TexEngine {
     Latex,
     XeLaTeX,
     LuaLaTeX,
+}
+
+impl TexEngine {
+    /// The binary name, which is also how `% !TEX program` spells it.
+    fn program_name(self) -> &'static str {
+        match self {
+            TexEngine::Latex => "pdflatex",
+            TexEngine::XeLaTeX => "xelatex",
+            TexEngine::LuaLaTeX => "lualatex",
+        }
+    }
 }
 
 /// Detect TeX engine from `% !TEX program = <engine>` magic comment in the first 20 lines.
@@ -347,6 +583,119 @@ fn detect_tex_engine(content: &str) -> Option<TexEngine> {
         }
     }
     None
+}
+
+/// Packages that only work under XeTeX or LuaTeX. Their presence means the
+/// document *cannot* be built with pdfLaTeX, so the absence of a
+/// `% !TEX program` line still tells us which engine was intended.
+const UNICODE_ENGINE_PACKAGES: &[&str] = &[
+    "fontspec",
+    "unicode-math",
+    "polyglossia",
+    "xeCJK",
+    "luatexja",
+    "luacode",
+];
+
+/// Engine a document needs when it does not say so itself.
+///
+/// pdfLaTeX is the default everywhere else (Overleaf, `latexmk`, TeXShop), so it
+/// is the default that reproduces other toolchains' pagination. We only depart
+/// from it when the source loads something pdfLaTeX physically cannot run.
+fn infer_tex_engine(content: &str) -> TexEngine {
+    let stripped = strip_tex_comments(content);
+    if UNICODE_ENGINE_PACKAGES
+        .iter()
+        .any(|pkg| source_loads_package(content, pkg))
+        || stripped.contains("\\setmainfont")
+        || stripped.contains("\\setsansfont")
+        || stripped.contains("\\setmonofont")
+    {
+        TexEngine::XeLaTeX
+    } else {
+        TexEngine::Latex
+    }
+}
+
+/// Which backend/engine pair will actually run.
+pub(crate) struct ResolvedBackend {
+    pub use_texlive: bool,
+    /// Engine handed to the TeX Live driver; `None` when Tectonic runs.
+    pub engine: Option<TexEngine>,
+    pub actual: ActualEngine,
+    /// Set when the request cannot be served at all — compile must not start.
+    pub hard_error: Option<String>,
+}
+
+/// Decide the backend, honouring `% !TEX program` wherever it is possible.
+///
+/// Tectonic is XeTeX-only. Silently substituting XeTeX for a document that
+/// explicitly asked for pdfLaTeX is what makes page counts drift away from
+/// Overleaf without any signal to the user, so when TeX Live can serve the
+/// requested engine we use it even if Tectonic is the configured backend.
+pub(crate) fn resolve_backend(
+    prefer_texlive: bool,
+    requested: Option<TexEngine>,
+    source: &str,
+    texlive_lookup: &dyn Fn(&str) -> bool,
+) -> ResolvedBackend {
+    if prefer_texlive {
+        // No magic comment: infer rather than defaulting to XeLaTeX, so a plain
+        // pdfLaTeX document is built by pdfLaTeX and paginates like Overleaf.
+        let engine = requested.unwrap_or_else(|| infer_tex_engine(source));
+        return ResolvedBackend {
+            use_texlive: true,
+            engine: Some(engine),
+            actual: ActualEngine::Texlive(engine),
+            hard_error: None,
+        };
+    }
+
+    match requested {
+        // Tectonic can serve XeLaTeX, and an unmarked document gets whatever the
+        // bundled engine is — that case is reported through the fidelity notes.
+        Some(TexEngine::XeLaTeX) | None => ResolvedBackend {
+            use_texlive: false,
+            engine: None,
+            actual: ActualEngine::TectonicXetex,
+            hard_error: None,
+        },
+        Some(engine) => {
+            if texlive_lookup(engine.program_name()) {
+                ResolvedBackend {
+                    use_texlive: true,
+                    engine: Some(engine),
+                    actual: ActualEngine::Texlive(engine),
+                    hard_error: None,
+                }
+            } else if engine == TexEngine::LuaLaTeX {
+                // LuaLaTeX documents genuinely cannot run on XeTeX — refusing is
+                // more useful than emitting a broken PDF.
+                ResolvedBackend {
+                    use_texlive: false,
+                    engine: None,
+                    actual: ActualEngine::TectonicXetex,
+                    hard_error: Some(
+                        "This document requires LuaLaTeX (% !TEX program = lualatex), \
+                         which is not supported. Prism uses a XeTeX-based engine (Tectonic). \
+                         Install TeX Live to build it, switch to XeLaTeX, or remove the magic \
+                         comment."
+                            .to_string(),
+                    ),
+                }
+            } else {
+                // pdfLaTeX requested, no TeX Live: XeTeX will usually produce a
+                // correct-looking PDF, so build it and report the substitution
+                // rather than refusing.
+                ResolvedBackend {
+                    use_texlive: false,
+                    engine: None,
+                    actual: ActualEngine::TectonicXetex,
+                    hard_error: None,
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -671,7 +1020,14 @@ fn install_glyphtounicode_stub(work_dir: &Path) {
 /// Marker prepended to the main `.tex` file so pdfTeX-only count-register
 /// assignments (e.g. `\pdfgentounicode=1` in `fontenc` / `ragged2e`) compile
 /// under the XeTeX-based Tectonic engine.
-const XETEX_COMPAT_INPUT: &str = "\\input{devprism-xetex-compat}\n";
+///
+/// Deliberately carries **no trailing newline**: it is spliced onto the front of
+/// line 1 rather than occupying a line of its own.  See
+/// `prepend_xetex_compat_input`.
+const XETEX_COMPAT_INPUT: &str = "\\input{devprism-xetex-compat}";
+
+/// Substring that marks a main file as already carrying the shim.
+const XETEX_COMPAT_MARKER: &str = "devprism-xetex-compat";
 
 /// Write `devprism-xetex-compat.tex` into the build dir.  XeTeX lacks several
 /// pdfTeX count registers that pdfLaTeX-oriented packages assign during their
@@ -705,16 +1061,59 @@ fn install_xetex_compat_stub(work_dir: &Path) {
 /// Prepend `\\input{devprism-xetex-compat}` to the main `.tex` in `work_dir`
 /// so the shim runs before `\\documentclass` and early `\\usepackage` calls.
 /// Idempotent: skips if the marker is already present (e.g. on retry).
+///
+/// **The shim must not occupy a line of its own.**  The engine reports positions
+/// (`l.N` in the log, and every SyncTeX record) against the file it actually
+/// read — this mutated build-directory copy — while the user edits the pristine
+/// project file.  A trailing newline here would make every reported line one
+/// greater than the real one, so "Fix with AI", the error list and
+/// click-to-source would all land one line late for the entire document.
+/// Splicing onto the front of line 1 keeps the line count identical: TeX loads
+/// the shim and then continues on the same line, whether line 1 is
+/// `\documentclass`, a `% !TEX` magic comment, or anything else.
+///
+/// A leading UTF-8 BOM stays in byte position 0 — XeTeX only skips one there,
+/// and pushing it mid-line would turn it into a typeset character.
 fn prepend_xetex_compat_input(work_dir: &Path, main_file: &str) {
     let main_path = work_dir.join(main_file);
     let Ok(content) = std::fs::read_to_string(&main_path) else {
         return;
     };
-    if content.contains("devprism-xetex-compat") {
-        return;
+    if let Some(modified) = splice_xetex_compat_input(&content) {
+        let _ = std::fs::write(&main_path, &modified);
     }
-    let modified = format!("{XETEX_COMPAT_INPUT}{content}");
-    let _ = std::fs::write(&main_path, &modified);
+}
+
+/// Splice the shim into `content` without adding a line.
+/// `None` when it is already there.
+fn splice_xetex_compat_input(content: &str) -> Option<String> {
+    if content.contains(XETEX_COMPAT_MARKER) {
+        return None;
+    }
+    // A BOM only stays invisible at byte 0.
+    let (prefix, rest) = match content.strip_prefix('\u{feff}') {
+        Some(rest) => ("\u{feff}", rest),
+        None => ("", content),
+    };
+    // A `%&format` directive is only honoured as the first characters of the
+    // file, so splice into line 2 instead. Line 1 is a comment either way, so
+    // nothing has executed yet and the shim still runs before `\documentclass`.
+    if rest.starts_with("%&") {
+        if let Some(nl) = rest.find('\n') {
+            let (first_line, tail) = rest.split_at(nl + 1);
+            return Some(format!("{prefix}{first_line}{XETEX_COMPAT_INPUT}{tail}"));
+        }
+        // Nothing but the directive — there are no later lines to shift.
+        return Some(format!("{prefix}{rest}\n{XETEX_COMPAT_INPUT}"));
+    }
+    Some(format!("{prefix}{XETEX_COMPAT_INPUT}{rest}"))
+}
+
+/// Strip the injected shim from a build-directory copy of a main file, so that
+/// content-based detection (engine magic comment, package scans) sees what the
+/// user actually wrote rather than what the previous compile left behind.
+fn strip_xetex_compat_input(content: &str) -> String {
+    content.replacen(XETEX_COMPAT_INPUT, "", 1)
 }
 
 pub(crate) fn compile_with_tectonic(work_dir: &Path, main_file: &str) -> Result<(), String> {
@@ -787,10 +1186,38 @@ fn compile_with_tectonic_subprocess(work_dir: &Path, main_file: &str) -> Result<
         .map_err(|e| e.to_message("Compilation"))?;
 
     if output.status.success() {
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(stderr.trim().to_string())
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !stderr.is_empty() {
+        return Err(stderr);
+    }
+
+    // A signalled engine writes neither a log nor a message, so without this the
+    // user sees a bare "no PDF generated". The overwhelmingly common cause is a
+    // font the document asks for that the engine cannot load — XeTeX aborts
+    // rather than reporting it.
+    Err(describe_engine_death(&output.status))
+}
+
+/// Human-readable cause for a TeX engine that exited without saying anything.
+fn describe_engine_death(status: &std::process::ExitStatus) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return format!(
+                "The TeX engine was terminated by signal {signal} without writing a log. \
+                 This is usually a font the document requests but the engine cannot load — \
+                 check any `\\setmainfont`/`fontspec` fonts are installed, or that packages \
+                 needing system fonts (e.g. `fontawesome5`) have theirs.",
+            );
+        }
+    }
+    match status.code() {
+        Some(code) => format!("The TeX engine exited with status {code} without writing a log."),
+        None => "The TeX engine exited abnormally without writing a log.".to_string(),
     }
 }
 
@@ -1315,6 +1742,19 @@ pub async fn compile_latex(
     }
 }
 
+/// What the last successful compile of `project_dir` did, including every reason
+/// its pagination can differ from the same source built elsewhere.
+///
+/// `None` when nothing has been compiled for this project yet.
+#[tauri::command]
+pub async fn latex_build_report(
+    state: tauri::State<'_, LatexCompilerState>,
+    project_dir: String,
+) -> Result<Option<LatexBuildReport>, String> {
+    let builds = state.last_builds.lock().await;
+    Ok(builds.get(&project_dir).map(|b| b.report.clone()))
+}
+
 struct CompileFail {
     backend_label: String,
     message: String,
@@ -1417,9 +1857,16 @@ async fn compile_latex_inner(
         if use_texlive { "texlive" } else { "tectonic" }
     );
 
-    // Remove stale PDF so a failed compile doesn't return the previous result.
+    // Remove the stale PDF *and log* so this run cannot be judged by the last
+    // one's output. Leaving the log behind means a run that dies before writing
+    // one (a signalled engine, a missing font) reports the previous run's
+    // errors, and — worse — a stale "No pages of output" triggers the
+    // `\AtEndDocument{\null}` retry below, which appends an empty box and can
+    // push a full page over onto a new one.
     let pdf_path = work_dir.join(format!("{}.pdf", main_file_name));
+    let log_path = work_dir.join(format!("{}.log", main_file_name));
     let _ = std::fs::remove_file(&pdf_path);
+    let _ = std::fs::remove_file(&log_path);
 
     // Verify the main TeX file exists before attempting compilation
     let main_tex_path = work_dir.join(&main_file);
@@ -1432,39 +1879,39 @@ async fn compile_latex_inner(
         ));
     }
 
-    // Detect TeX engine from magic comment
-    let main_tex_content = std::fs::read_to_string(&main_tex_path).unwrap_or_default();
-    let engine = detect_tex_engine(&main_tex_content);
+    // Engine detection reads the *project* source, never the build-dir copy: a
+    // previous compile spliced the XeTeX shim into that copy, and reading it
+    // back would let our own injection influence what we detect.
+    let main_tex_content = std::fs::read_to_string(Path::new(&project_dir).join(&main_file))
+        .map(|c| c.to_string())
+        .unwrap_or_else(|_| {
+            strip_xetex_compat_input(&std::fs::read_to_string(&main_tex_path).unwrap_or_default())
+        });
+    let requested_engine = detect_tex_engine(&main_tex_content);
 
-    // Save engine name before `engine` is moved into the spawn_blocking closure
-    let engine_name_for_label = match &engine {
-        Some(TexEngine::XeLaTeX) | None => "xelatex",
-        Some(TexEngine::Latex) => "pdflatex",
-        Some(TexEngine::LuaLaTeX) => "lualatex",
-    };
-    let backend_label = if use_texlive {
-        format!("TeXLive/{}", engine_name_for_label)
-    } else {
-        "Tectonic".to_string()
-    };
-
-    if !use_texlive {
-        if let Some(TexEngine::LuaLaTeX) = engine {
-            return Err(CompileFail::new(
-                &backend_label,
-                "This document requires LuaLaTeX (% !TEX program = lualatex), \
-                 which is not supported. Prism uses a XeTeX-based engine (Tectonic). \
-                 Please switch to XeLaTeX or remove the magic comment.",
-            ));
-        }
+    let resolved = resolve_backend(use_texlive, requested_engine, &main_tex_content, &|name| {
+        find_texlive_binary(name).is_ok()
+    });
+    if let Some(err) = resolved.hard_error {
+        return Err(CompileFail::new(
+            if use_texlive { "TeXLive" } else { "Tectonic" },
+            err,
+        ));
     }
+    let auto_switched_to_texlive = resolved.use_texlive && !use_texlive;
+    let mut use_texlive = resolved.use_texlive;
+    let engine = resolved.engine;
 
-    let compile_result = if use_texlive {
+    let mut actual_engine = resolved.actual;
+    let mut backend_label = actual_engine.label().to_string();
+
+    let mut compile_result = if use_texlive {
         let work_dir_clone = work_dir.clone();
         let main_file_clone = main_file.clone();
+        let source = main_tex_content.clone();
         let result = tokio::task::spawn_blocking(move || {
             lower_thread_priority();
-            compile_with_texlive(&work_dir_clone, &main_file_clone, engine, &main_tex_content)
+            compile_with_texlive(&work_dir_clone, &main_file_clone, engine, &source)
         })
         .await
         .map_err(|e| CompileFail::new(&backend_label, format!("Compilation task panicked: {e}")))?;
@@ -1493,7 +1940,28 @@ async fn compile_latex_inner(
         result
     };
 
-    let log_path = work_dir.join(format!("{}.log", main_file_name));
+    // Honouring `% !TEX program` must never make a document that used to build
+    // stop building: a TeX Live install can be incomplete where the Tectonic
+    // bundle is not. If the engine we switched to produced nothing, fall back to
+    // the configured backend and say so in the report.
+    let mut texlive_fallback = false;
+    if auto_switched_to_texlive && !pdf_path.exists() {
+        eprintln!("[latex] auto-selected TeX Live produced no PDF — falling back to Tectonic");
+        let _ = std::fs::remove_file(&log_path);
+        let work_dir_clone = work_dir.clone();
+        let main_file_clone = main_file.clone();
+        let backend = backend_label.clone();
+        compile_result = tokio::task::spawn_blocking(move || {
+            lower_thread_priority();
+            compile_with_tectonic_subprocess(&work_dir_clone, &main_file_clone)
+        })
+        .await
+        .map_err(|e| CompileFail::new(&backend, format!("Compilation task panicked: {e}")))?;
+        use_texlive = false;
+        texlive_fallback = true;
+        actual_engine = ActualEngine::TectonicXetex;
+        backend_label = actual_engine.label().to_string();
+    }
 
     // Handle "No pages of output" — retry with \AtEndDocument{\null} injection (Tectonic only).
     // TeXLive multi-pass handles this differently; the injection is Tectonic-specific.
@@ -1541,6 +2009,36 @@ async fn compile_latex_inner(
         }
     }
 
+    // Explain, from this run's own log, every way the result can differ from the
+    // same source built on another toolchain. Without this a page count that
+    // disagrees with Overleaf looks like a defect with no visible cause.
+    let final_log = std::fs::read_to_string(&log_path).unwrap_or_default();
+    let mut fidelity = collect_fidelity_notes(
+        &main_tex_content,
+        &final_log,
+        actual_engine,
+        requested_engine,
+    );
+    if texlive_fallback {
+        fidelity.insert(
+            0,
+            LatexFidelityNote::new(
+                "texlive-fallback",
+                "TeX Live was selected to match the engine this document requests, but it \
+                 produced no PDF, so the build fell back to the bundled Tectonic engine.",
+            ),
+        );
+    }
+    let report = LatexBuildReport {
+        engine: backend_label.clone(),
+        requested_engine: requested_engine.map(|e| e.program_name().to_string()),
+        pages: parse_output_pages(&final_log),
+        fidelity,
+    };
+    for note in &report.fidelity {
+        eprintln!("[latex] fidelity: {} — {}", note.code, note.message);
+    }
+
     // Store build info — but NOT for DevPrism's throwaway temp compiles (e.g.
     // the track-changes diff preview `.devprism-...tex`). Those share the
     // per-project build dir, so recording them here would overwrite the real
@@ -1553,6 +2051,7 @@ async fn compile_latex_inner(
             BuildInfo {
                 work_dir: work_dir.clone(),
                 main_file_name: main_file_name.clone(),
+                report,
             },
         );
     }
@@ -1928,6 +2427,277 @@ mod tests {
             1,
             "compat input must not be prepended twice"
         );
+    }
+
+    /// The engine reports `l.N` and SyncTeX positions against the copy it read.
+    /// If the shim took a line of its own, every reported line would be one past
+    /// the user's real source, for the whole document.
+    #[test]
+    fn test_prepend_xetex_compat_input_preserves_line_numbering() {
+        let cases = [
+            "\\documentclass{article}\n\\begin{document}\nx\n\\end{document}\n",
+            "% !TEX program = pdflatex\n\\documentclass{article}\n\\begin{document}\nx\n\\end{document}\n",
+            "\u{feff}\\documentclass{article}\n\\begin{document}\nx\n\\end{document}\n",
+            // `%&format` directive: must stay at byte 0.
+            "%&pdflatex\n\\documentclass{article}\n\\begin{document}\nx\n\\end{document}\n",
+            // CRLF line endings.
+            "\\documentclass{article}\r\n\\begin{document}\r\nx\r\n\\end{document}\r\n",
+            // No trailing newline.
+            "\\documentclass{article}\n\\begin{document}\nx\n\\end{document}",
+            "",
+        ];
+        // The structural guarantee the line numbering rests on.
+        assert!(!XETEX_COMPAT_INPUT.contains('\n'));
+
+        for original in cases {
+            let work_dir = tempfile::tempdir().unwrap();
+            let main_path = work_dir.path().join("main.tex");
+            std::fs::write(&main_path, original).unwrap();
+
+            prepend_xetex_compat_input(work_dir.path(), "main.tex");
+
+            let modified = std::fs::read_to_string(&main_path).unwrap();
+            if !original.is_empty() {
+                assert_eq!(
+                    modified.lines().count(),
+                    original.lines().count(),
+                    "injection changed the line count of {original:?}"
+                );
+            }
+            // Every original line must keep its own line number. Exactly one
+            // line gains the shim as a prefix; none may move.
+            for (n, (before, after)) in original.lines().zip(modified.lines()).enumerate() {
+                // The BOM legitimately moves ahead of the shim on line 1.
+                let before = before.trim_start_matches('\u{feff}');
+                let after = after.trim_start_matches('\u{feff}');
+                assert!(
+                    after.ends_with(before),
+                    "line {} moved in {original:?}: {after:?} should end with {before:?}",
+                    n + 1
+                );
+            }
+            assert_eq!(strip_xetex_compat_input(&modified), original);
+        }
+    }
+
+    /// `%&format` is only honoured as the first characters of the file.
+    #[test]
+    fn splice_keeps_format_directive_at_byte_zero() {
+        let out = splice_xetex_compat_input("%&pdflatex\n\\documentclass{article}\n").unwrap();
+        assert!(out.starts_with("%&pdflatex\n\\input{devprism-xetex-compat}\\documentclass"));
+        // Still only one line for line 1 and one for line 2.
+        assert_eq!(out.lines().count(), 2);
+
+        // Degenerate: the directive is the whole file, so no line can shift.
+        let out = splice_xetex_compat_input("%&pdflatex").unwrap();
+        assert!(out.starts_with("%&pdflatex\n"));
+    }
+
+    #[test]
+    fn splice_is_idempotent() {
+        let once = splice_xetex_compat_input("\\documentclass{article}\n").unwrap();
+        assert!(splice_xetex_compat_input(&once).is_none());
+    }
+
+    /// A BOM only suppresses a typeset character when it is at byte 0.
+    #[test]
+    fn test_prepend_xetex_compat_input_keeps_bom_first() {
+        let work_dir = tempfile::tempdir().unwrap();
+        let main_path = work_dir.path().join("main.tex");
+        std::fs::write(&main_path, "\u{feff}\\documentclass{article}\n").unwrap();
+
+        prepend_xetex_compat_input(work_dir.path(), "main.tex");
+
+        let modified = std::fs::read_to_string(&main_path).unwrap();
+        assert!(
+            modified.starts_with("\u{feff}\\input{devprism-xetex-compat}\\documentclass"),
+            "BOM must stay at byte 0, got {modified:?}"
+        );
+    }
+
+    // --- engine resolution ---
+
+    fn no_texlive(_: &str) -> bool {
+        false
+    }
+    fn all_texlive(_: &str) -> bool {
+        true
+    }
+
+    #[test]
+    fn pdflatex_request_uses_texlive_when_available() {
+        let r = resolve_backend(false, Some(TexEngine::Latex), "", &all_texlive);
+        assert!(r.use_texlive);
+        assert_eq!(r.actual, ActualEngine::Texlive(TexEngine::Latex));
+        assert!(r.hard_error.is_none());
+    }
+
+    #[test]
+    fn pdflatex_request_falls_back_to_tectonic_without_texlive() {
+        let r = resolve_backend(false, Some(TexEngine::Latex), "", &no_texlive);
+        assert!(!r.use_texlive);
+        assert_eq!(r.actual, ActualEngine::TectonicXetex);
+        assert!(
+            r.hard_error.is_none(),
+            "a pdfLaTeX document should still build under XeTeX, with a warning"
+        );
+    }
+
+    #[test]
+    fn lualatex_request_still_errors_without_texlive() {
+        let r = resolve_backend(false, Some(TexEngine::LuaLaTeX), "", &no_texlive);
+        assert!(r.hard_error.is_some());
+    }
+
+    #[test]
+    fn lualatex_request_uses_texlive_when_available() {
+        let r = resolve_backend(false, Some(TexEngine::LuaLaTeX), "", &all_texlive);
+        assert!(r.use_texlive);
+        assert!(r.hard_error.is_none());
+    }
+
+    #[test]
+    fn texlive_backend_infers_pdflatex_for_plain_documents() {
+        let r = resolve_backend(true, None, "\\documentclass{article}", &all_texlive);
+        assert_eq!(
+            r.actual,
+            ActualEngine::Texlive(TexEngine::Latex),
+            "an unmarked document should build with pdfLaTeX, like Overleaf"
+        );
+    }
+
+    #[test]
+    fn texlive_backend_infers_xelatex_when_fontspec_is_used() {
+        let src = "\\documentclass{article}\n\\usepackage{fontspec}\n";
+        let r = resolve_backend(true, None, src, &all_texlive);
+        assert_eq!(r.actual, ActualEngine::Texlive(TexEngine::XeLaTeX));
+    }
+
+    #[test]
+    fn magic_comment_beats_inference() {
+        let src = "% !TEX program = xelatex\n\\documentclass{article}\n";
+        let r = resolve_backend(true, Some(TexEngine::XeLaTeX), src, &all_texlive);
+        assert_eq!(r.actual, ActualEngine::Texlive(TexEngine::XeLaTeX));
+    }
+
+    #[test]
+    fn commented_out_fontspec_does_not_force_xelatex() {
+        let src = "\\documentclass{article}\n% \\usepackage{fontspec}\n";
+        let r = resolve_backend(true, None, src, &all_texlive);
+        assert_eq!(r.actual, ActualEngine::Texlive(TexEngine::Latex));
+    }
+
+    // --- package scanning ---
+
+    #[test]
+    fn source_loads_package_handles_options_and_lists() {
+        assert!(source_loads_package("\\usepackage{microtype}", "microtype"));
+        assert!(source_loads_package(
+            "\\usepackage[protrusion=true]{microtype}",
+            "microtype"
+        ));
+        assert!(source_loads_package(
+            "\\usepackage{geometry, microtype , xcolor}",
+            "microtype"
+        ));
+        assert!(source_loads_package(
+            "\\RequirePackage{microtype}",
+            "microtype"
+        ));
+        assert!(!source_loads_package("% \\usepackage{microtype}", "microtype"));
+        assert!(!source_loads_package("\\usepackage{microtypo}", "microtype"));
+        assert!(!source_loads_package("", "microtype"));
+    }
+
+    #[test]
+    fn strip_tex_comments_respects_escaped_percent() {
+        assert_eq!(strip_tex_comments("50\\% off % a comment\n"), "50\\% off \n");
+    }
+
+    // --- fidelity notes ---
+
+    #[test]
+    fn microtype_under_xetex_is_reported() {
+        let notes = collect_fidelity_notes(
+            "\\usepackage{microtype}",
+            "",
+            ActualEngine::TectonicXetex,
+            None,
+        );
+        assert!(notes.iter().any(|n| n.code == "microtype-expansion-unavailable"));
+    }
+
+    #[test]
+    fn microtype_under_pdflatex_is_not_reported() {
+        let notes = collect_fidelity_notes(
+            "\\usepackage{microtype}",
+            "",
+            ActualEngine::Texlive(TexEngine::Latex),
+            None,
+        );
+        assert!(notes.is_empty(), "got {notes:?}");
+    }
+
+    #[test]
+    fn engine_substitution_is_reported() {
+        let notes = collect_fidelity_notes(
+            "",
+            "",
+            ActualEngine::TectonicXetex,
+            Some(TexEngine::Latex),
+        );
+        assert!(notes.iter().any(|n| n.code == "engine-substituted"));
+    }
+
+    #[test]
+    fn honoured_engine_request_is_not_reported() {
+        let notes = collect_fidelity_notes(
+            "",
+            "",
+            ActualEngine::Texlive(TexEngine::Latex),
+            Some(TexEngine::Latex),
+        );
+        assert!(notes.is_empty(), "got {notes:?}");
+    }
+
+    #[test]
+    fn font_substitution_is_reported() {
+        let log = "LaTeX Font Warning: Font shape `T1/zi4/m/n' undefined\n";
+        let notes = collect_fidelity_notes("", log, ActualEngine::Texlive(TexEngine::Latex), None);
+        assert!(notes.iter().any(|n| n.code == "font-substituted"));
+    }
+
+    #[test]
+    fn microtype_detected_from_log_when_source_is_indirect() {
+        // The preamble lives in a `.sty`, so only the log knows microtype loaded.
+        let log = "(microtype.sty ... (microtype-xetex.def)";
+        let notes = collect_fidelity_notes("", log, ActualEngine::TectonicXetex, None);
+        assert!(notes.iter().any(|n| n.code == "microtype-expansion-unavailable"));
+    }
+
+    // --- page count parsing ---
+
+    #[test]
+    fn parse_output_pages_reads_the_engine_line() {
+        assert_eq!(
+            parse_output_pages("Output written on main.xdv (3 pages, 15724 bytes)."),
+            Some(3)
+        );
+        assert_eq!(
+            parse_output_pages("Output written on main.pdf (1 page, 900 bytes)."),
+            Some(1)
+        );
+        // The last run wins when a log holds several passes.
+        assert_eq!(
+            parse_output_pages(
+                "Output written on main.xdv (4 pages, 1 bytes).\n\
+                 Output written on main.xdv (3 pages, 1 bytes)."
+            ),
+            Some(3)
+        );
+        assert_eq!(parse_output_pages("No pages of output."), None);
+        assert_eq!(parse_output_pages(""), None);
+        assert_eq!(parse_output_pages("Output written on main.xdv (bytes)."), None);
     }
 
     // --- extract_error_lines ---

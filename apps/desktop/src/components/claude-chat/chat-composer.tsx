@@ -633,10 +633,13 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
   useLayoutEffect(() => {
     if (!modelPickerOpen || !modelButtonRef.current) return;
     const rect = modelButtonRef.current.getBoundingClientRect();
-    setPickerPos({
-      left: rect.left,
-      bottom: window.innerHeight - rect.top + 4,
-    });
+    const nextLeft = rect.left;
+    const nextBottom = window.innerHeight - rect.top + 4;
+    setPickerPos((prev) =>
+      prev.left === nextLeft && prev.bottom === nextBottom
+        ? prev
+        : { left: nextLeft, bottom: nextBottom },
+    );
     // Move focus into the menu on open so keyboard/AT users land inside it and
     // Escape can restore focus to the trigger.
     modelPickerRef.current?.focus();
@@ -1014,8 +1017,16 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
     if (!selectionRange || !currentContextLabel) return;
     const file = files.find((f) => f.id === activeFileId);
     if (!file?.content) return;
+    const nextText = file.content.slice(
+      selectionRange.start,
+      selectionRange.end,
+    );
     // Replace any existing selection-based context (keep file contexts)
     setPinnedContexts((prev) => {
+      const existing = prev.find((c) => c.label === currentContextLabel);
+      if (existing && existing.selectedText === nextText) {
+        return prev;
+      }
       const filtered = prev.filter(
         (c) => !c.label.includes(":") || c.label.startsWith("@attachments/"),
       );
@@ -1024,10 +1035,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
         {
           label: currentContextLabel,
           filePath: file.relativePath,
-          selectedText: file.content!.slice(
-            selectionRange.start,
-            selectionRange.end,
-          ),
+          selectedText: nextText,
         },
       ];
     });
@@ -1036,7 +1044,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
   // Compute @ mention matches
   useEffect(() => {
     if (mentionQuery === null) {
-      setMentionFiles([]);
+      setMentionFiles((prev) => (prev.length === 0 ? prev : []));
       return;
     }
     const q = mentionQuery.toLowerCase();

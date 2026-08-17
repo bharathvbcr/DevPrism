@@ -80,8 +80,10 @@ export function useOllamaModelsCapabilities(
 
   useEffect(() => {
     if (!enabled || models.length === 0) {
-      setCapabilitiesByModel({});
-      setLoading(false);
+      setCapabilitiesByModel((prev) =>
+        Object.keys(prev).length === 0 ? prev : {},
+      );
+      setLoading((prev) => (prev ? false : prev));
       return;
     }
 

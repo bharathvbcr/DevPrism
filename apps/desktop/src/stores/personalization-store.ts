@@ -32,10 +32,13 @@ interface PersonalizationState {
   addResearchInterest: (interest: string) => void;
   removeResearchInterest: (interest: string) => void;
   incrementDocumentClass: (docClass: string) => void;
-  
+
   analyzeLaTeXContent: (filePath: string, content: string) => void;
   analyzeChatConversation: (messages: ClaudeStreamMessage[]) => Promise<void>;
-  triggerAiRefinement: (text: string, contextDescription: string) => Promise<void>;
+  triggerAiRefinement: (
+    text: string,
+    contextDescription: string,
+  ) => Promise<void>;
   resetProfile: () => void;
 }
 
@@ -75,20 +78,77 @@ function simpleHash(str: string): string {
 
 // Vocab of common research disciplines to match against title words/abstract
 const RESEARCH_DISCIPLINES = [
-  "Quantum Computing", "Quantum Physics", "Quantum Mechanics", "Astrobiology", "Astrophysics", 
-  "Cosmology", "String Theory", "Particle Physics", "Condensed Matter", "Plasma Physics", 
-  "Optics", "Photonics", "Nanotechnology", "Materials Science", "Biophysics",
-  "Machine Learning", "Deep Learning", "Artificial Intelligence", "Neural Networks", 
-  "Computer Vision", "Natural Language Processing", "Robotics", "Human-Computer Interaction", 
-  "Bioinformatics", "Data Science", "Cryptography", "Distributed Systems", "Software Engineering", 
-  "Cloud Computing", "Biochemistry", "Molecular Biology", "Genetics", "Neuroscience", 
-  "Immunology", "Microbiology", "Ecology", "Evolutionary Biology", "Oncology", "Pharmacology", 
-  "Virology", "Organic Chemistry", "Inorganic Chemistry", "Physical Chemistry", "Analytical Chemistry", 
-  "Polymer Chemistry", "Pure Mathematics", "Applied Mathematics", "Statistics", "Topology", 
-  "Algebra", "Geometry", "Probability", "Number Theory", "Economics", "Macroeconomics", 
-  "Microeconomics", "Behavioral Economics", "Finance", "Econometrics", "Cognitive Science", 
-  "Psychology", "Sociology", "Anthropology", "Linguistics", "Political Science", "Geology", 
-  "Geophysics", "Meteorology", "Oceanography", "Climate Science", "Environmental Science"
+  "Quantum Computing",
+  "Quantum Physics",
+  "Quantum Mechanics",
+  "Astrobiology",
+  "Astrophysics",
+  "Cosmology",
+  "String Theory",
+  "Particle Physics",
+  "Condensed Matter",
+  "Plasma Physics",
+  "Optics",
+  "Photonics",
+  "Nanotechnology",
+  "Materials Science",
+  "Biophysics",
+  "Machine Learning",
+  "Deep Learning",
+  "Artificial Intelligence",
+  "Neural Networks",
+  "Computer Vision",
+  "Natural Language Processing",
+  "Robotics",
+  "Human-Computer Interaction",
+  "Bioinformatics",
+  "Data Science",
+  "Cryptography",
+  "Distributed Systems",
+  "Software Engineering",
+  "Cloud Computing",
+  "Biochemistry",
+  "Molecular Biology",
+  "Genetics",
+  "Neuroscience",
+  "Immunology",
+  "Microbiology",
+  "Ecology",
+  "Evolutionary Biology",
+  "Oncology",
+  "Pharmacology",
+  "Virology",
+  "Organic Chemistry",
+  "Inorganic Chemistry",
+  "Physical Chemistry",
+  "Analytical Chemistry",
+  "Polymer Chemistry",
+  "Pure Mathematics",
+  "Applied Mathematics",
+  "Statistics",
+  "Topology",
+  "Algebra",
+  "Geometry",
+  "Probability",
+  "Number Theory",
+  "Economics",
+  "Macroeconomics",
+  "Microeconomics",
+  "Behavioral Economics",
+  "Finance",
+  "Econometrics",
+  "Cognitive Science",
+  "Psychology",
+  "Sociology",
+  "Anthropology",
+  "Linguistics",
+  "Political Science",
+  "Geology",
+  "Geophysics",
+  "Meteorology",
+  "Oceanography",
+  "Climate Science",
+  "Environmental Science",
 ];
 
 export const usePersonalizationStore = create<PersonalizationState>()(
@@ -114,7 +174,7 @@ export const usePersonalizationStore = create<PersonalizationState>()(
         void syncPersonalizationEnabled(enabled);
       },
       setAutoExtractEnabled: (enabled) => set({ autoExtractEnabled: enabled }),
-      
+
       updateProfile: (updates) =>
         set((state) => {
           const profile = { ...state.profile, ...updates };
@@ -125,7 +185,8 @@ export const usePersonalizationStore = create<PersonalizationState>()(
       addResearchInterest: (interest) =>
         set((state) => {
           const clean = interest.trim();
-          if (!clean || state.profile.researchInterests.includes(clean)) return {};
+          if (!clean || state.profile.researchInterests.includes(clean))
+            return {};
           const profile = {
             ...state.profile,
             researchInterests: [...state.profile.researchInterests, clean],
@@ -151,7 +212,8 @@ export const usePersonalizationStore = create<PersonalizationState>()(
           const cls = docClass.trim().toLowerCase();
           if (!cls) return {};
           const favoriteDocumentClasses = { ...state.favoriteDocumentClasses };
-          favoriteDocumentClasses[cls] = (favoriteDocumentClasses[cls] ?? 0) + 1;
+          favoriteDocumentClasses[cls] =
+            (favoriteDocumentClasses[cls] ?? 0) + 1;
           return { favoriteDocumentClasses };
         }),
 
@@ -178,19 +240,24 @@ export const usePersonalizationStore = create<PersonalizationState>()(
         if (!state.autoExtractEnabled) return;
 
         const hash = simpleHash(content);
-        if (state.lastAnalyzedFile === filePath && state.lastAnalyzedContentHash === hash) {
+        if (
+          state.lastAnalyzedFile === filePath &&
+          state.lastAnalyzedContentHash === hash
+        ) {
           return; // Skip if already analyzed
         }
 
         // 1. Document class
-        const docClass = extractFirstMatch(content, [/\\documentclass(?:\[[^\]]*\])?\{([^}]+)\}/]);
+        const docClass = extractFirstMatch(content, [
+          /\\documentclass(?:\[[^\]]*\])?\{([^}]+)\}/,
+        ]);
         if (docClass) {
           state.incrementDocumentClass(docClass);
         }
 
         // 2. Author info
         const author = extractFirstMatch(content, [
-          /\\author(?:\[[^\]]*\])?\{([^}]+)\}/
+          /\\author(?:\[[^\]]*\])?\{([^}]+)\}/,
         ]);
 
         // 3. Affiliation
@@ -198,7 +265,7 @@ export const usePersonalizationStore = create<PersonalizationState>()(
           /\\institute(?:\[[^\]]*\])?\{([^}]+)\}/,
           /\\institution(?:\[[^\]]*\])?\{([^}]+)\}/,
           /\\affil(?:\[[^\]]*\])?\{([^}]+)\}/,
-          /\\address(?:\[[^\]]*\])?\{([^}]+)\}/
+          /\\address(?:\[[^\]]*\])?\{([^}]+)\}/,
         ]);
 
         const profileUpdates: Partial<UserProfile> = {};
@@ -210,7 +277,9 @@ export const usePersonalizationStore = create<PersonalizationState>()(
         }
 
         // 4. Research interests from title
-        const title = extractFirstMatch(content, [/\\title(?:\[[^\]]*\])?\{([^}]+)\}/]);
+        const title = extractFirstMatch(content, [
+          /\\title(?:\[[^\]]*\])?\{([^}]+)\}/,
+        ]);
         const matchedTopics: string[] = [];
         if (title) {
           const lowerTitle = title.toLowerCase();
@@ -222,7 +291,10 @@ export const usePersonalizationStore = create<PersonalizationState>()(
         }
 
         // Update profile
-        if (Object.keys(profileUpdates).length > 0 || matchedTopics.length > 0) {
+        if (
+          Object.keys(profileUpdates).length > 0 ||
+          matchedTopics.length > 0
+        ) {
           set((s) => {
             const newInterests = [...s.profile.researchInterests];
             for (const topic of matchedTopics) {
@@ -230,17 +302,17 @@ export const usePersonalizationStore = create<PersonalizationState>()(
                 newInterests.push(topic);
               }
             }
-              return {
-                profile: {
-                  ...s.profile,
-                  ...profileUpdates,
-                  researchInterests: newInterests,
-                },
-                lastAnalyzedFile: filePath,
-                lastAnalyzedContentHash: hash,
-              };
-            });
-            scheduleIdentityProfileSync(get().profile);
+            return {
+              profile: {
+                ...s.profile,
+                ...profileUpdates,
+                researchInterests: newInterests,
+              },
+              lastAnalyzedFile: filePath,
+              lastAnalyzedContentHash: hash,
+            };
+          });
+          scheduleIdentityProfileSync(get().profile);
         } else {
           set({
             lastAnalyzedFile: filePath,
@@ -251,8 +323,8 @@ export const usePersonalizationStore = create<PersonalizationState>()(
         // Trigger asynchronous deep refinement using local AI if appropriate
         if (canUseAiAssist()) {
           void state.triggerAiRefinement(
-            content.slice(0, 15000), 
-            `LaTeX document (${filePath})`
+            content.slice(0, 15000),
+            `LaTeX document (${filePath})`,
           );
         }
       },
@@ -266,7 +338,9 @@ export const usePersonalizationStore = create<PersonalizationState>()(
         for (const msg of messages.slice(-6)) {
           const contentText = messageContentText(msg);
           if (contentText) {
-            textParts.push(`${msg.type === "user" ? "User" : "Assistant"}: ${contentText}`);
+            textParts.push(
+              `${msg.type === "user" ? "User" : "Assistant"}: ${contentText}`,
+            );
           }
         }
         const text = textParts.join("\n");
@@ -274,8 +348,12 @@ export const usePersonalizationStore = create<PersonalizationState>()(
 
         // Perform simple regex heuristic scan for identity
         const nameMatches = text.match(/my name is ([a-zA-Z\s]{2,30})/i);
-        const univMatches = text.match(/(?:at|from)\s+([a-zA-Z\s]{4,40}\s+university|mit|stanford|harvard|caltech|oxford|cambridge)/i);
-        const roleMatches = text.match(/(phd candidate|phd student|postdoc|professor|researcher|undergraduate|student)/i);
+        const univMatches = text.match(
+          /(?:at|from)\s+([a-zA-Z\s]{4,40}\s+university|mit|stanford|harvard|caltech|oxford|cambridge)/i,
+        );
+        const roleMatches = text.match(
+          /(phd candidate|phd student|postdoc|professor|researcher|undergraduate|student)/i,
+        );
 
         const profileUpdates: Partial<UserProfile> = {};
         if (nameMatches && nameMatches[1] && !state.profile.name) {
@@ -313,10 +391,12 @@ export const usePersonalizationStore = create<PersonalizationState>()(
       triggerAiRefinement: async (text, contextDescription) => {
         try {
           const currentProfile = get().profile;
-          
-          const systemPrompt = 
+
+          const systemPrompt =
             "You are a quiet background profiling system. Your job is to extract user facts from text to help customize their LaTeX workspace.\n" +
-            "Given text from a " + contextDescription + ", extract or refine details about the user.\n" +
+            "Given text from a " +
+            contextDescription +
+            ", extract or refine details about the user.\n" +
             "You must return a JSON object with the following fields:\n" +
             '{"name": string, "role": string, "affiliation": string, "writingStyle": string, "researchInterests": string[]}\n' +
             "Follow these strict guidelines:\n" +
@@ -335,33 +415,55 @@ export const usePersonalizationStore = create<PersonalizationState>()(
 
           // Parse JSON response
           let parsed: any = null;
-          try {
-            parsed = JSON.parse(rawResponse.trim());
-          } catch {
-            const match = rawResponse.match(/\{[\s\S]*\}/);
-            if (match) {
-              parsed = JSON.parse(match[0]);
+          if (typeof rawResponse === "string" && rawResponse.trim()) {
+            try {
+              parsed = JSON.parse(rawResponse.trim());
+            } catch {
+              const match = rawResponse.match(/\{[\s\S]*\}/);
+              if (match) {
+                try {
+                  parsed = JSON.parse(match[0]);
+                } catch {
+                  parsed = null;
+                }
+              }
             }
           }
 
           if (parsed && typeof parsed === "object") {
             set((state) => {
               const updates: Partial<UserProfile> = {};
-              
-              if (parsed.name && typeof parsed.name === "string" && !state.profile.name) {
+
+              if (
+                parsed.name &&
+                typeof parsed.name === "string" &&
+                !state.profile.name
+              ) {
                 updates.name = parsed.name.trim();
               }
-              if (parsed.role && typeof parsed.role === "string" && !state.profile.role) {
+              if (
+                parsed.role &&
+                typeof parsed.role === "string" &&
+                !state.profile.role
+              ) {
                 updates.role = parsed.role.trim();
               }
-              if (parsed.affiliation && typeof parsed.affiliation === "string" && !state.profile.affiliation) {
+              if (
+                parsed.affiliation &&
+                typeof parsed.affiliation === "string" &&
+                !state.profile.affiliation
+              ) {
                 updates.affiliation = parsed.affiliation.trim();
               }
-              if (parsed.writingStyle && typeof parsed.writingStyle === "string" && !state.profile.writingStyle) {
+              if (
+                parsed.writingStyle &&
+                typeof parsed.writingStyle === "string" &&
+                !state.profile.writingStyle
+              ) {
                 updates.writingStyle = parsed.writingStyle.trim();
               }
-              
-              let researchInterests = [...state.profile.researchInterests];
+
+              const researchInterests = [...state.profile.researchInterests];
               if (Array.isArray(parsed.researchInterests)) {
                 for (const item of parsed.researchInterests) {
                   if (typeof item === "string" && item.trim()) {
@@ -395,20 +497,21 @@ export const usePersonalizationStore = create<PersonalizationState>()(
         if (state?.profile) scheduleIdentityProfileSync(state.profile);
       },
     },
-  )
+  ),
 );
 
 export function buildPersonalizationContext(): string {
   const store = usePersonalizationStore.getState();
   if (!store.personalizationEnabled) return "";
-  
+
   const { profile } = store;
   const parts: string[] = [];
-  
+
   if (profile.name) parts.push(`Name: ${profile.name}`);
   if (profile.role) parts.push(`Role: ${profile.role}`);
   if (profile.affiliation) parts.push(`Affiliation: ${profile.affiliation}`);
-  if (profile.writingStyle) parts.push(`Writing Style: ${profile.writingStyle}`);
+  if (profile.writingStyle)
+    parts.push(`Writing Style: ${profile.writingStyle}`);
   if (profile.researchInterests && profile.researchInterests.length > 0) {
     parts.push(`Research Interests: ${profile.researchInterests.join(", ")}`);
   }
@@ -423,13 +526,13 @@ export function buildPersonalizationContext(): string {
   if (topDocClasses.length > 0) {
     parts.push(`Preferred document classes: ${topDocClasses.join(", ")}`);
   }
-  
+
   if (parts.length === 0) return "";
-  
+
   return [
     "## USER PROFILE (Local on-device personalization)",
     "Adopt these settings and details automatically for this user when writing papers, abstracts, biographies, emails, or compiling document authorship block details. Keep tone natural. A separate behavioral adaptation layer also tunes depth and suggestions from on-device usage — follow both.",
-    ...parts.map(p => `- ${p}`),
-    ""
+    ...parts.map((p) => `- ${p}`),
+    "",
   ].join("\n");
 }

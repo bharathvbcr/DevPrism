@@ -246,7 +246,7 @@ export function SettingsDialog({ open, appVersion }: SettingsDialogProps) {
   }, [nativeAgentEnabled, settingsDetailSection, settingsOllamaBaseUrl]);
 
   const chatOllamaModels = useMemo(
-    () => settingsOllamaModels.filter((model) => model.chatCapable),
+    () => (settingsOllamaModels ?? []).filter((model) => model.chatCapable),
     [settingsOllamaModels],
   );
   const { status: settingsOllamaStatus, refresh: refreshSettingsOllamaStatus } =

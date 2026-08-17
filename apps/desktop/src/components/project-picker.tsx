@@ -346,7 +346,6 @@ export function ProjectPicker() {
 
   const claudeStatus = useClaudeSetupStore((s) => s.status);
   const checkClaudeStatus = useClaudeSetupStore((s) => s.checkStatus);
-  const isClaudeReady = claudeStatus === "ready";
 
   useEffect(() => {
     checkClaudeStatus();
@@ -918,7 +917,7 @@ export function ProjectPicker() {
 
   useEffect(() => {
     if (!wantsSemantic || !canUseAiAssist()) {
-      setSemanticOrder(null);
+      setSemanticOrder((prev) => (prev === null ? prev : null));
       return;
     }
     if (semanticDebounceRef.current) clearTimeout(semanticDebounceRef.current);
@@ -2286,7 +2285,7 @@ function ProjectPreviewCard({
     return () => {
       cancelled = true;
     };
-  }, [project]);
+  }, [project.path, project.name, project.lastOpened]);
 
   // When this card is reused for a different project (list reorder/filter),
   // reset the blurb to the new project's cached value (or empty) and allow a

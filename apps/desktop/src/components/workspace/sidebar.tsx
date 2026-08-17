@@ -1,4 +1,11 @@
-import { useState, useCallback, useMemo, useRef, useEffect } from "react";
+import {
+  useState,
+  useCallback,
+  useMemo,
+  useRef,
+  useEffect,
+  forwardRef,
+} from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import {
   FileTextIcon,
@@ -2502,27 +2509,44 @@ export function Sidebar({
 
 // ─── dnd-kit helpers ───
 
-function DroppableRoot({
-  children,
-  nativeDragOver,
-}: {
+interface DroppableRootProps extends React.HTMLAttributes<HTMLDivElement> {
   children: React.ReactNode;
   nativeDragOver?: boolean;
-}) {
-  const { setNodeRef, isOver } = useDroppable({ id: "__root__" });
-  return (
-    <div
-      ref={setNodeRef}
-      data-drop-folder="__root__"
-      className={cn(
-        "min-h-0 flex-1 overflow-y-auto p-1",
-        (isOver || nativeDragOver) && "bg-accent/30",
-      )}
-    >
-      {children}
-    </div>
-  );
 }
+
+const DroppableRoot = forwardRef<HTMLDivElement, DroppableRootProps>(
+  ({ children, nativeDragOver, className, ...props }, forwardedRef) => {
+    const { setNodeRef, isOver } = useDroppable({ id: "__root__" });
+
+    const handleRef = useCallback(
+      (node: HTMLDivElement | null) => {
+        setNodeRef(node);
+        if (typeof forwardedRef === "function") {
+          forwardedRef(node);
+        } else if (forwardedRef) {
+          forwardedRef.current = node;
+        }
+      },
+      [setNodeRef, forwardedRef],
+    );
+
+    return (
+      <div
+        ref={handleRef}
+        data-drop-folder="__root__"
+        className={cn(
+          "min-h-0 flex-1 overflow-y-auto p-1",
+          (isOver || nativeDragOver) && "bg-accent/30",
+          className,
+        )}
+        {...props}
+      >
+        {children}
+      </div>
+    );
+  },
+);
+DroppableRoot.displayName = "DroppableRoot";
 
 function DroppableFolder({
   id,
@@ -3639,22 +3663,10 @@ function DraggableItem({
     data: { type, name },
   });
 
-  // Wrap listeners to log pointer events
-  const wrappedListeners = listeners
-    ? Object.fromEntries(
-        Object.entries(listeners).map(([key, handler]) => [
-          key,
-          (e: React.PointerEvent) => {
-            (handler as (e: React.PointerEvent) => void)(e);
-          },
-        ]),
-      )
-    : {};
-
   return (
     <div
       ref={setNodeRef}
-      {...wrappedListeners}
+      {...listeners}
       {...attributes}
       style={{ opacity: isDragging ? 0.4 : 1 }}
     >

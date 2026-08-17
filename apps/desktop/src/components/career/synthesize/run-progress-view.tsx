@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   AlertTriangleIcon,
   CheckCircle2Icon,
@@ -507,10 +507,7 @@ function WaitingPanel({
   detail?: string;
   llmCall?: SynthesisStage["llmCall"];
 }) {
-  const [tick, setTick] = useState(elapsedMs);
-  useEffect(() => {
-    setTick(elapsedMs);
-  }, [elapsedMs]);
+  const tick = elapsedMs;
 
   const callElapsed =
     llmCall != null ? Math.max(0, Date.now() - llmCall.startedAt) : tick;

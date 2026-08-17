@@ -118,6 +118,8 @@ export function CareerSynthesizeTab() {
     };
   }, [pdfUrl]);
 
+  const [runsLoaded, setRunsLoaded] = useState(false);
+
   const refreshRuns = useCallback(async () => {
     setRunsLoading(true);
     setRunsError(null);
@@ -130,6 +132,7 @@ export function CareerSynthesizeTab() {
       setRunsError(err instanceof Error ? err.message : String(err));
     } finally {
       setRunsLoading(false);
+      setRunsLoaded(true);
     }
   }, []);
 
@@ -238,7 +241,7 @@ export function CareerSynthesizeTab() {
       autoOpenAttempted.current = true;
       return;
     }
-    if (runsLoading) return;
+    if (!runsLoaded || runsLoading) return;
     autoOpenAttempted.current = true;
     const latest = runs[0];
     if (!latest) return;
@@ -248,6 +251,7 @@ export function CareerSynthesizeTab() {
     viewingStoredRunId,
     report,
     result,
+    runsLoaded,
     runsLoading,
     runs,
     openRunRow,

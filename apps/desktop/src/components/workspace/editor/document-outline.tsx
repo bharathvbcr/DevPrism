@@ -1,7 +1,6 @@
 import { type RefObject, useMemo, useState } from "react";
 import { EditorView } from "@codemirror/view";
 import { ListTreeIcon, SparklesIcon, Loader2Icon } from "lucide-react";
-import { toast } from "sonner";
 import { showWorkspaceError } from "@/stores/workspace-banner-store";
 import {
   Popover,
@@ -9,7 +8,11 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
-import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useDocumentStore } from "@/stores/document-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { canUseAiAssist, summarizeSection } from "@/lib/ai-assist";
@@ -117,11 +120,13 @@ export function DocumentOutline({
   const [summary, setSummary] = useState<string | null>(null);
   const [summarizing, setSummarizing] = useState(false);
   const aiSummarize = useSettingsStore((s) => s.aiSummarize);
-  const activeSource = useDocumentStore((s) => {
-    const f = s.files.find((file) => file.id === s.activeFileId);
-    if (f?.type !== "tex" && f?.type !== "typst") return null;
-    return { kind: f.type, content: f.content ?? "" };
-  });
+  const activeFileId = useDocumentStore((s) => s.activeFileId);
+  const files = useDocumentStore((s) => s.files);
+  const activeFile = files.find((file) => file.id === activeFileId);
+  const activeSource = useMemo(() => {
+    if (activeFile?.type !== "tex" && activeFile?.type !== "typst") return null;
+    return { kind: activeFile.type, content: activeFile.content ?? "" };
+  }, [activeFile?.type, activeFile?.content]);
 
   const outline = useMemo(() => {
     if (!activeSource) return [];
@@ -175,15 +180,25 @@ export function DocumentOutline({
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <TooltipIconButton
-          tooltip="Document outline"
-          aria-pressed={open}
-          className={cn("size-7", open ? "bg-accent" : "text-muted-foreground")}
-        >
-          <ListTreeIcon className="size-4" />
-        </TooltipIconButton>
-      </PopoverTrigger>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <PopoverTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="Document outline"
+              aria-pressed={open}
+              className={cn(
+                "size-7",
+                open ? "bg-accent" : "text-muted-foreground",
+              )}
+            >
+              <ListTreeIcon className="size-4" />
+            </Button>
+          </PopoverTrigger>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">Document outline</TooltipContent>
+      </Tooltip>
       <PopoverContent align="end" className="w-72 p-1">
         <div className="flex items-center justify-between px-2 py-1.5">
           <span className="font-medium text-muted-foreground text-xs">

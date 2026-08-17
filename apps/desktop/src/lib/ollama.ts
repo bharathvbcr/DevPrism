@@ -92,9 +92,10 @@ export function getOllamaBaseUrl(
 export async function listOllamaModels(
   baseUrl?: string | null,
 ): Promise<OllamaModelInfo[]> {
-  return invoke<OllamaModelInfo[]>("list_ollama_models", {
+  const res = await invoke<OllamaModelInfo[]>("list_ollama_models", {
     baseUrl: baseUrl?.trim() || null,
   });
+  return Array.isArray(res) ? res : [];
 }
 
 export async function getOllamaStatus(

@@ -12,7 +12,12 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useDocumentStore } from "@/stores/document-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { resolveActiveCompileTarget } from "@/lib/compile-root-preference";
@@ -166,19 +171,26 @@ export function ExportMenu() {
 
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <TooltipIconButton
-          tooltip="Export document"
-          disabled={busy}
-          className={cn("size-7 text-muted-foreground")}
-        >
-          {busy ? (
-            <Loader2Icon className="size-4 animate-spin" />
-          ) : (
-            <FileDownIcon className="size-4" />
-          )}
-        </TooltipIconButton>
-      </DropdownMenuTrigger>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              disabled={busy}
+              aria-label="Export document"
+              className={cn("size-7 text-muted-foreground")}
+            >
+              {busy ? (
+                <Loader2Icon className="size-4 animate-spin" />
+              ) : (
+                <FileDownIcon className="size-4" />
+              )}
+            </Button>
+          </DropdownMenuTrigger>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">Export document</TooltipContent>
+      </Tooltip>
       <DropdownMenuContent align="end">
         <DropdownMenuLabel>Export as</DropdownMenuLabel>
         <DropdownMenuSeparator />

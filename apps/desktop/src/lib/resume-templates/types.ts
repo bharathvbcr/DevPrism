@@ -86,6 +86,15 @@ export interface SectionSlot {
   render: (blocks: RenderedBlock[]) => string;
 }
 
+/**
+ * Typesetting backend a template compiles with.
+ *
+ * Only `typst` is used for resumes — it links the compiler in-process (see
+ * `career_typst_compile`). `latex` remains for the general document workspace,
+ * which compiles via Tectonic, and for reading pre-Typst stored runs.
+ */
+export type ResumeEngine = "latex" | "typst";
+
 export interface ResumeTemplateBudget {
   totalLines: number;
   perBullet: number;
@@ -97,6 +106,8 @@ export type ResumeTemplateLayout = "single-column" | "two-column";
 
 export interface ResumeTemplate {
   id: string;
+  /** Which compiler renders this template. Defaults to `latex` when absent. */
+  engine?: ResumeEngine;
   /** Static, hand-audited preamble — never touched by AI. */
   preamble: string;
   sections: SectionSlot[];
@@ -106,9 +117,27 @@ export interface ResumeTemplate {
    * minipage and summary/experience/projects/publications on the right.
    */
   layout?: ResumeTemplateLayout;
+  /**
+   * Engine-specific document assembly. When absent the LaTeX assembler
+   * (`renderTemplate`) is used, preserving the pre-Typst behaviour.
+   */
+  render?: (
+    content: ResumeContent,
+    sectionOrder?: SectionKind[],
+  ) => RenderResult;
+  /** Typst only: font fallback chain. The last entry should be an embedded family. */
+  fontStack?: string[];
+  /** Typst only: page margin, e.g. `"0.7in"`. */
+  pageMargin?: string;
+  /** Typst only: base text size, e.g. `"11pt"`. */
+  baseFontSize?: string;
 }
 
 export interface RenderResult {
-  tex: string;
+  /**
+   * Assembled document source — LaTeX for `engine: "latex"`, Typst markup
+   * for `engine: "typst"`.
+   */
+  source: string;
   slots: SlotLineRange[];
 }

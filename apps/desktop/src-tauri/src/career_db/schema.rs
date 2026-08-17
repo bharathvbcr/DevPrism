@@ -58,6 +58,7 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(SCHEMA_SQL)
         .map_err(|e| format!("Failed to init career schema: {e}"))?;
     migrate_embeddings_pk(conn)?;
+    migrate_persona_templates(conn)?;
     // career_meta may be missing on DBs created before it was added.
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS career_meta (
@@ -157,6 +158,30 @@ pub fn meta_set(conn: &Connection, key: &str, value: &str) -> Result<(), String>
 }
 
 /// Seed built-in personas if missing. Never overwrites user edits.
+/// Legacy LaTeX resume template ids → their Typst replacements.
+///
+/// The LaTeX resume templates were removed when Typst became the resume
+/// engine. Personas stored before that still name them, and an unresolvable
+/// `defaultTemplateId` would make Synthesize fail with "Unknown resume
+/// template", so rewrite them in place on open.
+const LEGACY_TEMPLATE_IDS: &[(&str, &str)] = &[
+    ("ats-single-column", "typst-ats-single-column"),
+    ("ats-two-column", "typst-ats-two-column"),
+];
+
+fn migrate_persona_templates(conn: &Connection) -> Result<(), String> {
+    for (old, new) in LEGACY_TEMPLATE_IDS {
+        conn.execute(
+            "UPDATE personas
+                SET json = json_set(json, '$.defaultTemplateId', ?2)
+              WHERE json_extract(json, '$.defaultTemplateId') = ?1",
+            rusqlite::params![old, new],
+        )
+        .map_err(|e| format!("Failed to migrate persona template ids: {e}"))?;
+    }
+    Ok(())
+}
+
 pub fn seed_default_personas(conn: &Connection) -> Result<(), String> {
     let defaults = [
         json!({
@@ -169,7 +194,7 @@ pub fn seed_default_personas(conn: &Connection) -> Result<(), String> {
                 "deep-learning": 1.4,
                 "llm": 1.5
             },
-            "defaultTemplateId": "ats-single-column",
+            "defaultTemplateId": "typst-ats-single-column",
             "sectionOrder": ["experience", "projects", "skills", "education", "publications"],
             "toneDirective": "Emphasize technical depth, systems impact, and measurable ML outcomes. Prefer precise tooling and method names."
         }),
@@ -183,7 +208,7 @@ pub fn seed_default_personas(conn: &Connection) -> Result<(), String> {
                 "nextflow": 1.2,
                 "biology": 1.2
             },
-            "defaultTemplateId": "ats-single-column",
+            "defaultTemplateId": "typst-ats-single-column",
             "sectionOrder": ["experience", "publications", "projects", "skills", "education"],
             "toneDirective": "Emphasize scientific rigor, domain collaboration, and translational impact. Prefer assay, cohort, and pipeline specifics."
         }),
@@ -197,7 +222,7 @@ pub fn seed_default_personas(conn: &Connection) -> Result<(), String> {
                 "roadmap": 1.3,
                 "cross-functional": 1.2
             },
-            "defaultTemplateId": "ats-single-column",
+            "defaultTemplateId": "typst-ats-single-column",
             "sectionOrder": ["experience", "leadership", "skills", "projects", "education", "publications"],
             "toneDirective": "Emphasize scope, team outcomes, stakeholder alignment, and delivery under ambiguity. Prefer org-level metrics over individual tooling."
         }),
@@ -223,6 +248,86 @@ pub fn seed_default_personas(conn: &Connection) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn seeded_personas_use_the_typst_engine() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        seed_default_personas(&conn).unwrap();
+
+        let stale: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM personas
+                  WHERE json_extract(json, '$.defaultTemplateId') NOT LIKE 'typst-%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stale, 0, "a seeded persona still points at a LaTeX template");
+    }
+
+    #[test]
+    fn migrates_legacy_persona_template_ids() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+
+        // Simulate rows written before Typst replaced LaTeX.
+        for (id, template) in [
+            ("legacy-one", "ats-single-column"),
+            ("legacy-two", "ats-two-column"),
+            ("custom", "some-custom-template"),
+        ] {
+            conn.execute(
+                "INSERT INTO personas (id, json) VALUES (?1, ?2)",
+                rusqlite::params![
+                    id,
+                    format!(
+                        r#"{{"id":"{id}","label":"L","skillWeights":{{}},"defaultTemplateId":"{template}","sectionOrder":[],"toneDirective":""}}"#
+                    )
+                ],
+            )
+            .unwrap();
+        }
+
+        migrate_persona_templates(&conn).unwrap();
+
+        let read = |id: &str| -> String {
+            conn.query_row(
+                "SELECT json_extract(json, '$.defaultTemplateId') FROM personas WHERE id = ?1",
+                rusqlite::params![id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(read("legacy-one"), "typst-ats-single-column");
+        assert_eq!(read("legacy-two"), "typst-ats-two-column");
+        // A user's own template id must be left alone.
+        assert_eq!(read("custom"), "some-custom-template");
+    }
+
+    #[test]
+    fn persona_migration_is_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO personas (id, json) VALUES ('p', ?1)",
+            rusqlite::params![
+                r#"{"id":"p","label":"L","skillWeights":{},"defaultTemplateId":"ats-single-column","sectionOrder":[],"toneDirective":""}"#
+            ],
+        )
+        .unwrap();
+        for _ in 0..3 {
+            migrate_persona_templates(&conn).unwrap();
+        }
+        let v: String = conn
+            .query_row(
+                "SELECT json_extract(json, '$.defaultTemplateId') FROM personas WHERE id = 'p'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(v, "typst-ats-single-column");
+    }
 
     #[test]
     fn init_schema_creates_tables() {

@@ -37,6 +37,7 @@ import { useOllamaPullStore } from "@/stores/ollama-pull-store";
 import { useClaudeSetupStore } from "@/stores/claude-setup-store";
 import { IngestProgressList, type IngestProgressItem } from "./ingest-progress";
 import { PublicationImportWizard } from "./publication-import-wizard";
+import { scratchSuffix, uniqueId } from "@/lib/unique-id";
 
 function fileLabel(path: string): string {
   return path.split(/[\\/]/).pop() ?? path;
@@ -204,7 +205,7 @@ export function CareerKnowledgeTab() {
     if (!text) return;
     setBusy(true);
     setNotice(null);
-    const id = `paste-${Date.now()}`;
+    const id = uniqueId("paste");
     setProgressItems([
       {
         id,
@@ -219,14 +220,14 @@ export function CareerKnowledgeTab() {
       let deferred = false;
       if (pasteKind === "bibtex") {
         const seeded = await seedPublicationsFromBibtex(text, {
-          uri: `paste://bibtex-${Date.now()}`,
+          uri: `paste://bibtex-${scratchSuffix()}`,
           title: "Pasted bibliography",
           onProgress,
         });
         deferred = seeded.embed.deferred;
       } else if (pasteKind === "mindmap") {
         const out = await ingestMindmapText(text, {
-          uri: `paste://mindmap-${Date.now()}`,
+          uri: `paste://mindmap-${scratchSuffix()}`,
           title: "Pasted mind map",
           sourceType: "mindmap",
           onProgress,
@@ -234,7 +235,7 @@ export function CareerKnowledgeTab() {
         deferred = out.embed.deferred;
       } else {
         const out = await ingestMarkdownText(text, {
-          uri: `paste://markdown-${Date.now()}`,
+          uri: `paste://markdown-${scratchSuffix()}`,
           title: "Pasted markdown",
           sourceType: "markdown",
           onProgress,

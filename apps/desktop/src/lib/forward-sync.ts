@@ -4,6 +4,7 @@ import {
   getCurrentPdfRootId,
 } from "@/stores/document-store";
 import { synctexForward } from "@/lib/latex-compiler";
+import { nextSequence } from "@/lib/unique-id";
 import {
   getCompileRootPreference,
   setCompileRootPreference,
@@ -73,7 +74,9 @@ export async function triggerForwardSync(options?: {
     y: result.y,
     width: result.width,
     height: result.height,
-    nonce: Date.now(),
+    // Monotonic, not a timestamp: two syncs in the same millisecond must
+    // still produce distinct pulses.
+    nonce: nextSequence(),
   });
   return true;
 }

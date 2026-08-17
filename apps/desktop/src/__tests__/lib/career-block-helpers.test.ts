@@ -11,9 +11,9 @@ import {
 } from "@/lib/career/block-helpers";
 
 describe("createEmptyPersona", () => {
-  it("defaults to ats-single-column template id", () => {
+  it("defaults to the Typst single-column template", () => {
     const persona = createEmptyPersona();
-    expect(persona.defaultTemplateId).toBe("ats-single-column");
+    expect(persona.defaultTemplateId).toBe("typst-ats-single-column");
   });
 
   it("allows overrides", () => {

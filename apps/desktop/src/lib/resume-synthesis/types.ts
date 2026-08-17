@@ -347,7 +347,12 @@ export interface MatchReport {
   notices: string[];
   semanticMatchingDisabled: boolean;
   critique: CriticResult | null;
-  repairs: string[];
+  /**
+   * Slots reverted to canonical text by the removed LaTeX compile-repair loop.
+   * Only present on runs created before Typst became the resume engine — Typst
+   * content cannot break compilation, so nothing populates this any more.
+   */
+  repairs?: string[];
   /** Per-stage elapsed milliseconds (populated on final report; may be partial earlier). */
   stageTimingsMs?: StageTimingsMs;
   /** Per-must-have skill → which block/bullet covers it (heatmap data). */
@@ -382,13 +387,19 @@ export interface MatchReport {
 export interface SynthesisResult {
   /** Null when the run could not be persisted to the career DB. */
   runId: string | null;
+  /**
+   * Template that produced this result. Materialization needs it to pick the
+   * right engine and file extension (`.tex` vs `.typ`).
+   */
+  templateId: string;
+  /** Assembled document source — LaTeX or Typst, per the template's engine. */
   tex: string;
   content: ResumeContent;
   report: MatchReport;
   /** Compile-verify succeeded (PDF bytes live in the temp compile path; UI materializes later). */
   compileOk: boolean;
   compileSummary: string;
-  /** PDF bytes from a successful `career_verify_compile`, when the engine produced one. */
+  /** PDF bytes from a successful Typst compile, when the engine produced one. */
   pdfBytes?: Uint8Array | null;
 }
 
@@ -462,7 +473,6 @@ export interface SynthesisDeps {
   ) => Promise<{
     tex: string;
     content: ResumeContent;
-    repairs: string[];
     result: { success: boolean; summary: string };
     pdfBytes?: Uint8Array | null;
   }>;

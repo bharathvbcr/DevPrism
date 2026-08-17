@@ -1,26 +1,34 @@
-export {
-  applyBoldMarkdown,
-  escapeAndValidateSlot,
-  escapeHrefUrl,
-  escapeLatexSpecials,
-  escapeResumeText,
-  mapSmartPunctuation,
-  normalizeResumePlainText,
-  validateEscapedSlot,
-  type SlotValidationResult,
-} from "./latex-escape";
+export { draftsToContent } from "./orchestrator";
 
 export {
-  bisectSlots,
-  careerVerifyCompile,
-  compileWithRepairLoop,
-  mapErrorLineToSlot,
-  SynthesisCompileError,
-  type AgentCompileResult,
-  type CompileEngine,
-  type CompileRepairSuccess,
-  type CompileVerifyOptions,
-  type LatexCompileErrorItem,
+  clampSlotText,
+  escapeTypstStringBody,
+  MAX_RICH_PARTS,
+  MAX_SLOT_CHARS,
+  normalizeTypstPlainText,
+  parseRichParts,
+  toTypstRich,
+  toTypstString,
+  toTypstUrl,
+  typstStringOrCanonical,
+  validateTypstString,
+  type RichPart,
+} from "./typst-escape";
+
+export {
+  summarizeTypstResult,
+  typstCompile,
+  typstFontFamilies,
+  typstPdfBytes,
+  type TypstCompileResult,
+  type TypstDiagnostic,
+} from "./typst-compile";
+
+export {
+  compileResumeDocument,
+  mapDiagnosticToSlot,
+  type ResumeCompileOptions,
+  type ResumeCompileOutcome,
 } from "./compile-verify";
 
 export {

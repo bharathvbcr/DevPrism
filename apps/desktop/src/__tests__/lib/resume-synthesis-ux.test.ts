@@ -168,7 +168,13 @@ describe("synthesis-ux helpers", () => {
         preview: "tok1 tok2 final",
         at: 3,
       },
-      { type: "block-rewrite-done", blockId: "a", at: 4 },
+      {
+        type: "block-rewrite-done",
+        blockId: "a",
+        at: 4,
+        fallbackCount: 0,
+        bulletCount: 2,
+      },
       { type: "error", message: "boom", at: 5 },
     ];
     const out = coalesceRunEventsForPersistence(events);

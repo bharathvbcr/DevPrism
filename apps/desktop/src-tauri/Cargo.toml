@@ -32,6 +32,13 @@ git2 = { version = "0.20", default-features = false, features = ["vendored-libgi
 chrono = "0.4"
 uuid = { version = "1", features = ["v4"] }
 which = "7"
+# Typst resume engine: linked in-process (no subprocess, no bundle download).
+# Apache-2.0. `typst-kit` supplies embedded + system font discovery.
+typst = "0.15"
+typst-layout = "0.15"
+typst-pdf = "0.15"
+typst-assets = { version = "0.15", features = ["fonts"] }
+typst-kit = { version = "0.15", default-features = false, features = ["embedded-fonts", "scan-fonts"] }
 tectonic = { version = "0.15", default-features = true, features = ["external-harfbuzz"] }
 # NOTE: Building tectonic requires external harfbuzz/graphite2/icu/freetype:
 #   macOS:   brew install icu4c harfbuzz pkg-config
@@ -64,3 +71,8 @@ windows-sys = { version = "0.61", features = ["Win32_System_Environment"] }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"
+
+[dev-dependencies]
+# `test` gives the MockRuntime used by tests/ipc.rs to drive real IPC.
+tauri = { version = "2", features = ["devtools", "test"] }
+tempfile = "3"

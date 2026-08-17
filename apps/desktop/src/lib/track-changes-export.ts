@@ -14,6 +14,7 @@ import {
 } from "@/lib/latex-track-changes";
 import { writeTexFileContent, deleteFileFromDisk, join } from "@/lib/tauri/fs";
 import { useSettingsStore } from "@/stores/settings-store";
+import { scratchSuffix } from "@/lib/unique-id";
 import { useTrackChangesPreviewStore } from "@/stores/track-changes-preview-store";
 
 function texDiffsOnly(diffs: TexFileDiff[]): TexFileDiff[] {
@@ -123,8 +124,10 @@ export async function previewTrackedChangesPdf(
     : buildTrackChangesReport(texDiffs, meta, granularity);
 
   // Unique per-invocation temp name (dotfile, never poisons SyncTeX) so two
-  // concurrent previews can't clobber each other's source.
-  const tempRelPath = `.devprism-track-changes-preview-${Date.now()}.tex`;
+  // concurrent previews can't clobber each other's source. `Date.now()` alone
+  // is not enough: it has millisecond resolution, and two windows open on the
+  // same project write into the same folder.
+  const tempRelPath = `.devprism-track-changes-preview-${scratchSuffix()}.tex`;
   const tempAbsPath = await join(projectRoot, tempRelPath);
   const useTexlive = useSettingsStore.getState().compilerBackend === "texlive";
   const toastId = toast.loading("Compiling tracked changes PDF…");

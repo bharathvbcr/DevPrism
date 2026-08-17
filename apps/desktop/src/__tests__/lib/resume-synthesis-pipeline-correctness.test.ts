@@ -11,9 +11,8 @@ import type {
   RewrittenBlockDraft,
 } from "@/lib/resume-synthesis/types";
 import {
-  renderTemplate,
-  setSlotPlainText,
-  ATS_RESUME_TEMPLATE,
+  renderTypstTemplate,
+  TYPST_ATS_SINGLE_TEMPLATE,
 } from "@/lib/resume-templates";
 import type { ResumeContent } from "@/lib/resume-templates/types";
 
@@ -132,8 +131,8 @@ describe("enforceBulletInvariants fallback reasons", () => {
   });
 });
 
-describe("header slot repair + href escaping", () => {
-  it("renders LinkedIn URLs without escaping underscores", () => {
+describe("header link rendering", () => {
+  it("keeps underscores in link URLs and never escapes them", () => {
     const content: ResumeContent = {
       header: {
         fullName: "Jane Doe",
@@ -147,45 +146,31 @@ describe("header slot repair + href escaping", () => {
       },
       experience: [],
     };
-    const { tex } = renderTemplate(ATS_RESUME_TEMPLATE, content);
-    expect(tex).toContain("\\href{https://linkedin.com/in/jane_doe}{LinkedIn}");
-    expect(tex).toContain("\\href{https://github.com/org/my_repo}{GitHub}");
-    // URL argument must keep underscores; label text may still escape.
-    expect(tex).toMatch(/\\href\{https:\/\/linkedin\.com\/in\/jane_doe\}/);
-    expect(tex).not.toMatch(
-      /\\href\{https:\/\/linkedin\.com\/in\/jane\\_doe\}/,
-    );
+    const { source } = renderTypstTemplate(TYPST_ATS_SINGLE_TEMPLATE, content);
+    // Typst literals need no escaping — the URL must survive byte-for-byte.
+    expect(source).toContain('"https://linkedin.com/in/jane_doe"');
+    expect(source).toContain('"https://github.com/org/my_repo"');
+    expect(source).not.toContain("jane\\_doe");
+    expect(source).toContain('"LinkedIn"');
+    expect(source).toContain('"GitHub"');
   });
 
-  it("setSlotPlainText restores header:contact and header:links", () => {
+  it("drops a link whose scheme could execute on click", () => {
     const content: ResumeContent = {
       header: {
-        fullName: "Jane",
-        cityRegion: "poison",
-        email: "bad@x.com",
-        phone: "000",
-        linkedinUrl: "https://linkedin.com/in/jane_doe",
-        linkedinLabel: "poison",
-        githubUrl: "https://github.com/me",
+        fullName: "Jane Doe",
+        cityRegion: "",
+        email: "",
+        phone: "",
+        portfolioUrl: "javascript:alert(1)",
+        portfolioLabel: "portfolio",
       },
       experience: [],
     };
-    const contact = setSlotPlainText(
-      content,
-      "header:contact",
-      "Seattle · jane@example.com · 555-0100",
-    );
-    expect(contact.header.cityRegion).toBe("Seattle");
-    expect(contact.header.email).toBe("jane@example.com");
-    expect(contact.header.phone).toBe("555-0100");
-
-    const links = setSlotPlainText(
-      content,
-      "header:links",
-      "LinkedIn · GitHub",
-    );
-    expect(links.header.linkedinLabel).toBe("LinkedIn");
-    expect(links.header.githubLabel).toBe("GitHub");
+    const { source } = renderTypstTemplate(TYPST_ATS_SINGLE_TEMPLATE, content);
+    expect(source).not.toContain("javascript:");
+    // The label survives even though the URL was refused.
+    expect(source).toContain('"portfolio"');
   });
 });
 
@@ -194,7 +179,7 @@ describe("repairFlagged round isolation", () => {
     id: "ai",
     label: "AI",
     skillWeights: {},
-    defaultTemplateId: "ats-single-column",
+    defaultTemplateId: "typst-ats-single-column",
     sectionOrder: ["experience"],
     toneDirective: "concise",
   };

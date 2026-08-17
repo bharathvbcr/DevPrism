@@ -75,6 +75,7 @@ import {
   getProviderDisplayName,
   getProviderIconSrc,
 } from "@/lib/provider-icons";
+import { isTextContent } from "@/lib/tauri/fs";
 import {
   getModelCapabilities,
   isChatModelOption,
@@ -129,6 +130,7 @@ import {
 } from "@/lib/ai-assist";
 import { useCursorSetupStore } from "@/stores/cursor-setup-store";
 import { useGroqSetupStore } from "@/stores/groq-setup-store";
+import { scratchSuffix } from "@/lib/unique-id";
 
 const log = createLogger("chat-composer");
 const EMPTY_GUIDANCE: QueuedGuidance[] = [];
@@ -155,7 +157,7 @@ function safePastedFileName(file: File, index: number) {
   const base =
     file.name && file.name !== "image.png"
       ? file.name.replace(/\.[^.]+$/, "")
-      : `paste-${Date.now()}-${index + 1}`;
+      : `paste-${scratchSuffix()}-${index + 1}`;
   return `${base.replace(/[^a-zA-Z0-9._-]/g, "_")}.${ext}`;
 }
 
@@ -1061,11 +1063,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
 
   const buildPinnedContextForFile = useCallback(
     async (file: ProjectFile): Promise<PinnedContext> => {
-      const isTextFile =
-        file.type === "tex" ||
-        file.type === "bib" ||
-        file.type === "style" ||
-        file.type === "other";
+      const isTextFile = isTextContent(file.type);
 
       return {
         label: `@${file.relativePath}`,
@@ -1480,7 +1478,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
             }
             const fullPath = await join(
               tempRoot,
-              `${Date.now()}-${index + 1}-${fileName}`,
+              `${scratchSuffix()}-${index + 1}-${fileName}`,
             );
             const buffer = await file.arrayBuffer();
             await writeFile(fullPath, new Uint8Array(buffer));
@@ -1511,7 +1509,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
         let fileName = file.name;
         if (!fileName || fileName === "image.png") {
           const ext = file.type.split("/")[1] || "png";
-          fileName = `paste-${Date.now()}.${ext}`;
+          fileName = `paste-${scratchSuffix()}.${ext}`;
         }
 
         const targetName = `attachments/${fileName}`;

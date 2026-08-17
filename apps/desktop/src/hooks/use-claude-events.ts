@@ -12,7 +12,8 @@ import { useHistoryStore } from "@/stores/history-store";
 import { useProposedChangesStore } from "@/stores/proposed-changes-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { readTexFileContent } from "@/lib/tauri/fs";
-import { compileLatex, formatCompileError } from "@/lib/latex-compiler";
+import { formatCompileError } from "@/lib/latex-compiler";
+import { compileTargetToPdf } from "@/lib/project-compile";
 import { resolveActiveCompileTarget } from "@/lib/compile-root-preference";
 import { createLogger } from "@/lib/debug/logger";
 import { getChatLabels } from "@/lib/chat-labels";
@@ -541,16 +542,17 @@ export function useClaudeEvents() {
           files,
         );
         if (resolved) {
-          const { rootId, targetPath } = resolved;
+          const { rootId, targetPath, engine } = resolved;
           useDocumentStore.getState().setIsCompiling(true);
           useDocumentStore.getState().setPendingRecompile(false);
           try {
             await useDocumentStore.getState().saveAllFiles();
             const texlive =
               useSettingsStore.getState().compilerBackend === "texlive";
-            const pdfData = await compileLatex(
+            const pdfData = await compileTargetToPdf(
               projectRoot,
               targetPath,
+              engine,
               texlive,
             );
             useDocumentStore.getState().setPdfData(pdfData, rootId);

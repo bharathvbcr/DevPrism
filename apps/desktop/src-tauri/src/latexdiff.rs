@@ -1,5 +1,13 @@
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
+use std::time::Duration;
+
+use crate::proc::{run_with_timeout, succeeds_within};
+
+/// latexdiff is a Perl script over two files; it should never take long, but an
+/// unbounded wait would hold a blocking-pool thread for the session.
+const LATEXDIFF_TIMEOUT: Duration = Duration::from_secs(60);
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Windows CREATE_NO_WINDOW flag to keep a console window from flashing when
 /// spawning the latexdiff child process from the GUI app.
@@ -35,13 +43,9 @@ fn detect_latexdiff_blocking() -> bool {
     let Some(bin) = latexdiff_binary() else {
         return false;
     };
-    latexdiff_command(&bin)
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    let mut cmd = latexdiff_command(&bin);
+    cmd.arg("--version");
+    succeeds_within(cmd, PROBE_TIMEOUT)
 }
 
 /// Report whether the `latexdiff` tool is available. When false the frontend
@@ -77,13 +81,9 @@ fn run_latexdiff(old_content: String, new_content: String) -> Result<String, Str
     // mangled by an auto-detected 8-bit encoding. Default markup: \DIFadd (blue,
     // underlined) / \DIFdel (red, struck); latexdiff emits its own preamble so
     // the result compiles as-is.
-    let output = latexdiff_command(&bin)
-        .arg("--encoding=utf8")
-        .arg(&old_path)
-        .arg(&new_path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output();
+    let mut cmd = latexdiff_command(&bin);
+    cmd.arg("--encoding=utf8").arg(&old_path).arg(&new_path);
+    let output = run_with_timeout(cmd, LATEXDIFF_TIMEOUT);
 
     // `dir` (TempDir) is dropped at end of scope, removing the scratch files.
     match output {
@@ -94,7 +94,40 @@ fn run_latexdiff(old_content: String, new_content: String) -> Result<String, Str
             let stderr = String::from_utf8_lossy(&out.stderr);
             Err(format!("latexdiff failed:\n{}", tail_lines(stderr.trim(), 15)))
         }
-        Err(e) => Err(format!("Failed to run latexdiff: {}", e)),
+        Err(e) => Err(e.to_message("latexdiff")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tail_lines_keeps_the_last_n() {
+        assert_eq!(tail_lines("a\nb\nc\nd", 2), "c\nd");
+        assert_eq!(tail_lines("only", 5), "only");
+        assert_eq!(tail_lines("", 5), "");
+        // Fewer lines than requested must not panic on the slice.
+        assert_eq!(tail_lines("a\nb", 100), "a\nb");
+    }
+
+    #[test]
+    fn detection_is_bounded_and_never_panics() {
+        // Whether latexdiff exists here is irrelevant; this must return either
+        // way, promptly, rather than hanging or unwrapping a missing binary.
+        let started = std::time::Instant::now();
+        let _ = detect_latexdiff_blocking();
+        assert!(started.elapsed() < Duration::from_secs(30));
+    }
+
+    #[test]
+    fn missing_latexdiff_is_an_error_not_a_panic() {
+        // When the binary is absent the command must fail cleanly so the
+        // frontend can fall back to its self-contained markup generator.
+        if latexdiff_binary().is_none() {
+            let err = run_latexdiff("a".into(), "b".into()).unwrap_err();
+            assert!(err.contains("latexdiff not found"), "{err}");
+        }
     }
 }
 

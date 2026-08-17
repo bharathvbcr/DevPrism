@@ -247,13 +247,13 @@ export function MatchReportPanel({
         </div>
       )}
 
-      {report.repairs.length > 0 && (
+      {(report.repairs?.length ?? 0) > 0 && (
         <div className="space-y-1">
           <h3 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
             Repairs
           </h3>
           <ul className="space-y-1 text-muted-foreground text-xs">
-            {report.repairs.map((r) => (
+            {report.repairs?.map((r) => (
               <li key={r}>• {r}</li>
             ))}
           </ul>

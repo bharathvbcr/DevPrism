@@ -81,6 +81,17 @@ export interface ExperienceBlock {
   domains: string[];
   skills: SkillTag[];
   seniorityLevel: SeniorityLevel;
+  /** City / region shown on the entry's second line, e.g. "Remote". */
+  location?: string;
+  /** Optional link for the org name (company site, repo, publication DOI). */
+  url?: string;
+  /** Display text for `url`; defaults to the URL itself. */
+  urlLabel?: string;
+  /**
+   * Trailing detail line: GPA, honors, coursework, awards.
+   * Rendered under the entry's bullets.
+   */
+  extra?: string;
   bullets: Bullet[];
   /** Raw knowledge pool ("10+ points") for JD-tailored distillation. */
   facts: BlockFact[];

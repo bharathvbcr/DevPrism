@@ -87,6 +87,18 @@ pub struct ExperienceBlock {
     #[serde(default)]
     pub skills: Vec<SkillTag>,
     pub seniority_level: String,
+    /// City / region shown on the entry's second line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+    /// Optional link for the org name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Display text for `url`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url_label: Option<String>,
+    /// Trailing detail line: GPA, honors, coursework, awards.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra: Option<String>,
     #[serde(default)]
     pub bullets: Vec<Bullet>,
     /// Raw knowledge pool for JD-tailored distillation.
@@ -696,6 +708,10 @@ mod tests {
                 years: Some(5.0),
             }],
             seniority_level: "senior".into(),
+            location: None,
+            url: None,
+            url_label: None,
+            extra: None,
             bullets: vec![Bullet {
                 id: "b1".into(),
                 canonical: "Built X".into(),
@@ -744,7 +760,7 @@ mod tests {
             id: "custom_ops".into(),
             label: "Ops".into(),
             skill_weights: serde_json::Map::new(),
-            default_template_id: "ats-single-column".into(),
+            default_template_id: "typst-ats-single-column".into(),
             section_order: vec!["experience".into()],
             tone_directive: "".into(),
         };
@@ -776,6 +792,10 @@ mod tests {
             domains: vec![],
             skills: vec![],
             seniority_level: "senior".into(),
+            location: None,
+            url: None,
+            url_label: None,
+            extra: None,
             bullets: vec![Bullet {
                 id: "bullet_orphan".into(),
                 canonical: "Built Y".into(),

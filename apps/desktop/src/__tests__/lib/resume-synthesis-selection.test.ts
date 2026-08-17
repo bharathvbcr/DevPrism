@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ExperienceBlock } from "@/lib/career/types";
-import { ATS_RESUME_TEMPLATE } from "@/lib/resume-templates";
+import { TYPST_ATS_SINGLE_TEMPLATE } from "@/lib/resume-templates";
 import {
   assertBudgetInvariants,
   budgetFromTemplate,
@@ -90,11 +90,13 @@ describe("estimateBlockLines", () => {
 
 describe("budgetFromTemplate overhead", () => {
   it("subtracts fixed overhead from totalLines", () => {
-    const b = budgetFromTemplate(ATS_RESUME_TEMPLATE.budget);
+    const b = budgetFromTemplate(TYPST_ATS_SINGLE_TEMPLATE.budget);
     expect(b.totalLines).toBe(
-      ATS_RESUME_TEMPLATE.budget.totalLines - BUDGET_FIXED_OVERHEAD_LINES,
+      TYPST_ATS_SINGLE_TEMPLATE.budget.totalLines - BUDGET_FIXED_OVERHEAD_LINES,
     );
-    expect(b.totalLines).toBeLessThan(ATS_RESUME_TEMPLATE.budget.totalLines);
+    expect(b.totalLines).toBeLessThan(
+      TYPST_ATS_SINGLE_TEMPLATE.budget.totalLines,
+    );
   });
 });
 
@@ -107,11 +109,18 @@ describe("knapsackSelect budget invariants", () => {
       makeBlock("d", { score: 0.6 }),
       makeBlock("e", { score: 0.5 }),
     ];
-    const { selected } = knapsackSelect(scored, ATS_RESUME_TEMPLATE.budget, []);
-    const check = assertBudgetInvariants(selected, ATS_RESUME_TEMPLATE.budget);
+    const { selected } = knapsackSelect(
+      scored,
+      TYPST_ATS_SINGLE_TEMPLATE.budget,
+      [],
+    );
+    const check = assertBudgetInvariants(
+      selected,
+      TYPST_ATS_SINGLE_TEMPLATE.budget,
+    );
     expect(check.ok).toBe(true);
     expect(selected.length).toBeLessThanOrEqual(
-      ATS_RESUME_TEMPLATE.budget.blocksPerSection.experience ?? 3,
+      TYPST_ATS_SINGLE_TEMPLATE.budget.blocksPerSection.experience ?? 3,
     );
   });
 
@@ -121,7 +130,11 @@ describe("knapsackSelect budget invariants", () => {
       makeBlock("b", { score: 0.85, org: "Acme" }),
       makeBlock("c", { score: 0.7, org: "Beta" }),
     ];
-    const { selected } = knapsackSelect(scored, ATS_RESUME_TEMPLATE.budget, []);
+    const { selected } = knapsackSelect(
+      scored,
+      TYPST_ATS_SINGLE_TEMPLATE.budget,
+      [],
+    );
     const acme = selected.filter((s) => s.block.org === "Acme");
     expect(acme).toHaveLength(1);
     expect(acme[0]!.block.id).toBe("a");
@@ -190,8 +203,8 @@ describe("knapsackSelect budget invariants", () => {
       makeBlock("b", { score: 0.8 }),
       makeBlock("c", { score: 0.7 }),
     ];
-    const r1 = knapsackSelect(scored, ATS_RESUME_TEMPLATE.budget, []);
-    const r2 = knapsackSelect(scored, ATS_RESUME_TEMPLATE.budget, []);
+    const r1 = knapsackSelect(scored, TYPST_ATS_SINGLE_TEMPLATE.budget, []);
+    const r2 = knapsackSelect(scored, TYPST_ATS_SINGLE_TEMPLATE.budget, []);
     expect(r1.selected.map((s) => s.block.id)).toEqual(
       r2.selected.map((s) => s.block.id),
     );

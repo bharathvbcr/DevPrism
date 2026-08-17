@@ -21,6 +21,8 @@ import { canUseAiAssist } from "@/lib/ai-assist";
 import { writeTexFileContent, deleteFileFromDisk, join } from "@/lib/tauri/fs";
 import { cn } from "@/lib/utils";
 import { showWorkspaceError } from "@/stores/workspace-banner-store";
+import { isCompilableSource } from "@/lib/tauri/fs";
+import { scratchSuffix } from "@/lib/unique-id";
 
 type ExportFormat = "docx" | "html" | "markdown";
 
@@ -54,7 +56,9 @@ export function ExportMenu() {
   const [busy, setBusy] = useState(false);
   const [withAbstract, setWithAbstract] = useState(false);
   const projectRoot = useDocumentStore((s) => s.projectRoot);
-  const hasTex = useDocumentStore((s) => s.files.some((f) => f.type === "tex"));
+  const hasTex = useDocumentStore((s) =>
+    s.files.some((f) => isCompilableSource(f.type)),
+  );
   const aiSummarize = useSettingsStore((s) => s.aiSummarize);
 
   const canAbstract = aiSummarize && canUseAiAssist();
@@ -120,7 +124,7 @@ export function ExportMenu() {
             const dir = target.targetPath.includes("/")
               ? target.targetPath.slice(0, target.targetPath.lastIndexOf("/"))
               : "";
-            const fileName = `.devprism-export-${Date.now()}.tex`;
+            const fileName = `.devprism-export-${scratchSuffix()}.tex`;
             tempRelPath = dir ? `${dir}/${fileName}` : fileName;
             tempAbsPath = await join(root, tempRelPath);
             await writeTexFileContent(tempAbsPath, augmented);

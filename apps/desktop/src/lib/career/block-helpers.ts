@@ -114,7 +114,7 @@ export function createEmptyPersona(overrides: Partial<Persona> = {}): Persona {
     id: newCareerId("persona"),
     label: "New persona",
     skillWeights: {},
-    defaultTemplateId: "ats-single-column",
+    defaultTemplateId: "typst-ats-single-column",
     sectionOrder: [
       "experience",
       "projects",

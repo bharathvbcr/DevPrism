@@ -1,9 +1,15 @@
 import { resolveTexRoot, type ProjectFile } from "@/stores/document-store";
+import {
+  parseTypstImports,
+  resolveTypstImport,
+  resolveTypstRoot,
+} from "@/lib/typst-project";
 import { useSettingsStore } from "@/stores/settings-store";
 import {
   listCompileRoots,
   resolveCompileTarget,
-} from "@/lib/latex-compiler";
+  type CompileTarget,
+} from "@/lib/compile-targets";
 
 export const FOLLOW_EDITOR_COMPILE_ROOT = "__follow_editor__";
 
@@ -45,6 +51,10 @@ export function resolvePreviewCompileRoot(
   if (hasPinnedCompileRoot(projectRoot, files)) {
     return getCompileRootPreference(projectRoot!)!;
   }
+  const active = files.find((f) => f.id === activeFileId);
+  if (active?.type === "typst") {
+    return resolveTypstRoot(activeFileId, files);
+  }
   return resolveTexRoot(activeFileId, files);
 }
 
@@ -53,7 +63,7 @@ export function resolveActiveCompileTarget(
   projectRoot: string | null,
   activeFileId: string,
   files: ProjectFile[],
-): { rootId: string; targetPath: string } | null {
+): CompileTarget | null {
   const preferred = projectRoot ? getCompileRootPreference(projectRoot) : null;
   return resolveCompileTarget(activeFileId, files, preferred);
 }
@@ -99,6 +109,32 @@ export function collectTransitiveTexInputs(
   return visited;
 }
 
+/** All .typ files transitively #import'ed / #include'd from a compile root. */
+export function collectTransitiveTypstImports(
+  rootId: string,
+  files: ProjectFile[],
+): Set<string> {
+  const byPath = new Map(
+    files.filter((f) => f.type === "typst").map((f) => [f.relativePath, f]),
+  );
+  const visited = new Set<string>();
+  const queue = [rootId];
+  while (queue.length > 0) {
+    const id = queue.pop()!;
+    if (visited.has(id)) continue;
+    visited.add(id);
+    const file = files.find((f) => f.id === id);
+    if (!file?.content || file.type !== "typst") continue;
+    for (const raw of parseTypstImports(file.content)) {
+      const resolved = resolveTypstImport(file.relativePath, raw);
+      if (!resolved) continue;
+      const child = byPath.get(resolved) ?? byPath.get(`${resolved}.typ`);
+      if (child && !visited.has(child.id)) queue.push(child.id);
+    }
+  }
+  return visited;
+}
+
 /**
  * Whether an edited file can affect the PDF for a given compile root.
  * Used to skip auto-recompile when the pinned target is unrelated to the edit.
@@ -119,6 +155,13 @@ export function fileAffectsCompileRoot(
       return true;
     }
     return resolveTexRoot(editedFileId, files) === targetRootId;
+  }
+
+  if (edited.type === "typst") {
+    if (collectTransitiveTypstImports(targetRootId, files).has(editedFileId)) {
+      return true;
+    }
+    return resolveTypstRoot(editedFileId, files) === targetRootId;
   }
 
   const root = files.find((f) => f.id === targetRootId);

@@ -39,6 +39,57 @@ Three layers:
 | **2 — Context integration** | Heading-aware chunking → `aiEmbed` → sqlite-vec ANN with cosine fallback; fact embeddings; tag-only degradation |
 | **3 — RAG / inference** | Seven-stage `synthesizeResume` (+ stage 3b gap analysis, stage 5 distill & rewrite) → optional `materializeSynthesis` |
 
+
+## Engine
+
+**Typst is the only resume engine.** The LaTeX resume path (`ats-single-column`,
+`ats-two-column`, `latex-escape.ts`, the compile-repair loop and
+`career_verify_compile`) was removed once Typst proved better on every axis:
+
+| | Typst (now) | LaTeX resume path (removed) |
+|---|---|---|
+| Command | `career_typst_compile` | `career_verify_compile` |
+| Execution | in-process crate | app binary re-spawned as a Tectonic subprocess |
+| Warm compile | **0.6 ms** | subprocess + cold temp dir every call |
+| Text safety | code-mode string literals — injection impossible by construction | escaped into markup; needed bisect/repair |
+| Repair loop | none needed | render -> verify -> bisect -> revert -> retry |
+| PDF | tagged (PDF/UA-capable) | untagged |
+
+Templates: `typst-ats-single-column`, `typst-ats-two-column`
+(`apps/desktop/src/lib/resume-templates/typst-ats.ts`).
+Engine: `apps/desktop/src-tauri/src/career_typst/`.
+
+**Legacy ids.** Personas are rewritten on career-DB open
+(`migrate_persona_templates`); `canonicalTemplateId` additionally maps
+`ats-single-column` / `ats-two-column` onto their Typst replacements so a
+stored run never fails with "Unknown resume template". Stored runs keep their
+original LaTeX `tex`, and materialization writes `.tex` for them.
+
+**Code-mode invariant.** Every AI/user value is emitted as a Typst string
+literal inside the document's single `#{ … }` block. Literals are only
+literals in code mode — in markup `#` still opens code mode. See
+`typst-escape.ts`, `assertCodeModeOnly`, and the Rust test
+`markup_splicing_is_unsafe_which_is_why_we_use_code_mode`.
+
+**Workspace editing.** `.typ` is a first-class `ProjectFileType` (not `tex` —
+SyncTeX, latexdiff and the rich editor are LaTeX-only and must not receive
+Typst). `lib/compile-targets.ts` is the single owner of "which document builds,
+with which engine"; `compileTargetToPdf` in `lib/project-compile.ts` is the
+single dispatch point. Typst roots come from an import graph
+(`lib/typst-project.ts`) since Typst has no `\documentclass` marker. Editor
+highlighting is a hand-written `StreamLanguage` in `lib/editor/typst-language.ts`
+(no CodeMirror 6 Typst grammar exists on npm).
+
+Still LaTeX-only, by nature: SyncTeX forward/inverse sync, latexdiff
+track-changes export, the rich (Word-like) editor, compile profiles, and the
+LaTeX autocomplete/linter.
+
+**Cross-language fixtures.** `npx vitest run
+src/__tests__/lib/typst-fixtures.emit.test.ts` writes the documents the TS
+templates actually emit into `src-tauri/tests/fixtures/typst/`; the Rust test
+`rendered_fixtures_compile` compiles all of them. This is the only check that
+the renderer and the compiler agree.
+
 ---
 
 ## Layer 1 — Master Career Database

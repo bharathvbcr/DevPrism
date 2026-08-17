@@ -202,7 +202,14 @@ export function CareerSynthesizeTab() {
       const tex = extractStoredRunTex(runRow.reportJson);
       const storedEvents = extractStoredRunEvents(runRow.reportJson);
       const compileMeta = extractStoredCompileMeta(runRow.reportJson);
-      openStoredReport(runRow.id, parsed, tex, storedEvents, compileMeta);
+      openStoredReport(
+        runRow.id,
+        runRow.templateId,
+        parsed,
+        tex,
+        storedEvents,
+        compileMeta,
+      );
       setActivityExpanded(true);
       if (!opts?.silent) {
         toast.success(

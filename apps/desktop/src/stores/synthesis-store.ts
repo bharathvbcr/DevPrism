@@ -62,6 +62,8 @@ interface SynthesisState {
    */
   openStoredReport: (
     runId: string,
+    /** Template the run used — needed to rematerialize with the right engine. */
+    templateId: string,
     report: MatchReport,
     tex?: string | null,
     events?: RunEvent[] | null,
@@ -186,7 +188,7 @@ export const useSynthesisStore = create<SynthesisState>((set, get) => ({
     abortController.abort();
   },
 
-  openStoredReport: (runId, report, tex, events, compile) => {
+  openStoredReport: (runId, templateId, report, tex, events, compile) => {
     const hasTex = typeof tex === "string" && tex.trim().length > 0;
     const compileOk = compile?.compileOk ?? true;
     const compileSummary =
@@ -205,6 +207,7 @@ export const useSynthesisStore = create<SynthesisState>((set, get) => ({
       result: hasTex
         ? {
             runId,
+            templateId,
             tex: tex!,
             content: {
               header: {

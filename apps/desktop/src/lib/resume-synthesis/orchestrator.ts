@@ -861,6 +861,7 @@ function defaultDeps(): SynthesisDeps {
           summary: result.result.summary,
         },
         pdfBytes: result.pdfBytes ?? null,
+        pageCount: result.pageCount,
       };
     },
   };
@@ -1618,7 +1619,9 @@ export async function synthesizeResume(
     summary,
   );
 
-  const compileResult = await deps.compile(template, content, {
+  let adjustedDrafts = finalDrafts;
+  let finalContent = content;
+  let finalCompileResult = await deps.compile(template, content, {
     sectionOrder: persona.sectionOrder as SectionKind[],
     signal,
     onAttempt: (detail, attempt) => {
@@ -1644,23 +1647,99 @@ export async function synthesizeResume(
       });
     },
   });
+
+  // Stage 7.5: Closed-loop layout verification & auto-condense
+  const targetPages = template.budget.totalLines > 60 ? 2 : 1;
+  if (
+    finalCompileResult.result.success &&
+    finalCompileResult.pageCount != null &&
+    finalCompileResult.pageCount > targetPages
+  ) {
+    emit(onProgress, {
+      id: "assembling",
+      label: "Assembling LaTeX and verifying compile",
+      detail: `Layout spillover (${finalCompileResult.pageCount} pages vs ${targetPages} target) — auto-condensing…`,
+      progress: 0.94,
+      partialReport: withTimings({
+        ...partialReport,
+        critique,
+      }),
+    });
+
+    let condensedCount = 0;
+    const workingDrafts = adjustedDrafts.map((d) => ({
+      ...d,
+      bullets: d.bullets.map((b) => ({ ...b })),
+    }));
+
+    // Find blocks with >1 bullet, sorted by block score ascending
+    const sortable = [...workingDrafts].sort((a, b) => a.score - b.score);
+    for (const d of sortable) {
+      if (d.bullets.length > 1) {
+        // Try trimming the last bullet of this lower-priority block
+        const lastBullet = d.bullets[d.bullets.length - 1]!;
+        if (
+          !lastBullet.usedCanonical ||
+          (lastBullet.sourceFactIds?.length ?? 0) > 0
+        ) {
+          d.bullets.pop();
+          condensedCount++;
+        }
+      }
+      if (condensedCount >= 2) break;
+    }
+
+    if (condensedCount > 0) {
+      const condensedContent = draftsToContent(
+        workingDrafts,
+        contentHeader,
+        profile,
+        persona.sectionOrder as SectionKind[],
+        summary,
+      );
+
+      const recompile = await deps.compile(template, condensedContent, {
+        sectionOrder: persona.sectionOrder as SectionKind[],
+        signal,
+      });
+
+      if (
+        recompile.result.success &&
+        recompile.pageCount != null &&
+        recompile.pageCount <= targetPages
+      ) {
+        adjustedDrafts = workingDrafts;
+        finalContent = condensedContent;
+        finalCompileResult = recompile;
+        const msg = `Layout auto-condensed: pruned ${condensedCount} trailing bullet(s) to guarantee strict ${targetPages}-page fit.`;
+        notices.push(msg);
+        pushEvent({
+          type: "stage-finish",
+          stage: "assembling",
+          at: Date.now(),
+          detail: msg,
+        });
+      }
+    }
+  }
+
   recordTiming(stageTimingsMs, "assembling", tAssemble);
   pushEvent({
     type: "stage-finish",
     stage: "assembling",
     at: Date.now(),
     durationMs: stageTimingsMs.assembling ?? 0,
-    detail: compileResult.result.success
+    detail: finalCompileResult.result.success
       ? "Compile verified"
       : "Compile needs review",
   });
   throwIfAborted(signal);
 
-  const selectedIds = new Set(finalDrafts.map((d) => d.block.id));
+  const selectedIds = new Set(adjustedDrafts.map((d) => d.block.id));
   const mustHaveCoverage = buildMustHaveCoverage(
     profile.mustHaveSkills,
     selected.map((s) => s.block),
-    finalDrafts,
+    adjustedDrafts,
   );
   // Recompute uncovered status from final coverage.
   for (const row of mustHaveCoverage) {
@@ -1670,7 +1749,7 @@ export async function synthesizeResume(
         : "uncovered";
   }
 
-  const honesty = summarizeRewriteHonesty(finalDrafts);
+  const honesty = summarizeRewriteHonesty(adjustedDrafts);
   const report = buildMatchReport(
     scored,
     selectedIds,
@@ -1697,10 +1776,10 @@ export async function synthesizeResume(
       // Persist tex + coalesced events + compile status for rematerialization / activity replay.
       reportJson: {
         ...report,
-        tex: compileResult.tex,
+        tex: finalCompileResult.tex,
         events: coalesceRunEventsForPersistence(runEvents),
-        compileOk: compileResult.result.success,
-        compileSummary: compileResult.result.summary,
+        compileOk: finalCompileResult.result.success,
+        compileSummary: finalCompileResult.result.summary,
       },
       createdAt: Date.now(),
     });
@@ -1714,7 +1793,7 @@ export async function synthesizeResume(
   emit(onProgress, {
     id: "done",
     label: "Synthesis complete",
-    detail: compileResult.result.success
+    detail: finalCompileResult.result.success
       ? "Compile verified"
       : "Compile needs review",
     progress: 1,
@@ -1724,11 +1803,11 @@ export async function synthesizeResume(
   return {
     runId: persistedRunId,
     templateId,
-    tex: compileResult.tex,
-    content: compileResult.content,
+    tex: finalCompileResult.tex,
+    content: finalContent,
     report,
-    compileOk: compileResult.result.success,
-    compileSummary: compileResult.result.summary,
-    pdfBytes: compileResult.pdfBytes ?? null,
+    compileOk: finalCompileResult.result.success,
+    compileSummary: finalCompileResult.result.summary,
+    pdfBytes: finalCompileResult.pdfBytes ?? null,
   };
 }

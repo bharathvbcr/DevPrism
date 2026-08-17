@@ -96,6 +96,7 @@ export {
   enforceFactOnlyInvariants,
   hasForbiddenLatex,
   hasProvenance,
+  metricPreservedInText,
   metricsFromProvenance,
   metricsPreserved,
   metricsValuesPreserved,
@@ -143,6 +144,7 @@ export {
   repairProgrammatic,
   runCritic,
   runProgrammaticChecks,
+  runQualityChecks,
   validateCriticOut,
   type CriticLlmOut,
 } from "./critic";

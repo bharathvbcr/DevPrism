@@ -46,6 +46,7 @@ export {
   distillFactsFromNotes,
   parseDistilledFacts,
 } from "./distill-facts";
+export * from "../mcp";
 
 export function listBlocks(
   missingEmbeddingsOnly = false,

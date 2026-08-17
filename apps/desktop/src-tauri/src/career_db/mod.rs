@@ -2,9 +2,9 @@
 //!
 //! DB path: `dirs::config_dir()/DevPrism/career.db`
 
-mod ingest;
-mod schema;
-mod vectors;
+pub(crate) mod ingest;
+pub(crate) mod schema;
+pub(crate) mod vectors;
 
 use ingest::{IngestReport, KbChunkRow, KbSourceRow, PreparedSource};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-use vectors::{ScoredHit, SearchFilter};
+pub(crate) use vectors::{ScoredHit, SearchFilter};
 
 // --- Domain types (camelCase JSON, mirrored in apps/desktop/src/lib/career/types.ts) ---
 
@@ -178,7 +178,7 @@ impl CareerDbState {
         }
     }
 
-    fn with_conn<F, T>(&self, f: F) -> Result<T, String>
+    pub fn with_conn<F, T>(&self, f: F) -> Result<T, String>
     where
         F: FnOnce(&Connection) -> Result<T, String>,
     {
@@ -233,7 +233,7 @@ fn parse_updated_at_ms(updated_at: &str) -> i64 {
 
 // --- Blocking helpers ---
 
-fn list_blocks_blocking(
+pub(crate) fn list_blocks_blocking(
     conn: &Connection,
     missing_embeddings_only: bool,
 ) -> Result<Vec<ExperienceBlock>, String> {
@@ -261,7 +261,7 @@ fn list_blocks_blocking(
     Ok(out)
 }
 
-fn upsert_block_blocking(conn: &Connection, block: &ExperienceBlock) -> Result<(), String> {
+pub(crate) fn upsert_block_blocking(conn: &Connection, block: &ExperienceBlock) -> Result<(), String> {
     let json =
         serde_json::to_string(block).map_err(|e| format!("Failed to serialize block: {e}"))?;
     let updated_at = parse_updated_at_ms(&block.updated_at);
@@ -274,7 +274,7 @@ fn upsert_block_blocking(conn: &Connection, block: &ExperienceBlock) -> Result<(
     Ok(())
 }
 
-fn delete_block_blocking(conn: &Connection, id: &str) -> Result<(), String> {
+pub(crate) fn delete_block_blocking(conn: &Connection, id: &str) -> Result<(), String> {
     // Collect child bullet + fact ids from block JSON before deleting the row.
     let block_json: Option<String> = conn
         .query_row(
@@ -322,7 +322,7 @@ fn delete_block_blocking(conn: &Connection, id: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn list_personas_blocking(conn: &Connection) -> Result<Vec<Persona>, String> {
+pub(crate) fn list_personas_blocking(conn: &Connection) -> Result<Vec<Persona>, String> {
     let mut stmt = conn
         .prepare("SELECT json FROM personas ORDER BY id ASC")
         .map_err(|e| format!("Failed to prepare list personas: {e}"))?;
@@ -339,7 +339,7 @@ fn list_personas_blocking(conn: &Connection) -> Result<Vec<Persona>, String> {
     Ok(out)
 }
 
-fn upsert_persona_blocking(conn: &Connection, persona: &Persona) -> Result<(), String> {
+pub(crate) fn upsert_persona_blocking(conn: &Connection, persona: &Persona) -> Result<(), String> {
     let json =
         serde_json::to_string(persona).map_err(|e| format!("Failed to serialize persona: {e}"))?;
     conn.execute(
@@ -358,7 +358,7 @@ fn is_seeded_persona_id(id: &str) -> bool {
     SEEDED_PERSONA_IDS.iter().any(|s| *s == id)
 }
 
-fn delete_persona_blocking(conn: &Connection, id: &str) -> Result<(), String> {
+pub(crate) fn delete_persona_blocking(conn: &Connection, id: &str) -> Result<(), String> {
     if is_seeded_persona_id(id) {
         return Err(format!(
             "Cannot delete built-in persona '{id}'. Create a custom persona instead."
@@ -373,7 +373,7 @@ fn delete_persona_blocking(conn: &Connection, id: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn store_embeddings_blocking(conn: &Connection, items: &[EmbeddingItem]) -> Result<(), String> {
+pub(crate) fn store_embeddings_blocking(conn: &Connection, items: &[EmbeddingItem]) -> Result<(), String> {
     for item in items {
         let blob = vectors::pack_f32_le(&item.vec);
         let dim = item.vec.len() as i64;
@@ -403,7 +403,7 @@ fn store_embeddings_blocking(conn: &Connection, items: &[EmbeddingItem]) -> Resu
     Ok(())
 }
 
-fn save_run_blocking(conn: &Connection, run: &SynthesisRun) -> Result<(), String> {
+pub(crate) fn save_run_blocking(conn: &Connection, run: &SynthesisRun) -> Result<(), String> {
     let report = serde_json::to_string(&run.report_json)
         .map_err(|e| format!("Failed to serialize run report: {e}"))?;
     let created_at = if run.created_at > 0 {
@@ -433,7 +433,7 @@ fn save_run_blocking(conn: &Connection, run: &SynthesisRun) -> Result<(), String
     Ok(())
 }
 
-fn list_runs_blocking(conn: &Connection) -> Result<Vec<SynthesisRun>, String> {
+pub(crate) fn list_runs_blocking(conn: &Connection) -> Result<Vec<SynthesisRun>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT id, jd_hash, persona_id, template_id, report_json, created_at

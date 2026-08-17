@@ -8,6 +8,7 @@ import {
   enforceBulletInvariants,
   enforceFactOnlyInvariants,
   hasForbiddenLatex,
+  metricPreservedInText,
   validateRewriteBlockOut,
   type RewriteBlockOut,
 } from "./rewrite";
@@ -93,6 +94,56 @@ export function computeAtsCoveragePct(
   return Math.round((100 * hits) / keywords.length);
 }
 
+const WEAK_VERB_PATTERNS = [
+  /^(?:responsible for|was responsible for)\b/i,
+  /^(?:helped with|assisted with|assisted in|assisted)\b/i,
+  /^(?:worked on|worked with|worked as)\b/i,
+  /^(?:tasked with|involved in|participated in)\b/i,
+  /^(?:supported the|contributed to)\b/i,
+  /^(?:handled|did|made)\b/i,
+];
+
+/**
+ * Programmatic linguistic and structural quality linting.
+ * Evaluates action verb strength, Google X-Y-Z formulation indicators,
+ * and repetitive starting verbs.
+ */
+export function runQualityChecks(drafts: RewrittenBlockDraft[]): string[] {
+  const qualityFlags: string[] = [];
+  for (const d of drafts) {
+    let prevFirstWord = "";
+    for (const b of d.bullets) {
+      const text = b.text.trim();
+      if (!text) continue;
+
+      // 1. Weak action verbs
+      for (const pattern of WEAK_VERB_PATTERNS) {
+        if (pattern.test(text)) {
+          qualityFlags.push(`${d.block.id}:${b.id}:weak-verb`);
+          break;
+        }
+      }
+
+      // 2. Repetitive starting verb across consecutive bullets
+      const firstWord = (text.split(/\s+/)[0] ?? "").toLowerCase();
+      if (firstWord && firstWord.length > 3 && firstWord === prevFirstWord) {
+        qualityFlags.push(`${d.block.id}:${b.id}:repetitive-verb`);
+      }
+      prevFirstWord = firstWord;
+
+      // 3. Google X-Y-Z check: if text contains no numbers/metrics or no active outcome
+      const hasNumberOrMetric =
+        /\d|%|\$|increased|reduced|improved|decreased|accelerated|scaled|cut\b/i.test(
+          text,
+        );
+      if (!hasNumberOrMetric && text.length > 40) {
+        qualityFlags.push(`${d.block.id}:${b.id}:missing-xyz-metric`);
+      }
+    }
+  }
+  return qualityFlags;
+}
+
 function normalizeCriticOut(
   value: CriticLlmOut,
   drafts: RewrittenBlockDraft[],
@@ -112,6 +163,7 @@ function normalizeCriticOut(
         : [],
     })),
     programmaticFlags: [],
+    qualityFlags: [],
   };
 }
 
@@ -142,7 +194,7 @@ export function runProgrammaticChecks(
       ];
       for (const m of required) {
         const v = m.value?.trim();
-        if (v && !rewritten.text.includes(v)) {
+        if (v && !metricPreservedInText(v, rewritten.text)) {
           flags.push(`${d.block.id}:${bullet.id}:metric-lost`);
           break;
         }
@@ -164,6 +216,16 @@ export function runProgrammaticChecks(
       for (const id of factIds) {
         if (!blockFacts.some((f) => f.id === id)) {
           flags.push(`${d.block.id}:${rewritten.id}:invalid-provenance`);
+          break;
+        }
+      }
+      const factMetrics = factIds
+        .map((id) => blockFacts.find((f) => f.id === id))
+        .flatMap((f) => f?.metrics ?? []);
+      for (const m of factMetrics) {
+        const v = m.value?.trim();
+        if (v && !metricPreservedInText(v, rewritten.text)) {
+          flags.push(`${d.block.id}:${rewritten.id}:metric-lost`);
           break;
         }
       }
@@ -245,6 +307,7 @@ export async function runCritic(
   options?: { llmJson?: typeof llmJson },
 ): Promise<CriticResult> {
   const programmaticFlags = runProgrammaticChecks(drafts, 0);
+  const qualityFlags = runQualityChecks(drafts);
   const call = options?.llmJson ?? llmJson;
   const programmaticAts = computeAtsCoveragePct(drafts, profile.atsKeywords);
 
@@ -278,12 +341,14 @@ export async function runCritic(
     });
     const result = normalizeCriticOut(raw, drafts, profile);
     result.programmaticFlags = programmaticFlags;
+    result.qualityFlags = qualityFlags;
     return result;
   } catch {
     return {
       atsCoveragePct: programmaticAts,
       verdicts: [],
       programmaticFlags,
+      qualityFlags,
       llmSkipped: true,
     };
   }
@@ -295,6 +360,7 @@ function findBullet(block: ExperienceBlock, bulletId: string) {
 
 /**
  * Regenerate only flagged bullets (maxRetries), then fall back to canonical.
+ * For fact-only distilled bullets, repair using ground-truth facts or prune if ungrounded.
  * Across rounds, only bullets that are still failing are re-repaired.
  */
 export async function repairFlagged(
@@ -338,10 +404,81 @@ export async function repairFlagged(
       const draft = current.find((d) => d.block.id === v.blockId);
       if (!draft) continue;
       const bullet = findBullet(draft.block, v.bulletId);
+
+      // Handle fact-only distilled bullets
       if (!bullet) {
-        // Fact-only distilled bullet — skip LLM repair; keep as-is.
+        const factBullet = draft.bullets.find((b) => b.id === v.bulletId);
+        if (!factBullet) continue;
+        const blockFacts = draft.block.facts ?? [];
+        const citedFacts = blockFacts.filter((f) =>
+          (factBullet.sourceFactIds ?? []).includes(f.id),
+        );
+        if (citedFacts.length === 0) {
+          // No valid cited facts -> prune ungrounded bullet
+          current = current.map((d) => {
+            if (d.block.id !== v.blockId) return d;
+            return {
+              ...d,
+              bullets: d.bullets.filter((b) => b.id !== v.bulletId),
+            };
+          });
+          continue;
+        }
+
+        try {
+          const out = await call<RewriteBlockOut>({
+            system: `Fix this resume bullet distilled from factual points. Return ONLY JSON {"bullets":[{"id":"${factBullet.id}","text":string}]}.
+Plain text only. Preserve metrics ${JSON.stringify(
+              citedFacts.flatMap((f) => f.metrics.map((m) => m.value)),
+            )} verbatim.
+Do not invent facts beyond the ground truth facts. ≤ ${perBullet} chars.`,
+            prompt: [
+              `Ground truth facts:\n${citedFacts.map((f) => `- ${f.text}`).join("\n")}`,
+              `Previous rewrite: ${factBullet.text}`,
+              `Flags: ${v.flags.join(", ") || "ungrounded"}`,
+              `Evidence:\n${draft.evidence.join("\n") || "(none)"}`,
+              `ATS keywords: ${profile.atsKeywords.join(", ")}`,
+              `Tone: ${persona.toneDirective}`,
+            ].join("\n"),
+            temperature: 0.2,
+            validate: validateRewriteBlockOut,
+            label: `repair:fact:${v.blockId}:${v.bulletId}`,
+          });
+          const text =
+            out.bullets.find((b) => b.id === factBullet.id)?.text ?? "";
+          const fixed = enforceFactOnlyInvariants(
+            text,
+            factBullet.id,
+            perBullet,
+            blockFacts,
+            factBullet.sourceFactIds ?? [],
+          );
+          if (!fixed.usedCanonical && fixed.text) {
+            current = current.map((d) => {
+              if (d.block.id !== v.blockId) return d;
+              return {
+                ...d,
+                bullets: d.bullets.map((b) =>
+                  b.id === factBullet.id ? fixed : b,
+                ),
+              };
+            });
+          } else {
+            stillBad.push(v);
+          }
+        } catch (err) {
+          if (
+            err &&
+            typeof err === "object" &&
+            (err as { name?: string }).name === "AbortError"
+          ) {
+            throw err;
+          }
+          stillBad.push(v);
+        }
         continue;
       }
+
       if (bullet.locked) {
         // Force canonical for locked
         current = current.map((d) => {
@@ -410,13 +547,20 @@ Do not invent facts beyond canonical + evidence. ≤ ${perBullet} chars.`,
 
     pending = stillBad;
     if (pending.length === 0) break;
-    // Final fallback to canonical for remaining
+
+    // Final fallback for remaining failing bullets
     if (attempt === maxRetries - 1) {
       for (const v of pending) {
         current = current.map((d) => {
           if (d.block.id !== v.blockId) return d;
           const bullet = findBullet(d.block, v.bulletId);
-          if (!bullet) return d;
+          if (!bullet) {
+            // Prune ungrounded fact-only bullet on final failed attempt
+            return {
+              ...d,
+              bullets: d.bullets.filter((b) => b.id !== v.bulletId),
+            };
+          }
           return {
             ...d,
             bullets: d.bullets.map((b) =>

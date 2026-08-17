@@ -16,6 +16,7 @@ mod groq_setup;
 mod history;
 pub mod latex;
 pub mod latexdiff;
+pub mod mcp;
 mod native_agent;
 mod personalization;
 mod proc;
@@ -643,6 +644,11 @@ pub fn command_handler(
             career_db::career_vector_search,
             career_db::career_save_run,
             career_db::career_list_runs,
+            mcp::mcp_execute_request,
+            mcp::mcp_list_tools,
+            mcp::mcp_list_resources,
+            mcp::mcp_get_task_status,
+            mcp::mcp_cancel_task,
             detect_editors,
             open_in_editor,
             js_log,
@@ -784,6 +790,7 @@ pub fn run() {
         .manage(zotero::ZoteroOAuthState::default())
         .manage(comments::CommentsWatcherState::default())
         .manage(career_db::CareerDbState::default())
+        .manage(mcp::McpServerState::new(career_db::CareerDbState::default()))
         .setup(|app| {
             // Safety net: force-show the main window after a timeout if the
             // frontend JS never calls `getCurrentWindow().show()`.

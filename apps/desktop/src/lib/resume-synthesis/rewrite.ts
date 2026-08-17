@@ -102,12 +102,149 @@ export function validateDistillBlockOut(
   });
 }
 
-/** Every metric.value must appear verbatim in rewritten text. */
-export function metricsPreserved(
-  canonical: Pick<Bullet, "metrics">,
+const NUMBER_WORDS: Record<string, string> = {
+  "1": "one",
+  "2": "two",
+  "3": "three",
+  "4": "four",
+  "5": "five",
+  "6": "six",
+  "7": "seven",
+  "8": "eight",
+  "9": "nine",
+  "10": "ten",
+};
+
+function escapeRegex(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Robust boundary-aware and synonym-tolerant metric verification.
+ * Checks whether a ground-truth metric (e.g. "18%", "$1.2M", "5", "10k") is preserved
+ * in the synthesized bullet text without allowing scope expansion.
+ */
+export function metricPreservedInText(
+  metricValue: string,
   text: string,
 ): boolean {
-  return metricsValuesPreserved(canonical.metrics, text);
+  const v = metricValue.trim();
+  if (!v) return true;
+
+  // 1. If it's an exact substring, ensure it's boundary-safe for bare numbers.
+  if (text.includes(v)) {
+    if (/^\d+$/.test(v)) {
+      const boundaryRegex = new RegExp(
+        `(?:^|[^\\d,])${escapeRegex(v)}(?:[^\\d,]|$)`,
+        "i",
+      );
+      if (boundaryRegex.test(text)) return true;
+    } else {
+      return true;
+    }
+  }
+
+  const vLower = v.toLowerCase();
+
+  // 2. Percentage checks: e.g. "25%" -> "25 percent", "25 pct", "25.0%"
+  const pctMatch = vLower.match(/^(\d+(?:\.\d+)?)\s*%/);
+  if (pctMatch) {
+    const num = pctMatch[1]!;
+    const numFloat = parseFloat(num);
+    const pctPatterns = [
+      new RegExp(
+        `(?:^|[^\\d,])${escapeRegex(num)}\\s*(?:%|percent|pct|percentage)(?:[^\\w]|$)`,
+        "i",
+      ),
+      new RegExp(
+        `(?:^|[^\\d,])${numFloat.toFixed(1)}\\s*(?:%|percent|pct|percentage)(?:[^\\w]|$)`,
+        "i",
+      ),
+    ];
+    if (pctPatterns.some((p) => p.test(text))) return true;
+  }
+
+  // 3. Multiplier checks: e.g. "5x" -> "5-fold", "5 times", "5X"
+  const multMatch = vLower.match(/^(\d+(?:\.\d+)?)\s*x$/);
+  if (multMatch) {
+    const num = multMatch[1]!;
+    const multPatterns = [
+      new RegExp(
+        `(?:^|[^\\d,])${escapeRegex(num)}\\s*(?:x|-fold|\\s*fold|\\s*times)(?:[^\\w]|$)`,
+        "i",
+      ),
+    ];
+    if (multPatterns.some((p) => p.test(text))) return true;
+  }
+
+  // 4. Currency and magnitude checks: e.g. "$1.2M", "$100K", "$5B"
+  const currMatch = vLower.match(
+    /^(\$|usd\s*|€|£)?\s*(\d+(?:\.\d+)?)\s*(k|m|b|thousand|million|billion)?\s*(usd)?$/,
+  );
+  if (currMatch) {
+    const num = currMatch[2]!;
+    const mag = currMatch[3];
+    const numVal = parseFloat(num);
+
+    if (mag === "m" || mag === "million") {
+      const fullNum = Math.round(numVal * 1_000_000).toLocaleString("en-US");
+      const fullNumPlain = String(Math.round(numVal * 1_000_000));
+      const patterns = [
+        new RegExp(
+          `\\$?\\s*${escapeRegex(num)}\\s*(?:m|million|m\\s*usd)\\b`,
+          "i",
+        ),
+        new RegExp(`\\$?\\s*${escapeRegex(fullNum)}\\b`, "i"),
+        new RegExp(`\\$?\\s*${escapeRegex(fullNumPlain)}\\b`, "i"),
+      ];
+      if (patterns.some((p) => p.test(text))) return true;
+    } else if (mag === "k" || mag === "thousand") {
+      const fullNum = Math.round(numVal * 1_000).toLocaleString("en-US");
+      const fullNumPlain = String(Math.round(numVal * 1_000));
+      const patterns = [
+        new RegExp(
+          `\\$?\\s*${escapeRegex(num)}\\s*(?:k|thousand|k\\s*usd)\\b`,
+          "i",
+        ),
+        new RegExp(`\\$?\\s*${escapeRegex(fullNum)}\\b`, "i"),
+        new RegExp(`\\$?\\s*${escapeRegex(fullNumPlain)}\\b`, "i"),
+      ];
+      if (patterns.some((p) => p.test(text))) return true;
+    } else if (mag === "b" || mag === "billion") {
+      const fullNum = Math.round(numVal * 1_000_000_000).toLocaleString(
+        "en-US",
+      );
+      const patterns = [
+        new RegExp(
+          `\\$?\\s*${escapeRegex(num)}\\s*(?:b|billion|b\\s*usd)\\b`,
+          "i",
+        ),
+        new RegExp(`\\$?\\s*${escapeRegex(fullNum)}\\b`, "i"),
+      ];
+      if (patterns.some((p) => p.test(text))) return true;
+    }
+  }
+
+  // 5. Comma-formatted numbers: e.g. "10,000" <-> "10000" <-> "10k"
+  const commaMatch = v.match(/^(\d{1,3}(?:,\d{3})+)$/);
+  if (commaMatch) {
+    const rawDigits = v.replace(/,/g, "");
+    if (
+      new RegExp(`(?:^|[^\\d,])${rawDigits}(?:[^\\d,]|$)`).test(text)
+    ) {
+      return true;
+    }
+    const asK = `${parseInt(rawDigits, 10) / 1000}k`;
+    if (new RegExp(`\\b${asK}\\b`, "i").test(text)) return true;
+  }
+
+  // 6. Number words: "1" -> "one", "5" -> "five", etc.
+  if (/^\d+$/.test(v) && NUMBER_WORDS[v]) {
+    const word = NUMBER_WORDS[v]!;
+    if (new RegExp(`\\b${word}\\b`, "i").test(text)) return true;
+  }
+
+  return false;
 }
 
 export function metricsValuesPreserved(
@@ -117,7 +254,7 @@ export function metricsValuesPreserved(
   for (const m of metrics) {
     const v = m.value?.trim();
     if (!v) continue;
-    if (!text.includes(v)) return false;
+    if (!metricPreservedInText(v, text)) return false;
   }
   return true;
 }

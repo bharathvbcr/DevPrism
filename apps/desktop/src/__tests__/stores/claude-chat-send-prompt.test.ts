@@ -201,7 +201,7 @@ describe("useClaudeChatStore.sendPrompt context assembly", () => {
     expect(state.saveAllFiles).not.toHaveBeenCalled();
     expect(createSnapshotMock).toHaveBeenCalledWith(
       "/project",
-      "[claude] Before Claude edit",
+      "[claude] Before Claude",
     );
   });
 

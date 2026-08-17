@@ -170,3 +170,6 @@ Thumbs.db
 
 # Local AI coding agents
 .grok/
+
+# Local AI coding agents
+.cursor/

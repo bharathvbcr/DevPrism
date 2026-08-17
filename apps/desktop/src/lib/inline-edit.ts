@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useProposedChangesStore } from "@/stores/proposed-changes-store";
+import { useSettingsStore } from "@/stores/settings-store";
 import {
   useClaudeChatStore,
   type PromptContextOverride,
@@ -128,6 +129,11 @@ export async function applyLintLineFix(options: {
 
 /** Direct one-shot transform (Ollama or OpenAI-compatible), not the full agent loop. */
 export function canUseDirectInlineTransform(): boolean {
+  if (!useSettingsStore.getState().aiAssistEnabled) return false;
+  const provider = resolveAiProvider();
+  if (provider.backend === "claude-code" || provider.backend === "cursor-cli") {
+    return false;
+  }
   return canUseAiAssist();
 }
 

@@ -162,6 +162,8 @@ export interface CriticResult {
   atsCoveragePct: number;
   verdicts: CriticBulletVerdict[];
   programmaticFlags: string[];
+  /** Non-fatal linguistic and formatting quality warnings. */
+  qualityFlags?: string[];
   /** True when the LLM critic call failed and only programmatic ATS was used. */
   llmSkipped?: boolean;
 }
@@ -475,6 +477,7 @@ export interface SynthesisDeps {
     content: ResumeContent;
     result: { success: boolean; summary: string };
     pdfBytes?: Uint8Array | null;
+    pageCount?: number | null;
   }>;
 }
 

@@ -118,6 +118,31 @@ pub fn tool_schemas() -> Value {
                 "options": {"type": "array", "items": {"type": "string"}, "description": "Up to 4 short answer choices to offer (optional); the user can always type a free-form reply instead"}
             }),
             &["question"]),
+        schema("career_search_kb", "Search candidate's career knowledgebase, experience blocks, and verified facts by query, persona, or kind.",
+            json!({
+                "query": {"type": "string", "description": "Search query or skill keyword"},
+                "persona": {"type": "string", "description": "Optional persona filter (e.g. 'ai', 'management')"},
+                "kind": {"type": "string", "description": "Optional block kind filter (e.g. 'work', 'project', 'education')"}
+            }),
+            &["query"]),
+        schema("resume_gap_analysis", "Evaluate candidate's career coverage against a target Job Description, identifying missing required skills and match score.",
+            json!({
+                "jd_text": {"type": "string", "description": "Full target job description text"},
+                "persona_id": {"type": "string", "description": "Optional persona ID"}
+            }),
+            &["jd_text"]),
+        schema("resume_synthesize", "Run end-to-end 7-stage resume synthesis pipeline generating tailored Typst resume code.",
+            json!({
+                "jd_text": {"type": "string", "description": "Target job description text"},
+                "persona_id": {"type": "string", "description": "Persona ID (e.g. 'ai')"},
+                "template_id": {"type": "string", "description": "Template ID (e.g. 'modern-cv')"}
+            }),
+            &["jd_text"]),
+        schema("resume_compile", "Compile Typst resume source code into PDF bytes using the in-process Typst engine.",
+            json!({
+                "typst_source": {"type": "string", "description": "Typst resume source code to compile"}
+            }),
+            &["typst_source"]),
     ])
 }
 
@@ -1005,9 +1030,40 @@ async fn execute_inner(project_dir: &Path, name: &str, args: &Value) -> (String,
                 Err(e) => (e, true),
             }
         }
+        "career_search_kb" => {
+            let db = crate::career_db::CareerDbState::default();
+            match crate::mcp::tools_career::execute_career_tool(&db, "career_search_kb", args).await {
+                Ok(val) => (val.to_string(), false),
+                Err(err) => (err.message, true),
+            }
+        }
+        "resume_gap_analysis" => {
+            let db = crate::career_db::CareerDbState::default();
+            let task_mgr = std::sync::Arc::new(crate::mcp::tasks::TaskManager::new());
+            match crate::mcp::tools_resume::execute_resume_tool(&db, &task_mgr, "resume_gap_analysis", args).await {
+                Ok(val) => (val.to_string(), false),
+                Err(err) => (err.message, true),
+            }
+        }
+        "resume_synthesize" => {
+            let db = crate::career_db::CareerDbState::default();
+            let task_mgr = std::sync::Arc::new(crate::mcp::tasks::TaskManager::new());
+            match crate::mcp::tools_resume::execute_resume_tool(&db, &task_mgr, "resume_synthesize", args).await {
+                Ok(val) => (val.to_string(), false),
+                Err(err) => (err.message, true),
+            }
+        }
+        "resume_compile" => {
+            let db = crate::career_db::CareerDbState::default();
+            let task_mgr = std::sync::Arc::new(crate::mcp::tasks::TaskManager::new());
+            match crate::mcp::tools_resume::execute_resume_tool(&db, &task_mgr, "resume_compile", args).await {
+                Ok(val) => (val.to_string(), false),
+                Err(err) => (err.message, true),
+            }
+        }
         other => (
             format!(
-                "Unknown tool \"{}\". Available tools: Read, Write, Edit, MultiEdit, LS, Grep, Bash, Glob, Compile, AskUser. \
+                "Unknown tool \"{}\". Available tools: Read, Write, Edit, MultiEdit, LS, Grep, Bash, Glob, Compile, AskUser, career_search_kb, resume_gap_analysis, resume_synthesize, resume_compile. \
                  Call one of these instead.",
                 other
             ),
@@ -1690,7 +1746,7 @@ mod tests {
     fn schemas_are_well_formed() {
         let s = tool_schemas();
         let arr = s.as_array().unwrap();
-        assert_eq!(arr.len(), 10);
+        assert_eq!(arr.len(), 14);
         for t in arr {
             assert_eq!(t["type"], "function");
             assert!(t["function"]["name"].is_string());

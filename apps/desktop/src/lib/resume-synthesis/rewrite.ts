@@ -120,6 +120,34 @@ function escapeRegex(str: string): string {
 }
 
 /**
+ * Edge class for a *quantity*: a match may not continue a longer number, a
+ * decimal, or a word.
+ *
+ * The previous guards were `[^\d,]`, which let a metric be "preserved" by a
+ * number that merely contained it. All of these used to return true:
+ * `"25%"` in `"125%"`, `"5%"` in `"5.5%"`, `"5"` in `"5th"` and `"Q5"`,
+ * `"10,000"` in `"110,000"`, `"$1.2M"` in `"1,200,000,000"`. Reporting a
+ * changed number as preserved is the exact failure this gate exists to prevent.
+ *
+ * Kept identical to `quantity_left_ok` / `quantity_right_ok` in the Rust port
+ * (`src-tauri/src/career_match/metrics.rs`); change both together.
+ */
+const QTY_EDGE = "[^0-9a-zA-Z.,]";
+
+/** `(?:^|EDGE)needle(?:EDGE|$)` — both edges guarded. */
+function quantityRegex(needle: string): RegExp {
+  return new RegExp(
+    `(?:^|${QTY_EDGE})${escapeRegex(needle)}(?:${QTY_EDGE}|$)`,
+    "i",
+  );
+}
+
+/** Right edge only, for metrics whose own prefix supplies the left one ($, ~). */
+function quantityRegexRightOnly(needle: string): RegExp {
+  return new RegExp(`${escapeRegex(needle)}(?:${QTY_EDGE}|$)`, "i");
+}
+
+/**
  * Robust boundary-aware and synonym-tolerant metric verification.
  * Checks whether a ground-truth metric (e.g. "18%", "$1.2M", "5", "10k") is preserved
  * in the synthesized bullet text without allowing scope expansion.
@@ -131,18 +159,12 @@ export function metricPreservedInText(
   const v = metricValue.trim();
   if (!v) return true;
 
-  // 1. If it's an exact substring, ensure it's boundary-safe for bare numbers.
-  if (text.includes(v)) {
-    if (/^\d+$/.test(v)) {
-      const boundaryRegex = new RegExp(
-        `(?:^|[^\\d,])${escapeRegex(v)}(?:[^\\d,]|$)`,
-        "i",
-      );
-      if (boundaryRegex.test(text)) return true;
-    } else {
-      return true;
-    }
-  }
+  // 1. Exact occurrence, guarded on BOTH edges so a metric can never be
+  //    satisfied by a longer number that merely contains it.
+  if (quantityRegex(v).test(text)) return true;
+  // Metrics that do not start with a digit ("$1.2M", "~5x") carry their own
+  // left edge, so only the right edge needs guarding.
+  if (!/^\d/.test(v) && quantityRegexRightOnly(v).test(text)) return true;
 
   const vLower = v.toLowerCase();
 
@@ -153,14 +175,27 @@ export function metricPreservedInText(
     const numFloat = parseFloat(num);
     const pctPatterns = [
       new RegExp(
-        `(?:^|[^\\d,])${escapeRegex(num)}\\s*(?:%|percent|pct|percentage)(?:[^\\w]|$)`,
-        "i",
-      ),
-      new RegExp(
-        `(?:^|[^\\d,])${numFloat.toFixed(1)}\\s*(?:%|percent|pct|percentage)(?:[^\\w]|$)`,
+        `(?:^|${QTY_EDGE})${escapeRegex(num)}\\s*(?:%|percent|pct|percentage)(?:[^\\w]|$)`,
         "i",
       ),
     ];
+    // The one-decimal form exists so "25%" matches "25.0%". It is only added
+    // when rounding to one place is LOSSLESS, i.e. the value already has at
+    // most one decimal digit. Adding it unconditionally accepted a genuinely
+    // different number ("0.25%" matching "0.2%"), and because Rust's `{:.1}`
+    // rounds half-to-even while `toFixed(1)` rounds half-up, the two ports
+    // accepted *different* wrong numbers. Mirrored in career_match::metrics.
+    const decimals = (num.split(".")[1] ?? "").length;
+    if (decimals <= 1) {
+      pctPatterns.push(
+        new RegExp(
+          // escapeRegex is essential: unescaped "1.5" makes '.' a wildcard,
+          // so the metric "1.5%" matched the text "125%".
+          `(?:^|${QTY_EDGE})${escapeRegex(numFloat.toFixed(1))}\\s*(?:%|percent|pct|percentage)(?:[^\\w]|$)`,
+          "i",
+        ),
+      );
+    }
     if (pctPatterns.some((p) => p.test(text))) return true;
   }
 
@@ -170,7 +205,7 @@ export function metricPreservedInText(
     const num = multMatch[1]!;
     const multPatterns = [
       new RegExp(
-        `(?:^|[^\\d,])${escapeRegex(num)}\\s*(?:x|-fold|\\s*fold|\\s*times)(?:[^\\w]|$)`,
+        `(?:^|${QTY_EDGE})${escapeRegex(num)}\\s*(?:x|-fold|\\s*fold|\\s*times)(?:[^\\w]|$)`,
         "i",
       ),
     ];
@@ -194,8 +229,8 @@ export function metricPreservedInText(
           `\\$?\\s*${escapeRegex(num)}\\s*(?:m|million|m\\s*usd)\\b`,
           "i",
         ),
-        new RegExp(`\\$?\\s*${escapeRegex(fullNum)}\\b`, "i"),
-        new RegExp(`\\$?\\s*${escapeRegex(fullNumPlain)}\\b`, "i"),
+        quantityRegex(fullNum),
+        quantityRegex(fullNumPlain),
       ];
       if (patterns.some((p) => p.test(text))) return true;
     } else if (mag === "k" || mag === "thousand") {
@@ -206,8 +241,8 @@ export function metricPreservedInText(
           `\\$?\\s*${escapeRegex(num)}\\s*(?:k|thousand|k\\s*usd)\\b`,
           "i",
         ),
-        new RegExp(`\\$?\\s*${escapeRegex(fullNum)}\\b`, "i"),
-        new RegExp(`\\$?\\s*${escapeRegex(fullNumPlain)}\\b`, "i"),
+        quantityRegex(fullNum),
+        quantityRegex(fullNumPlain),
       ];
       if (patterns.some((p) => p.test(text))) return true;
     } else if (mag === "b" || mag === "billion") {
@@ -219,7 +254,7 @@ export function metricPreservedInText(
           `\\$?\\s*${escapeRegex(num)}\\s*(?:b|billion|b\\s*usd)\\b`,
           "i",
         ),
-        new RegExp(`\\$?\\s*${escapeRegex(fullNum)}\\b`, "i"),
+        quantityRegex(fullNum),
       ];
       if (patterns.some((p) => p.test(text))) return true;
     }
@@ -229,7 +264,7 @@ export function metricPreservedInText(
   const commaMatch = v.match(/^(\d{1,3}(?:,\d{3})+)$/);
   if (commaMatch) {
     const rawDigits = v.replace(/,/g, "");
-    if (new RegExp(`(?:^|[^\\d,])${rawDigits}(?:[^\\d,]|$)`).test(text)) {
+    if (quantityRegex(rawDigits).test(text)) {
       return true;
     }
     const asK = `${parseInt(rawDigits, 10) / 1000}k`;

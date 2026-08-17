@@ -5,6 +5,7 @@ mod anthropic_proxy;
 #[cfg(target_os = "macos")]
 pub mod app_nap;
 mod career_db;
+mod career_match;
 pub mod career_typst;
 mod claude;
 mod claude_process;

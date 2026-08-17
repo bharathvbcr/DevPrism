@@ -33,7 +33,7 @@ pub fn list_career_tools() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "career_search_kb".to_string(),
-            description: "Search candidate's career knowledgebase, experience blocks, facts, and project notes using semantic vector search and keyword filtering.".to_string(),
+            description: "Search the career knowledgebase across blocks, bullets, facts and KB chunks. Runs semantic vector search when an embedding provider is reachable and always runs a word-boundary lexical pass, merging both. The response reports `searchMode` and `semanticStatus` ('ran' / 'ran_no_matches' / 'unavailable' with a reason) so a lexical-only result is never mistaken for a semantic one. persona/domain/owner_kind filters apply to both passes.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -102,7 +102,7 @@ pub fn list_career_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "career_delete_block".to_string(),
-            description: "Delete an experience block and its associated embeddings from the career database. Requires MRTR confirmation if block has facts or bullets.".to_string(),
+            description: "Delete an experience block and its associated embeddings. Requires MRTR confirmation when the block has bullets or facts; the returned request_state binds the confirmation to that specific block, and a follow-up naming a different block_id is rejected.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -269,10 +269,14 @@ pub async fn execute_career_tool(
                 .get("query")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| JsonRpcError::invalid_params("Missing required 'query' argument"))?;
+            // Bounded: `limit` reaches an over-fetch multiplier and a Vec
+            // truncate, so an unbounded value is an allocation lever.
+            const MAX_SEARCH_LIMIT: usize = 200;
             let limit = arguments
                 .get("limit")
                 .and_then(|v| v.as_u64())
-                .unwrap_or(10) as usize;
+                .map(|n| (n as usize).clamp(1, MAX_SEARCH_LIMIT))
+                .unwrap_or(10);
 
             let owner_kinds = arguments
                 .get("owner_kinds")
@@ -292,87 +296,299 @@ pub async fn execute_career_tool(
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
 
-            let _filter = career_db::SearchFilter {
-                owner_kind: owner_kinds.and_then(|arr| arr.into_iter().next()),
-                personas: persona_id.map(|p| vec![p]),
-                domains: domain.map(|d| vec![d]),
+            // Deliberately does NOT carry persona/domain down to `vector_search`:
+            // `passes_block_filters` rejects every non-block owner kind when
+            // either is set, which silently deleted all bullet/fact hits. The
+            // parent-aware equivalent is applied to the returned hits below,
+            // using the parent tags that `resolve_hit_text` puts in `meta`.
+            let filter = career_db::SearchFilter {
+                owner_kind: None,
+                personas: None,
+                domains: None,
                 kinds: None,
                 model: None,
             };
 
-            // Hybrid search: query blocks and chunks for keyword matches and embeddings
+            // Semantic first. `career_search_kb` advertises vector search, and
+            // the crate has both an embedder (`native_agent::ai_embed`) and a
+            // real ANN/brute-force index (`career_db::vectors::vector_search`);
+            // the previous implementation built a SearchFilter, discarded it,
+            // and substring-matched instead.
+            let embed = crate::native_agent::ai_embed(
+                vec![query.to_string()],
+                None,
+                None,
+                None,
+                None,
+            )
+            .await;
+
+            let mut semantic_hits: Vec<Value> = Vec::new();
+            let mut semantic_error: Option<String> = None;
+            match embed {
+                Ok(vecs) if !vecs.is_empty() && !vecs[0].is_empty() => {
+                    let qv = vecs[0].clone();
+                    let db_v = db.clone();
+                    let f = filter.clone();
+                    let over_fetch = limit.saturating_mul(4).max(limit);
+                    let res = tokio::task::spawn_blocking(move || {
+                        db_v.with_conn(|conn| {
+                            career_db::vector_search_blocking(conn, &qv, over_fetch, &f)
+                        })
+                    })
+                    .await
+                    .map_err(|e| JsonRpcError::internal_error(format!("vector task error: {e}")))?;
+
+                    match res {
+                        Ok(hits) => {
+                            for h in hits {
+                                // `vector_search` applies persona/domain filters
+                                // only to block-kind owners, and knows nothing
+                                // about owner_kinds, so both are enforced here.
+                                // Without this, a filtered search returned
+                                // semantic hits the lexical pass would exclude.
+                                if let Some(kinds) = &owner_kinds {
+                                    if !kinds.iter().any(|k| *k == h.owner_kind) {
+                                        continue;
+                                    }
+                                }
+                                // Block hits and child hits both carry the
+                                // relevant tags in `meta`; a kb_chunk carries
+                                // neither and so cannot satisfy such a filter.
+                                let parent_ok = |key: &str, want: &Option<String>| -> bool {
+                                    let Some(w) = want else { return true };
+                                    match h.meta.get(key).and_then(|v| v.as_array()) {
+                                        Some(arr) => {
+                                            arr.iter().any(|v| v.as_str() == Some(w.as_str()))
+                                        }
+                                        None => false,
+                                    }
+                                };
+                                if !parent_ok("personas", &persona_id)
+                                    || !parent_ok("domains", &domain)
+                                {
+                                    continue;
+                                }
+                                semantic_hits.push(json!({
+                                    "ownerId": h.owner_id,
+                                    "ownerKind": h.owner_kind,
+                                    "score": h.score,
+                                    "matchedBy": "semantic",
+                                    "text": h.text,
+                                    "meta": h.meta,
+                                }));
+                            }
+                        }
+                        Err(e) => semantic_error = Some(e),
+                    }
+                }
+                Ok(_) => semantic_error = Some("embedder returned no vector".to_string()),
+                Err(e) => semantic_error = Some(e),
+            }
+
+            // Three distinct states, kept distinct: the semantic path could not
+            // run; it ran and matched nothing; it ran and matched. Collapsing
+            // the first two would make "no embedding provider" look identical
+            // to "nothing in the index is relevant".
+            let semantic_available = semantic_error.is_none();
+            let semantic_hit_count = semantic_hits.len();
+            let semantic_status = match (&semantic_error, semantic_hit_count) {
+                (Some(_), _) => "unavailable",
+                (None, 0) => "ran_no_matches",
+                (None, _) => "ran",
+            };
+
+            // Lexical pass always runs: it is cheap, and it catches exact
+            // identifiers that embeddings routinely miss. Results are merged,
+            // never silently substituted.
             let query_owned = query.to_string();
             let db_clone = db.clone();
-            let hits = tokio::task::spawn_blocking(move || {
+            let kinds_filter = owner_kinds.clone();
+            let persona_f = persona_id.clone();
+            let domain_f = domain.clone();
+            let lexical = tokio::task::spawn_blocking(move || {
                 db_clone.with_conn(|conn| {
-                    // Search blocks matching query text
                     let blocks = career_db::list_blocks_blocking(conn, false)?;
                     let mut scored: Vec<Value> = Vec::new();
-                    let q_lower = query_owned.to_lowercase();
+                    let q = query_owned.trim();
+                    // A natural-language query ("kubernetes experience at scale")
+                    // matched nothing, because the whole phrase was required to
+                    // appear contiguously. Match the phrase OR any significant
+                    // token, so multi-word queries behave like a search box.
+                    let tokens: Vec<String> = q
+                        .split(|c: char| !c.is_alphanumeric() && c != '+' && c != '#' && c != '.')
+                        .filter(|t| t.chars().count() > 2)
+                        .map(|t| t.to_string())
+                        .collect();
+                    let hits_text = |hay: &str| -> bool {
+                        if crate::career_match::text::text_covers_skill(hay, q) {
+                            return true;
+                        }
+                        !tokens.is_empty()
+                            && tokens
+                                .iter()
+                                .any(|t| crate::career_match::text::text_covers_skill(hay, t))
+                    };
+
+                    let wants = |kind: &str| -> bool {
+                        kinds_filter.as_ref().is_none_or(|k| k.iter().any(|x| x == kind))
+                    };
 
                     for block in blocks {
-                        let mut score: f64 = 0.0;
-                        let text = format!("{} {} {}", block.title, block.org, block.skills.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(" "));
-                        if text.to_lowercase().contains(&q_lower) {
-                            score += 0.8;
-                        }
-                        for bullet in &block.bullets {
-                            if bullet.canonical.to_lowercase().contains(&q_lower) {
-                                score += 0.9;
+                        // Apply the persona/domain filters that were previously
+                        // parsed and then dropped on the floor.
+                        if let Some(p) = &persona_f {
+                            if !block.personas.iter().any(|bp| bp == p) {
+                                continue;
                             }
                         }
-                        for fact in &block.facts {
-                            if fact.text.to_lowercase().contains(&q_lower) {
-                                score += 0.95;
+                        if let Some(d) = &domain_f {
+                            if !block.domains.iter().any(|bd| bd == d) {
+                                continue;
                             }
                         }
-                        if score > 0.0 {
-                            scored.push(json!({
-                                "ownerId": block.id,
-                                "ownerKind": "block",
-                                "score": score.min(1.0),
-                                "title": block.title,
-                                "org": block.org,
-                                "kind": block.kind,
-                                "skills": block.skills,
-                                "bulletCount": block.bullets.len(),
-                                "factCount": block.facts.len()
-                            }));
+
+                        if wants("block") {
+                            let head = format!(
+                                "{} {} {}",
+                                block.title,
+                                block.org,
+                                block
+                                    .skills
+                                    .iter()
+                                    .map(|s| s.name.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(" ")
+                            );
+                            if hits_text(&head) {
+                                scored.push(json!({
+                                    "ownerId": block.id,
+                                    "ownerKind": "block",
+                                    "score": 0.80,
+                                    "matchedBy": "lexical",
+                                    "scoreKind": "lexical_constant",
+                                    "title": block.title,
+                                    "org": block.org,
+                                    "kind": block.kind,
+                                    "personas": block.personas,
+                                    "domains": block.domains,
+                                }));
+                            }
+                        }
+
+                        if wants("bullet") {
+                            for bullet in &block.bullets {
+                                if hits_text(&bullet.canonical) {
+                                    scored.push(json!({
+                                        "ownerId": bullet.id,
+                                        "ownerKind": "bullet",
+                                        "score": 0.90,
+                                        "matchedBy": "lexical",
+                                        "blockId": block.id,
+                                        "text": bullet.canonical,
+                                    }));
+                                }
+                            }
+                        }
+
+                        if wants("fact") {
+                            for fact in &block.facts {
+                                let hit = hits_text(&fact.text)
+                                    || fact.skills.iter().any(|s| {
+                                        crate::career_match::text::skills_match(s, q)
+                                    });
+                                if hit {
+                                    scored.push(json!({
+                                        "ownerId": fact.id,
+                                        "ownerKind": "fact",
+                                        "score": 0.95,
+                                        "matchedBy": "lexical",
+                                        "blockId": block.id,
+                                        "text": fact.text,
+                                    }));
+                                }
+                            }
                         }
                     }
 
-                    // Also search KB chunks
-                    let chunks = career_db::ingest::list_kb_chunks(conn, None, false)?;
-                    for chunk in chunks {
-                        if chunk.text.to_lowercase().contains(&q_lower) {
-                            scored.push(json!({
-                                "ownerId": chunk.id,
-                                "ownerKind": "kb_chunk",
-                                "score": 0.85,
-                                "sourceId": chunk.source_id,
-                                "snippet": chunk.text.chars().take(200).collect::<String>()
-                            }));
+                    // A KB chunk carries no persona or domain, so when either
+                    // filter is set it cannot satisfy it and must be excluded
+                    // rather than returned as an unfiltered extra.
+                    if wants("kb_chunk") && persona_f.is_none() && domain_f.is_none() {
+                        let chunks = career_db::ingest::list_kb_chunks(conn, None, false)?;
+                        for chunk in chunks {
+                            if hits_text(&chunk.text) {
+                                scored.push(json!({
+                                    "ownerId": chunk.id,
+                                    "ownerKind": "kb_chunk",
+                                    "score": 0.85,
+                                    "matchedBy": "lexical",
+                                    "sourceId": chunk.source_id,
+                                    "snippet": chunk.text.chars().take(200).collect::<String>(),
+                                }));
+                            }
                         }
                     }
 
-                    scored.sort_by(|a, b| {
-                        let sa = a.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                        let sb = b.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                        sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
-                    });
-
-                    scored.truncate(limit);
                     Ok(scored)
                 })
             })
             .await
             .map_err(|e| JsonRpcError::internal_error(format!("search task error: {e}")))?
-            .map_err(|e| JsonRpcError::internal_error(e))?;
+            .map_err(JsonRpcError::internal_error)?;
+
+            // Merge, preferring the semantic score when both modes hit the same
+            // owner, and de-duplicate by (ownerKind, ownerId).
+            let mut merged: Vec<Value> = Vec::new();
+            let mut seen: std::collections::HashSet<(String, String)> =
+                std::collections::HashSet::new();
+            for h in semantic_hits.into_iter().chain(lexical.into_iter()) {
+                let key = (
+                    h.get("ownerKind").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    h.get("ownerId").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                );
+                if seen.insert(key) {
+                    merged.push(h);
+                }
+            }
+            // Lexical "scores" are fixed confidence constants, not similarities.
+            // Ranking them in the same ordering as real cosine values let a
+            // constant 0.8 evict a genuine 0.66 semantic match under a small
+            // limit, so the two families are ranked in separate tiers with
+            // semantic first, and each tier sorted by its own score.
+            merged.sort_by(|a, b| {
+                let tier = |v: &Value| -> u8 {
+                    if v.get("matchedBy").and_then(|m| m.as_str()) == Some("semantic") {
+                        0
+                    } else {
+                        1
+                    }
+                };
+                let sa = a.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let sb = b.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                tier(a).cmp(&tier(b)).then_with(|| {
+                    sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+                })
+            });
+            merged.truncate(limit);
+            let count = merged.len();
 
             Ok(json!({
                 "query": query,
-                "hits": hits,
-                "count": hits.len(),
+                "hits": merged,
+                "count": count,
+                // A search that could not run semantically must not look like
+                // one that did.
+                "searchMode": if semantic_available { "semantic+lexical" } else { "lexical_only" },
+                "semanticAvailable": semantic_available,
+                "semanticStatus": semantic_status,
+                "semanticHitCount": semantic_hit_count,
+                "semanticUnavailableReason": semantic_error,
+                "filtersApplied": {
+                    "personaId": persona_id,
+                    "domain": domain,
+                    "ownerKinds": owner_kinds,
+                },
                 "_meta": {
                     "ttlMs": 30000,
                     "cacheScope": "user"
@@ -463,16 +679,35 @@ pub async fn execute_career_tool(
                     }));
                 }
 
-                // Proceed with deletion
+                // The signed state is the authority on WHAT was confirmed.
+                // Previously this fell back to the caller's `block_id` and then
+                // reported that id as deleted, so a client could confirm
+                // deleting block A and have block B's id echoed back, and a
+                // state without a blockId would delete whatever the caller
+                // named. Both defeat the confirmation gate.
                 let bid = state_val
                     .get("blockId")
                     .and_then(|v| v.as_str())
-                    .unwrap_or(block_id)
+                    .ok_or_else(|| {
+                        JsonRpcError::new(
+                            crate::mcp::protocol::ERR_ELICITATION_FAILED,
+                            "request_state carries no blockId; re-run the deletion to obtain a \
+                             fresh confirmation".to_string(),
+                        )
+                    })?
                     .to_string();
+                if bid != block_id {
+                    return Err(JsonRpcError::invalid_params(format!(
+                        "block_id '{block_id}' does not match the confirmed block '{bid}'. \
+                         Re-run the deletion for the block you intend to delete."
+                    )));
+                }
 
                 let db_clone = db.clone();
+                let bid_for_delete = bid.clone();
                 tokio::task::spawn_blocking(move || {
-                    db_clone.with_conn(|conn| career_db::delete_block_blocking(conn, &bid))
+                    db_clone
+                        .with_conn(|conn| career_db::delete_block_blocking(conn, &bid_for_delete))
                 })
                 .await
                 .map_err(|e| JsonRpcError::internal_error(format!("delete task error: {e}")))?
@@ -480,8 +715,8 @@ pub async fn execute_career_tool(
 
                 return Ok(json!({
                     "success": true,
-                    "deletedBlockId": block_id,
-                    "message": format!("Block '{block_id}' and all associated embeddings deleted")
+                    "deletedBlockId": bid,
+                    "message": format!("Block '{bid}' and all associated embeddings deleted")
                 }));
             }
 
@@ -585,10 +820,16 @@ pub async fn execute_career_tool(
                     }
                 }
 
+                // The tool description promises extracted skills; this used to
+                // hardcode an empty vec. Extraction reuses the same controlled
+                // vocabulary and word-boundary matcher the JD scanner uses, so
+                // fact skills and JD requirements are directly comparable.
+                let skills = crate::career_match::jd::skills_in_text(trimmed);
+
                 facts.push(BlockFact {
                     id: format!("fact-{}", Uuid::new_v4().to_string().chars().take(8).collect::<String>()),
                     text: trimmed.to_string(),
-                    skills: Vec::new(),
+                    skills,
                     metrics,
                     source: source.to_string(),
                     created_at: now.clone(),

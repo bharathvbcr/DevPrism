@@ -187,7 +187,17 @@ export function textCoversSkill(text: string, skill: string): boolean {
   for (const v of variants) {
     const escaped = v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     // Word boundary that also treats non-alphanumeric as edges (C++, Node.js).
-    const re = new RegExp(`(^|[^a-z0-9+#])${escaped}([^a-z0-9+.]|$)`, "i");
+    //
+    // Two edge characters are deliberate and were fixed together with the Rust
+    // port in `career_match::text`:
+    //   * `.` IS a valid right edge, so a skill ending a sentence
+    //     ("...and Kubernetes.") matches. It previously did not, which silently
+    //     dropped requirements from real job descriptions. Allowing it does not
+    //     reintroduce Node⊂Nodemon, because letters are still excluded.
+    //   * `&` is NOT a valid edge on either side, so "R&D" no longer counts as
+    //     evidence of the skill "R". An ampersand joins tokens rather than
+    //     separating them.
+    const re = new RegExp(`(^|[^a-z0-9+#&])${escaped}([^a-z0-9+&]|$)`, "i");
     if (re.test(hay)) return true;
   }
   return false;

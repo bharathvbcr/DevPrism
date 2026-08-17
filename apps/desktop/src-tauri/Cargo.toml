@@ -49,6 +49,12 @@ tar = "0.4"
 zip = { version = "4", default-features = false, features = ["deflate"] }
 tempfile = "3"
 rusqlite = { version = "0.32", features = ["bundled"] }
+# NFC normalisation for résumé slot text (career_match::typst_escape), matching
+# `String.prototype.normalize("NFC")` in resume-synthesis/typst-escape.ts.
+# NOT a new dependency in the build graph: typst -> typst-library -> hayagriva
+# -> biblatex already compiles unicode-normalization 0.1.25, so this only makes
+# an already-linked crate directly addressable.
+unicode-normalization = "0.1"
 # Statically linked sqlite-vec (vec0 ANN). Registered on career.db open; brute-force fallback if load fails.
 sqlite-vec = "0.1.6"
 

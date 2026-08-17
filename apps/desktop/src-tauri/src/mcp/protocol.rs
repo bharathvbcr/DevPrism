@@ -258,6 +258,47 @@ pub struct InputRequiredResult {
     pub request_state: String, // self-contained serialized/base64 state
 }
 
+/// Process-lifetime key used to tag `requestState` payloads.
+///
+/// `requestState` is the ONLY thing standing between a caller and a destructive
+/// action that is supposed to require human confirmation. It used to be plain
+/// base64 JSON, so a client could mint its own "already confirmed" state and
+/// skip elicitation entirely. The tag below makes a forged state detectable.
+///
+/// This is an integrity tag, not a cryptographic signature for third parties:
+/// the key never leaves the process and dies with it, which also means states
+/// do not survive a restart. That is the correct lifetime for a confirmation.
+fn request_state_key() -> &'static [u8; 32] {
+    use std::sync::OnceLock;
+    static KEY: OnceLock<[u8; 32]> = OnceLock::new();
+    KEY.get_or_init(|| {
+        let mut k = [0u8; 32];
+        k[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+        k[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+        k
+    })
+}
+
+fn state_tag(payload: &[u8]) -> String {
+    use base64::prelude::*;
+    use hmac::{Hmac, Mac};
+    use sha1::Sha1;
+    let Ok(mut mac) = Hmac::<Sha1>::new_from_slice(request_state_key()) else {
+        return String::new();
+    };
+    mac.update(payload);
+    BASE64_STANDARD.encode(mac.finalize().into_bytes())
+}
+
+/// Constant-time comparison so a caller cannot probe the tag byte by byte.
+fn tags_match(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() || a.is_empty() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
 impl InputRequiredResult {
     pub fn new(
         input_requests: HashMap<String, InputRequest>,
@@ -266,22 +307,90 @@ impl InputRequiredResult {
         use base64::prelude::*;
         let serialized = serde_json::to_string(state_payload)
             .map_err(|e| format!("Failed to serialize requestState: {e}"))?;
-        let base64_state = BASE64_STANDARD.encode(serialized.as_bytes());
+        let body = BASE64_STANDARD.encode(serialized.as_bytes());
+        let tag = state_tag(body.as_bytes());
+        if tag.is_empty() {
+            return Err("Failed to tag requestState".to_string());
+        }
         Ok(Self {
             result_type: "inputRequired".to_string(),
             input_requests,
-            request_state: base64_state,
+            // `body.tag`: '.' cannot appear in standard base64, so the split is
+            // unambiguous.
+            request_state: format!("{body}.{tag}"),
         })
     }
 
     pub fn decode_state(request_state: &str) -> Result<Value, String> {
         use base64::prelude::*;
+        let raw = request_state.trim();
+        let (body, tag) = raw.split_once('.').ok_or_else(|| {
+            "requestState is not integrity-tagged; re-run the request to obtain a fresh one"
+                .to_string()
+        })?;
+        if !tags_match(tag, &state_tag(body.as_bytes())) {
+            return Err(
+                "requestState failed its integrity check; it was modified, forged, or issued by a                  previous run of this server. Re-run the request to obtain a fresh confirmation."
+                    .to_string(),
+            );
+        }
         let decoded_bytes = BASE64_STANDARD
-            .decode(request_state.trim())
+            .decode(body)
             .map_err(|e| format!("Invalid base64 in requestState: {e}"))?;
         let val: Value = serde_json::from_slice(&decoded_bytes)
             .map_err(|e| format!("Invalid JSON in requestState: {e}"))?;
         Ok(val)
+    }
+}
+
+#[cfg(test)]
+mod request_state_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn state(payload: &Value) -> String {
+        InputRequiredResult::new(HashMap::new(), payload)
+            .map(|r| r.request_state)
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn a_tagged_state_round_trips() {
+        let s = state(&json!({ "blockId": "blk-1" }));
+        let back = InputRequiredResult::decode_state(&s).unwrap_or(Value::Null);
+        assert_eq!(back["blockId"], "blk-1");
+    }
+
+    /// The attack this closes: mint a state that was never issued.
+    #[test]
+    fn a_forged_state_is_rejected() {
+        use base64::prelude::*;
+        let forged = BASE64_STANDARD.encode(br#"{"blockId":"blk-victim"}"#);
+        assert!(InputRequiredResult::decode_state(&forged).is_err(), "untagged state accepted");
+        let forged_with_tag = format!("{forged}.{}", BASE64_STANDARD.encode(b"not-the-tag"));
+        assert!(
+            InputRequiredResult::decode_state(&forged_with_tag).is_err(),
+            "bad tag accepted"
+        );
+    }
+
+    #[test]
+    fn a_tampered_payload_is_rejected() {
+        use base64::prelude::*;
+        let s = state(&json!({ "blockId": "blk-1" }));
+        let (_, tag) = s.split_once('.').unwrap_or(("", ""));
+        let swapped = BASE64_STANDARD.encode(br#"{"blockId":"blk-2"}"#);
+        assert!(
+            InputRequiredResult::decode_state(&format!("{swapped}.{tag}")).is_err(),
+            "payload swap under a valid tag accepted"
+        );
+    }
+
+    #[test]
+    fn malformed_states_do_not_panic() {
+        for bad in ["", ".", "a.", ".b", "not base64!.tag", "&&&.&&&"] {
+            assert!(InputRequiredResult::decode_state(bad).is_err(), "accepted {bad:?}");
+        }
     }
 }
 

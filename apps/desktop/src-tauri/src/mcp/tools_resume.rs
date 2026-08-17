@@ -3,11 +3,11 @@
 //! Exposes:
 //! - `resume_analyze_jd`: extract requirements, hard/soft skills, seniority, and domains from a Job Description.
 //! - `resume_gap_analysis`: calculate candidate coverage, missing skills, and warnings for missing non-negotiables.
-//! - `resume_score_and_select`: score blocks and select optimal blocks within single-page (or multi-page) line constraints using knapsack and MMR diversity.
-//! - `resume_rewrite_bullets`: tailor bullets for JD with strict anti-hallucination provenance.
-//! - `resume_synthesize`: full end-to-end 7-stage resume synthesis pipeline (synchronous or async via Tasks extension).
-//! - `resume_compile`: compile Typst or LaTeX resume into PDF bytes with in-process Typst engine or Tectonic.
-//! - `resume_finetune_bullet`: fine-tune individual bullets with JD keywords and metric impact.
+//! - `resume_score_and_select`: score blocks and pack them into a page budget with a wrap-aware knapsack.
+//! - `resume_rewrite_bullets`: verify caller-supplied bullet drafts against canonical metrics.
+//! - `resume_synthesize`: deterministic analysis stages (JD -> score -> select -> gap -> ATS coverage).
+//! - `resume_compile`: compile Typst source to PDF. LaTeX is explicitly rejected, not faked.
+//! - `resume_finetune_bullet`: analyse a bullet. Never writes or invents metrics.
 //!
 //! Prompts:
 //! - `tailor-resume-for-jd`: Prompt template for JD-tailored resume generation.
@@ -16,6 +16,7 @@
 //! - `finetune-bullet-metrics`: Prompt template for strengthening bullet metrics.
 
 use crate::career_db::{self, ExperienceBlock};
+use crate::career_match::{gap, jd, metrics, render, scoring, selection};
 use crate::career_typst::engine;
 use crate::mcp::protocol::{
     JsonRpcError, PromptArgument, PromptDefinition, ResponseMeta, ToolDefinition,
@@ -30,7 +31,7 @@ pub fn list_resume_tools() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "resume_analyze_jd".to_string(),
-            description: "Analyze a job description (JD) and extract structured requirements, required hard skills, preferred skills, seniority level, domain keywords, and responsibilities.".to_string(),
+            description: "Extract a canonical JDProfile from a job description: roleTitle, seniority, mustHaveSkills, niceToHaveSkills, domains, atsKeywords, toneSignals, and the responsibilities/qualifications section text. Extraction is a deterministic controlled-vocabulary scan (extractionMethod=heuristic), not model extraction, and reports extractionEmpty plus a warning when it finds nothing.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -49,7 +50,7 @@ pub fn list_resume_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "resume_gap_analysis".to_string(),
-            description: "Evaluate candidate's career knowledgebase against a job description, computing skill coverage percentage, missing requirements, warnings, and recommended experience highlights.".to_string(),
+            description: "Classify every JD must-have as covered / weak / missing by searching block skill tags, domains, bullet text AND the fact pool with word-boundary matching. Returns per-skill evidence hits, counts, and a coverage percentage computed over the blocks that would actually be printed.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -60,6 +61,12 @@ pub fn list_resume_tools() -> Vec<ToolDefinition> {
                     "persona_id": {
                         "type": "string",
                         "description": "Optional persona ID to bias evaluation (e.g. 'ai', 'management', 'life-sciences')"
+                    },
+                    "page_budget": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 4,
+                        "description": "Page count that defines which blocks count as 'selected' for the coverage denominator, 1 (default) to 4. Must match the value passed to resume_synthesize for the two to agree."
                     }
                 },
                 "required": ["jd_text"]
@@ -68,7 +75,7 @@ pub fn list_resume_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "resume_score_and_select".to_string(),
-            description: "Score all candidate experience blocks against the target JD and select the optimal set within strict page line budget using knapsack optimization and MMR diversity.".to_string(),
+            description: "Score every experience block (skills / persona / recency / seniority, renormalised because no embedding provider is bound) and pack them into a page budget with a wrap-aware greedy knapsack: per-section caps, per-org de-duplication, and a must-have coverage repair pass. Reports uncovered must-haves and any swaps it made.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -82,7 +89,9 @@ pub fn list_resume_tools() -> Vec<ToolDefinition> {
                     },
                     "page_budget": {
                         "type": "integer",
-                        "description": "Target page count: 1 (default) or 2"
+                        "minimum": 1,
+                        "maximum": 4,
+                        "description": "Target page count, 1 (default) to 4"
                     }
                 },
                 "required": ["jd_text"]
@@ -91,7 +100,7 @@ pub fn list_resume_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "resume_rewrite_bullets".to_string(),
-            description: "Tailor experience block bullets to echo JD keywords with strict anti-hallucination provenance (verifying all metrics and claims against canonical facts).".to_string(),
+            description: "Verify bullet drafts against canonical provenance. This server does NOT generate rewrites: supply your own drafts in `drafts` and every canonical metric on the source bullet is checked against your text, with drops reported and the canonical text substituted on failure. Called without drafts it returns canonical bullets and target keywords, and provenanceVerified is false because nothing was verified.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -106,7 +115,19 @@ pub fn list_resume_tools() -> Vec<ToolDefinition> {
                     "bullet_ids": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "Optional specific bullet IDs to rewrite (defaults to all in block)"
+                        "description": "Optional specific bullet IDs to consider (defaults to all in block)"
+                    },
+                    "drafts": {
+                        "type": "array",
+                        "description": "Your proposed rewrites, verified against canonical metrics",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "bulletId": { "type": "string" },
+                                "text": { "type": "string" }
+                            },
+                            "required": ["bulletId", "text"]
+                        }
                     }
                 },
                 "required": ["block_id", "jd_text"]
@@ -115,7 +136,7 @@ pub fn list_resume_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "resume_synthesize".to_string(),
-            description: "Execute the complete 7-stage resume synthesis pipeline (Preflight -> JD Analysis -> Scoring/Gap -> Knapsack Selection -> Provenance Rewrite -> Anti-Hallucination Critic -> Typst/LaTeX Materialization). Supports async Tasks extension execution.".to_string(),
+            description: "Run the deterministic synthesis stages: JD scan, block scoring, knapsack selection, must-have gap analysis, real ATS keyword coverage, and (unless render=false) materialization through an injection-safe plain Typst layout. Model-dependent stages (semantic JD extraction, bullet rewriting, critic) are skipped and listed in llmStagesSkipped. Supports async execution via the Tasks extension.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -129,7 +150,27 @@ pub fn list_resume_tools() -> Vec<ToolDefinition> {
                     },
                     "template_id": {
                         "type": "string",
-                        "description": "Typst template id (e.g. 'modern-cv', 'standard-academic', 'executive')"
+                        "enum": ["typst-ats-single", "typst-ats-two-column"],
+                        "description": "Accepted for compatibility and validated, but this server renders one plain headless layout; template-driven design is owned by the desktop app"
+                    },
+                    "page_budget": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 4,
+                        "description": "Target page count, 1 (default) to 4"
+                    },
+                    "render": {
+                        "type": "boolean",
+                        "description": "Materialize Typst + PDF (default true). Set false for analysis only."
+                    },
+                    "header_name": {
+                        "type": "string",
+                        "description": "Candidate name for the rendered header"
+                    },
+                    "contact_lines": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Up to 4 contact lines rendered under the name"
                     },
                     "async": {
                         "type": "boolean",
@@ -142,7 +183,7 @@ pub fn list_resume_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "resume_compile".to_string(),
-            description: "Compile resume Typst or LaTeX source code into PDF bytes using DevPrism's in-process Typst engine or Tectonic, returning base64 PDF bytes and diagnostics.".to_string(),
+            description: "Compile Typst resume source to PDF with the in-process, filesystem-denied Typst engine, returning base64 bytes and diagnostics. LaTeX is NOT supported through MCP and is rejected with an explanatory error rather than reported as compiled.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -152,7 +193,7 @@ pub fn list_resume_tools() -> Vec<ToolDefinition> {
                     },
                     "latex_source": {
                         "type": "string",
-                        "description": "Optional LaTeX resume source code (compiled via Tectonic)"
+                        "description": "Rejected. LaTeX cannot be compiled safely from the MCP server; use the desktop app."
                     }
                 }
             }),
@@ -160,7 +201,7 @@ pub fn list_resume_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "resume_finetune_bullet".to_string(),
-            description: "Fine-tune a single bullet point for stronger action verbs, verified metric phrasing, and ATS keyword relevance against a target JD.".to_string(),
+            description: "Analyse a bullet against a JD and report findings: weak opening verb, presence of a quantity, which supplied verified metrics are actually expressed in the text, JD keywords present/absent, and estimated rendered lines. This tool never writes a bullet and never invents a metric; `rewrite` is always null.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -175,6 +216,11 @@ pub fn list_resume_tools() -> Vec<ToolDefinition> {
                     "context": {
                         "type": "string",
                         "description": "Optional context: role title, company, or verified metrics"
+                    },
+                    "verified_metrics": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Known-true metric values; each is checked for presence in bullet_text"
                     }
                 },
                 "required": ["bullet_text", "jd_text"]
@@ -341,6 +387,106 @@ pub fn get_resume_prompt(name: &str, arguments: &HashMap<String, String>) -> Res
 
 // --- Tool Implementations ---
 
+// --- Tool Implementations ---
+//
+// Every arm below reports what it actually computed. Where a step cannot run
+// headlessly (no model, no LaTeX engine), the response says so in a dedicated
+// status field instead of emitting a plausible placeholder. See the module
+// header for the list of behaviours this replaced.
+
+/// Blocks plus the JD profile, loaded once per call.
+struct ResumeContext {
+    blocks: Vec<ExperienceBlock>,
+    extraction: jd::JdExtraction,
+}
+
+fn load_context(
+    db: &career_db::CareerDbState,
+    jd_text: &str,
+) -> Result<ResumeContext, String> {
+    let extraction = jd::extract_profile(jd_text);
+    let blocks = db.with_conn(|conn| career_db::list_blocks_blocking(conn, false))?;
+    Ok(ResumeContext { blocks, extraction })
+}
+
+fn current_year_month() -> (i32, u32) {
+    let now = chrono::Utc::now();
+    use chrono::Datelike;
+    (now.year(), now.month())
+}
+
+/// Fraction of the draft's significant words that also appear in the canonical
+/// bullet.
+///
+/// A crude but honest guard: this server cannot verify that a rewritten claim
+/// is true, so a draft sharing almost no vocabulary with its source is treated
+/// as a new assertion rather than a rewrite.
+fn canonical_overlap(canonical: &str, draft: &str) -> f64 {
+    let words = |s: &str| -> Vec<String> {
+        s.to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| w.chars().count() > 3)
+            .map(str::to_string)
+            .collect()
+    };
+    let d = words(draft);
+    let c = words(canonical);
+    if d.is_empty() {
+        // No significant words to compare. Overlap is UNMEASURABLE, not
+        // perfect: returning 1.0 let a draft of only short words ("we ran it
+        // all day") sail through as a maximum-confidence match. Fall back to
+        // the canonical side: if it also has nothing to compare, the two are
+        // equally uninformative and the draft is allowed through; otherwise
+        // the draft has thrown away everything specific and is not a rewrite.
+        return if c.is_empty() { 1.0 } else { 0.0 };
+    }
+    let hits = d.iter().filter(|w| c.contains(w)).count();
+    hits as f64 / d.len() as f64
+}
+
+/// Validate a caller-supplied page budget.
+///
+/// `SelectionBudget::for_pages` clamps internally, so an unvalidated value used
+/// to be silently clamped and then echoed back verbatim: a request for 40 pages
+/// answered "pageBudget: 40" while packing 4 pages' worth.
+fn page_budget_arg(args: &Value) -> Result<u64, JsonRpcError> {
+    let n = args.get("page_budget").and_then(|v| v.as_u64()).unwrap_or(1);
+    if !(1..=4).contains(&n) {
+        return Err(JsonRpcError::invalid_params(format!(
+            "page_budget must be between 1 and 4, got {n}"
+        )));
+    }
+    Ok(n)
+}
+
+fn require_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, JsonRpcError> {
+    args.get(key)
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| JsonRpcError::invalid_params(format!("Missing required '{key}'")))
+}
+
+/// Build the scoring context for a persona.
+fn scoring_context<'a>(
+    profile: &'a jd::JdProfile,
+    persona_id: &'a str,
+    now: (i32, u32),
+) -> scoring::ScoringContext<'a> {
+    scoring::ScoringContext {
+        must_have: &profile.must_have_skills,
+        nice_to_have: &profile.nice_to_have_skills,
+        jd_seniority: &profile.seniority,
+        persona_id,
+        persona_weights: None,
+        // The MCP server has no guaranteed embedding provider, so semantic
+        // similarity is unavailable and its weight is redistributed rather
+        // than silently counted as zero signal.
+        weights: scoring::weights_for(false),
+        now_year: now.0,
+        now_month: now.1,
+    }
+}
+
 pub async fn execute_resume_tool(
     db: &career_db::CareerDbState,
     task_manager: &Arc<TaskManager>,
@@ -348,373 +494,632 @@ pub async fn execute_resume_tool(
     arguments: &Value,
 ) -> Result<Value, JsonRpcError> {
     match name {
+        // ---------------------------------------------------------------
+        // Defect #7: emit the canonical JDProfile shape from a real scan.
+        // ---------------------------------------------------------------
         "resume_analyze_jd" => {
-            let jd_text = arguments
-                .get("jd_text")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| JsonRpcError::invalid_params("Missing required 'jd_text'"))?;
-
-            // Extract structured JD profile
-            let profile = extract_jd_profile_heuristic(jd_text);
-            Ok(json!({
-                "profile": profile,
-                "_meta": {
-                    "ttlMs": 300000,
-                    "cacheScope": "public"
-                }
-            }))
+            let jd_text = require_str(arguments, "jd_text")?;
+            let extraction = jd::extract_profile(jd_text);
+            let mut out = serde_json::to_value(&extraction)
+                .map_err(|e| JsonRpcError::internal_error(format!("profile encode: {e}")))?;
+            if let Some(obj) = out.as_object_mut() {
+                obj.insert(
+                    "_meta".to_string(),
+                    json!({ "ttlMs": 300_000, "cacheScope": "public" }),
+                );
+            }
+            Ok(json!({ "profile": out }))
         }
 
+        // ---------------------------------------------------------------
+        // Defect #8: search skills, domains, bullets AND facts, with
+        // word-boundary matching and a covered/weak/missing ladder.
+        // ---------------------------------------------------------------
         "resume_gap_analysis" => {
-            let jd_text = arguments
-                .get("jd_text")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| JsonRpcError::invalid_params("Missing required 'jd_text'"))?;
-
+            let jd_text = require_str(arguments, "jd_text")?.to_string();
             let persona_id = arguments
                 .get("persona_id")
                 .and_then(|v| v.as_str())
-                .unwrap_or("ai");
+                .unwrap_or("ai")
+                .to_string();
+            let page_budget = page_budget_arg(arguments)?;
 
             let db_clone = db.clone();
-            let jd_owned = jd_text.to_string();
-            let pid_owned = persona_id.to_string();
+            let now = current_year_month();
+            let report = tokio::task::spawn_blocking(move || -> Result<Value, String> {
+                let ctx = load_context(&db_clone, &jd_text)?;
+                let profile = &ctx.extraction.profile;
 
-            let gap_report = tokio::task::spawn_blocking(move || {
-                db_clone.with_conn(|conn| {
-                    let blocks = career_db::list_blocks_blocking(conn, false)?;
-                    let jd_profile = extract_jd_profile_heuristic(&jd_owned);
+                // "Selected" means the blocks that would actually be printed,
+                // so coverage reflects the resume, not the whole database.
+                let sctx = scoring_context(profile, &persona_id, now);
+                let scored = scoring::score_blocks(&ctx.blocks, &sctx, &HashMap::new());
+                let budget = selection::SelectionBudget::for_pages(page_budget as usize);
+                let sel = selection::knapsack_select(
+                    &scored,
+                    &budget,
+                    &profile.must_have_skills,
+                    selection::DEFAULT_ORG_SCORE_GAP,
+                );
+                let selected_blocks: Vec<ExperienceBlock> =
+                    sel.selected.iter().map(|s| s.block.clone()).collect();
 
-                    // Collect all candidate skills and bullet keywords
-                    let mut candidate_skills = HashSet::new();
-                    for b in &blocks {
-                        for s in &b.skills {
-                            candidate_skills.insert(s.name.to_lowercase());
-                        }
-                    }
+                let must = gap::analyze_must_have_gaps(
+                    &profile.must_have_skills,
+                    &selected_blocks,
+                    &ctx.blocks,
+                );
+                let nice = gap::analyze_must_have_gaps(
+                    &profile.nice_to_have_skills,
+                    &selected_blocks,
+                    &ctx.blocks,
+                );
 
-                    let required_skills = jd_profile["requiredSkills"]
-                        .as_array()
-                        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(str::to_lowercase)).collect::<Vec<_>>())
-                        .unwrap_or_default();
+                let mut warnings: Vec<String> = Vec::new();
+                if let Some(w) = &ctx.extraction.warning {
+                    warnings.push(w.clone());
+                }
+                if must.missing_count > 0 {
+                    let missing: Vec<&str> = must
+                        .items
+                        .iter()
+                        .filter(|i| i.status == gap::GapStatus::Missing)
+                        .map(|i| i.skill.as_str())
+                        .collect();
+                    warnings.push(format!(
+                        "{} must-have skill(s) have no evidence anywhere in the knowledgebase: {}",
+                        missing.len(),
+                        missing.join(", ")
+                    ));
+                }
+                if ctx.blocks.is_empty() {
+                    warnings.push(
+                        "Career knowledgebase is empty, so 0% coverage reflects missing data, \
+                         not a missing skillset."
+                            .to_string(),
+                    );
+                }
 
-                    let preferred_skills = jd_profile["preferredSkills"]
-                        .as_array()
-                        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(str::to_lowercase)).collect::<Vec<_>>())
-                        .unwrap_or_default();
-
-                    let mut covered_required = Vec::new();
-                    let mut missing_required = Vec::new();
-
-                    for req in &required_skills {
-                        if candidate_skills.iter().any(|s| s.contains(req) || req.contains(s)) {
-                            covered_required.push(req.clone());
-                        } else {
-                            missing_required.push(req.clone());
-                        }
-                    }
-
-                    let mut covered_preferred = Vec::new();
-                    let mut missing_preferred = Vec::new();
-                    for pref in &preferred_skills {
-                        if candidate_skills.iter().any(|s| s.contains(pref) || pref.contains(s)) {
-                            covered_preferred.push(pref.clone());
-                        } else {
-                            missing_preferred.push(pref.clone());
-                        }
-                    }
-
-                    let total_req = required_skills.len().max(1);
-                    let coverage_pct = ((covered_required.len() as f64) / (total_req as f64) * 100.0).round();
-
-                    let mut warnings = Vec::new();
-                    if !missing_required.is_empty() {
-                        warnings.push(format!("Missing {} non-negotiable required skills: {}", missing_required.len(), missing_required.join(", ")));
-                    }
-
-                    Ok(json!({
-                        "coveragePercentage": coverage_pct,
-                        "personaId": pid_owned,
-                        "requiredSkillsTotal": required_skills.len(),
-                        "requiredSkillsCovered": covered_required,
-                        "requiredSkillsMissing": missing_required,
-                        "preferredSkillsCovered": covered_preferred,
-                        "preferredSkillsMissing": missing_preferred,
-                        "warnings": warnings,
-                        "recommendedFocus": if coverage_pct >= 80.0 { "Strong match - emphasize metrics and leadership" } else { "Tailor experience bullets to highlight transferable technical skills" }
-                    }))
-                })
+                Ok(json!({
+                    "personaId": persona_id,
+                    "extractionMethod": ctx.extraction.extraction_method,
+                    "extractionEmpty": ctx.extraction.extraction_empty,
+                    "blocksInKnowledgebase": ctx.blocks.len(),
+                    "blocksConsideredSelected": selected_blocks.len(),
+                    "mustHave": must,
+                    "niceToHave": nice,
+                    "coveragePercentage": must.coverage_percentage,
+                    "warnings": warnings,
+                }))
             })
             .await
             .map_err(|e| JsonRpcError::internal_error(format!("gap analysis task error: {e}")))?
-            .map_err(|e| JsonRpcError::internal_error(e))?;
+            .map_err(JsonRpcError::internal_error)?;
 
-            Ok(gap_report)
+            Ok(report)
         }
 
+        // ---------------------------------------------------------------
+        // Defect #6: real knapsack with a wrap-aware line model, section
+        // caps, per-org de-duplication and must-have coverage repair.
+        // ---------------------------------------------------------------
         "resume_score_and_select" => {
-            let jd_text = arguments
-                .get("jd_text")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| JsonRpcError::invalid_params("Missing required 'jd_text'"))?;
-
-            let page_budget = arguments
-                .get("page_budget")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(1) as usize;
-
-            let db_clone = db.clone();
-            let jd_owned = jd_text.to_string();
-
-            let selection = tokio::task::spawn_blocking(move || {
-                db_clone.with_conn(|conn| {
-                    let blocks = career_db::list_blocks_blocking(conn, false)?;
-                    let jd_lower = jd_owned.to_lowercase();
-
-                    // Score blocks based on keyword overlap and seniority
-                    let mut scored_blocks = Vec::new();
-                    for b in blocks {
-                        let mut score: f64 = 0.5; // baseline
-                        for s in &b.skills {
-                            if jd_lower.contains(&s.name.to_lowercase()) {
-                                score += 0.25;
-                            }
-                        }
-                        for bullet in &b.bullets {
-                            if jd_lower.contains(&bullet.canonical.to_lowercase()) {
-                                score += 0.15;
-                            }
-                        }
-                        scored_blocks.push((b, score.min(1.0)));
-                    }
-
-                    scored_blocks.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-                    // Knapsack selection: 1 page ~ 45-50 lines total
-                    let max_lines = if page_budget == 1 { 45 } else { 90 };
-                    let mut total_lines = 12; // header + section overhead
-                    let mut selected = Vec::new();
-
-                    for (block, score) in scored_blocks {
-                        let block_lines = 2 + block.bullets.len(); // 2 lines title/org + 1 per bullet
-                        if total_lines + block_lines <= max_lines {
-                            total_lines += block_lines;
-                            selected.push(json!({
-                                "blockId": block.id,
-                                "title": block.title,
-                                "org": block.org,
-                                "kind": block.kind,
-                                "score": score,
-                                "bulletCount": block.bullets.len(),
-                                "selectedBullets": block.bullets.iter().map(|b| b.id.clone()).collect::<Vec<_>>()
-                            }));
-                        }
-                    }
-
-                    Ok(json!({
-                        "pageBudget": page_budget,
-                        "estimatedTotalLines": total_lines,
-                        "selectedBlocks": selected,
-                        "selectedCount": selected.len()
-                    }))
-                })
-            })
-            .await
-            .map_err(|e| JsonRpcError::internal_error(format!("selection error: {e}")))?
-            .map_err(|e| JsonRpcError::internal_error(e))?;
-
-            Ok(selection)
-        }
-
-        "resume_rewrite_bullets" => {
-            let block_id = arguments
-                .get("block_id")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| JsonRpcError::invalid_params("Missing required 'block_id'"))?;
-            let jd_text = arguments
-                .get("jd_text")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| JsonRpcError::invalid_params("Missing required 'jd_text'"))?;
-
-            let db_clone = db.clone();
-            let bid = block_id.to_string();
-            let _jd_owned = jd_text.to_string();
-
-            let rewritten = tokio::task::spawn_blocking(move || {
-                db_clone.with_conn(|conn| {
-                    let blocks = career_db::list_blocks_blocking(conn, false)?;
-                    let block = blocks
-                        .into_iter()
-                        .find(|b| b.id == bid)
-                        .ok_or_else(|| format!("Block '{bid}' not found"))?;
-
-                    let mut drafts = Vec::new();
-                    for bullet in &block.bullets {
-                        // Strict provenance: preserve exact canonical numbers/metrics
-                        let tailored = bullet.canonical.clone();
-                        // Highlight action verbs and ensure metrics stay intact
-                        let verified_metrics: Vec<String> = bullet.metrics.iter().map(|m| m.value.clone()).collect();
-                        
-                        drafts.push(json!({
-                            "bulletId": bullet.id,
-                            "canonical": bullet.canonical,
-                            "tailored": tailored,
-                            "provenanceVerified": true,
-                            "verifiedMetrics": verified_metrics,
-                            "hasHallucination": false
-                        }));
-                    }
-
-                    Ok(json!({
-                        "blockId": bid,
-                        "title": block.title,
-                        "org": block.org,
-                        "rewrittenBullets": drafts,
-                        "honestProvenance": true
-                    }))
-                })
-            })
-            .await
-            .map_err(|e| JsonRpcError::internal_error(format!("rewrite error: {e}")))?
-            .map_err(|e| JsonRpcError::internal_error(e))?;
-
-            Ok(rewritten)
-        }
-
-        "resume_synthesize" => {
-            let jd_text = arguments
-                .get("jd_text")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| JsonRpcError::invalid_params("Missing required 'jd_text'"))?;
+            let jd_text = require_str(arguments, "jd_text")?.to_string();
             let persona_id = arguments
                 .get("persona_id")
                 .and_then(|v| v.as_str())
-                .unwrap_or("ai");
-            let template_id = arguments
-                .get("template_id")
+                .unwrap_or("ai")
+                .to_string();
+            let requested_pages = page_budget_arg(arguments)?;
+
+            let db_clone = db.clone();
+            let now = current_year_month();
+            let selection_json = tokio::task::spawn_blocking(move || -> Result<Value, String> {
+                let ctx = load_context(&db_clone, &jd_text)?;
+                let profile = &ctx.extraction.profile;
+                let sctx = scoring_context(profile, &persona_id, now);
+                let scored = scoring::score_blocks(&ctx.blocks, &sctx, &HashMap::new());
+                let budget = selection::SelectionBudget::for_pages(requested_pages as usize);
+                let sel = selection::knapsack_select(
+                    &scored,
+                    &budget,
+                    &profile.must_have_skills,
+                    selection::DEFAULT_ORG_SCORE_GAP,
+                );
+
+                let selected: Vec<Value> = sel
+                    .selected
+                    .iter()
+                    .map(|s| {
+                        let kept = selection::trim_selected_bullets(
+                            &s.block,
+                            &profile.must_have_skills,
+                            budget.bullets_per_block(),
+                        );
+                        json!({
+                            "blockId": s.block.id,
+                            "title": s.block.title,
+                            "org": s.block.org,
+                            "kind": s.block.kind,
+                            "section": selection::section_for_block(&s.block),
+                            "score": s.score,
+                            "scoreComponents": s.components,
+                            "estimatedLines": selection::estimate_block_lines(
+                                &s.block,
+                                selection::CHARS_PER_LINE,
+                            ),
+                            "bulletCount": s.block.bullets.len(),
+                            "selectedBullets": kept,
+                        })
+                    })
+                    .collect();
+
+                Ok(json!({
+                    "pageBudget": requested_pages,
+                    "lineBudget": budget.total_lines,
+                    "estimatedTotalLines": sel.estimated_lines,
+                    "charsPerLine": selection::CHARS_PER_LINE,
+                    "selectedBlocks": selected,
+                    "selectedCount": sel.selected.len(),
+                    "consideredCount": scored.len(),
+                    "uncoveredMustHaves": sel.uncovered_must_haves,
+                    "coverageSwaps": sel.swaps,
+                    "semanticScoringAvailable": false,
+                    "note": "Embedding weight was redistributed across the deterministic \
+                             components because the MCP server has no embedding provider bound.",
+                }))
+            })
+            .await
+            .map_err(|e| JsonRpcError::internal_error(format!("selection task error: {e}")))?
+            .map_err(JsonRpcError::internal_error)?;
+
+            Ok(selection_json)
+        }
+
+        // ---------------------------------------------------------------
+        // Defect #1: verify provenance for real. Optionally accept drafts
+        // from the calling agent and check every canonical metric survived.
+        // ---------------------------------------------------------------
+        "resume_rewrite_bullets" => {
+            let block_id = require_str(arguments, "block_id")?.to_string();
+            let jd_text = require_str(arguments, "jd_text")?.to_string();
+            let bullet_ids: Option<HashSet<String>> = arguments
+                .get("bullet_ids")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect());
+
+            // { bulletId -> proposed text } supplied by the calling agent.
+            let mut drafts: HashMap<String, String> = HashMap::new();
+            if let Some(arr) = arguments.get("drafts").and_then(|v| v.as_array()) {
+                for d in arr {
+                    let (Some(id), Some(text)) = (
+                        d.get("bulletId").and_then(|v| v.as_str()),
+                        d.get("text").and_then(|v| v.as_str()),
+                    ) else {
+                        return Err(JsonRpcError::invalid_params(
+                            "each draft needs 'bulletId' and 'text'",
+                        ));
+                    };
+                    drafts.insert(id.to_string(), text.to_string());
+                }
+            }
+
+            let db_clone = db.clone();
+            let result = tokio::task::spawn_blocking(move || -> Result<Value, String> {
+                let ctx = load_context(&db_clone, &jd_text)?;
+                let block = ctx
+                    .blocks
+                    .iter()
+                    .find(|b| b.id == block_id)
+                    .ok_or_else(|| format!("Block '{block_id}' not found"))?;
+                let profile = &ctx.extraction.profile;
+
+                // A draft naming a bullet that does not exist was silently
+                // dropped, so a caller could believe it had submitted work that
+                // was never checked.
+                let known: HashSet<&str> = block.bullets.iter().map(|b| b.id.as_str()).collect();
+                let unknown: Vec<String> = drafts
+                    .keys()
+                    .filter(|id| !known.contains(id.as_str()))
+                    .cloned()
+                    .collect();
+                if !unknown.is_empty() {
+                    return Err(format!(
+                        "drafts reference bullet ids not in block '{}': {}",
+                        block.id,
+                        unknown.join(", ")
+                    ));
+                }
+
+                let mut out = Vec::new();
+                let mut verified_count = 0usize;
+                let mut rejected_count = 0usize;
+
+                for bullet in &block.bullets {
+                    if let Some(filter) = &bullet_ids {
+                        if !filter.contains(&bullet.id) {
+                            continue;
+                        }
+                    }
+                    let canonical_metrics: Vec<String> =
+                        bullet.metrics.iter().map(|m| m.value.clone()).collect();
+                    let jd_keywords: Vec<String> = profile
+                        .ats_keywords
+                        .iter()
+                        .filter(|k| {
+                            crate::career_match::text::text_covers_skill(&bullet.canonical, k)
+                        })
+                        .cloned()
+                        .collect();
+
+                    match drafts.get(&bullet.id) {
+                        Some(proposed) => {
+                            let dropped = metrics::dropped_metrics(&bullet.metrics, proposed);
+                            let kept_all =
+                                metrics::metrics_values_preserved(&bullet.metrics, proposed);
+                            debug_assert_eq!(kept_all, dropped.is_empty());
+                            // Preservation alone is not enough: a bullet with no
+                            // recorded metrics preserves all zero of them, so a
+                            // draft could invent a figure and pass. Also reject
+                            // quantities the knowledgebase does not support.
+                            let introduced = metrics::introduced_numbers(
+                                &bullet.canonical,
+                                &bullet.metrics,
+                                proposed,
+                            );
+                            // A locked bullet is not open for rewriting. The
+                            // flag was reported and then ignored.
+                            let locked_block = bullet.locked;
+                            // Token overlap with the canonical text. This server
+                            // has no model and cannot judge whether a claim is
+                            // true, so a draft that shares almost nothing with
+                            // the canonical bullet is surfaced rather than
+                            // waved through.
+                            let overlap = canonical_overlap(&bullet.canonical, proposed);
+                            const MIN_OVERLAP: f64 = 0.25;
+                            let preserved = kept_all
+                                && introduced.is_empty()
+                                && !locked_block
+                                && overlap >= MIN_OVERLAP;
+                            // Both failure modes can apply at once, so they are
+                            // listed rather than collapsed into one status with
+                            // an arbitrary precedence. Built outside `json!`,
+                            // which cannot parse a turbofish in a block.
+                            let mut rejection_reasons: Vec<&str> = Vec::new();
+                            if !dropped.is_empty() {
+                                rejection_reasons.push("dropped_metric");
+                            }
+                            if !introduced.is_empty() {
+                                rejection_reasons.push("unsupported_number");
+                            }
+                            if locked_block {
+                                rejection_reasons.push("bullet_locked");
+                            }
+                            if overlap < MIN_OVERLAP {
+                                rejection_reasons.push("insufficient_overlap_with_canonical");
+                            }
+                            if preserved {
+                                verified_count += 1;
+                            } else {
+                                rejected_count += 1;
+                            }
+                            out.push(json!({
+                                "bulletId": bullet.id,
+                                "canonical": bullet.canonical,
+                                "proposed": proposed,
+                                // The accepted text is the draft only when it
+                                // survived verification; otherwise we fall back
+                                // to canonical rather than shipping a claim we
+                                // could not substantiate.
+                                "accepted": if preserved { proposed.clone() } else { bullet.canonical.clone() },
+                                "status": if preserved { "verified" } else { "rejected_canonical_fallback" },
+                                "rejectionReasons": rejection_reasons,
+                                "provenanceVerified": preserved,
+                                // Naming the checks that actually ran, because
+                                // "provenanceVerified" alone reads as a claim
+                                // this server cannot make: it has no model and
+                                // cannot judge whether a rewritten statement is
+                                // true, only whether the numbers and wording
+                                // stay tied to the canonical bullet.
+                                "verifiedChecks": [
+                                    "canonical_metrics_preserved",
+                                    "no_unsupported_numbers",
+                                    "not_locked",
+                                    "token_overlap_with_canonical"
+                                ],
+                                "notVerified": [
+                                    "factual_truth_of_new_claims",
+                                    "employer_or_scope_accuracy"
+                                ],
+                                "canonicalOverlap": overlap,
+                                "droppedMetrics": dropped,
+                                "introducedNumbers": introduced,
+                                "canonicalMetrics": canonical_metrics,
+                                "jdKeywordsPresent": jd_keywords,
+                                "locked": bullet.locked,
+                            }));
+                        }
+                        None => {
+                            out.push(json!({
+                                "bulletId": bullet.id,
+                                "canonical": bullet.canonical,
+                                "accepted": bullet.canonical,
+                                "status": "canonical_only",
+                                // No rewrite was attempted, so nothing was
+                                // verified. Reporting `true` here is what the
+                                // previous implementation did and it is exactly
+                                // the failure this field must not have.
+                                "provenanceVerified": false,
+                                "canonicalMetrics": canonical_metrics,
+                                "jdKeywordsPresent": jd_keywords,
+                                "locked": bullet.locked,
+                            }));
+                        }
+                    }
+                }
+
+                if out.is_empty() && bullet_ids.is_some() {
+                    return Err(format!(
+                        "No bullets in block '{block_id}' matched the requested bullet_ids"
+                    ));
+                }
+
+                Ok(json!({
+                    "blockId": block.id,
+                    "title": block.title,
+                    "org": block.org,
+                    "bullets": out,
+                    "rewriteMode": if drafts.is_empty() { "verify_only_no_drafts_supplied" } else { "verified_supplied_drafts" },
+                    "verifiedCount": verified_count,
+                    "rejectedCount": rejected_count,
+                    "targetKeywords": profile.ats_keywords,
+                    "guidance": "This server does not generate rewrites. Draft bullets yourself, \
+                                 then resubmit them in 'drafts' to have every canonical metric \
+                                 checked against the proposed text.",
+                }))
+            })
+            .await
+            .map_err(|e| JsonRpcError::internal_error(format!("rewrite error: {e}")))?
+            .map_err(JsonRpcError::internal_error)?;
+
+            Ok(result)
+        }
+
+        // ---------------------------------------------------------------
+        // Defect #4: real analysis, real ATS coverage, no mock renderer.
+        // ---------------------------------------------------------------
+        "resume_synthesize" => {
+            let jd_text = require_str(arguments, "jd_text")?.to_string();
+            let persona_id = arguments
+                .get("persona_id")
                 .and_then(|v| v.as_str())
-                .unwrap_or("modern-cv");
-            let is_async = arguments
-                .get("async")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+                .unwrap_or("ai")
+                .to_string();
+            let page_budget = page_budget_arg(arguments)?;
+            let is_async = arguments.get("async").and_then(|v| v.as_bool()).unwrap_or(false);
+            let render_doc = arguments.get("render").and_then(|v| v.as_bool()).unwrap_or(true);
+            let header_name = arguments
+                .get("header_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let contact_lines: Vec<String> = arguments
+                .get("contact_lines")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
+
+            if let Some(t) = arguments.get("template_id").and_then(|v| v.as_str()) {
+                if !matches!(t, "typst-ats-single" | "typst-ats-two-column") {
+                    return Err(JsonRpcError::invalid_params(format!(
+                        "Unknown template_id '{t}'. This server does not render templates; \
+                         known ids are 'typst-ats-single' and 'typst-ats-two-column', both \
+                         rendered by the desktop app."
+                    )));
+                }
+            }
+
+            let run = {
+                let db_clone = db.clone();
+                let now = current_year_month();
+                move || -> Result<Value, String> {
+                    let ctx = load_context(&db_clone, &jd_text)?;
+                    let profile = &ctx.extraction.profile;
+                    let sctx = scoring_context(profile, &persona_id, now);
+                    let scored = scoring::score_blocks(&ctx.blocks, &sctx, &HashMap::new());
+                    let budget = selection::SelectionBudget::for_pages(page_budget as usize);
+                    let sel = selection::knapsack_select(
+                        &scored,
+                        &budget,
+                        &profile.must_have_skills,
+                        selection::DEFAULT_ORG_SCORE_GAP,
+                    );
+                    let selected_blocks: Vec<ExperienceBlock> =
+                        sel.selected.iter().map(|s| s.block.clone()).collect();
+
+                    let gap_report = gap::analyze_must_have_gaps(
+                        &profile.must_have_skills,
+                        &selected_blocks,
+                        &ctx.blocks,
+                    );
+
+                    // Coverage over the bullets that would actually print.
+                    let mut bullet_texts: Vec<String> = Vec::new();
+                    let mut skill_names: Vec<String> = Vec::new();
+                    for b in &selected_blocks {
+                        let kept = selection::trim_selected_bullets(
+                            b,
+                            &profile.must_have_skills,
+                            budget.bullets_per_block(),
+                        );
+                        for bullet in &b.bullets {
+                            if kept.contains(&bullet.id) {
+                                bullet_texts.push(bullet.canonical.clone());
+                            }
+                        }
+                        // Skill tags are metadata; `render_resume` prints only
+                        // the header, entries and bullets. Counting tags in the
+                        // ATS corpus reported keyword coverage the produced PDF
+                        // does not actually have.
+                        if !render_doc {
+                            for s in &b.skills {
+                                skill_names.push(s.name.clone());
+                            }
+                        }
+                    }
+                    let ats = gap::compute_ats_coverage_pct(
+                        &bullet_texts,
+                        &skill_names,
+                        &profile.ats_keywords,
+                    );
+
+                    // Materialize through the injection-safe code-mode renderer.
+                    // The design layer (templates, two-column, typography) stays
+                    // owned by the desktop app; this is the plain layout that
+                    // lets a headless agent finish the job.
+                    let materialization = if render_doc {
+                        let mut kept_by_block: HashMap<String, Vec<String>> = HashMap::new();
+                        for b in &selected_blocks {
+                            kept_by_block.insert(
+                                b.id.clone(),
+                                selection::trim_selected_bullets(
+                                    b,
+                                    &profile.must_have_skills,
+                                    budget.bullets_per_block(),
+                                ),
+                            );
+                        }
+                        let source = render::render_resume(
+                            &header_name,
+                            &contact_lines,
+                            &selected_blocks,
+                            Some(&kept_by_block),
+                        );
+                        // Defence in depth: refuse to emit source whose literals
+                        // do not round-trip, rather than handing back something
+                        // that might carry an unbalanced quote.
+                        if let Some(bad) = render::audit_rendered_literals(&source) {
+                            json!({
+                                "status": "refused_unsafe_source",
+                                "reason": format!("rendered literal failed validation: {bad}"),
+                                "typstSource": Value::Null,
+                            })
+                        } else {
+                            let compiled = engine::compile_resume_pdf(&source);
+                            json!({
+                                "status": if compiled.pdf_bytes.is_some() { "rendered" } else { "render_compile_failed" },
+                                "renderer": "career_match::render (plain layout, code-mode literals)",
+                                "note": "Template-driven layouts live in the desktop app; this is \
+                                         the headless fallback layout.",
+                                "typstSource": source,
+                                "pageCount": compiled.page_count,
+                                "errors": compiled.errors,
+                                "warnings": compiled.warnings,
+                                "pdfBytesLength": compiled.pdf_bytes.as_ref().map(|b| b.len()).unwrap_or(0),
+                                "pdfBase64": compiled.pdf_bytes.as_ref().map(|b| BASE64_STANDARD.encode(b)),
+                            })
+                        }
+                    } else {
+                        json!({
+                            "status": "skipped_by_request",
+                            "typstSource": Value::Null,
+                        })
+                    };
+
+                    Ok(json!({
+                        "personaId": persona_id,
+                        "pageBudget": page_budget,
+                        "profile": profile,
+                        "extractionMethod": ctx.extraction.extraction_method,
+                        "selectedBlocks": selected_blocks.iter().map(|b| json!({
+                            "blockId": b.id, "title": b.title, "org": b.org,
+                        })).collect::<Vec<_>>(),
+                        "estimatedTotalLines": sel.estimated_lines,
+                        "lineBudget": budget.total_lines,
+                        "uncoveredMustHaves": sel.uncovered_must_haves,
+                        "gapAnalysis": gap_report,
+                        "matchReport": {
+                            "atsCoveragePercentage": ats,
+                            "mustHaveCoveragePercentage": gap_report.coverage_percentage,
+                            "bulletsConsidered": bullet_texts.len(),
+                            "aiRewrittenCount": 0,
+                            "canonicalFallbackCount": bullet_texts.len(),
+                        },
+                        "materialization": materialization,
+                        "llmStagesSkipped": ["jd-extraction-model", "bullet-rewrite", "critic"],
+                    }))
+                }
+            };
 
             if is_async {
-                // Kick off as non-blocking async task via TaskManager (SEP-2663)
                 let handle = task_manager.create_task("resume_synthesize", Some(600));
                 let task_id = handle.task_id.clone();
                 let task_mgr = Arc::clone(task_manager);
-                let db_clone = db.clone();
-                let jd_owned = jd_text.to_string();
-                let pid_owned = persona_id.to_string();
-                let tid_owned = template_id.to_string();
                 let handle_clone = handle.clone();
 
                 tokio::spawn(async move {
-                    task_mgr.update_progress(&task_id, 0.2, Some("Stage 1-3: Analyzing JD and scoring blocks".to_string()));
-                    
-                    // Simulate step-by-step progress
-                    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                    task_mgr.update_progress(
+                        &task_id,
+                        0.1,
+                        Some("Analyzing JD and loading knowledgebase".to_string()),
+                    );
                     if handle_clone.is_cancelled() {
+                        task_mgr.fail_task(&task_id, "cancelled".to_string());
                         return;
                     }
-
-                    task_mgr.update_progress(&task_id, 0.6, Some("Stage 4-5: Selecting knapsack and rewriting bullets with provenance".to_string()));
-                    
-                    let run_res = tokio::task::spawn_blocking(move || {
-                        db_clone.with_conn(|conn| {
-                            let blocks = career_db::list_blocks_blocking(conn, false)?;
-                            let jd_profile = extract_jd_profile_heuristic(&jd_owned);
-                            let typst_source = generate_mock_typst_resume(&blocks, &jd_profile, &tid_owned);
-                            let compile_res = engine::compile_resume_pdf(&typst_source);
-
-                            Ok(json!({
-                                "personaId": pid_owned,
-                                "templateId": tid_owned,
-                                "typstSource": typst_source,
-                                "pdfBytesLength": compile_res.pdf_bytes.as_ref().map(|b| b.len()).unwrap_or(0),
-                                "errors": compile_res.errors,
-                                "warnings": compile_res.warnings,
-                                "pageCount": compile_res.page_count,
-                                "matchReport": {
-                                    "coveragePercentage": 88.0,
-                                    "aiRewrittenCount": blocks.iter().map(|b| b.bullets.len()).sum::<usize>(),
-                                    "canonicalFallbackCount": 0
-                                }
-                            }))
-                        })
-                    }).await;
-
-                    match run_res {
-                        Ok(Ok(val)) => {
-                            task_mgr.complete_task(&task_id, val);
-                        }
-                        Ok(Err(e)) => {
-                            task_mgr.fail_task(&task_id, e);
-                        }
-                        Err(e) => {
-                            task_mgr.fail_task(&task_id, format!("Join error: {e}"));
-                        }
+                    // Progress is reported around the one real unit of work
+                    // rather than interpolated with a sleep.
+                    task_mgr.update_progress(
+                        &task_id,
+                        0.5,
+                        Some("Scoring, selecting and computing coverage".to_string()),
+                    );
+                    match tokio::task::spawn_blocking(run).await {
+                        Ok(Ok(val)) => task_mgr.complete_task(&task_id, val),
+                        Ok(Err(e)) => task_mgr.fail_task(&task_id, e),
+                        Err(e) => task_mgr.fail_task(&task_id, format!("Join error: {e}")),
                     }
                 });
 
                 return Ok(json!({
                     "taskId": handle.task_id,
                     "status": "working",
-                    "message": "Resume synthesis started asynchronously. Poll status with method 'tasks/get'."
+                    "message": "Resume synthesis started. Poll with 'tasks/get'.",
                 }));
             }
 
-            // Synchronous run
-            let db_clone = db.clone();
-            let jd_owned = jd_text.to_string();
-            let pid_owned = persona_id.to_string();
-            let tid_owned = template_id.to_string();
-
-            let synthesis_result = tokio::task::spawn_blocking(move || {
-                db_clone.with_conn(|conn| {
-                    let blocks = career_db::list_blocks_blocking(conn, false)?;
-                    let jd_profile = extract_jd_profile_heuristic(&jd_owned);
-                    let typst_source = generate_mock_typst_resume(&blocks, &jd_profile, &tid_owned);
-                    let compile_res = engine::compile_resume_pdf(&typst_source);
-
-                    Ok(json!({
-                        "personaId": pid_owned,
-                        "templateId": tid_owned,
-                        "typstSource": typst_source,
-                        "pdfBytesLength": compile_res.pdf_bytes.as_ref().map(|b| b.len()).unwrap_or(0),
-                        "errors": compile_res.errors,
-                        "warnings": compile_res.warnings,
-                        "pageCount": compile_res.page_count,
-                        "matchReport": {
-                            "coveragePercentage": 88.0,
-                            "aiRewrittenCount": blocks.iter().map(|b| b.bullets.len()).sum::<usize>(),
-                            "canonicalFallbackCount": 0
-                        }
-                    }))
-                })
-            })
-            .await
-            .map_err(|e| JsonRpcError::internal_error(format!("synthesis task error: {e}")))?
-            .map_err(|e| JsonRpcError::internal_error(e))?;
-
-            Ok(synthesis_result)
+            tokio::task::spawn_blocking(run)
+                .await
+                .map_err(|e| JsonRpcError::internal_error(format!("synthesis task error: {e}")))?
+                .map_err(JsonRpcError::internal_error)
         }
 
+        // ---------------------------------------------------------------
+        // Defect #5: LaTeX was reported as compiled without being compiled.
+        // ---------------------------------------------------------------
         "resume_compile" => {
             let typst_source = arguments.get("typst_source").and_then(|v| v.as_str());
             let latex_source = arguments.get("latex_source").and_then(|v| v.as_str());
 
+            if typst_source.is_some() && latex_source.is_some() {
+                return Err(JsonRpcError::invalid_params(
+                    "Provide exactly one of 'typst_source' or 'latex_source', not both",
+                ));
+            }
+
             if let Some(typst) = typst_source {
+                if typst.trim().is_empty() {
+                    return Err(JsonRpcError::invalid_params("'typst_source' is empty"));
+                }
                 let typst_owned = typst.to_string();
-                let compile_res = tokio::task::spawn_blocking(move || {
-                    engine::compile_resume_pdf(&typst_owned)
-                })
-                .await
-                .map_err(|e| JsonRpcError::internal_error(format!("compile task error: {e}")))?;
+                let compile_res =
+                    tokio::task::spawn_blocking(move || engine::compile_resume_pdf(&typst_owned))
+                        .await
+                        .map_err(|e| {
+                            JsonRpcError::internal_error(format!("compile task error: {e}"))
+                        })?;
 
                 let pdf_base64 = compile_res.pdf_bytes.as_ref().map(|b| BASE64_STANDARD.encode(b));
-
                 return Ok(json!({
                     "engine": "typst",
                     "success": compile_res.pdf_bytes.is_some(),
@@ -722,127 +1127,156 @@ pub async fn execute_resume_tool(
                     "warnings": compile_res.warnings,
                     "pageCount": compile_res.page_count,
                     "pdfBase64": pdf_base64,
-                    "byteLength": compile_res.pdf_bytes.map(|b| b.len()).unwrap_or(0)
+                    "byteLength": compile_res.pdf_bytes.map(|b| b.len()).unwrap_or(0),
                 }));
             }
 
-            if let Some(latex) = latex_source {
-                return Ok(json!({
-                    "engine": "tectonic",
-                    "success": true,
-                    "message": "LaTeX source verified for compilation",
-                    "sourceLength": latex.len()
-                }));
+            if latex_source.is_some() {
+                // Honest refusal. The in-process Tectonic driver cannot be
+                // called from the long-lived MCP server: its C `font_cache`
+                // static is not reset on failure, so a second failed compile
+                // aborts the whole process, and it has no timeout. The
+                // subprocess-isolated wrapper is private and the safe public
+                // entry point needs a project directory plus LatexCompilerState,
+                // neither of which the MCP transports have.
+                return Err(JsonRpcError::invalid_params(
+                    "LaTeX compilation is not available through the MCP server. The in-process \
+                     Tectonic engine is not safe to call here (no timeout; a failed run poisons a \
+                     process-wide font cache), and the subprocess path requires a project \
+                     directory this transport does not have. Compile LaTeX in the desktop app, or \
+                     pass 'typst_source' instead.",
+                ));
             }
 
-            Err(JsonRpcError::invalid_params("Either 'typst_source' or 'latex_source' must be provided"))
+            Err(JsonRpcError::invalid_params(
+                "Provide 'typst_source'. ('latex_source' is rejected: see resume_compile docs.)",
+            ))
         }
 
+        // ---------------------------------------------------------------
+        // Defect #2: never fabricate a metric. Report only what is there.
+        // ---------------------------------------------------------------
         "resume_finetune_bullet" => {
-            let bullet_text = arguments
-                .get("bullet_text")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| JsonRpcError::invalid_params("Missing required 'bullet_text'"))?;
-            let _jd_text = arguments
-                .get("jd_text")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| JsonRpcError::invalid_params("Missing required 'jd_text'"))?;
-            let _context = arguments.get("context").and_then(|v| v.as_str()).unwrap_or("");
+            let bullet_text = require_str(arguments, "bullet_text")?;
+            let jd_text = require_str(arguments, "jd_text")?;
+            let context = arguments.get("context").and_then(|v| v.as_str()).unwrap_or("");
 
-            // Heuristic fine-tuning: check action verb and metric presence
-            let has_metric = bullet_text.chars().any(|c| c.is_ascii_digit()) || bullet_text.contains('%') || bullet_text.contains('$');
-            let first_word = bullet_text.split_whitespace().next().unwrap_or("Engineered");
+            let extraction = jd::extract_profile(jd_text);
+            let profile = &extraction.profile;
 
-            let suggestion = if !has_metric {
-                format!("{bullet_text} (impact: improved latency/efficiency by 25%)")
-            } else {
-                bullet_text.to_string()
-            };
+            let trimmed = bullet_text.trim();
+            let lower = trimmed.to_lowercase();
+
+            // Verified metrics may be supplied by the caller; we check them
+            // against the text rather than inventing any.
+            let supplied_metrics: Vec<String> = arguments
+                .get("verified_metrics")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
+            // Blank entries are dropped rather than counted: an empty metric is
+            // vacuously "preserved", which inflated suppliedMetricsPresent.
+            let supplied_metrics: Vec<String> = supplied_metrics
+                .into_iter()
+                .filter(|m| !m.trim().is_empty())
+                .collect();
+            let missing_supplied: Vec<String> = supplied_metrics
+                .iter()
+                .filter(|m| !metrics::metric_preserved_in_text(m, trimmed))
+                .cloned()
+                .collect();
+
+            let has_number = trimmed.chars().any(|c| c.is_ascii_digit());
+            let has_unit = trimmed.contains('%') || trimmed.contains('$') || trimmed.contains('×');
+
+            let first_word = trimmed.split_whitespace().next().unwrap_or("");
+            let weak_openers = [
+                "responsible", "helped", "assisted", "worked", "tasked",
+                "involved", "participated", "supported", "contributed",
+                "handled", "did", "made",
+            ];
+            let weak_opener = weak_openers
+                .iter()
+                .find(|w| lower.starts_with(*w))
+                .map(|w| (*w).to_string());
+
+            let matched_keywords: Vec<String> = profile
+                .ats_keywords
+                .iter()
+                .filter(|k| crate::career_match::text::text_covers_skill(trimmed, k))
+                .cloned()
+                .collect();
+            let missing_keywords: Vec<String> = profile
+                .must_have_skills
+                .iter()
+                .filter(|k| !crate::career_match::text::text_covers_skill(trimmed, k))
+                .cloned()
+                .collect();
+
+            let mut suggestions: Vec<String> = Vec::new();
+            if let Some(w) = &weak_opener {
+                suggestions.push(format!(
+                    "Opens with the weak verb '{w}'. Lead with the action you took."
+                ));
+            }
+            if !has_number {
+                suggestions.push(
+                    "No quantity present. If you have a verified figure for this work, add it. \
+                     Do not invent one."
+                        .to_string(),
+                );
+            }
+            if !missing_supplied.is_empty() {
+                suggestions.push(format!(
+                    "These supplied metrics are not expressed in the text: {}",
+                    missing_supplied.join(", ")
+                ));
+            }
+            if !missing_keywords.is_empty() {
+                suggestions.push(format!(
+                    "JD must-haves not evidenced here: {}. Only add them if this work genuinely \
+                     involved them.",
+                    missing_keywords.join(", ")
+                ));
+            }
+            if context.trim().is_empty() {
+                suggestions.push(
+                    "No context supplied; pass 'context' (role, org, verified metrics) for a \
+                     sharper review."
+                        .to_string(),
+                );
+            }
 
             Ok(json!({
                 "original": bullet_text,
-                "fineTuned": suggestion,
-                "hasMetric": has_metric,
-                "strongActionVerb": true,
-                "actionVerb": first_word,
-                "recommendation": "Follow Google X-Y-Z formula: Accomplished [X], measured by [Y], by doing [Z]"
+                // Deliberately absent: a machine-written "improved" bullet.
+                // The previous implementation appended a fabricated
+                // "(impact: improved latency/efficiency by 25%)" to any bullet
+                // with no number in it.
+                "rewrite": Value::Null,
+                "rewritePolicy": "This server never generates or appends metrics. It reports \
+                                  findings; you write the bullet and may resubmit it to \
+                                  resume_rewrite_bullets for provenance verification.",
+                "analysis": {
+                    "hasNumber": has_number,
+                    "hasUnit": has_unit,
+                    "openingWord": first_word,
+                    "weakOpener": weak_opener,
+                    "suppliedMetricsPresent": supplied_metrics.len() - missing_supplied.len(),
+                    "suppliedMetricsMissing": missing_supplied,
+                    "jdKeywordsPresent": matched_keywords,
+                    "jdMustHavesAbsent": missing_keywords,
+                    "characterCount": trimmed.chars().count(),
+                    "estimatedRenderedLines": selection::estimate_bullet_lines(
+                        trimmed,
+                        selection::CHARS_PER_LINE,
+                    ),
+                },
+                "suggestions": suggestions,
+                "recommendation": "Google X-Y-Z: accomplished [X], as measured by [Y], by doing [Z].",
             }))
         }
 
         _ => Err(JsonRpcError::method_not_found(name)),
     }
-}
-
-// --- Heuristics ---
-
-fn extract_jd_profile_heuristic(jd_text: &str) -> Value {
-    let lower = jd_text.to_lowercase();
-    let title = if lower.contains("staff") {
-        "Staff Software Engineer"
-    } else if lower.contains("senior") || lower.contains("sr.") {
-        "Senior Software Engineer"
-    } else if lower.contains("principal") {
-        "Principal Engineer"
-    } else {
-        "Software Engineer"
-    };
-
-    let company = if lower.contains("google") {
-        "Google"
-    } else if lower.contains("apple") {
-        "Apple"
-    } else if lower.contains("microsoft") {
-        "Microsoft"
-    } else if lower.contains("meta") {
-        "Meta"
-    } else {
-        "Technology Leader"
-    };
-
-    let known_skills = [
-        "python", "rust", "typescript", "react", "c++", "go", "kubernetes", "docker",
-        "distributed systems", "machine learning", "pytorch", "tensorflow", "sqlite",
-        "graphql", "rest", "microservices", "sql", "linux", "aws", "gcp"
-    ];
-
-    let mut required = Vec::new();
-    let mut preferred = Vec::new();
-
-    for skill in known_skills {
-        if lower.contains(skill) {
-            if required.len() < 4 {
-                required.push(skill);
-            } else {
-                preferred.push(skill);
-            }
-        }
-    }
-
-    json!({
-        "title": title,
-        "company": company,
-        "requiredSkills": required,
-        "preferredSkills": preferred,
-        "seniority": if lower.contains("senior") || lower.contains("staff") { "Senior" } else { "Mid" },
-        "domain": if lower.contains("ai") || lower.contains("machine learning") { "AI / Machine Learning" } else { "Software Engineering" },
-        "cultureKeywords": ["ownership", "impact", "collaboration", "scale", "velocity"]
-    })
-}
-
-fn generate_mock_typst_resume(blocks: &[ExperienceBlock], _profile: &Value, _template_id: &str) -> String {
-    let mut out = String::new();
-    out.push_str("#set page(paper: \"a4\", margin: (x: 1.5cm, y: 1.5cm))\n");
-    out.push_str("#set text(font: \"New Computer Modern\", size: 10pt)\n\n");
-    out.push_str("= Candidate Resume\n\n");
-
-    out.push_str("== Experience\n\n");
-    for b in blocks.iter().take(3) {
-        out.push_str(&format!("*{}* -- _{}_\n", b.title, b.org));
-        for bullet in &b.bullets {
-            out.push_str(&format!("- {}\n", bullet.canonical));
-        }
-        out.push_str("\n");
-    }
-
-    out
 }

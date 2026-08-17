@@ -178,6 +178,34 @@ impl CareerDbState {
         }
     }
 
+    /// Open a private in-memory career DB with the full schema applied.
+    ///
+    /// `open_default` resolves to the user's real `career.db`, so any test that
+    /// built state through it was reading and writing production career data.
+    /// Tests must use this instead: each call is an isolated database that dies
+    /// with the connection.
+    pub fn open_in_memory() -> Result<Self, String> {
+        let _ = vectors::ensure_sqlite_vec_registered();
+        let conn = Connection::open_in_memory()
+            .map_err(|e| format!("Failed to open in-memory career db: {e}"))?;
+        conn.execute_batch("PRAGMA foreign_keys = ON;")
+            .map_err(|e| format!("Failed to enable foreign keys: {e}"))?;
+        schema::init_schema(&conn)?;
+        schema::seed_default_personas(&conn)?;
+        Ok(Self {
+            inner: Arc::new(Mutex::new(DbSlot::Ready(conn))),
+        })
+    }
+
+    /// A state whose every `with_conn` call fails, for exercising the
+    /// db-unavailable branch that production hits when `career.db` cannot open.
+    #[cfg(test)]
+    pub fn failed_for_test(reason: &str) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(DbSlot::Failed(reason.to_string()))),
+        }
+    }
+
     pub fn with_conn<F, T>(&self, f: F) -> Result<T, String>
     where
         F: FnOnce(&Connection) -> Result<T, String>,
@@ -259,6 +287,19 @@ pub(crate) fn list_blocks_blocking(
         out.push(block);
     }
     Ok(out)
+}
+
+/// Blocking vector search, for callers that already hold a connection.
+///
+/// The MCP tool layer needs this: `career_vector_search` is a Tauri command and
+/// is unreachable from the headless MCP transports.
+pub(crate) fn vector_search_blocking(
+    conn: &Connection,
+    query_vec: &[f32],
+    k: usize,
+    filter: &SearchFilter,
+) -> Result<Vec<ScoredHit>, String> {
+    vectors::vector_search(conn, query_vec, k, filter)
 }
 
 pub(crate) fn upsert_block_blocking(conn: &Connection, block: &ExperienceBlock) -> Result<(), String> {

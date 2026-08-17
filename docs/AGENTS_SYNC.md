@@ -1,30 +1,31 @@
 # AGENTS/CLAUDE Sync Checklist
 
 Purpose:
-- Keep every new scope directory aligned to the repo map + graphify contract before work starts there.
+- Keep every new scope directory aligned to the DevCouncil repo map before work starts there.
 
 Pre-edit check:
-1. Run `gitnexus:status` at repo root before broad changes.
+1. Run `dev map --if-stale` at repo root before broad changes (or `dev map` after large refactors).
 2. Ensure the target scope has both files when scope receives behavioral edits:
    - `AGENTS.md`
    - `CLAUDE.md`
 3. If missing any file, create both.
 4. Add these sections to each file:
    - `## Repo Map`
-   - Reference `GITNEXUS_MAP.md`
-   - `## Graphify Trigger`
-   - Rule: `/graphify` for knowledge-graph mapping requests
+   - Reference `.devcouncil/repo_map.json` and/or `docs/DEV_MAP.md`
+   - `## Must Use Map` with `dev graph` / MCP tooling pointers
+5. Root `AGENTS.md` / `CLAUDE.md` are managed by `dev map` (marker-guarded). Do not hand-edit them; regenerate with `dev map`.
+6. Cursor agents: keep `.cursor/rules/devcouncil-map.mdc` (alwaysApply) and `.cursor/mcp.json` (DevCouncil MCP). Refresh MCP with `dev integrate cursor --apply`.
 
 Non-source scope rule:
 - For assets/static-only directories, keep AGENTS/CLAUDE light and route edits to source instructions (`apps/desktop/...` or root) for ownership.
 
-Quick enforcement command (run from `devprism-main`):
+Quick enforcement command (run from repo root):
 
 ```powershell
 $files = Get-ChildItem -Recurse -File -Path . | Where-Object { $_.Name -in @('AGENTS.md','CLAUDE.md') }
 $missing = foreach ($f in $files) {
   $txt = Get-Content -Raw $f.FullName
-  if ($txt -notmatch 'Repo Map|Graphify Trigger|/graphify') { $f.FullName }
+  if ($txt -notmatch 'Managed by dev map|\.devcouncil/repo_map\.json|DEV_MAP\.md') { $f.FullName }
 }
 $files.Count
 $missing.Count
@@ -37,7 +38,7 @@ Automatic enforcement:
 
 Pass criteria:
 - No files appear in `$missing`.
-- New scope has map pointer and graphify trigger before edits begin.
+- New scope has a DevCouncil map pointer before edits begin.
 
 Additional audit:
 - `pnpm agents:verify:all` checks all tracked `AGENTS.md` / `CLAUDE.md` files in the repo for compliance.

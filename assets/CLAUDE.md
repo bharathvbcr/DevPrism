@@ -1,20 +1,17 @@
 # Claude Instructions
 
-Use GitNexus as the primary map before broad edits.
-
 Before broad exploration:
-
-1. Run `pnpm gitnexus:status`.
-2. If needed, run `pnpm gitnexus:analyze`.
-3. Use `docs/GITNEXUS_MAP.md` as the repository ownership map before editing.
 
 This scope is non-source; prioritize referenced source scopes for behavior and ownership decisions.
 
 ## Repo Map
 
-- Canonical map: `../docs/GITNEXUS_MAP.md`
-- Use this to verify ownership before any cross-scope change.
+- Canonical map: `.devcouncil/repo_map.json`
+- Ownership boundaries: `docs/DEV_MAP.md`
+- Refresh with `dev map` (or `dev map --if-stale`) before broad edits.
 
-## Graphify Trigger
+## Must Use Map
 
-- For knowledge-graph mapping requests, trigger `/graphify` before any edit planning.
+- Before broad exploration or edits, open `.devcouncil/repo_map.json` (or MCP `devcouncil_repo_map`).
+- Before changing a symbol/file, check callers with `dev graph query` / `devcouncil_graph_query`.
+- Before risky edits, check blast radius with `dev graph impact` / `devcouncil_impact`.

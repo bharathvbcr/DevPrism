@@ -166,18 +166,36 @@ fn build_uncached(project_dir: &Path) -> (String, Vec<(PathBuf, u128)>) {
     let skills = enumerate_skills(project_dir);
     let map = build_project_map(project_dir);
     let bib = build_bib_summary(project_dir, &mut watch);
+    let repo_map = detect_devcouncil_repo_map(project_dir, &mut watch);
 
     if detected.is_empty()
         && data_files.is_empty()
         && skills.is_empty()
         && map.trim().is_empty()
         && bib.is_empty()
+        && repo_map.is_none()
     {
         return (String::new(), watch);
     }
 
     let mut out = String::new();
     out.push_str("\n\n## PROJECT CONTEXT (auto-discovered; open files with the Read tool)\n");
+
+    // ── DevCouncil repo map (primary navigation index when present) ──
+    if let Some(repo_map_rel) = &repo_map {
+        out.push_str("\n### DevCouncil repo map (use before broad exploration)\n");
+        out.push_str(&format!(
+            "- {} — subsystems, entry roots, neighbors; open before guessing file locations\n",
+            repo_map_rel
+        ));
+        let ownership = project_dir.join("docs").join("DEV_MAP.md");
+        if ownership.is_file() {
+            out.push_str("- docs/DEV_MAP.md — ownership boundaries across frontend / Rust\n");
+        }
+        out.push_str(
+            "- Prefer `dev map --if-stale` + `dev graph query|impact` (or DevCouncil MCP) over broad greps\n",
+        );
+    }
 
     // ── Instruction & context files ──
     if !detected.is_empty() {
@@ -415,6 +433,22 @@ fn sanitize(s: &str) -> String {
         out.push('\n');
     }
     out
+}
+
+// ─── DevCouncil repo map pointer ───
+
+/// When present, surface `.devcouncil/repo_map.json` without walking the rest of
+/// `.devcouncil/` (that tree stays excluded from the compact project map).
+fn detect_devcouncil_repo_map(
+    root: &Path,
+    watch: &mut Vec<(PathBuf, u128)>,
+) -> Option<String> {
+    let abs = root.join(".devcouncil").join("repo_map.json");
+    if !abs.is_file() {
+        return None;
+    }
+    watch.push((abs.clone(), mtime_ms(&abs)));
+    Some(".devcouncil/repo_map.json".to_string())
 }
 
 // ─── Key data files (list only) ───
@@ -772,6 +806,33 @@ mod tests {
         let dir = temp_project("empty");
         let block = build_project_context_prompt(&dir);
         assert!(block.trim().is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn surfaces_devcouncil_repo_map_when_present() {
+        let dir = temp_project("devmap");
+        fs::create_dir_all(dir.join(".devcouncil")).unwrap();
+        fs::write(dir.join(".devcouncil/repo_map.json"), "{\"files\":[]}").unwrap();
+        fs::create_dir_all(dir.join("docs")).unwrap();
+        fs::write(dir.join("docs/DEV_MAP.md"), "# boundaries\n").unwrap();
+
+        let block = build_project_context_prompt(&dir);
+        assert!(
+            block.contains(".devcouncil/repo_map.json"),
+            "repo map pointer present"
+        );
+        assert!(
+            block.contains("DevCouncil repo map"),
+            "repo map section titled"
+        );
+        assert!(block.contains("docs/DEV_MAP.md"), "ownership doc listed");
+        // Still must not dump the rest of .devcouncil into the tree map.
+        assert!(
+            !block.contains("state.sqlite"),
+            "devcouncil internals stay hidden"
+        );
+
         let _ = fs::remove_dir_all(&dir);
     }
 

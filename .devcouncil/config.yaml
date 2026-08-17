@@ -28,6 +28,9 @@ integrations:
     command: code-review-graph
     enabled: false
     optional: true
+  cursor:
+    enabled: true
+    config_path: .cursor/mcp.json
 models:
   provider: openrouter
   roles:

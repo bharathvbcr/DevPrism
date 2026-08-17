@@ -8,11 +8,12 @@ Embeddings use composite PK `(owner_id, model)`. `owner_kind` includes `block` \
 
 ## Repo Map
 
-- Canonical map: `../../../../docs/GITNEXUS_MAP.md`
-- Design: `docs/CAREER_PLATFORM_DESIGN.md`, `docs/RESUME_SYNTHESIS.md`
-- Frontend client: `apps/desktop/src/lib/career/`
-- Host module: this directory (`career_db`)
+- Canonical map: `.devcouncil/repo_map.json`
+- Ownership boundaries: `docs/DEV_MAP.md`
+- Refresh with `dev map` (or `dev map --if-stale`) before broad edits.
 
-## Graphify Trigger
+## Must Use Map
 
-- For knowledge-graph mapping requests, trigger `/graphify` before any edit planning.
+- Before broad exploration or edits, open `.devcouncil/repo_map.json` (or MCP `devcouncil_repo_map`).
+- Before changing a symbol/file, check callers with `dev graph query` / `devcouncil_graph_query`.
+- Before risky edits, check blast radius with `dev graph impact` / `devcouncil_impact`.

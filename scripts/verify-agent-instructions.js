@@ -3,11 +3,13 @@ const { execSync, spawnSync } = require("node:child_process");
 const path = require("node:path");
 const fs = require("node:fs");
 
+const MANAGED_MARKER = /Managed by dev map/i;
+const MAP_REFERENCE = /\.devcouncil\/repo_map\.json|DEV_MAP\.md/i;
+
 const REQUIRED_RULES = [
   { name: "Repo Map section", pattern: /## Repo Map/i },
-  { name: "Graphify section", pattern: /## Graphify Trigger/i },
-  { name: "Map reference", pattern: /GITNEXUS_MAP\.md/i },
-  { name: "Graphify trigger command", pattern: /\/graphify/i },
+  { name: "Map reference", pattern: MAP_REFERENCE },
+  { name: "Must Use Map section", pattern: /## Must Use Map/i },
 ];
 
 function getAllInstructionFiles() {
@@ -82,8 +84,19 @@ function fileContent(filePath) {
   }
 }
 
+function missingRequiredFields(content) {
+  // Root guides owned by `dev map` use a managed marker instead of hand-written sections.
+  if (MANAGED_MARKER.test(content) && MAP_REFERENCE.test(content)) {
+    return [];
+  }
+
+  return REQUIRED_RULES.filter((rule) => !rule.pattern.test(content)).map(
+    (rule) => rule.name,
+  );
+}
+
 function hasAllRequiredSections(content) {
-  return REQUIRED_RULES.every((rule) => rule.pattern.test(content));
+  return missingRequiredFields(content).length === 0;
 }
 
 function hasTrackedPath(filePath) {
@@ -120,9 +133,7 @@ function main() {
         continue;
       }
 
-      const missing = REQUIRED_RULES.filter(
-        (rule) => !rule.pattern.test(content),
-      ).map((rule) => rule.name);
+      const missing = missingRequiredFields(content);
       if (missing.length > 0) {
         errors.push(
           `${filePath} missing required fields (${missing.join(", ")})`,
@@ -131,7 +142,7 @@ function main() {
     }
 
     if (errors.length > 0) {
-      console.error("GitNexus instruction audit failed:");
+      console.error("DevCouncil instruction audit failed:");
       for (const err of errors) {
         console.error(`- ${err}`);
       }
@@ -159,16 +170,9 @@ function main() {
       continue;
     }
 
-    const missing = REQUIRED_RULES.filter(
-      (rule) => !rule.pattern.test(content),
-    ).map((rule) => rule.name);
+    const missing = missingRequiredFields(content);
     if (missing.length > 0) {
-      reportError(
-        errors,
-        item.path,
-        "missing required sections",
-        missing.map((r) => r.source),
-      );
+      reportError(errors, item.path, "missing required sections", missing);
     }
   }
 
@@ -199,7 +203,7 @@ function main() {
   }
 
   if (errors.length > 0) {
-    console.error("GitNexus instruction check failed:");
+    console.error("DevCouncil instruction check failed:");
     for (const err of errors) {
       console.error(`- ${err}`);
     }

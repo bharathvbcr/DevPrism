@@ -1,0 +1,31 @@
+---
+description: Require DevCouncil repo map / code graph before exploring or editing
+alwaysApply: true
+---
+
+# DevCouncil Map (required)
+
+This repo is mapped by DevCouncil. Prefer the map over broad greps and guesswork.
+
+## Always Do
+
+- Before broad exploration or refactors: run `dev map --if-stale` (or `pnpm map:if-stale`), then use `devcouncil_repo_map` (MCP) or read `.devcouncil/repo_map.json`.
+- Resolve ownership via `subsystems`, `entry_points`, `critical_files`, `neighbors`, and `docs/DEV_MAP.md`.
+- Before editing a symbol/file: `devcouncil_graph_query` / `devcouncil_code_explore`, or CLI `dev graph query <name>`.
+- Before risky edits: `devcouncil_impact` / `devcouncil_graph_impact`, or `dev graph impact <path>`. Report notable blast radius.
+- After large structural changes: `dev map` (or `devcouncil_graph_ingest`).
+
+## Never Do
+
+- Do not treat GitNexus, Graphify, or `/graphify` as active tooling here.
+- Do not invent module locations when the map already lists them.
+- Do not trust raw `unreachable_files` / inferred dead-code alone — prefer `unwired_candidates`, extracted dead tiers, and a file grep before deletes.
+
+## Fallback (no MCP)
+
+```bash
+dev map --if-stale
+dev graph query <symbol>
+dev graph impact <path>
+dev graph dead --confidence extracted
+```

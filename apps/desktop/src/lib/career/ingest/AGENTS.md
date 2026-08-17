@@ -4,12 +4,12 @@ TypeScript chunkers and embedding pipeline for the Master Career Database knowle
 
 ## Repo Map
 
-- Canonical map: `../../../../../docs/GITNEXUS_MAP.md`
-- Parent client: `apps/desktop/src/lib/career/`
-- Rust host: `apps/desktop/src-tauri/src/career_db/ingest.rs`
-- Progress: `ProcessingProgress` threaded via `pipeline.ts` / `embed.ts` `onProgress` / `onProcessingProgress`
-- BibTeX: `zotero.ts` — KB chunks (`seedPublicationsFromBibtex`) and publication blocks (`bibEntriesToPublicationBlocks`)
+- Canonical map: `.devcouncil/repo_map.json`
+- Ownership boundaries: `docs/DEV_MAP.md`
+- Refresh with `dev map` (or `dev map --if-stale`) before broad edits.
 
-## Graphify Trigger
+## Must Use Map
 
-- For knowledge-graph mapping requests, trigger `/graphify` before any edit planning.
+- Before broad exploration or edits, open `.devcouncil/repo_map.json` (or MCP `devcouncil_repo_map`).
+- Before changing a symbol/file, check callers with `dev graph query` / `devcouncil_graph_query`.
+- Before risky edits, check blast radius with `dev graph impact` / `devcouncil_impact`.

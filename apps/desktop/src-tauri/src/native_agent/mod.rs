@@ -114,6 +114,8 @@ const SYSTEM_RULES: &str = concat!(
     "4. Python: a project .venv is auto-activated; use Bash with `uv run python ...`.\n",
     "5. PROJECT CONTEXT & AUTONOMY: first read any instruction/master/profile files listed below ",
     "and consult the project map and installed skills; do not ask for details that are already there. ",
+    "If a DevCouncil repo map (`.devcouncil/repo_map.json`) is listed, open it before broad exploration ",
+    "and prefer its subsystems/entry points over guessing file locations. ",
     "Keep going until the task is complete, then give a short summary.\n",
     "6. AskUser: only when you are genuinely blocked on a decision you cannot resolve from the ",
     "project files or the conversation (the request is ambiguous between materially different ",
@@ -902,7 +904,11 @@ pub async fn run_native_agent(
             })
             .or_else(|| std::env::var("GROQ_API_KEY").ok())
             .unwrap_or_default();
-        if key.trim().is_empty() {
+        // Vertex OpenAI-compat credentials intentionally store an empty API key;
+        // the request path mints a gcloud OAuth token via resolve_vertex_bearer_token.
+        if key.trim().is_empty()
+            && !crate::google_auth::is_vertex_openai_compat_base_url(&base)
+        {
             let msg =
                 "[E_AUTH] API key is required. Add a provider credential in Settings → Provider."
                     .to_string();

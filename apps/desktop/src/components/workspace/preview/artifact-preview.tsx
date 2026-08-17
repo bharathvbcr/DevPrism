@@ -1,6 +1,5 @@
 import { useRef, useState } from "react";
 import { Loader2Icon, SparklesIcon, XIcon } from "lucide-react";
-import { showWorkspaceError } from "@/stores/workspace-banner-store";
 import { useDocumentStore } from "@/stores/document-store";
 import { canUseAiAssist, summarizeSection } from "@/lib/ai-assist";
 import { useSettingsStore } from "@/stores/settings-store";

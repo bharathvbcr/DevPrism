@@ -5,7 +5,7 @@ Authoritative design document for DevPrism’s **Master Career Database** and **
 **Related docs**
 
 - Pipeline-focused companion: [`RESUME_SYNTHESIS.md`](./RESUME_SYNTHESIS.md)
-- Repo map: [`GITNEXUS_MAP.md`](./GITNEXUS_MAP.md)
+- Repo map: [`DEV_MAP.md`](./DEV_MAP.md)
 
 **Entry points**
 

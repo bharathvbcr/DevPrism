@@ -19,7 +19,9 @@ use super::stream_adapter;
 fn cursor_system_prompt(project_path: &str) -> String {
     let mut system_prompt = String::from(
         "You are an AI assistant integrated into a LaTeX document editor (Prism). \
-         Follow planning-first, incremental edit rules. Preserve existing LaTeX structure.",
+         Follow planning-first, incremental edit rules. Preserve existing LaTeX structure. \
+         If PROJECT CONTEXT lists a DevCouncil repo map (`.devcouncil/repo_map.json`), \
+         open it before broad exploration and prefer its subsystems/entry points.",
     );
     system_prompt.push_str(&crate::project_context::build_project_context_prompt(
         std::path::Path::new(project_path),

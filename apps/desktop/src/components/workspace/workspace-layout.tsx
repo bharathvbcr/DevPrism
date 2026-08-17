@@ -13,7 +13,7 @@ import {
 import { Sidebar } from "./sidebar";
 import { LatexEditor } from "./editor/latex-editor";
 import { RichLatexEditor } from "./editor/rich/rich-latex-editor";
-import { PdfPreview } from "./preview/pdf-preview";
+import { ArtifactPreview } from "./preview/artifact-preview";
 import { WorkspacePanelResizeHandle } from "./panel-resize-handle";
 import { WorkspaceLoadingSkeleton } from "./workspace-loading-skeleton";
 import { WorkspaceBannerBar } from "./workspace-banner-bar";
@@ -364,7 +364,7 @@ export function WorkspaceLayout() {
             minSize={25}
             className="min-w-0"
           >
-            <PdfPreview />
+            <ArtifactPreview />
           </Panel>
         )}
       </PanelGroup>

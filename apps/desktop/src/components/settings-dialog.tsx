@@ -51,6 +51,7 @@ import { GROQ_DEFAULT_MODEL } from "@/stores/groq-setup-store";
 import { useSpacesStore } from "@/stores/spaces-store";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import { Toggle } from "@/components/ui/toggle";
 import { ClaudeSetup } from "./claude-setup";
 import { GroqSetup } from "./groq-setup";
 import { CursorSetup } from "./cursor-setup";
@@ -638,20 +639,20 @@ export function SettingsDialog({ open, appVersion }: SettingsDialogProps) {
                     { value: "created", label: "Created" },
                   ] as const
                 ).map((option) => (
-                  <button
+                  <Toggle
                     key={option.value}
-                    type="button"
-                    onClick={() => setHomepageDateField(option.value)}
-                    aria-pressed={homepageDateField === option.value}
+                    size="sm"
+                    pressed={homepageDateField === option.value}
+                    onPressedChange={() => setHomepageDateField(option.value)}
                     className={cn(
-                      "h-8 rounded-md px-3 font-medium text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      "h-8 min-w-0 rounded-md px-3 shadow-none",
                       homepageDateField === option.value
-                        ? "bg-muted text-foreground"
-                        : "text-muted-foreground hover:text-foreground",
+                        ? "bg-muted text-foreground data-[state=on]:bg-muted data-[state=on]:text-foreground"
+                        : "text-muted-foreground hover:bg-transparent hover:text-foreground data-[state=off]:hover:bg-transparent",
                     )}
                   >
                     {option.label}
-                  </button>
+                  </Toggle>
                 ))}
               </div>
             </div>

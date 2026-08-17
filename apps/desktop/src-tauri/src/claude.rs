@@ -1159,33 +1159,6 @@ async fn fetch_openai_compatible_models(
 ) -> Result<Vec<OpenAiCompatibleModelInfo>, String> {
     ensure_secure_known_provider_base_url(base_url)?;
     if crate::google_auth::is_vertex_openai_compat_base_url(base_url) {
-        // #region agent log
-        {
-            let payload = serde_json::json!({
-                "sessionId": "2b80f1",
-                "runId": "post-fix",
-                "hypothesisId": "A",
-                "location": "claude.rs:fetch_openai_compatible_models",
-                "message": "using curated Vertex model list (no /models endpoint)",
-                "data": {
-                    "baseUrl": base_url,
-                    "modelsUrlWouldBe": openai_models_url(base_url),
-                    "curatedCount": 8
-                },
-                "timestamp": std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis())
-                    .unwrap_or(0)
-            });
-            if let Ok(mut file) = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("/Users/bharath/Code/DevPrism/.cursor/debug-2b80f1.log")
-            {
-                let _ = writeln!(file, "{}", payload);
-            }
-        }
-        // #endregion
         return Ok(vertex_openai_compat_models());
     }
 
@@ -1197,29 +1170,6 @@ async fn fetch_openai_compatible_models(
         .build()
         .map_err(|err| format!("Failed to build HTTP client: {}", err))?;
     let url = openai_models_url(base_url);
-    // #region agent log
-    {
-        let payload = serde_json::json!({
-            "sessionId": "2b80f1",
-            "runId": "post-fix",
-            "hypothesisId": "A",
-            "location": "claude.rs:fetch_openai_compatible_models:request",
-            "message": "fetching provider models",
-            "data": { "baseUrl": base_url, "modelsUrl": url },
-            "timestamp": std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis())
-                .unwrap_or(0)
-        });
-        if let Ok(mut file) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("/Users/bharath/Code/DevPrism/.cursor/debug-2b80f1.log")
-        {
-            let _ = writeln!(file, "{}", payload);
-        }
-    }
-    // #endregion
     // Idempotent GET — retry transient connect errors / 429 / 5xx.
     let bearer_token = crate::google_auth::resolve_vertex_bearer_token(base_url, api_key).await?;
     let response = crate::retry::send_with_retry(3, || {
@@ -2738,9 +2688,11 @@ fn common_claude_args(cwd: &str) -> Vec<String> {
         "citations (\\cite), cross-references (\\label, \\ref), and BibTeX for bibliographies.\n",
         "6. PROJECT CONTEXT & AUTONOMY: If a \"PROJECT CONTEXT\" section appears below, FIRST read the ",
         "listed instruction / master / profile files (open them with Read) and consult the project map ",
-        "before writing; do not ask the user for details that are already in those files. If an installed ",
-        "skill in .claude/skills/ matches the task, follow it. Then act independently: plan, make small ",
-        "incremental Edits, and keep going until the task is complete.\n",
+        "before writing; do not ask the user for details that are already in those files. If a DevCouncil ",
+        "repo map (`.devcouncil/repo_map.json`) is listed, open it before broad exploration and prefer ",
+        "its subsystems/entry points over guessing. If an installed skill in .claude/skills/ matches the ",
+        "task, follow it. Then act independently: plan, make small incremental Edits, and keep going ",
+        "until the task is complete.\n",
         "7. PYTHON: If a .venv/ exists in the project, it is already activated. ",
         "Use `uv pip install` to add packages and `python` to run scripts."
     ));
@@ -2973,35 +2925,6 @@ async fn verify_openai_compatible_credential(
 
     let request_body = openai_compatible_verification_body(&credential.model);
     let chat_url = openai_chat_completions_url(&credential.base_url);
-    // #region agent log
-    {
-        let payload = serde_json::json!({
-            "sessionId": "2b80f1",
-            "runId": "post-fix",
-            "hypothesisId": "A",
-            "location": "claude.rs:verify_openai_compatible_credential",
-            "message": "verification chat URL",
-            "data": {
-                "baseUrl": credential.base_url,
-                "chatUrl": chat_url,
-                "model": credential.model,
-                "hasExtraV1": chat_url.contains("/openapi/v1/chat/completions"),
-                "endsWithOpenapiChat": chat_url.ends_with("/openapi/chat/completions")
-            },
-            "timestamp": std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis())
-                .unwrap_or(0)
-        });
-        if let Ok(mut file) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("/Users/bharath/Code/DevPrism/.cursor/debug-2b80f1.log")
-        {
-            let _ = writeln!(file, "{}", payload);
-        }
-    }
-    // #endregion
 
     let request = client
         .post(&chat_url)
@@ -3018,40 +2941,6 @@ async fn verify_openai_compatible_credential(
         .text()
         .await
         .map_err(|err| format!("Failed to read provider verification response: {}", err))?;
-
-    // #region agent log
-    {
-        let is_html = response_text.trim_start().starts_with("<!DOCTYPE")
-            || response_text
-                .trim_start()
-                .to_ascii_lowercase()
-                .starts_with("<html");
-        let payload = serde_json::json!({
-            "sessionId": "2b80f1",
-            "runId": "post-fix",
-            "hypothesisId": "A",
-            "location": "claude.rs:verify_openai_compatible_credential:response",
-            "message": "verification HTTP response",
-            "data": {
-                "status": status.as_u16(),
-                "success": status.is_success(),
-                "isHtml404": is_html && status.as_u16() == 404,
-                "bodyLen": response_text.len()
-            },
-            "timestamp": std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis())
-                .unwrap_or(0)
-        });
-        if let Ok(mut file) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("/Users/bharath/Code/DevPrism/.cursor/debug-2b80f1.log")
-        {
-            let _ = writeln!(file, "{}", payload);
-        }
-    }
-    // #endregion
 
     if !status.is_success() {
         return Err(openai_compatible_verification_error(

@@ -23,6 +23,7 @@ import {
   FolderPlusIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { DevPrismLogo } from "@/components/devprism-logo";
 import {
   Dialog,
   DialogContent,
@@ -313,15 +314,14 @@ export function EnvironmentOnboarding() {
           }}
         >
           <div className="flex flex-col items-center px-6 pt-6 pb-4 text-center">
-            <img
-              src="/icon-192.png"
-              alt="DevPrism"
-              className="size-14 object-contain"
+            <DevPrismLogo
+              withWordmark
+              className="flex-col gap-3"
+              imageClassName="size-14 object-contain"
+              wordmarkClassName="font-semibold text-xl"
             />
             <DialogHeader className="mt-3 items-center gap-1.5 text-center">
-              <DialogTitle className="font-semibold text-xl">
-                DevPrism
-              </DialogTitle>
+              <DialogTitle className="sr-only">DevPrism</DialogTitle>
               <DialogDescription className="max-w-sm text-sm leading-relaxed">
                 {claudeOptional
                   ? "Configure Python and optional cloud tools — or create a project to start writing right away."

@@ -93,6 +93,8 @@ import {
 import { exists, join, scanProjectFolder } from "@/lib/tauri/fs";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Toggle } from "@/components/ui/toggle";
+import { DevPrismLogo } from "@/components/devprism-logo";
 import {
   Dialog,
   DialogContent,
@@ -1037,10 +1039,7 @@ export function ProjectPicker() {
           )}
         >
           {!isSidebarCollapsed && (
-            <div className="flex min-w-0 items-center gap-2">
-              <img src="/icon-192.png" alt="DevPrism" className="size-6" />
-              <span className="truncate font-semibold text-sm">DevPrism</span>
-            </div>
+            <DevPrismLogo withWordmark imageClassName="size-6" />
           )}
           <Button
             variant="ghost"
@@ -1240,25 +1239,25 @@ export function ProjectPicker() {
                     { value: "created", label: "Created" },
                   ] as const
                 ).map((option) => (
-                  <button
+                  <Toggle
                     key={option.value}
-                    type="button"
-                    onClick={() => setHomepageDateField(option.value)}
-                    aria-pressed={homepageDateField === option.value}
+                    size="sm"
+                    pressed={homepageDateField === option.value}
+                    onPressedChange={() => setHomepageDateField(option.value)}
                     title={
                       option.value === "modified"
                         ? "Show each project's last edited date"
                         : "Show each project's created date"
                     }
                     className={cn(
-                      "h-8 rounded-md px-2.5 font-medium text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      "h-8 min-w-0 rounded-md px-2.5 shadow-none",
                       homepageDateField === option.value
-                        ? "bg-background text-foreground shadow-sm ring-1 ring-border/60"
-                        : "text-muted-foreground hover:text-foreground",
+                        ? "bg-background text-foreground shadow-sm ring-1 ring-border/60 data-[state=on]:bg-background data-[state=on]:text-foreground"
+                        : "text-muted-foreground hover:bg-transparent hover:text-foreground data-[state=off]:hover:bg-transparent",
                     )}
                   >
                     {option.label}
-                  </button>
+                  </Toggle>
                 ))}
               </div>
 

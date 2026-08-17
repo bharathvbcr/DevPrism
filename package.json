@@ -8,19 +8,16 @@
   },
   "private": true,
   "workspaces": [
-    "apps/*",
-    "packages/*"
+    "apps/*"
   ],
   "scripts": {
     "dev": "pnpm --filter=@devprism/desktop dev",
-    "dev:web": "pnpm turbo dev --filter=@devprism/web --filter=@devprism/latex-api",
     "dev:desktop": "node scripts/dev-desktop.mjs",
     "build:desktop": "node scripts/build-desktop.mjs",
     "lint": "pnpm exec biome check",
-    "lint:fix": "pnpm exec biome check --fix",
-    "gitnexus:status": "npx --yes gitnexus status",
-    "gitnexus:analyze": "npx --yes gitnexus analyze --skip-git --skills",
-    "gitnexus:refresh": "npx --yes gitnexus analyze --skip-git --skills --force",
+    "lint:fix": "pnpm exec biome check --write",
+    "map": "dev map",
+    "map:if-stale": "dev map --if-stale",
     "agents:verify": "node scripts/verify-agent-instructions.js",
     "agents:verify:all": "node scripts/verify-agent-instructions.js --all",
     "release": "echo 'To release: git tag v<version> && git push origin v<version>'",
@@ -28,8 +25,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.3.13",
-    "husky": "^9.1.7",
-    "turbo": "^2.9.14"
+    "husky": "^9.1.7"
   },
   "packageManager": "pnpm@10.28.2",
   "pnpm": {

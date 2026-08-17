@@ -431,67 +431,11 @@ export const useClaudeSetupStore = create<ClaudeSetupState>((set, get) => ({
         model: modelName || null,
         credentialLabel: credentialLabel || null,
       });
-      // #region agent log
-      fetch(
-        "http://127.0.0.1:7469/ingest/5467c670-30c7-4bdd-8ed4-cfd8c95975bc",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Debug-Session-Id": "2b80f1",
-          },
-          body: JSON.stringify({
-            sessionId: "2b80f1",
-            runId: "post-fix",
-            hypothesisId: "A",
-            location: "claude-setup-store.ts:saveApiKey:success",
-            message: "provider credential saved after verification",
-            data: {
-              provider,
-              baseUrl: url || null,
-              model: modelName || null,
-              isVertex: /aiplatform\.googleapis\.com/i.test(url || ""),
-            },
-            timestamp: Date.now(),
-          }),
-        },
-      ).catch(() => {});
-      // #endregion
       set({ isSavingApiKey: false });
       await get().checkStatus();
       return true;
     } catch (err: any) {
       const message = err?.message || String(err);
-      // #region agent log
-      fetch(
-        "http://127.0.0.1:7469/ingest/5467c670-30c7-4bdd-8ed4-cfd8c95975bc",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Debug-Session-Id": "2b80f1",
-          },
-          body: JSON.stringify({
-            sessionId: "2b80f1",
-            runId: "post-fix",
-            hypothesisId: "A",
-            location: "claude-setup-store.ts:saveApiKey:catch",
-            message: "provider verification failed in UI",
-            data: {
-              provider,
-              baseUrl: url || null,
-              model: modelName || null,
-              errorHasHtml404:
-                message.includes("Error 404") || message.includes("<!DOCTYPE"),
-              errorHasNotFound: message.toLowerCase().includes("not found"),
-              errorHasExtraV1Hint: message.includes("/openapi/v1/"),
-              errorPreview: message.slice(0, 240),
-            },
-            timestamp: Date.now(),
-          }),
-        },
-      ).catch(() => {});
-      // #endregion
       set({
         isSavingApiKey: false,
         error: message,

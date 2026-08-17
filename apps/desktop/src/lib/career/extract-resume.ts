@@ -20,6 +20,8 @@ Return ONLY JSON of the form:
   "domains":string[],
   "skills":string[],
   "seniorityLevel":"ic"|"senior"|"lead"|"manager"|"director",
+  "location":string (optional, e.g. "Remote" or "New York, NY"),
+  "extra":string (optional trailing detail line: GPA, honors, coursework),
   "bullets":string[],
   "facts":string[] (optional)
 }]}
@@ -28,6 +30,7 @@ Rules:
 - Split distinct roles/projects into separate blocks.
 - Bullets are polished resume lines (plain text, no LaTeX commands) — keep a tight set.
 - When the source has extra detail that does not fit cleanly as polished bullets (side metrics, tools, ownership notes), put those in facts[] as short raw points. Omit facts when everything fits in bullets.
+- Put a GPA / honors / coursework line in "extra", not in bullets.
 - If unsure of seniority, use "senior".
 - Return ONLY JSON — no markdown fences, no commentary.`;
 
@@ -156,6 +159,8 @@ export function parseExtractedBlocks(raw: string): ExperienceBlock[] {
         seniorityLevel: isSeniorityLevel(row.seniorityLevel)
           ? row.seniorityLevel
           : "senior",
+        location: optionalText(row.location),
+        extra: optionalText(row.extra),
         bullets:
           bulletTexts.length > 0
             ? bulletTexts.map((t) => newBullet(t))
@@ -166,6 +171,13 @@ export function parseExtractedBlocks(raw: string): ExperienceBlock[] {
     );
   }
   return out;
+}
+
+/** Trimmed string when present and non-empty, else undefined. */
+function optionalText(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : undefined;
 }
 
 /** LLM extraction → draft blocks. Caller must review; never auto-commits. */

@@ -4,20 +4,21 @@ mod agent_process;
 mod anthropic_proxy;
 #[cfg(target_os = "macos")]
 pub mod app_nap;
-mod career_compile;
 mod career_db;
+pub mod career_typst;
 mod claude;
 mod claude_process;
 mod comments;
 mod cursor_agent;
-mod export;
+pub mod export;
 mod google_auth;
 mod groq_setup;
 mod history;
-mod latex;
-mod latexdiff;
+pub mod latex;
+pub mod latexdiff;
 mod native_agent;
 mod personalization;
+mod proc;
 mod project_context;
 mod project_import;
 mod retry;
@@ -603,42 +604,18 @@ async fn read_clipboard_file_paths() -> Result<Vec<String>, String> {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    // Load .env file (walks up from cwd to find it)
-    let _ = dotenvy::dotenv();
-
-    #[allow(clippy::expect_used)]
-    let app = tauri::Builder::default()
-        .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_fs::init())
-        .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_process::init())
-        .manage(claude::ClaudeProcessState::default())
-        .manage(latex::LatexCompilerState::default())
-        .manage(zotero::ZoteroOAuthState::default())
-        .manage(comments::CommentsWatcherState::default())
-        .manage(career_db::CareerDbState::default())
-        .setup(|app| {
-            // Safety net: force-show the main window after a timeout if the
-            // frontend JS never calls `getCurrentWindow().show()`.
-            // This prevents the window from staying permanently hidden when
-            // WKWebView fails to execute JS (e.g. WebKit top-level-await bug
-            // on macOS 12). See https://bugs.webkit.org/show_bug.cgi?id=242740
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(8)).await;
-                if let Some(window) = handle.get_webview_window("main") {
-                    if !window.is_visible().unwrap_or(true) {
-                        eprintln!("[safety] Main window still hidden after 8s, force-showing");
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                    }
-                }
-            });
-            Ok(())
-        })
-        .invoke_handler(tauri::generate_handler![
+/// The app's complete command surface.
+///
+/// Extracted from `run()` so `tests/ipc.rs` can assert, statically, that every
+/// command the frontend invokes is registered here.
+///
+/// Not generic over the runtime: many commands take a concrete `AppHandle` or
+/// `WebviewWindow` (i.e. `Wry`), so this list cannot be built on Tauri's
+/// `MockRuntime`. The IPC tests therefore register their own runtime-agnostic
+/// subset and rely on the static check to catch drift.
+pub fn command_handler(
+) -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
+    tauri::generate_handler![
             create_new_window,
             set_native_window_theme,
             allow_project_directory,
@@ -674,7 +651,9 @@ pub fn run() {
             latex::synctex_edit,
             latex::synctex_forward,
             latex::detect_texlive,
-            career_compile::career_verify_compile,
+            career_typst::career_typst_compile,
+            career_typst::career_typst_compile_project,
+            career_typst::career_typst_fonts,
             latexdiff::detect_latexdiff,
             latexdiff::latexdiff_generate,
             export::export_document,
@@ -786,7 +765,45 @@ pub fn run() {
             comments::comments_stop_watcher,
             get_system_info,
             open_debug_window,
-        ])
+    ]
+}
+
+pub fn run() {
+    // Load .env file (walks up from cwd to find it)
+    let _ = dotenvy::dotenv();
+
+    #[allow(clippy::expect_used)]
+    let app = tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_process::init())
+        .manage(claude::ClaudeProcessState::default())
+        .manage(latex::LatexCompilerState::default())
+        .manage(zotero::ZoteroOAuthState::default())
+        .manage(comments::CommentsWatcherState::default())
+        .manage(career_db::CareerDbState::default())
+        .setup(|app| {
+            // Safety net: force-show the main window after a timeout if the
+            // frontend JS never calls `getCurrentWindow().show()`.
+            // This prevents the window from staying permanently hidden when
+            // WKWebView fails to execute JS (e.g. WebKit top-level-await bug
+            // on macOS 12). See https://bugs.webkit.org/show_bug.cgi?id=242740
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+                if let Some(window) = handle.get_webview_window("main") {
+                    if !window.is_visible().unwrap_or(true) {
+                        eprintln!("[safety] Main window still hidden after 8s, force-showing");
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                }
+            });
+            Ok(())
+        })
+        .invoke_handler(command_handler())
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 

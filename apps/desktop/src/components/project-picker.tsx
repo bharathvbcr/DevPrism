@@ -81,6 +81,11 @@ import {
   useSettingsStore,
   type HomepageDateField,
 } from "@/stores/settings-store";
+import { compileTypstProject } from "@/lib/typst-project";
+import {
+  summarizeTypstResult,
+  typstPdfBytes,
+} from "@/lib/resume-synthesis/typst-compile";
 import { compileLatex } from "@/lib/latex-compiler";
 import { getMupdfClient } from "@/lib/mupdf/mupdf-client";
 import { FSA_SCHEME } from "@/lib/browser-project/constants";
@@ -1895,8 +1900,20 @@ async function findMainTexFile(
   if (named) return named;
 
   let texFiles: { absolutePath: string; relativePath: string }[];
+  let typstFiles: { absolutePath: string; relativePath: string }[] = [];
   try {
     const scan = await scanProjectFolder(projectPath);
+    typstFiles = scan.files
+      .filter((f) => f.type === "typst")
+      .sort(
+        (a, b) =>
+          a.relativePath.split("/").length - b.relativePath.split("/").length ||
+          a.relativePath.localeCompare(b.relativePath),
+      )
+      .map((f) => ({
+        absolutePath: f.absolutePath,
+        relativePath: f.relativePath,
+      }));
     texFiles = scan.files
       .filter((f) => f.type === "tex")
       .sort(
@@ -1911,7 +1928,8 @@ async function findMainTexFile(
   } catch {
     return null;
   }
-  if (texFiles.length === 0) return null;
+  // A Typst-only project still deserves a thumbnail.
+  if (texFiles.length === 0) return typstFiles[0] ?? null;
 
   for (const file of texFiles) {
     try {
@@ -2082,9 +2100,19 @@ async function loadProjectPreview(
       try {
         const useTexlive =
           useSettingsStore.getState().compilerBackend === "texlive";
-        const pdfBytes = await enqueueProjectPreviewCompile(() =>
-          compileLatex(project.path, texFile.relativePath, useTexlive),
-        );
+        const isTypst = texFile.relativePath.toLowerCase().endsWith(".typ");
+        const pdfBytes = await enqueueProjectPreviewCompile(async () => {
+          if (isTypst) {
+            const result = await compileTypstProject(
+              project.path,
+              texFile.relativePath,
+            );
+            const bytes = typstPdfBytes(result);
+            if (!bytes) throw new Error(summarizeTypstResult(result));
+            return bytes;
+          }
+          return compileLatex(project.path, texFile.relativePath, useTexlive);
+        });
         const data: ProjectPreviewData = {
           kind: "pdf",
           url: await renderPdfThumbnailFromBytes(pdfBytes),

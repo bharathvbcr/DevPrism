@@ -2,9 +2,27 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{Mutex, Semaphore};
 
 const MAX_CONCURRENT: usize = 3;
+
+/// Deadline for one TeX engine pass (or the whole Tectonic run).
+///
+/// TeX can loop forever on a recursive macro, and an unbounded wait would hold
+/// a `MAX_CONCURRENT` permit plus the per-project lock for the rest of the
+/// session. Generous enough for a large real document, short enough that a
+/// runaway is recoverable.
+const ENGINE_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// Deadline for the bibliography helpers, which are far quicker than a pass.
+const BIB_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Deadline for `--version`-style availability probes.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Prune the per-project lock map once it exceeds this many entries.
+const PROJECT_LOCK_PRUNE_AT: usize = 64;
 
 /// Windows CREATE_NO_WINDOW flag to prevent console windows from flashing
 /// when spawning TeXLive/Tectonic child processes from the GUI app.
@@ -407,10 +425,9 @@ pub(crate) fn find_texlive_binary(name: &str) -> Result<PathBuf, String> {
     // 3. macOS: ask login shell for PATH
     #[cfg(target_os = "macos")]
     {
-        if let Ok(output) = std::process::Command::new("/bin/zsh")
-            .args(["-l", "-c", &format!("which {}", name)])
-            .output()
-        {
+        let mut probe = std::process::Command::new("/bin/zsh");
+        probe.args(["-l", "-c", &format!("which {}", name)]);
+        if let Ok(output) = crate::proc::run_with_timeout(probe, PROBE_TIMEOUT) {
             if output.status.success() {
                 let resolved = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 let p = PathBuf::from(&resolved);
@@ -452,10 +469,58 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 /// Sync only source files (.tex, .bib, .sty, .cls, .bst, images, .pdf figures) from project to build dir.
 /// Skips build artifacts (.aux, .log, .toc, .synctex.gz, etc.) to preserve them.
 /// Note: .pdf is NOT skipped — figure PDFs must be synced. The output PDF is managed by compile_latex.
+/// Extensions the engine produces in the build directory. These have no
+/// counterpart in the project, so orphan-pruning must leave them alone.
+fn is_generated_artifact(path: &Path) -> bool {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if name.ends_with(".synctex.gz") || name.ends_with(".synctex") {
+        return true;
+    }
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    matches!(
+        ext,
+        "aux" | "log" | "toc" | "lof" | "lot" | "out" | "nav" | "snm" | "vrb"
+            | "bbl" | "blg" | "fls" | "fdb_latexmk" | "idx" | "ind" | "ilg"
+            | "glo" | "gls" | "glg" | "fmt" | "xdv" | "bcf"
+    )
+}
+
+// NOTE: `.pdf` is deliberately absent. A project may legitimately contain
+// figure PDFs, and treating every PDF as generated would keep a deleted figure
+// alive in the build dir — the same staleness bug pruning exists to fix. The
+// engine's own output PDF is safe because `compile_latex` removes it before
+// each run and regenerates it.
+
+/// Delete build-dir entries whose source counterpart is gone.
+///
+/// Without this the build directory only ever grows, and — worse — a file the
+/// user deleted keeps compiling from its stale copy, so the preview shows a
+/// document that no longer exists on disk. Best-effort: failing to remove one
+/// entry must not fail the compile.
+fn prune_orphans(src: &Path, dst: &Path) {
+    let Ok(entries) = std::fs::read_dir(dst) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let dst_path = entry.path();
+        let src_path = src.join(entry.file_name());
+        if dst_path.is_dir() {
+            if src_path.is_dir() {
+                prune_orphans(&src_path, &dst_path);
+            } else {
+                let _ = std::fs::remove_dir_all(&dst_path);
+            }
+        } else if !src_path.exists() && !is_generated_artifact(&dst_path) {
+            let _ = std::fs::remove_file(&dst_path);
+        }
+    }
+}
+
 fn sync_source_files(src: &Path, dst: &Path) -> std::io::Result<()> {
     if !dst.exists() {
         std::fs::create_dir_all(dst)?;
     }
+    prune_orphans(src, dst);
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
         let src_path = entry.path();
@@ -715,14 +780,11 @@ fn compile_with_tectonic_subprocess(work_dir: &Path, main_file: &str) -> Result<
         .map_err(|e| format!("Failed to get current executable path: {}", e))?;
 
     let mut cmd = std::process::Command::new(&exe);
-    cmd.args(["--tectonic-compile", &work_dir.to_string_lossy(), main_file])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+    cmd.args(["--tectonic-compile", &work_dir.to_string_lossy(), main_file]);
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW);
-    let output = cmd
-        .output()
-        .map_err(|e| format!("Failed to spawn tectonic subprocess: {}", e))?;
+    let output = crate::proc::run_with_timeout(cmd, ENGINE_TIMEOUT)
+        .map_err(|e| e.to_message("Compilation"))?;
 
     if output.status.success() {
         Ok(())
@@ -771,14 +833,11 @@ fn run_texlive_pass(
     cmd.args(args)
         .arg(main_file)
         .current_dir(work_dir)
-        .env("PATH", texlive_env_path(engine))
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+        .env("PATH", texlive_env_path(engine));
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW);
-    let output = cmd
-        .output()
-        .map_err(|e| format!("Failed to launch {}: {}", engine.display(), e))?;
+    let output = crate::proc::run_with_timeout(cmd, ENGINE_TIMEOUT)
+        .map_err(|e| e.to_message(&format!("{}", engine.display())))?;
 
     // TeXLive returns non-zero on warnings too — don't fail here.
     // The caller decides success by checking whether the PDF was produced.
@@ -840,13 +899,11 @@ fn compile_with_texlive(
             cmd.arg(main_stem)
                 .current_dir(work_dir)
                 .env("PATH", &env_path)
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped());
+                ;
             #[cfg(target_os = "windows")]
             cmd.creation_flags(CREATE_NO_WINDOW);
-            let output = cmd
-                .output()
-                .map_err(|e| format!("Failed to run biber: {}", e))?;
+            let output = crate::proc::run_with_timeout(cmd, BIB_TIMEOUT)
+                .map_err(|e| e.to_message("biber"))?;
             if !output.status.success() {
                 eprintln!(
                     "[texlive] biber warning: {}",
@@ -861,13 +918,11 @@ fn compile_with_texlive(
             cmd.arg(&aux_file)
                 .current_dir(work_dir)
                 .env("PATH", &env_path)
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped());
+                ;
             #[cfg(target_os = "windows")]
             cmd.creation_flags(CREATE_NO_WINDOW);
-            let output = cmd
-                .output()
-                .map_err(|e| format!("Failed to run bibtex: {}", e))?;
+            let output = crate::proc::run_with_timeout(cmd, BIB_TIMEOUT)
+                .map_err(|e| e.to_message("bibtex"))?;
             if !output.status.success() {
                 eprintln!(
                     "[texlive] bibtex warning: {}",
@@ -898,14 +953,11 @@ fn compile_with_texlive(
             cmd.args(["-o", &pdf_path.to_string_lossy()])
                 .arg(&xdv_path)
                 .current_dir(work_dir)
-                .env("PATH", &env_path)
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped());
+                .env("PATH", &env_path);
             #[cfg(target_os = "windows")]
             cmd.creation_flags(CREATE_NO_WINDOW);
-            let output = cmd
-                .output()
-                .map_err(|e| format!("Failed to launch xdvipdfmx: {}", e))?;
+            let output = crate::proc::run_with_timeout(cmd, ENGINE_TIMEOUT)
+                .map_err(|e| e.to_message("xdvipdfmx"))?;
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 if !stderr.trim().is_empty() {
@@ -1234,12 +1286,10 @@ pub fn detect_texlive() -> TexliveStatus {
 
     let version = find_texlive_binary("pdflatex").ok().and_then(|path| {
         let mut cmd = std::process::Command::new(&path);
-        cmd.arg("--version")
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
+        cmd.arg("--version");
         #[cfg(target_os = "windows")]
         cmd.creation_flags(CREATE_NO_WINDOW);
-        cmd.output().ok().and_then(|o| {
+        crate::proc::run_with_timeout(cmd, PROBE_TIMEOUT).ok().and_then(|o| {
             let stdout = String::from_utf8_lossy(&o.stdout);
             stdout.lines().next().map(|l| l.to_string())
         })
@@ -1305,6 +1355,12 @@ async fn compile_latex_inner(
     // Acquire per-project lock to prevent concurrent compilations on the same build dir.
     let project_lock = {
         let mut locks = state.project_locks.lock().await;
+        // Drop locks nobody is holding or waiting on. Without this the map
+        // grows by one entry per project opened and never shrinks. A strong
+        // count of 1 means only the map itself holds the Arc.
+        if locks.len() > PROJECT_LOCK_PRUNE_AT {
+            locks.retain(|key, lock| key == &project_dir || Arc::strong_count(lock) > 1);
+        }
         locks
             .entry(project_dir.clone())
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
@@ -2411,6 +2467,106 @@ Postamble:
         assert_eq!(
             std::fs::read_to_string(dst.path().join("figures").join("chart.pdf")).unwrap(),
             "pdf figure"
+        );
+    }
+
+    #[test]
+    fn sync_removes_a_source_file_deleted_from_the_project() {
+        // Without pruning, a chapter the user deleted keeps compiling from the
+        // stale build-dir copy, so the preview shows a document that no longer
+        // exists on disk.
+        let src = tempfile::TempDir::new().unwrap();
+        let dst = tempfile::TempDir::new().unwrap();
+        std::fs::write(src.path().join("main.tex"), "\\input{ch1}").unwrap();
+        std::fs::write(src.path().join("ch1.tex"), "one").unwrap();
+        sync_source_files(src.path(), dst.path()).unwrap();
+        assert!(dst.path().join("ch1.tex").exists());
+
+        std::fs::remove_file(src.path().join("ch1.tex")).unwrap();
+        sync_source_files(src.path(), dst.path()).unwrap();
+        assert!(
+            !dst.path().join("ch1.tex").exists(),
+            "deleted source file must not survive in the build dir"
+        );
+        assert!(dst.path().join("main.tex").exists(), "kept file was removed");
+    }
+
+    #[test]
+    fn sync_keeps_engine_generated_artifacts() {
+        // Artifacts live only in the build dir and have no source counterpart;
+        // pruning must not delete the output PDF or the SyncTeX map.
+        let src = tempfile::TempDir::new().unwrap();
+        let dst = tempfile::TempDir::new().unwrap();
+        std::fs::write(src.path().join("main.tex"), "x").unwrap();
+        sync_source_files(src.path(), dst.path()).unwrap();
+
+        for artifact in ["main.aux", "main.log", "main.synctex.gz", "main.xdv"] {
+            std::fs::write(dst.path().join(artifact), "generated").unwrap();
+        }
+        sync_source_files(src.path(), dst.path()).unwrap();
+        for artifact in ["main.aux", "main.log", "main.synctex.gz", "main.xdv"] {
+            assert!(
+                dst.path().join(artifact).exists(),
+                "{artifact} must survive the sync"
+            );
+        }
+    }
+
+    #[test]
+    fn sync_removes_a_figure_pdf_deleted_from_the_project() {
+        // `.pdf` is not treated as a generated artifact precisely so this
+        // works; the engine's output PDF is removed by compile_latex anyway.
+        let src = tempfile::TempDir::new().unwrap();
+        let dst = tempfile::TempDir::new().unwrap();
+        std::fs::write(src.path().join("main.tex"), "m").unwrap();
+        std::fs::write(src.path().join("figure.pdf"), "fig").unwrap();
+        sync_source_files(src.path(), dst.path()).unwrap();
+        assert!(dst.path().join("figure.pdf").exists());
+
+        std::fs::remove_file(src.path().join("figure.pdf")).unwrap();
+        sync_source_files(src.path(), dst.path()).unwrap();
+        assert!(
+            !dst.path().join("figure.pdf").exists(),
+            "deleted figure must not survive in the build dir"
+        );
+    }
+
+    #[test]
+    fn sync_removes_a_deleted_subdirectory() {
+        let src = tempfile::TempDir::new().unwrap();
+        let dst = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(src.path().join("parts")).unwrap();
+        std::fs::write(src.path().join("parts/a.tex"), "a").unwrap();
+        std::fs::write(src.path().join("main.tex"), "m").unwrap();
+        sync_source_files(src.path(), dst.path()).unwrap();
+        assert!(dst.path().join("parts/a.tex").exists());
+
+        std::fs::remove_dir_all(src.path().join("parts")).unwrap();
+        sync_source_files(src.path(), dst.path()).unwrap();
+        assert!(
+            !dst.path().join("parts").exists(),
+            "deleted directory must not survive"
+        );
+    }
+
+    #[test]
+    fn sync_removes_a_stale_track_changes_preview_source() {
+        // `previewTrackedChangesPdf` writes `.devprism-…tex` into the project,
+        // compiles, then deletes it. The build-dir copy must go too, or every
+        // preview leaves one behind for the rest of the session.
+        let src = tempfile::TempDir::new().unwrap();
+        let dst = tempfile::TempDir::new().unwrap();
+        std::fs::write(src.path().join("main.tex"), "m").unwrap();
+        let temp = ".devprism-track-changes-preview-123.tex";
+        std::fs::write(src.path().join(temp), "diff").unwrap();
+        sync_source_files(src.path(), dst.path()).unwrap();
+        assert!(dst.path().join(temp).exists());
+
+        std::fs::remove_file(src.path().join(temp)).unwrap();
+        sync_source_files(src.path(), dst.path()).unwrap();
+        assert!(
+            !dst.path().join(temp).exists(),
+            "throwaway preview source leaked into the build dir"
         );
     }
 

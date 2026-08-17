@@ -145,6 +145,7 @@ describe("useSynthesisStore events / readiness / pendingJd", () => {
         const report = minimalReport();
         const result: SynthesisResult = {
           runId: "run-1",
+          templateId: "ats-single-column",
           tex: "% tex",
           content: {
             header: {
@@ -221,7 +222,13 @@ describe("useSynthesisStore events / readiness / pendingJd", () => {
     ];
     useSynthesisStore
       .getState()
-      .openStoredReport("stored-1", minimalReport(), "%tex", events);
+      .openStoredReport(
+        "stored-1",
+        "ats-single-column",
+        minimalReport(),
+        "%tex",
+        events,
+      );
 
     const state = useSynthesisStore.getState();
     expect(state.viewingStoredRunId).toBe("stored-1");
@@ -233,10 +240,17 @@ describe("useSynthesisStore events / readiness / pendingJd", () => {
   it("openStoredReport restores compileOk from stored meta", () => {
     useSynthesisStore
       .getState()
-      .openStoredReport("stored-fail", minimalReport(), "%tex", [], {
-        compileOk: false,
-        compileSummary: "Compile needs review",
-      });
+      .openStoredReport(
+        "stored-fail",
+        "ats-single-column",
+        minimalReport(),
+        "%tex",
+        [],
+        {
+          compileOk: false,
+          compileSummary: "Compile needs review",
+        },
+      );
     const state = useSynthesisStore.getState();
     expect(state.result?.compileOk).toBe(false);
     expect(state.result?.compileSummary).toBe("Compile needs review");
@@ -260,6 +274,7 @@ describe("useSynthesisStore events / readiness / pendingJd", () => {
         const report = minimalReport();
         return {
           runId: "run-throttle",
+          templateId: "ats-single-column",
           tex: "% tex",
           content: {
             header: { fullName: "A", cityRegion: "", email: "", phone: "" },
@@ -277,7 +292,8 @@ describe("useSynthesisStore events / readiness / pendingJd", () => {
       jdText: "Senior ML engineer with Python experience required. ".repeat(3),
       personaId: "ai",
       templateId: "ats-single-column",
-      onProgress: (s) => progressCalls.push(s.progress),
+      // `progress` is an optional hint; the assertion only counts calls.
+      onProgress: (s) => progressCalls.push(s.progress ?? 0),
     });
 
     // Mid-throttle: store should not yet have flushed rapid updates.

@@ -34,7 +34,10 @@ import {
   writeBrowserTextFile,
 } from "@/lib/browser-project/browser-fs";
 import {
+  engineForFileType,
   getProjectFileType,
+  isCompilableSource,
+  isTextContent,
   shouldSkipProjectDirectory,
   LARGE_FILE_THRESHOLD,
   type FsProjectFile,
@@ -45,7 +48,14 @@ import {
 const log = createLogger("fs");
 
 export type { ProjectFileType, FsProjectFile, ScanResult };
-export { getProjectFileType, shouldSkipProjectDirectory, LARGE_FILE_THRESHOLD };
+export {
+  engineForFileType,
+  getProjectFileType,
+  isCompilableSource,
+  isTextContent,
+  shouldSkipProjectDirectory,
+  LARGE_FILE_THRESHOLD,
+};
 
 export async function scanProjectFolder(rootPath: string): Promise<ScanResult> {
   if (isBrowserProjectPath(rootPath)) {

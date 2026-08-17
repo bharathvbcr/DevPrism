@@ -214,6 +214,10 @@ export function BlockEditor({
             }))
             .filter((f) => f.text.length > 0),
           notes: draft.notes?.trim() ? draft.notes.trim() : undefined,
+          location: blankToUndefined(draft.location),
+          url: blankToUndefined(draft.url),
+          urlLabel: blankToUndefined(draft.urlLabel),
+          extra: blankToUndefined(draft.extra),
         };
         void onSave(cleaned);
       }}
@@ -232,6 +236,20 @@ export function BlockEditor({
             value={draft.org}
             onChange={(e) => update("org", e.target.value)}
             placeholder="Acme Labs"
+          />
+        </Field>
+        <Field label="Location">
+          <Input
+            value={draft.location ?? ""}
+            onChange={(e) => update("location", e.target.value)}
+            placeholder="Remote · New York, NY"
+          />
+        </Field>
+        <Field label="Link (optional)">
+          <Input
+            value={draft.url ?? ""}
+            onChange={(e) => update("url", e.target.value)}
+            placeholder="https://acme.example"
           />
         </Field>
         <Field label="Kind">
@@ -569,6 +587,13 @@ export function BlockEditor({
           </Button>
         </div>
 
+        <Field label="Extra line (GPA, honors, coursework)">
+          <Input
+            value={draft.extra ?? ""}
+            onChange={(e) => update("extra", e.target.value)}
+            placeholder="GPA 3.9/4.0 · Dean's List"
+          />
+        </Field>
         <Field label="Notes scratchpad">
           <Textarea
             value={draft.notes ?? ""}
@@ -859,6 +884,12 @@ function EvidenceRefsEditor({
       )}
     </div>
   );
+}
+
+/** Blank/whitespace-only optional input becomes `undefined`, never `""`. */
+function blankToUndefined(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
 }
 
 function Field({ label, children }: { label?: string; children: ReactNode }) {

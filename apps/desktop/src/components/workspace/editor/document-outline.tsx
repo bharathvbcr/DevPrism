@@ -14,6 +14,7 @@ import { useDocumentStore } from "@/stores/document-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { canUseAiAssist, summarizeSection } from "@/lib/ai-assist";
 import { cn } from "@/lib/utils";
+import { parseTypstHeadings } from "@/lib/typst-project";
 
 // Sectioning commands ordered by nesting depth. The index doubles as the
 // indentation level used to render a hierarchical outline.
@@ -84,6 +85,26 @@ function parseOutline(content: string): OutlineItem[] {
   return items;
 }
 
+/**
+ * Typst outline from `= Heading` markup. Heading depth is the run length, so
+ * `=` is level 0 (matching LaTeX `\section`) and each extra `=` nests one
+ * deeper, keeping the shared level-normalization below meaningful.
+ */
+function parseTypstOutline(content: string): OutlineItem[] {
+  let pos = 0;
+  const lineStarts: number[] = [0];
+  for (const ch of content) {
+    pos += ch.length;
+    if (ch === "\n") lineStarts.push(pos);
+  }
+  return parseTypstHeadings(content).map((h) => ({
+    title: h.title,
+    level: Math.max(0, h.level - 1),
+    pos: lineStarts[h.line - 1] ?? 0,
+    line: h.line,
+  }));
+}
+
 export function DocumentOutline({
   editorView,
   onBeforeJump,
@@ -96,15 +117,18 @@ export function DocumentOutline({
   const [summary, setSummary] = useState<string | null>(null);
   const [summarizing, setSummarizing] = useState(false);
   const aiSummarize = useSettingsStore((s) => s.aiSummarize);
-  const activeContent = useDocumentStore((s) => {
+  const activeSource = useDocumentStore((s) => {
     const f = s.files.find((file) => file.id === s.activeFileId);
-    return f?.type === "tex" ? (f.content ?? "") : null;
+    if (f?.type !== "tex" && f?.type !== "typst") return null;
+    return { kind: f.type, content: f.content ?? "" };
   });
 
-  const outline = useMemo(
-    () => (activeContent ? parseOutline(activeContent) : []),
-    [activeContent],
-  );
+  const outline = useMemo(() => {
+    if (!activeSource) return [];
+    return activeSource.kind === "typst"
+      ? parseTypstOutline(activeSource.content)
+      : parseOutline(activeSource.content);
+  }, [activeSource]);
 
   // Normalize levels so the shallowest heading present sits flush-left.
   const minLevel = outline.reduce(
@@ -112,7 +136,7 @@ export function DocumentOutline({
     SECTION_LEVELS.length,
   );
 
-  if (activeContent === null) return null;
+  if (activeSource === null) return null;
 
   const jumpTo = (pos: number) => {
     setOpen(false);
@@ -131,10 +155,10 @@ export function DocumentOutline({
   };
 
   const handleSummarize = async () => {
-    if (!activeContent || summarizing || !canUseAiAssist()) return;
+    if (!activeSource?.content || summarizing || !canUseAiAssist()) return;
     setSummarizing(true);
     try {
-      const text = await summarizeSection(activeContent);
+      const text = await summarizeSection(activeSource.content);
       setSummary(text);
     } catch (err) {
       showWorkspaceError(

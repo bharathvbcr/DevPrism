@@ -114,11 +114,13 @@ export function ArtifactPreview() {
     );
   }
 
-  // If it's a LaTeX file, show the PDF preview.
+  // LaTeX and Typst sources both render to a PDF preview.
   if (
     activeFile.type === "tex" ||
+    activeFile.type === "typst" ||
     activeFile.name.endsWith(".tex") ||
-    activeFile.name.endsWith(".ltx")
+    activeFile.name.endsWith(".ltx") ||
+    activeFile.name.endsWith(".typ")
   ) {
     return <PdfPreview />;
   }

@@ -19,7 +19,7 @@ import {
   type SectionKind,
   type SkillGroup,
 } from "@/lib/resume-templates";
-import { compileWithRepairLoop } from "./compile-verify";
+import { compileResumeDocument } from "./compile-verify";
 import { analyzeJobDescription, facetsOf } from "./jd-analysis";
 import { defaultStreamComplete, llmJson } from "./llm-json";
 import { runCritic, repairFlagged } from "./critic";
@@ -668,7 +668,7 @@ async function draftSummary(
   }
 }
 
-function draftsToContent(
+export function draftsToContent(
   drafts: RewrittenBlockDraft[],
   header: HeaderFields,
   profile: Awaited<ReturnType<typeof analyzeJobDescription>>["profile"],
@@ -679,10 +679,17 @@ function draftsToContent(
 
   for (const d of drafts) {
     const section = sectionForBlock(d.block);
+    // location / url / extra (GPA, honors, coursework) are rendered by the
+    // templates; without this mapping they were structurally unreachable.
     const rendered: RenderedBlock = {
       id: d.block.id,
       title: d.block.title,
       org: d.block.org,
+      location: d.block.location,
+      url: d.block.url,
+      urlLabel: d.block.urlLabel,
+      extra: d.block.extra,
+      canonicalExtra: d.block.extra,
       dateRange: formatDateRange(
         d.block.dateRange.start,
         d.block.dateRange.end,
@@ -780,7 +787,6 @@ function buildMatchReport(
   profile: import("./types").JDProfile,
   facets: JdFacets,
   critique: MatchReport["critique"],
-  repairs: string[],
   extraNotices: string[],
   extras?: {
     stageTimingsMs?: StageTimingsMs;
@@ -810,7 +816,6 @@ function buildMatchReport(
     notices,
     semanticMatchingDisabled: facets.semanticMatchingDisabled,
     critique,
-    repairs,
     stageTimingsMs: extras?.stageTimingsMs,
     mustHaveCoverage: extras?.mustHaveCoverage,
     aiRewrittenCount: extras?.aiRewrittenCount,
@@ -841,15 +846,16 @@ function defaultDeps(): SynthesisDeps {
     streamComplete: defaultStreamComplete,
     embed: (texts, signal) => aiEmbed(texts, signal),
     compile: async (template, content, options) => {
-      const result = await compileWithRepairLoop(template, content, {
+      // Dispatches on `template.engine`: in-process Typst, or the LaTeX
+      // render → bisect → revert repair loop.
+      const result = await compileResumeDocument(template, content, {
         sectionOrder: options?.sectionOrder,
         onAttempt: options?.onAttempt,
         signal: options?.signal,
       });
       return {
-        tex: result.tex,
+        tex: result.source,
         content: result.content,
-        repairs: result.repairs,
         result: {
           success: result.result.success,
           summary: result.result.summary,
@@ -863,7 +869,7 @@ function defaultDeps(): SynthesisDeps {
 /**
  * Full synthesis pipeline:
  * 1 JD analysis → 2 hybrid score → 3 knapsack + bullet trim → 4 evidence (MMR)
- * → 5 rewrite → 6 critic/repair → 7 renderTemplate + compileWithRepairLoop
+ * → 5 rewrite → 6 critic/repair → 7 renderResume + compileResumeDocument
  */
 export async function synthesizeResume(
   options: SynthesizeResumeOptions,
@@ -1137,7 +1143,6 @@ export async function synthesizeResume(
     profile,
     facets,
     null,
-    [],
     notices,
     {
       stageTimingsMs: { ...stageTimingsMs },
@@ -1672,7 +1677,6 @@ export async function synthesizeResume(
     profile,
     facets,
     critique,
-    compileResult.repairs,
     notices,
     {
       stageTimingsMs: { ...stageTimingsMs },
@@ -1719,6 +1723,7 @@ export async function synthesizeResume(
 
   return {
     runId: persistedRunId,
+    templateId,
     tex: compileResult.tex,
     content: compileResult.content,
     report,

@@ -1,10 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import {
-  resolveTexRoot,
-  type ProjectFile,
-  useDocumentStore,
-  getPdfBytes,
-} from "@/stores/document-store";
+import { useDocumentStore, getPdfBytes } from "@/stores/document-store";
+import { resolveCompileTarget } from "@/lib/compile-targets";
 import { usePersonalizationStore } from "@/stores/personalization-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { recordPersonalizationEvent } from "@/lib/personalization";
@@ -12,79 +8,6 @@ import { createLogger } from "@/lib/debug/logger";
 import { parseCompileErrorLine } from "@/lib/ai-assist";
 
 const log = createLogger("latex");
-
-export interface CompileRootOption {
-  rootId: string;
-  targetPath: string;
-  label: string;
-}
-
-const COVER_LETTER_NAMES = new Set([
-  "cover_letter.tex",
-  "cover-letter.tex",
-  "coverletter.tex",
-]);
-
-/** All standalone .tex roots (files with \\documentclass) in the project. */
-export function listCompileRoots(files: ProjectFile[]): CompileRootOption[] {
-  const roots = files
-    .filter(
-      (f) =>
-        f.type === "tex" &&
-        f.content &&
-        /\\documentclass[\s{[]/.test(f.content),
-    )
-    .map((f) => {
-      const lower = f.name.toLowerCase();
-      let label = f.name;
-      if (COVER_LETTER_NAMES.has(lower)) {
-        label = `Cover letter (${f.name})`;
-      } else if (lower === "main.tex") {
-        label = `Main (${f.name})`;
-      }
-      return {
-        rootId: f.id,
-        targetPath: f.relativePath,
-        label,
-      };
-    });
-
-  return roots.sort((a, b) => {
-    const aCover = a.label.startsWith("Cover letter");
-    const bCover = b.label.startsWith("Cover letter");
-    if (aCover !== bCover) return aCover ? 1 : -1;
-    return a.label.localeCompare(b.label);
-  });
-}
-
-/** Resolve which file to compile and the root ID for caching. */
-export function resolveCompileTarget(
-  activeFileId: string,
-  files: ProjectFile[],
-  preferredRootId?: string | null,
-): { rootId: string; targetPath: string } | null {
-  if (preferredRootId) {
-    const preferred = files.find((f) => f.id === preferredRootId);
-    if (
-      preferred?.type === "tex" &&
-      preferred.content &&
-      /\\documentclass[\s{[]/.test(preferred.content)
-    ) {
-      return { rootId: preferred.id, targetPath: preferred.relativePath };
-    }
-  }
-
-  const rootId = resolveTexRoot(activeFileId, files);
-  const rootEntry = files.find((f) => f.id === rootId);
-  if (rootEntry?.type === "tex") {
-    return { rootId, targetPath: rootEntry.relativePath };
-  }
-  const anyTex = files.find((f) => f.type === "tex");
-  if (anyTex) {
-    return { rootId: anyTex.id, targetPath: anyTex.relativePath };
-  }
-  return null;
-}
 
 /** Extract a human-readable error message from an unknown catch value. */
 export function formatCompileError(error: unknown): string {

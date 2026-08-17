@@ -17,6 +17,8 @@ import {
   createDirectory,
   join,
   LARGE_FILE_THRESHOLD,
+  isCompilableSource,
+  isTextContent,
   type ProjectFileType,
 } from "@/lib/tauri/fs";
 import { useHistoryStore } from "@/stores/history-store";
@@ -433,12 +435,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
       };
 
       // Load content for text-based files (skip large non-essential files)
-      if (
-        f.type === "tex" ||
-        f.type === "bib" ||
-        f.type === "style" ||
-        f.type === "other"
-      ) {
+      if (isTextContent(f.type)) {
         const isLargeNonEssential =
           f.type === "other" && f.fileSize > LARGE_FILE_THRESHOLD;
         if (!isLargeNonEssential) {
@@ -470,14 +467,22 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
     // Find the main tex file
     const mainTex =
       projectFiles.find(
-        (f) => f.name === "main.tex" || f.name === "document.tex",
-      ) || projectFiles.find((f) => f.type === "tex");
+        (f) =>
+          f.name === "main.tex" ||
+          f.name === "document.tex" ||
+          f.name === "main.typ" ||
+          f.name === "resume.typ",
+      ) ||
+      projectFiles.find((f) => f.type === "tex") ||
+      projectFiles.find((f) => f.type === "typst");
 
     // Pinned .tex files open by default: pick the first one (by manual pin
     // order) as the active file, falling back to main.tex when nothing is pinned.
     const marks = projectMarks(useFileMarksStore.getState().marks, rootPath);
     const firstPinnedTex = projectFiles
-      .filter((f) => f.type === "tex" && marks.get(f.relativePath)?.pinned)
+      .filter(
+        (f) => isCompilableSource(f.type) && marks.get(f.relativePath)?.pinned,
+      )
       .sort((a, b) => {
         const aOrder = marks.get(a.relativePath)?.pinOrder ?? 0;
         const bOrder = marks.get(b.relativePath)?.pinOrder ?? 0;
@@ -1216,7 +1221,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
     const file = state.files.find((f) => f.relativePath === relativePath);
     if (!file) return;
 
-    if (file.type === "tex" || file.type === "bib") {
+    if (file.type === "tex" || file.type === "typst" || file.type === "bib") {
       const content = await readTexFileContent(file.absolutePath);
       set((s) => ({
         files: s.files.map((f) =>
@@ -1247,12 +1252,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
           merged.push(existing);
         } else {
           const updated = { ...existing, fileSize: fsFile.fileSize };
-          if (
-            updated.type === "tex" ||
-            updated.type === "bib" ||
-            updated.type === "style" ||
-            updated.type === "other"
-          ) {
+          if (isTextContent(updated.type)) {
             const isLargeNonEssential =
               updated.type === "other" &&
               fsFile.fileSize > LARGE_FILE_THRESHOLD;
@@ -1283,10 +1283,8 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
         const isLargeNonEssential =
           pf.type === "other" && fsFile.fileSize > LARGE_FILE_THRESHOLD;
         if (
-          pf.type === "tex" ||
-          pf.type === "bib" ||
-          pf.type === "style" ||
-          (pf.type === "other" && !isLargeNonEssential)
+          isTextContent(pf.type) &&
+          !(pf.type === "other" && isLargeNonEssential)
         ) {
           try {
             pf.content = await readTexFileContent(pf.absolutePath);

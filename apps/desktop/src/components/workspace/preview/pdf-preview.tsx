@@ -51,6 +51,7 @@ import {
   showWorkspaceError,
   showWorkspaceWarning,
 } from "@/stores/workspace-banner-store";
+import { isCompilableSource } from "@/lib/tauri/fs";
 
 function findSourceSpan(
   content: string,
@@ -129,13 +130,15 @@ import {
 } from "@/components/ui/popover";
 import { HistoryPanel } from "@/components/workspace/history-panel";
 import {
-  compileLatex,
   synctexEdit,
-  listCompileRoots,
   formatCompileError,
   buildCompileFixPrompt,
-  type CompileRootOption,
 } from "@/lib/latex-compiler";
+import {
+  listCompileRoots,
+  type CompileRootOption,
+} from "@/lib/compile-targets";
+import { compileTargetToPdf } from "@/lib/project-compile";
 import {
   createAutoCompileScheduler,
   type AutoCompileScheduler,
@@ -170,6 +173,7 @@ import {
   settleSize,
   zoomSelectValue,
 } from "@/lib/pdf-zoom";
+import { scratchSuffix } from "@/lib/unique-id";
 
 const log = createLogger("pdf-preview");
 
@@ -325,7 +329,8 @@ export function PdfPreview() {
     return s.files.find((f) => f.id === s.activeFileId) ?? null;
   });
   const activeFileType = activeFile?.type ?? "tex";
-  const isTexActive = activeFileType === "tex";
+  // "a source the preview can build" — true for LaTeX and Typst alike.
+  const isTexActive = isCompilableSource(activeFileType);
   const requestJumpToPosition = useDocumentStore(
     (s) => s.requestJumpToPosition,
   );
@@ -961,14 +966,19 @@ export function PdfPreview() {
         );
         if (!resolved) {
           setCompileError(
-            "No .tex file found in this project. Create a main.tex file to compile.",
+            "No .tex or .typ file found in this project. Create a main.tex or main.typ file to compile.",
           );
           return;
         }
-        const { rootId, targetPath } = resolved;
+        const { rootId, targetPath, engine } = resolved;
         const texlive =
           useSettingsStore.getState().compilerBackend === "texlive";
-        const data = await compileLatex(projectRoot, targetPath, texlive);
+        const data = await compileTargetToPdf(
+          projectRoot,
+          targetPath,
+          engine,
+          texlive,
+        );
         setPdfData(data, rootId);
       } catch (error) {
         setCompileError(formatCompileError(error));
@@ -1240,7 +1250,7 @@ export function PdfPreview() {
       );
       return;
     }
-    const { rootId, targetPath: targetFile } = resolved;
+    const { rootId, targetPath: targetFile, engine: targetEngine } = resolved;
     // Skip recompile if no edits since last successful compile of this root
     // (unless force=true, e.g. user clicked Recompile button)
     if (!force) {
@@ -1268,7 +1278,12 @@ export function PdfPreview() {
     try {
       await saveAllFiles();
       const texlive = useSettingsStore.getState().compilerBackend === "texlive";
-      const data = await compileLatex(state.projectRoot, targetFile, texlive);
+      const data = await compileTargetToPdf(
+        state.projectRoot,
+        targetFile,
+        targetEngine,
+        texlive,
+      );
       setPdfData(data, rootId);
     } catch (error) {
       setCompileError(formatCompileError(error), rootId);
@@ -1384,7 +1399,7 @@ export function PdfPreview() {
     }
     if (!projectRoot) return;
 
-    const fileName = `capture-p${result.pageNumber}-${Date.now()}.png`;
+    const fileName = `capture-p${result.pageNumber}-${scratchSuffix()}.png`;
     const relativePath = `attachments/${fileName}`;
 
     try {

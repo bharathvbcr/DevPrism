@@ -20,7 +20,7 @@ function readiness(
   return {
     checkedAt: Date.now(),
     text: {
-      status: "unavailable",
+      status: "error",
       available: false,
       backend: null,
       model: null,
@@ -29,9 +29,9 @@ function readiness(
       message: "Configure an AI chat provider in Settings",
     },
     embeddings: {
-      status: "unavailable",
+      status: "error",
       available: false,
-      issue: "no-embeddings",
+      issue: "unreachable",
       message: "Embeddings unavailable",
     },
     data: {

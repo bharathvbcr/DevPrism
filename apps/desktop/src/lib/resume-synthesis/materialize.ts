@@ -15,6 +15,11 @@ import {
   type VariantInfo,
 } from "@/lib/tauri/variants";
 import { normalizeProjectName, getProjectNameError } from "@/lib/project-name";
+import {
+  getResumeTemplate,
+  templateEngine,
+  type ResumeEngine,
+} from "@/lib/resume-templates";
 import { suggestVersionName } from "@/lib/variant-status";
 import { useCareerStore } from "@/stores/career-store";
 import { useDocumentStore } from "@/stores/document-store";
@@ -119,23 +124,30 @@ export function listResumeMasterOptions(): ResumeMasterOption[] {
   return out;
 }
 
-async function findMainTex(projectPath: string): Promise<{
+async function findMainSource(
+  projectPath: string,
+  engine: ResumeEngine,
+): Promise<{
   relativePath: string;
   absolutePath: string;
   content: string;
 } | null> {
   const { files } = await scanProjectFolder(projectPath);
-  const texFiles = files.filter((f) => f.type === "tex");
+  // Only consider sources the target engine can actually compile — a Typst
+  // run must never overwrite a LaTeX master, or vice versa.
+  const wantType = engine === "typst" ? "typst" : "tex";
+  const ext = engine === "typst" ? ".typ" : ".tex";
+  const texFiles = files.filter((f) => f.type === wantType);
   if (texFiles.length === 0) return null;
 
   const preferred =
     texFiles.find(
       (f) =>
-        f.relativePath === "main.tex" ||
-        f.relativePath === "document.tex" ||
-        f.relativePath === "resume.tex" ||
-        f.relativePath.endsWith("/main.tex") ||
-        f.relativePath.endsWith("/resume.tex"),
+        f.relativePath === `main${ext}` ||
+        f.relativePath === `document${ext}` ||
+        f.relativePath === `resume${ext}` ||
+        f.relativePath.endsWith(`/main${ext}`) ||
+        f.relativePath.endsWith(`/resume${ext}`),
     ) ?? texFiles[0];
 
   let content = "";
@@ -228,11 +240,16 @@ export async function materializeSynthesis(
   const versionName =
     options.versionName.trim() || versionNameFromJd(options.jdText);
   const tex = options.result.tex;
+  // An unknown template id means a run persisted before this template existed;
+  // those were all LaTeX, so that is the safe default.
+  const template = getResumeTemplate(options.result.templateId);
+  const engine: ResumeEngine = template ? templateEngine(template) : "latex";
+  const mainFileName = engine === "typst" ? "resume.typ" : "resume.tex";
 
   let projectPath: string | null = null;
   let variant: VariantInfo | null = null;
   let oldContent = "";
-  let texRelativePath = "resume.tex";
+  let texRelativePath = mainFileName;
   let texAbsolutePath: string | null = null;
   let createdNewFolder = false;
   const masterPath = options.masterProjectPath;
@@ -251,14 +268,14 @@ export async function materializeSynthesis(
       projectPath = variant.path;
       assignProjectToResumeSpace(projectPath, masterPath);
 
-      const existing = await findMainTex(projectPath);
+      const existing = await findMainSource(projectPath, engine);
       if (existing) {
         texRelativePath = existing.relativePath;
         texAbsolutePath = existing.absolutePath;
         oldContent = existing.content;
       } else {
-        texAbsolutePath = await createFileOnDisk(projectPath, "resume.tex", "");
-        texRelativePath = "resume.tex";
+        texAbsolutePath = await createFileOnDisk(projectPath, mainFileName, "");
+        texRelativePath = mainFileName;
         oldContent = "";
       }
       await writeTexFileContent(texAbsolutePath, tex);
@@ -295,8 +312,8 @@ export async function materializeSynthesis(
       }
       await mkdir(projectPath, { recursive: true });
       createdNewFolder = true;
-      texAbsolutePath = await createFileOnDisk(projectPath, "resume.tex", tex);
-      texRelativePath = "resume.tex";
+      texAbsolutePath = await createFileOnDisk(projectPath, mainFileName, tex);
+      texRelativePath = mainFileName;
       oldContent = "";
       assignProjectToResumeSpace(projectPath);
       useProjectStore.getState().setLastProjectFolder(parent);

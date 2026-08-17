@@ -19,6 +19,7 @@ import {
   toggleComment,
 } from "@codemirror/commands";
 import { syntaxHighlighting, syntaxTreeAvailable } from "@codemirror/language";
+import { typst } from "@/lib/editor/typst-language";
 import { oneDark, oneDarkHighlightStyle } from "@codemirror/theme-one-dark";
 import { defaultHighlightStyle } from "@codemirror/language";
 import { useTheme } from "next-themes";
@@ -59,7 +60,7 @@ import {
   type PromptContextOverride,
 } from "@/stores/claude-chat-store";
 import { useHistoryStore, type FileDiff } from "@/stores/history-store";
-import { compileLatex, formatCompileError } from "@/lib/latex-compiler";
+import { formatCompileError } from "@/lib/latex-compiler";
 import { triggerForwardSync } from "@/lib/forward-sync";
 import {
   resolveActiveCompileTarget,
@@ -72,6 +73,8 @@ import { EditorToolbar } from "./editor-toolbar";
 import { SelectionToolbar, type ToolbarAction } from "./selection-toolbar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { isTextContent } from "@/lib/tauri/fs";
+import { compileTargetToPdf } from "@/lib/project-compile";
 import {
   Dialog,
   DialogContent,
@@ -236,11 +239,7 @@ export function LatexEditor() {
     );
     return s.compiledPageCounts.get(rootId) ?? null;
   });
-  const isTextFile =
-    activeFile?.type === "tex" ||
-    activeFile?.type === "bib" ||
-    activeFile?.type === "style" ||
-    activeFile?.type === "other";
+  const isTextFile = activeFile ? isTextContent(activeFile.type) : false;
   const activeFileContent = activeFile?.content;
   const isLargeFileNotLoaded =
     isTextFile && activeFileContent === undefined && !!activeFile;
@@ -561,7 +560,7 @@ export function LatexEditor() {
       );
       return;
     }
-    const { rootId, targetPath } = resolved;
+    const { rootId, targetPath, engine } = resolved;
     useHistoryStore.getState().stopReview();
     setIsCompiling(true);
     state.setPendingRecompile(false);
@@ -575,7 +574,12 @@ export function LatexEditor() {
         .catch(() => {});
       const useTexlive =
         useSettingsStore.getState().compilerBackend === "texlive";
-      const data = await compileLatex(projectRoot, targetPath, useTexlive);
+      const data = await compileTargetToPdf(
+        projectRoot,
+        targetPath,
+        engine,
+        useTexlive,
+      );
       setPdfData(data, rootId);
     } catch (error) {
       setCompileError(formatCompileError(error), rootId);
@@ -845,7 +849,9 @@ export function LatexEditor() {
         ]),
         activeFile?.type === "bib"
           ? bibtex()
-          : latex({ enableLinting: false, enableAutocomplete: false }),
+          : activeFile?.type === "typst"
+            ? typst()
+            : latex({ enableLinting: false, enableAutocomplete: false }),
         ...(activeFile?.type === "tex" ? [latexAutocomplete()] : []),
         ...(activeFile?.type === "tex"
           ? [

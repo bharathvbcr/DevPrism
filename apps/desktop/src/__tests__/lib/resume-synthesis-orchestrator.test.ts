@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ExperienceBlock, Persona } from "@/lib/career/types";
-import { ATS_RESUME_TEMPLATE } from "@/lib/resume-templates";
+import { TYPST_ATS_SINGLE_TEMPLATE } from "@/lib/resume-templates";
 import { synthesizeResume } from "@/lib/resume-synthesis/orchestrator";
 import type { JDProfile } from "@/lib/resume-synthesis/types";
 
@@ -109,7 +109,7 @@ describe("synthesizeResume (mocked llmJson)", () => {
     const result = await synthesizeResume({
       jdText: "We need a Senior ML Engineer with Python and PyTorch.",
       personaId: "ai",
-      templateId: ATS_RESUME_TEMPLATE.id,
+      templateId: TYPST_ATS_SINGLE_TEMPLATE.id,
       header: {
         fullName: "Test User",
         cityRegion: "SF",
@@ -221,7 +221,7 @@ describe("synthesizeResume (mocked llmJson)", () => {
       jdText:
         "We need a senior ML engineer with Python experience and strong systems skills for production ML platforms.",
       personaId: "ai",
-      templateId: ATS_RESUME_TEMPLATE.id,
+      templateId: TYPST_ATS_SINGLE_TEMPLATE.id,
       header: {
         fullName: "Test User",
         cityRegion: "SF",
@@ -312,7 +312,7 @@ describe("synthesizeResume (mocked llmJson)", () => {
     const result = await synthesizeResume({
       jdText: "Python role",
       personaId: "ai",
-      templateId: ATS_RESUME_TEMPLATE.id,
+      templateId: TYPST_ATS_SINGLE_TEMPLATE.id,
       deps: {
         listBlocks: async () => [locked],
         listPersonas: async () => [persona],
@@ -343,7 +343,7 @@ describe("synthesizeResume (mocked llmJson)", () => {
         jdText:
           "We need a Senior ML Engineer with Python and PyTorch experience for production systems.",
         personaId: "ai",
-        templateId: ATS_RESUME_TEMPLATE.id,
+        templateId: TYPST_ATS_SINGLE_TEMPLATE.id,
         signal: controller.signal,
         deps: {
           listBlocks: async () => [block("exp_a", ["Python"])],
@@ -397,7 +397,7 @@ describe("synthesizeResume (mocked llmJson)", () => {
         jdText:
           "We need a Senior ML Engineer with Python and PyTorch experience for production systems.",
         personaId: "ai",
-        templateId: ATS_RESUME_TEMPLATE.id,
+        templateId: TYPST_ATS_SINGLE_TEMPLATE.id,
         signal: controller.signal,
         deps: {
           listBlocks: async () => [block("exp_a", ["Python"])],
@@ -463,7 +463,7 @@ describe("synthesizeResume (mocked llmJson)", () => {
       jdText:
         "We need a Senior ML Engineer with Python and PyTorch experience for production systems.",
       personaId: "ai",
-      templateId: ATS_RESUME_TEMPLATE.id,
+      templateId: TYPST_ATS_SINGLE_TEMPLATE.id,
       deps: {
         listBlocks: async () => [block("exp_a", ["Python"])],
         listPersonas: async () => [persona],
@@ -535,7 +535,7 @@ describe("synthesizeResume (mocked llmJson)", () => {
       jdText:
         "We need a Senior ML Engineer with Python and PyTorch experience for production systems.",
       personaId: "ai",
-      templateId: ATS_RESUME_TEMPLATE.id,
+      templateId: TYPST_ATS_SINGLE_TEMPLATE.id,
       onProgress: (s) => {
         stages.push(s.id);
         if (s.detail) details.push(s.detail);
@@ -614,7 +614,7 @@ describe("synthesizeResume (mocked llmJson)", () => {
       jdText:
         "We need a Senior ML Engineer with Python and PyTorch experience for production systems.",
       personaId: "ai",
-      templateId: ATS_RESUME_TEMPLATE.id,
+      templateId: TYPST_ATS_SINGLE_TEMPLATE.id,
       onProgress: (s) => {
         if (s.streamPreview) previews.push(`${s.id}:${s.streamPreview}`);
       },

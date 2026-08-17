@@ -1,5 +1,11 @@
 export type ProjectFileType =
   | "tex"
+  /**
+   * Typst source (`.typ`). Deliberately distinct from `tex`: the workspace's
+   * compile, SyncTeX, outline and track-changes paths are LaTeX-specific, so
+   * classifying Typst as `tex` would route it to Tectonic and fail.
+   */
+  | "typst"
   | "image"
   | "pdf"
   | "bib"
@@ -86,6 +92,7 @@ export function getProjectFileType(name: string): ProjectFileType | null {
     if (lower.endsWith(ext)) return null;
   }
   if (lower.endsWith(".tex") || lower.endsWith(".ltx")) return "tex";
+  if (lower.endsWith(".typ")) return "typst";
   if (lower.endsWith(".bib")) return "bib";
   if (lower.endsWith(".pdf")) return "pdf";
   for (const ext of IMAGE_EXTENSIONS) {
@@ -95,6 +102,37 @@ export function getProjectFileType(name: string): ProjectFileType | null {
     if (lower.endsWith(ext)) return "style";
   }
   return "other";
+}
+
+/**
+ * Source documents that can act as a compile root.
+ *
+ * Prefer this over `type === "tex"` for anything that means "a document the
+ * workspace can build". Reserve the bare `"tex"` check for genuinely
+ * LaTeX-specific behaviour (SyncTeX, latexdiff, `\documentclass` parsing).
+ */
+export function isCompilableSource(type: ProjectFileType): boolean {
+  return type === "tex" || type === "typst";
+}
+
+/** File types whose content is loaded into memory and edited as text. */
+export function isTextContent(type: ProjectFileType): boolean {
+  return (
+    type === "tex" ||
+    type === "typst" ||
+    type === "bib" ||
+    type === "style" ||
+    type === "other"
+  );
+}
+
+/** Which compiler builds a given source file. */
+export function engineForFileType(
+  type: ProjectFileType,
+): "latex" | "typst" | null {
+  if (type === "typst") return "typst";
+  if (type === "tex") return "latex";
+  return null;
 }
 
 export interface ScanResult {

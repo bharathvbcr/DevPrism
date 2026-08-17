@@ -46,6 +46,7 @@ import {
   IngestProgressList,
   type IngestProgressItem,
 } from "../ingest-progress";
+import { scratchSuffix, uniqueId } from "@/lib/unique-id";
 
 const CREATE_NEW = "__create_new__";
 
@@ -184,7 +185,7 @@ export function AddKnowledgeDialog({
     const text = pasteText.trim();
     if (!text) return;
     setBusy(true);
-    const id = `paste-${Date.now()}`;
+    const id = uniqueId("paste");
     setProgressItems([{ id, label: `Pasted ${pasteKind}`, status: "active" }]);
     const onProgress = (progress: ProcessingProgress) => {
       patchItem(id, { progress, status: "active" });
@@ -193,7 +194,7 @@ export function AddKnowledgeDialog({
       let deferred = false;
       if (pasteKind === "mindmap") {
         const out = await ingestMindmapText(text, {
-          uri: `paste://mindmap-${Date.now()}`,
+          uri: `paste://mindmap-${scratchSuffix()}`,
           title: "Pasted mind map",
           sourceType: "mindmap",
           onProgress,
@@ -201,7 +202,7 @@ export function AddKnowledgeDialog({
         deferred = out.embed.deferred;
       } else {
         const out = await ingestMarkdownText(text, {
-          uri: `paste://markdown-${Date.now()}`,
+          uri: `paste://markdown-${scratchSuffix()}`,
           title: "Pasted markdown",
           sourceType: "markdown",
           onProgress,

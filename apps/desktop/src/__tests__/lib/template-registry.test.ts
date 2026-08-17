@@ -98,4 +98,28 @@ describe("template-registry", () => {
       expect(getTemplateSkeleton(fakeTemplate)).toBe(fakeTemplate.content);
     });
   });
+
+  // Templates were authored with `\\` (a line break) where `\` (an escape) was
+  // meant. The compile-time damage ranges from a stray break mid-sentence to a
+  // hard error, so pin the two shapes that are never intentional. Compile
+  // coverage itself lives in scripts/generate-previews.ts, which builds every
+  // template with the app's own engine.
+  describe("template content escaping", () => {
+    it("never breaks a line straight into a comment", () => {
+      // `\\%` = line break, then `%` comments out the rest of the source line.
+      for (const t of getAllTemplates()) {
+        expect(t.content, `${t.id} contains \\\\%`).not.toMatch(/\\\\%/);
+      }
+    });
+
+    it("uses an interword space, not a break, after an abbreviation", () => {
+      // `Dr.\\ Alexandra` should be `Dr.\ Alexandra`; inside a tabular cell or a
+      // group the break is fatal rather than merely ugly.
+      for (const t of getAllTemplates()) {
+        expect(t.content, `${t.id} contains .\\\\ `).not.toMatch(
+          /\.\\\\ [A-Za-z]/,
+        );
+      }
+    });
+  });
 });

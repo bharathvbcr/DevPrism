@@ -89,6 +89,7 @@ const TEMPLATES: TemplateDefinition[] = [
 \\usepackage{amsmath,amssymb,amsthm}
 \\usepackage{graphicx}
 \\usepackage[margin=1in]{geometry}
+\\usepackage{xcolor}
 \\usepackage{hyperref}
 \\usepackage{booktabs}
 \\usepackage{natbib}
@@ -112,12 +113,12 @@ const TEMPLATES: TemplateDefinition[] = [
 
 \\title{\\textbf{Adaptive Neural Architecture Search\\\\via Gradient-Based Optimization}}
 \\author{
-  Alice M.\\\\ Johnson\\\\textsuperscript{1} \\\\and
-  Robert K.\\\\ Chen\\\\textsuperscript{2} \\\\and
-  Maria L.\\\\ Santos\\\\textsuperscript{1}\\\\\\\\
-  \\\\textsuperscript{1}Department of Computer Science, Stanford University\\\\\\\\
-  \\\\textsuperscript{2}Google DeepMind\\\\\\\\
-  \\\\texttt{\\\\{ajohnson, msantos\\\\}@cs.stanford.edu, rchen@deepmind.com}
+  Alice M.\\ Johnson\\textsuperscript{1} \\and
+  Robert K.\\ Chen\\textsuperscript{2} \\and
+  Maria L.\\ Santos\\textsuperscript{1}\\\\
+  \\textsuperscript{1}Department of Computer Science, Stanford University\\\\
+  \\textsuperscript{2}Google DeepMind\\\\
+  \\texttt{\\{ajohnson, msantos\\}@cs.stanford.edu, rchen@deepmind.com}
 }
 \\date{\\today}
 
@@ -126,14 +127,14 @@ const TEMPLATES: TemplateDefinition[] = [
 \\maketitle
 
 \\begin{abstract}
-Neural Architecture Search (NAS) has emerged as a powerful paradigm for automating the design of deep neural networks. However, existing approaches often suffer from prohibitive computational costs and limited generalization across tasks. In this paper, we propose \\\\textit{AdaptiveNAS}, a novel gradient-based framework that leverages differentiable architecture parameters combined with a hierarchical search space to efficiently discover high-performing architectures. Our method introduces a multi-objective optimization criterion that simultaneously considers accuracy, latency, and model size. Extensive experiments on CIFAR-10, CIFAR-100, and ImageNet demonstrate that AdaptiveNAS achieves state-of-the-art performance while reducing search costs by $4.7\\\\times$ compared to previous methods. We further show that architectures discovered by our method transfer effectively to downstream tasks including object detection and semantic segmentation.
+Neural Architecture Search (NAS) has emerged as a powerful paradigm for automating the design of deep neural networks. However, existing approaches often suffer from prohibitive computational costs and limited generalization across tasks. In this paper, we propose \\textit{AdaptiveNAS}, a novel gradient-based framework that leverages differentiable architecture parameters combined with a hierarchical search space to efficiently discover high-performing architectures. Our method introduces a multi-objective optimization criterion that simultaneously considers accuracy, latency, and model size. Extensive experiments on CIFAR-10, CIFAR-100, and ImageNet demonstrate that AdaptiveNAS achieves state-of-the-art performance while reducing search costs by $4.7\\times$ compared to previous methods. We further show that architectures discovered by our method transfer effectively to downstream tasks including object detection and semantic segmentation.
 \\end{abstract}
 
 \\section{Introduction}
 
-Deep neural networks have achieved remarkable success across a wide range of applications, from image classification~\\\\citep{he2016deep} to natural language processing~\\\\citep{vaswani2017attention}. However, the design of neural network architectures remains a labor-intensive process that requires significant domain expertise. Neural Architecture Search (NAS) aims to automate this process by searching over a space of possible architectures to find those that maximize performance on a given task.
+Deep neural networks have achieved remarkable success across a wide range of applications, from image classification~\\citep{he2016deep} to natural language processing~\\citep{vaswani2017attention}. However, the design of neural network architectures remains a labor-intensive process that requires significant domain expertise. Neural Architecture Search (NAS) aims to automate this process by searching over a space of possible architectures to find those that maximize performance on a given task.
 
-Early NAS methods relied on reinforcement learning~\\\\citep{zoph2017neural} or evolutionary algorithms~\\\\citep{real2019regularized} to explore the architecture space. While these approaches demonstrated the potential of automated architecture design, they required thousands of GPU hours to complete a single search, making them impractical for many applications. Recent work has focused on reducing the computational cost of NAS through weight sharing~\\\\citep{pham2018efficient} and differentiable relaxation~\\\\citep{liu2019darts}.
+Early NAS methods relied on reinforcement learning~\\citep{zoph2017neural} or evolutionary algorithms~\\citep{real2019regularized} to explore the architecture space. While these approaches demonstrated the potential of automated architecture design, they required thousands of GPU hours to complete a single search, making them impractical for many applications. Recent work has focused on reducing the computational cost of NAS through weight sharing~\\citep{pham2018efficient} and differentiable relaxation~\\citep{liu2019darts}.
 
 In this paper, we propose AdaptiveNAS, a novel gradient-based architecture search framework that addresses two key limitations of existing methods:
 
@@ -146,73 +147,73 @@ Our main contributions are summarized as follows:
 \\begin{itemize}
   \\item We propose a hierarchical differentiable search space that captures both cell-level and network-level architectural decisions.
   \\item We develop a novel multi-objective optimization strategy that balances accuracy with computational efficiency.
-  \\item We achieve state-of-the-art results on CIFAR-10 (97.8\\\\%), CIFAR-100 (85.3\\\\%), and ImageNet (79.2\\\\% top-1) with significantly reduced search costs.
+  \\item We achieve state-of-the-art results on CIFAR-10 (97.8\\%), CIFAR-100 (85.3\\%), and ImageNet (79.2\\% top-1) with significantly reduced search costs.
 \\end{itemize}
 
 \\section{Related Work}
 
 \\subsection{Neural Architecture Search}
 
-The field of NAS has evolved rapidly since the seminal work of Zoph and Le~\\\\citep{zoph2017neural}, who used a recurrent neural network controller trained with reinforcement learning to generate architecture descriptions. Subsequent work by Real et al.~\\\\citep{real2019regularized} demonstrated that evolutionary methods could achieve comparable results with improved stability.
+The field of NAS has evolved rapidly since the seminal work of Zoph and Le~\\citep{zoph2017neural}, who used a recurrent neural network controller trained with reinforcement learning to generate architecture descriptions. Subsequent work by Real et al.~\\citep{real2019regularized} demonstrated that evolutionary methods could achieve comparable results with improved stability.
 
 \\subsection{Differentiable Architecture Search}
 
-DARTS~\\\\citep{liu2019darts} introduced a continuous relaxation of the discrete architecture space, enabling gradient-based optimization. This approach reduced search costs from thousands of GPU hours to a single GPU day. However, DARTS is known to suffer from performance collapse, where the search converges to architectures dominated by skip connections.
+DARTS~\\citep{liu2019darts} introduced a continuous relaxation of the discrete architecture space, enabling gradient-based optimization. This approach reduced search costs from thousands of GPU hours to a single GPU day. However, DARTS is known to suffer from performance collapse, where the search converges to architectures dominated by skip connections.
 
 \\subsection{Hardware-Aware NAS}
 
-Several recent works have incorporated hardware constraints directly into the search process. MnasNet~\\\\citep{tan2019mnasnet} used a multi-objective reward function that balances accuracy and latency. FBNet~\\\\citep{wu2019fbnet} extended differentiable search to include latency-aware optimization through a lookup table approach.
+Several recent works have incorporated hardware constraints directly into the search process. MnasNet~\\citep{tan2019mnasnet} used a multi-objective reward function that balances accuracy and latency. FBNet~\\citep{wu2019fbnet} extended differentiable search to include latency-aware optimization through a lookup table approach.
 
 \\section{Method}
 
 \\subsection{Problem Formulation}
 
-Let $\\\\mathcal{A}$ denote the space of all possible architectures. Our goal is to find an architecture $a^* \\\\in \\\\mathcal{A}$ that minimizes a multi-objective loss function:
+Let $\\mathcal{A}$ denote the space of all possible architectures. Our goal is to find an architecture $a^* \\in \\mathcal{A}$ that minimizes a multi-objective loss function:
 
 \\begin{equation}
-  a^* = \\\\arg\\\\min_{a \\\\in \\\\mathcal{A}} \\\\; \\\\mathcal{L}_{\\\\text{val}}(w^*(a), a) + \\\\lambda_1 \\\\cdot \\\\text{LAT}(a) + \\\\lambda_2 \\\\cdot \\\\text{SIZE}(a)
+  a^* = \\arg\\min_{a \\in \\mathcal{A}} \\; \\mathcal{L}_{\\text{val}}(w^*(a), a) + \\lambda_1 \\cdot \\text{LAT}(a) + \\lambda_2 \\cdot \\text{SIZE}(a)
 \\end{equation}
 
-where $w^*(a) = \\\\arg\\\\min_w \\\\mathcal{L}_{\\\\text{train}}(w, a)$ are the optimal weights for architecture $a$, $\\\\text{LAT}(a)$ is the inference latency, and $\\\\text{SIZE}(a)$ is the number of parameters.
+where $w^*(a) = \\arg\\min_w \\mathcal{L}_{\\text{train}}(w, a)$ are the optimal weights for architecture $a$, $\\text{LAT}(a)$ is the inference latency, and $\\text{SIZE}(a)$ is the number of parameters.
 
 \\subsection{Hierarchical Search Space}
 
-We decompose the search space into two levels. At the \\\\textit{cell level}, we search for computational cells that serve as building blocks. At the \\\\textit{network level}, we determine the arrangement and connectivity of these cells.
+We decompose the search space into two levels. At the \\textit{cell level}, we search for computational cells that serve as building blocks. At the \\textit{network level}, we determine the arrangement and connectivity of these cells.
 
 \\begin{definition}[Computational Cell]
-A computational cell is a directed acyclic graph (DAG) $G = (V, E)$ where each node $v_i \\\\in V$ represents a latent feature map and each edge $(i, j) \\\\in E$ is associated with an operation $o_{ij} \\\\in \\\\mathcal{O}$.
+A computational cell is a directed acyclic graph (DAG) $G = (V, E)$ where each node $v_i \\in V$ represents a latent feature map and each edge $(i, j) \\in E$ is associated with an operation $o_{ij} \\in \\mathcal{O}$.
 \\end{definition}
 
-The set of candidate operations $\\\\mathcal{O}$ includes:
+The set of candidate operations $\\mathcal{O}$ includes:
 \\begin{itemize}
-  \\item $3 \\\\times 3$ and $5 \\\\times 5$ separable convolutions
-  \\item $3 \\\\times 3$ and $5 \\\\times 5$ dilated separable convolutions
-  \\item $3 \\\\times 3$ max pooling and average pooling
+  \\item $3 \\times 3$ and $5 \\times 5$ separable convolutions
+  \\item $3 \\times 3$ and $5 \\times 5$ dilated separable convolutions
+  \\item $3 \\times 3$ max pooling and average pooling
   \\item Identity (skip connection)
   \\item Zero (no connection)
 \\end{itemize}
 
 \\subsection{Differentiable Relaxation}
 
-Following DARTS, we relax the categorical choice of operations to a continuous distribution using a softmax over architecture parameters $\\\\alpha$:
+Following DARTS, we relax the categorical choice of operations to a continuous distribution using a softmax over architecture parameters $\\alpha$:
 
 \\begin{equation}
-  \\\\bar{o}_{ij}(x) = \\\\sum_{o \\\\in \\\\mathcal{O}} \\\\frac{\\\\exp(\\\\alpha_o^{ij})}{\\\\sum_{o' \\\\in \\\\mathcal{O}} \\\\exp(\\\\alpha_{o'}^{ij})} \\\\cdot o(x)
+  \\bar{o}_{ij}(x) = \\sum_{o \\in \\mathcal{O}} \\frac{\\exp(\\alpha_o^{ij})}{\\sum_{o' \\in \\mathcal{O}} \\exp(\\alpha_{o'}^{ij})} \\cdot o(x)
 \\end{equation}
 
 \\begin{theorem}[Convergence Guarantee]
-Under mild regularity conditions on $\\\\mathcal{L}_{\\\\text{val}}$ and $\\\\mathcal{L}_{\\\\text{train}}$, the bilevel optimization converges to a stationary point at a rate of $O(1/\\\\sqrt{T})$ where $T$ is the number of iterations.
+Under mild regularity conditions on $\\mathcal{L}_{\\text{val}}$ and $\\mathcal{L}_{\\text{train}}$, the bilevel optimization converges to a stationary point at a rate of $O(1/\\sqrt{T})$ where $T$ is the number of iterations.
 \\end{theorem}
 
 \\section{Experiments}
 
 \\subsection{Experimental Setup}
 
-We evaluate AdaptiveNAS on three benchmark datasets: CIFAR-10, CIFAR-100, and ImageNet. For the search phase, we use a proxy task on CIFAR-10 with 8 cells and 16 initial channels. The search is conducted for 50 epochs using SGD with momentum 0.9 and weight decay $3 \\\\times 10^{-4}$.
+We evaluate AdaptiveNAS on three benchmark datasets: CIFAR-10, CIFAR-100, and ImageNet. For the search phase, we use a proxy task on CIFAR-10 with 8 cells and 16 initial channels. The search is conducted for 50 epochs using SGD with momentum 0.9 and weight decay $3 \\times 10^{-4}$.
 
 \\subsection{Results on CIFAR-10 and CIFAR-100}
 
-Table~\\\\ref{tab:cifar_results} summarizes the comparison with state-of-the-art methods on CIFAR-10 and CIFAR-100.
+Table~\\ref{tab:cifar_results} summarizes the comparison with state-of-the-art methods on CIFAR-10 and CIFAR-100.
 
 \\begin{table}[H]
 \\centering
@@ -220,23 +221,23 @@ Table~\\\\ref{tab:cifar_results} summarizes the comparison with state-of-the-art
 \\label{tab:cifar_results}
 \\begin{tabular}{@{}lccccc@{}}
 \\toprule
-\\textbf{Method} & \\textbf{CIFAR-10} & \\textbf{CIFAR-100} & \\textbf{Params} & \\textbf{Search Cost} & \\textbf{Search}\\\\\\\\
- & \\textbf{Error (\\\\%)} & \\textbf{Error (\\\\%)} & \\textbf{(M)} & \\textbf{(GPU days)} & \\textbf{Method} \\\\\\\\
+\\textbf{Method} & \\textbf{CIFAR-10} & \\textbf{CIFAR-100} & \\textbf{Params} & \\textbf{Search Cost} & \\textbf{Search}\\\\
+ & \\textbf{Error (\\%)} & \\textbf{Error (\\%)} & \\textbf{(M)} & \\textbf{(GPU days)} & \\textbf{Method} \\\\
 \\midrule
-NASNet-A        & 2.65 & 17.81 & 3.3 & 1800 & RL \\\\\\\\
-AmoebaNet-A     & 2.55 & 18.93 & 3.2 & 3150 & Evolution \\\\\\\\
-ENAS            & 2.89 & 19.43 & 4.6 & 0.5  & RL \\\\\\\\
-DARTS (2nd)     & 2.76 & 17.54 & 3.3 & 1.0  & Gradient \\\\\\\\
-PC-DARTS        & 2.57 & 17.11 & 3.6 & 0.1  & Gradient \\\\\\\\
+NASNet-A        & 2.65 & 17.81 & 3.3 & 1800 & RL \\\\
+AmoebaNet-A     & 2.55 & 18.93 & 3.2 & 3150 & Evolution \\\\
+ENAS            & 2.89 & 19.43 & 4.6 & 0.5  & RL \\\\
+DARTS (2nd)     & 2.76 & 17.54 & 3.3 & 1.0  & Gradient \\\\
+PC-DARTS        & 2.57 & 17.11 & 3.6 & 0.1  & Gradient \\\\
 \\midrule
-\\textbf{AdaptiveNAS} & \\textbf{2.21} & \\textbf{14.72} & \\textbf{3.4} & \\textbf{0.2} & \\textbf{Gradient} \\\\\\\\
+\\textbf{AdaptiveNAS} & \\textbf{2.21} & \\textbf{14.72} & \\textbf{3.4} & \\textbf{0.2} & \\textbf{Gradient} \\\\
 \\bottomrule
 \\end{tabular}
 \\end{table}
 
 \\subsection{Results on ImageNet}
 
-We transfer the best cell architecture discovered on CIFAR-10 to ImageNet by constructing a larger network with 14 cells and 48 initial channels. As shown in Table~\\\\ref{tab:imagenet_results}, AdaptiveNAS achieves competitive top-1 accuracy while maintaining reasonable model complexity.
+We transfer the best cell architecture discovered on CIFAR-10 to ImageNet by constructing a larger network with 14 cells and 48 initial channels. As shown in Table~\\ref{tab:imagenet_results}, AdaptiveNAS achieves competitive top-1 accuracy while maintaining reasonable model complexity.
 
 \\begin{table}[H]
 \\centering
@@ -244,14 +245,14 @@ We transfer the best cell architecture discovered on CIFAR-10 to ImageNet by con
 \\label{tab:imagenet_results}
 \\begin{tabular}{@{}lcccc@{}}
 \\toprule
-\\textbf{Method} & \\textbf{Top-1 (\\\\%)} & \\textbf{Top-5 (\\\\%)} & \\textbf{Params (M)} & \\textbf{FLOPs (M)} \\\\\\\\
+\\textbf{Method} & \\textbf{Top-1 (\\%)} & \\textbf{Top-5 (\\%)} & \\textbf{Params (M)} & \\textbf{FLOPs (M)} \\\\
 \\midrule
-MobileNetV2    & 72.0 & 91.0 & 3.4 & 300 \\\\\\\\
-NASNet-A       & 74.0 & 91.6 & 5.3 & 564 \\\\\\\\
-DARTS          & 73.3 & 91.3 & 4.7 & 574 \\\\\\\\
-ProxylessNAS   & 75.1 & 92.5 & 7.1 & 465 \\\\\\\\
+MobileNetV2    & 72.0 & 91.0 & 3.4 & 300 \\\\
+NASNet-A       & 74.0 & 91.6 & 5.3 & 564 \\\\
+DARTS          & 73.3 & 91.3 & 4.7 & 574 \\\\
+ProxylessNAS   & 75.1 & 92.5 & 7.1 & 465 \\\\
 \\midrule
-\\textbf{AdaptiveNAS} & \\textbf{79.2} & \\textbf{94.5} & \\textbf{5.8} & \\textbf{490} \\\\\\\\
+\\textbf{AdaptiveNAS} & \\textbf{79.2} & \\textbf{94.5} & \\textbf{5.8} & \\textbf{490} \\\\
 \\bottomrule
 \\end{tabular}
 \\end{table}
@@ -260,11 +261,11 @@ ProxylessNAS   & 75.1 & 92.5 & 7.1 & 465 \\\\\\\\
 
 \\subsection{Ablation Study}
 
-To understand the contribution of each component, we conduct ablation experiments on CIFAR-10. Removing the hierarchical search space increases the error rate from 2.21\\\\% to 2.58\\\\%. Removing the multi-objective loss leads to architectures with 2.3$\\\\times$ more parameters while providing only marginal accuracy improvements. These results confirm that both components are essential for achieving the best accuracy-efficiency trade-off.
+To understand the contribution of each component, we conduct ablation experiments on CIFAR-10. Removing the hierarchical search space increases the error rate from 2.21\\% to 2.58\\%. Removing the multi-objective loss leads to architectures with 2.3$\\times$ more parameters while providing only marginal accuracy improvements. These results confirm that both components are essential for achieving the best accuracy-efficiency trade-off.
 
 \\subsection{Search Cost Analysis}
 
-Our method completes the architecture search in approximately 4.8 GPU hours on a single NVIDIA V100, which is $4.7\\\\times$ faster than DARTS and orders of magnitude faster than RL-based or evolutionary methods. The efficiency gain primarily comes from the hierarchical decomposition, which reduces the number of architecture parameters by 60\\\\%.
+Our method completes the architecture search in approximately 4.8 GPU hours on a single NVIDIA V100, which is $4.7\\times$ faster than DARTS and orders of magnitude faster than RL-based or evolutionary methods. The efficiency gain primarily comes from the hierarchical decomposition, which reduces the number of architecture parameters by 60\\%.
 
 \\section{Conclusion}
 
@@ -275,7 +276,7 @@ We presented AdaptiveNAS, a gradient-based neural architecture search framework 
 This work was supported in part by NSF Grant IIS-2024000 and a Google Faculty Research Award.
 
 \\bibliographystyle{plainnat}
-% \\\\bibliography{references}
+% \\bibliography{references}
 
 \\begin{thebibliography}{10}
 
@@ -1151,9 +1152,9 @@ L.~N. Trefethen.
 
 \\title[Deep RL for Robotics]{Deep Reinforcement Learning\\\\for Autonomous Robot Navigation}
 \\subtitle{From Simulation to Real-World Deployment}
-\\author[Chen \\& Nakamura]{Dr.\\\\ Wei Chen\\inst{1} \\and Prof.\\\\ Yuki Nakamura\\inst{2}}
+\\author[Chen \\& Nakamura]{Dr.\\ Wei Chen\\inst{1} \\and Prof.\\ Yuki Nakamura\\inst{2}}
 \\institute[MIT \\& UTokyo]{\\inst{1}MIT CSAIL \\and \\inst{2}University of Tokyo}
-\\date{International Conference on Robotics and Automation\\\\May 2025}
+\\date[ICRA 2025]{International Conference on Robotics and Automation\\\\May 2025}
 
 \\begin{document}
 
@@ -1330,7 +1331,7 @@ model.learn(total_timesteps=10_000_000,
     \\caption{Navigation performance across environment difficulties}
     \\begin{tabular}{@{}lccc@{}}
       \\toprule
-      \\textbf{Method} & \\textbf{Success (\\%)} & \\textbf{Collision (\\%)} & \\textbf{Avg.\\\\ Time (s)} \\\\
+      \\textbf{Method} & \\textbf{Success (\\%)} & \\textbf{Collision (\\%)} & \\textbf{Avg.\\ Time (s)} \\\\
       \\midrule
       Bug2 Algorithm       & 62.3 & 15.2 & 34.7 \\\\
       RRT*                 & 78.1 & 8.4  & 28.3 \\\\
@@ -1466,6 +1467,7 @@ model.learn(total_timesteps=10_000_000,
 \\usepackage{tikz}
 \\usepackage{enumitem}
 \\usepackage{booktabs}
+\\usepackage{url}
 \\usepackage{microtype}
 
 \\pagestyle{empty}
@@ -1497,7 +1499,7 @@ model.learn(total_timesteps=10_000_000,
 % HEADER
 % ════════════════════════════════════════════
 \\begin{tikzpicture}[remember picture, overlay]
-  \\fill[headerblue] ([yshift=0cm]current page.north west) rectangle ([yshift=-18cm]current page.north east);
+  \\fill[headerblue] ([yshift=0cm]current page.north west) rectangle ([yshift=-21cm]current page.north east);
 \\end{tikzpicture}
 
 \\vspace*{-1cm}
@@ -1753,7 +1755,7 @@ GCN baseline (no attention)  & 1.52 \\\\
   \\item \\textbf{Interpretable} attention mechanism reveals binding site interactions
   \\item \\textbf{Practical impact}: identified 4 potent M$^{\\text{pro}}$ inhibitors from virtual screening
   \\item Inference time: \\textbf{0.3ms per complex} (GPU), enabling large-scale screening
-  \\item Code and models available at \\texttt{github.com/oxbiochem/affinitygnn}
+  \\item Code and models available at \\url{github.com/oxbiochem/affinitygnn}
 \\end{itemize}
 
 \\vspace{2cm}
@@ -2017,7 +2019,7 @@ Machine learning researcher with 8+ years of experience in natural language proc
 \\pagestyle{fancy}
 \\fancyhf{}
 \\renewcommand{\\headrulewidth}{0pt}
-\\fancyfoot[C]{\\small\\color{rulecolor}Page \\thepage\\\\ of \\pageref{LastPage}}
+\\fancyfoot[C]{\\small\\color{rulecolor}Page \\thepage\\ of \\pageref{LastPage}}
 
 \\setlength{\\parskip}{10pt}
 \\setlength{\\parindent}{0pt}
@@ -2045,7 +2047,7 @@ Machine learning researcher with 8+ years of experience in natural language proc
 \\vspace{0.5cm}
 
 % ──── Recipient ────
-Prof.\\\\ Sarah M.\\\\ Thompson\\\\
+Prof.\\ Sarah M.\\ Thompson\\\\
 Chair, Department of Computer Science\\\\
 University of California, Berkeley\\\\
 Soda Hall, Room 593\\\\
@@ -2053,13 +2055,13 @@ Berkeley, CA 94720
 
 \\vspace{0.5cm}
 
-\\textbf{Re: Letter of Recommendation for Dr.\\\\ James Liu -- Assistant Professor Position}
+\\textbf{Re: Letter of Recommendation for Dr.\\ James Liu -- Assistant Professor Position}
 
 \\vspace{0.3cm}
 
 Dear Professor Thompson,
 
-I am writing to provide my strongest recommendation for Dr.\\\\ James Liu, who is applying for the tenure-track Assistant Professor position in Quantum Computing at the University of California, Berkeley. I have had the privilege of working closely with James for the past five years, first as his doctoral advisor at MIT and subsequently as a research collaborator, and I can state without reservation that he is among the most talented young researchers I have encountered in my thirty-year career.
+I am writing to provide my strongest recommendation for Dr.\\ James Liu, who is applying for the tenure-track Assistant Professor position in Quantum Computing at the University of California, Berkeley. I have had the privilege of working closely with James for the past five years, first as his doctoral advisor at MIT and subsequently as a research collaborator, and I can state without reservation that he is among the most talented young researchers I have encountered in my thirty-year career.
 
 James joined my research group in 2018 after completing his undergraduate degree in Physics and Mathematics at Caltech, where he graduated first in his class. From the outset, it was clear that James possessed an unusual combination of deep mathematical intuition, strong programming skills, and creative thinking. His doctoral research focused on developing novel quantum error correction codes for fault-tolerant quantum computation, a topic of immense theoretical and practical importance.
 
@@ -2079,7 +2081,7 @@ James's research program is both visionary and practical. He has articulated a c
 
 On a personal level, James is a person of exceptional integrity and collegiality. He is generous with his time, always willing to help colleagues, and has been instrumental in fostering a collaborative and inclusive research culture in our group. He actively participates in outreach activities, including organizing quantum computing workshops for underrepresented high school students in the Boston area.
 
-In summary, I give Dr.\\\\ James Liu my highest and most enthusiastic recommendation. He has the intellectual depth, technical skill, creative vision, and personal qualities to become a leading figure in quantum computing and an outstanding faculty member. I am confident that he would be an exceptional addition to your department, and I strongly urge you to give his application the most serious consideration.
+In summary, I give Dr.\\ James Liu my highest and most enthusiastic recommendation. He has the intellectual depth, technical skill, creative vision, and personal qualities to become a leading figure in quantum computing and an outstanding faculty member. I am confident that he would be an exceptional addition to your department, and I strongly urge you to give his application the most serious consideration.
 
 Please do not hesitate to contact me if you require any additional information. I am happy to discuss James's qualifications in further detail by phone or video call at your convenience.
 
@@ -2089,15 +2091,15 @@ Sincerely yours,
 
 \\vspace{1.2cm}
 
-\\textbf{Prof.\\\\ Richard A.\\\\ Yamamoto}\\\\
-William A.\\\\ Coolidge Professor of Physics\\\\
+\\textbf{Prof.\\ Richard A.\\ Yamamoto}\\\\
+William A.\\ Coolidge Professor of Physics\\\\
 Director, Quantum Computing Research Laboratory\\\\
 Massachusetts Institute of Technology\\\\
 \\href{mailto:ryamamoto@mit.edu}{ryamamoto@mit.edu} \\quad|\\quad +1 (617) 253-4851
 
 \\vspace{1cm}
 
-{\\small\\color{rulecolor}\\textit{Enclosures: Curriculum Vitae of Dr.\\\\ James Liu; List of publications}}
+{\\small\\color{rulecolor}\\textit{Enclosures: Curriculum Vitae of Dr.\\ James Liu; List of publications}}
 
 \\end{document}
 `,
@@ -2229,10 +2231,10 @@ Massachusetts Institute of Technology\\\\
 \\toprule
 \\textbf{Version} & \\textbf{Date} & \\textbf{Author} & \\textbf{Changes} \\\\
 \\midrule
-1.0 & 2024-11-15 & M.\\\\ Torres & Initial draft \\\\
-1.5 & 2024-12-20 & A.\\\\ Krishnan & Added benchmarks and security analysis \\\\
-2.0 & 2025-01-28 & E.\\\\ Johansson & Performance tuning and final benchmarks \\\\
-2.1 & 2025-02-10 & M.\\\\ Torres & Minor corrections, final review \\\\
+1.0 & 2024-11-15 & M.\\ Torres & Initial draft \\\\
+1.5 & 2024-12-20 & A.\\ Krishnan & Added benchmarks and security analysis \\\\
+2.0 & 2025-01-28 & E.\\ Johansson & Performance tuning and final benchmarks \\\\
+2.1 & 2025-02-10 & M.\\ Torres & Minor corrections, final review \\\\
 \\bottomrule
 \\end{tabular}
 \\end{table}
@@ -2480,6 +2482,7 @@ Based on our evaluation, we recommend the following deployment plan:
 \\usepackage{titlesec}
 \\usepackage{enumitem}
 \\usepackage{booktabs}
+\\usepackage{tabularx}
 \\usepackage{microtype}
 \\usepackage{xcolor}
 \\usepackage{epigraph}
@@ -2540,7 +2543,7 @@ Based on our evaluation, we recommend the following deployment plan:
   Modern Cryptography}\\\\[1cm]
 {\\color{chaptercolor}\\rule{0.5\\textwidth}{1pt}}\\\\[1.5cm]
 {\\Large\\textit{From Classical Ciphers to Post-Quantum Security}}\\\\[2cm]
-{\\LARGE\\bfseries Prof.\\\\ Daniel Hartmann}\\\\[0.3cm]
+{\\LARGE\\bfseries Prof.\\ Daniel Hartmann}\\\\[0.3cm]
 {\\large Department of Mathematics\\\\ETH Zurich}\\\\[3cm]
 {\\large First Edition\\\\2025}
 \\vfill
@@ -2551,7 +2554,7 @@ Based on our evaluation, we recommend the following deployment plan:
 \\thispagestyle{empty}
 \\vspace*{\\fill}
 \\noindent\\textit{An Introduction to Modern Cryptography: From Classical Ciphers to Post-Quantum Security}\\\\[0.5cm]
-\\noindent Copyright \\copyright\\\\ 2025 by Daniel Hartmann. All rights reserved.\\\\[0.5cm]
+\\noindent Copyright \\copyright\\ 2025 by Daniel Hartmann. All rights reserved.\\\\[0.5cm]
 \\noindent Published by Academic Press International\\\\
 1 University Avenue, Zurich, Switzerland\\\\[0.5cm]
 \\noindent ISBN 978-0-000-00000-0 (hardcover)\\\\
@@ -2841,7 +2844,7 @@ D.~Boneh and V.~Shoup.
   {\\color{white}\\fontsize{36}{44}\\selectfont\\bfseries The Computing Chronicle}\\\\[6pt]
   {\\color{white!80}\\large Department of Computer Science --- Stanford University}\\\\[4pt]
   {\\color{accent}\\rule{6cm}{2pt}}\\\\[4pt]
-  {\\color{white!70}\\small Volume 12, Issue 3 \\quad|\\quad Spring 2025 \\quad|\\quad Editor: Prof.\\\\ Maria Santos}
+  {\\color{white!70}\\small Volume 12, Issue 3 \\quad|\\quad Spring 2025 \\quad|\\quad Editor: Prof.\\ Maria Santos}
 \\end{center}
 
 \\vspace{0.8cm}
@@ -2854,7 +2857,7 @@ D.~Boneh and V.~Shoup.
 \\centering\\small\\color{darktext}
 \\textbf{IN THIS ISSUE:}\\quad
 New AI Research Lab Opening $\\bullet$
-Faculty Spotlight: Prof.\\\\ Kim $\\bullet$
+Faculty Spotlight: Prof.\\ Kim $\\bullet$
 Student Hackathon Results $\\bullet$
 Alumni Interview $\\bullet$
 Upcoming Events
@@ -2870,11 +2873,11 @@ Upcoming Events
 % ──── Lead Story ────
 \\section{Department Launches Interdisciplinary AI Research Laboratory}
 
-The Department of Computer Science officially opened the Stanford Interdisciplinary AI Laboratory (SIAL) on March 15, with a ribbon-cutting ceremony attended by university president Dr.\\\\ Jonathan Blake and industry partners from Google, Microsoft, and NVIDIA.
+The Department of Computer Science officially opened the Stanford Interdisciplinary AI Laboratory (SIAL) on March 15, with a ribbon-cutting ceremony attended by university president Dr.\\ Jonathan Blake and industry partners from Google, Microsoft, and NVIDIA.
 
 The \\$45 million facility spans 25,000 square feet on the second floor of the newly renovated Gates Building and houses state-of-the-art computing infrastructure, including a cluster of 128 NVIDIA H100 GPUs and dedicated wet lab space for AI-driven biological research.
 
-\`\`This laboratory represents our commitment to developing AI technologies that address humanity's greatest challenges,'' said department chair Prof.\\\\ Robert Chen at the opening ceremony. \`\`By bringing together researchers from computer science, medicine, climate science, and the social sciences, we aim to create AI systems that are not only powerful but also responsible and beneficial.''
+\`\`This laboratory represents our commitment to developing AI technologies that address humanity's greatest challenges,'' said department chair Prof.\\ Robert Chen at the opening ceremony. \`\`By bringing together researchers from computer science, medicine, climate science, and the social sciences, we aim to create AI systems that are not only powerful but also responsible and beneficial.''
 
 \\textbf{Research Focus Areas:}
 \\begin{itemize}[leftmargin=1.2em, nosep, itemsep=2pt]
@@ -2887,11 +2890,11 @@ The \\$45 million facility spans 25,000 square feet on the second floor of the n
 The lab will host 12 faculty members, 40 graduate students, and 15 postdoctoral researchers. Industry partnerships include a \\$10 million gift from Google DeepMind and a \\$5 million equipment grant from NVIDIA.
 
 % ──── Faculty Spotlight ────
-\\section{Faculty Spotlight: Prof.\\\\ Soo-Jin Kim}
+\\section{Faculty Spotlight: Prof.\\ Soo-Jin Kim}
 
 \\subsection{From Seoul to Stanford: A Journey in Computational Biology}
 
-Prof.\\\\ Soo-Jin Kim joined the department in September 2024 after a distinguished postdoctoral fellowship at the Broad Institute of MIT and Harvard. Her research focuses on developing machine learning methods for understanding gene regulation and predicting the effects of genetic mutations on protein function.
+Prof.\\ Soo-Jin Kim joined the department in September 2024 after a distinguished postdoctoral fellowship at the Broad Institute of MIT and Harvard. Her research focuses on developing machine learning methods for understanding gene regulation and predicting the effects of genetic mutations on protein function.
 
 \`\`I was drawn to computer science because of its potential to transform biology,'' Kim said in a recent interview. \`\`We are generating biological data at an unprecedented rate, and computational methods are essential for making sense of it all.''
 
@@ -2926,13 +2929,13 @@ The winning teams received prizes including internship offers from sponsoring co
 \\columnbreak
 
 % ──── Alumni Interview ────
-\\section{Alumni Interview: Dr.\\\\ Marcus Chen (Ph.D.\\\\ '18)}
+\\section{Alumni Interview: Dr.\\ Marcus Chen (Ph.D.\\ '18)}
 
-\\textit{Dr.\\\\ Marcus Chen graduated from our department in 2018 and is now VP of Engineering at Anthropic, where he leads the infrastructure team responsible for training large language models.}
+\\textit{Dr.\\ Marcus Chen graduated from our department in 2018 and is now VP of Engineering at Anthropic, where he leads the infrastructure team responsible for training large language models.}
 
 \\textbf{Q: How did your time at Stanford prepare you for your current role?}
 
-A: The rigorous theoretical foundation I received at Stanford has been invaluable. My work on distributed systems with Prof.\\\\ Ousterhout taught me how to think about large-scale infrastructure challenges. But equally important were the soft skills---collaborating with researchers from different backgrounds, communicating complex ideas clearly, and managing uncertainty.
+A: The rigorous theoretical foundation I received at Stanford has been invaluable. My work on distributed systems with Prof.\\ Ousterhout taught me how to think about large-scale infrastructure challenges. But equally important were the soft skills---collaborating with researchers from different backgrounds, communicating complex ideas clearly, and managing uncertainty.
 
 \\textbf{Q: What advice would you give to current students?}
 
@@ -2950,7 +2953,7 @@ A: I am most excited about AI systems that can reason and plan, not just pattern
 \\toprule
 \\textbf{Date} & \\textbf{Event} \\\\
 \\midrule
-Apr 3 & Distinguished Lecture: Prof.\\\\ Yann LeCun, \`\`Objective-Driven AI'' \\\\
+Apr 3 & Distinguished Lecture: Prof.\\ Yann LeCun, \`\`Objective-Driven AI'' \\\\
 Apr 10--11 & Spring Research Symposium \\\\
 Apr 15 & PhD Admissions Visit Day \\\\
 Apr 22 & Industry Panel: \`\`Careers in AI'' \\\\
@@ -2968,10 +2971,10 @@ Jun 15 & Commencement ceremony \\\\
 \\begin{tikzpicture}[
   statbox/.style={rectangle, draw=primary, fill=lightbg, rounded corners=4pt, minimum width=3.2cm, minimum height=1.4cm, align=center}
 ]
-  \\node[statbox] at (0,0) {{\\Large\\bfseries\\color{accent} 847}\\\\\\\\{\\tiny Undergrad majors}};
-  \\node[statbox] at (3.6,0) {{\\Large\\bfseries\\color{accent} 312}\\\\\\\\{\\tiny Graduate students}};
-  \\node[statbox] at (0,-1.8) {{\\Large\\bfseries\\color{accent} 68}\\\\\\\\{\\tiny Faculty members}};
-  \\node[statbox] at (3.6,-1.8) {{\\Large\\bfseries\\color{accent} \\$94M}\\\\\\\\{\\tiny Research funding}};
+  \\node[statbox] at (0,0) {{\\Large\\bfseries\\color{accent} 847}\\\\{\\tiny Undergrad majors}};
+  \\node[statbox] at (3.6,0) {{\\Large\\bfseries\\color{accent} 312}\\\\{\\tiny Graduate students}};
+  \\node[statbox] at (0,-1.8) {{\\Large\\bfseries\\color{accent} 68}\\\\{\\tiny Faculty members}};
+  \\node[statbox] at (3.6,-1.8) {{\\Large\\bfseries\\color{accent} \\$94M}\\\\{\\tiny Research funding}};
 \\end{tikzpicture}
 \\end{center}
 
@@ -2979,7 +2982,7 @@ Jun 15 & Commencement ceremony \\\\
 \\section{Announcements}
 
 \\begin{itemize}[leftmargin=1.2em, itemsep=4pt]
-  \\item \\textbf{New course}: CS 329A \`\`Foundation Models'' will be offered for the first time in Fall 2025, co-taught by Profs.\\\\ Liang and Hashimoto.
+  \\item \\textbf{New course}: CS 329A \`\`Foundation Models'' will be offered for the first time in Fall 2025, co-taught by Profs.\\ Liang and Hashimoto.
   \\item \\textbf{Computing resources}: The department cluster has been upgraded with 64 additional A100 GPUs. Submit allocation requests via the department portal.
   \\item \\textbf{Travel grants}: Applications for the Summer Conference Travel Fund are due May 1. Awards of up to \\$2,500 are available.
   \\item \\textbf{Wellness}: The department peer counseling program holds drop-in hours every Wednesday 3--5pm in Gates 182.

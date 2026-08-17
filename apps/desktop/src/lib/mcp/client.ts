@@ -26,14 +26,20 @@ export interface McpClientOptions {
   clientInfo?: ClientInfo;
   transport?: "tauri" | "http";
   httpUrl?: string;
-  customTransport?: (request: JsonRpcRequest, headers?: Record<string, string>) => Promise<JsonRpcResponse>;
+  customTransport?: (
+    request: JsonRpcRequest,
+    headers?: Record<string, string>,
+  ) => Promise<JsonRpcResponse>;
 }
 
 export class StatelessMcpClient {
   private clientInfo: ClientInfo;
   private transport: "tauri" | "http" | "custom";
   private httpUrl: string;
-  private customTransport?: (request: JsonRpcRequest, headers?: Record<string, string>) => Promise<JsonRpcResponse>;
+  private customTransport?: (
+    request: JsonRpcRequest,
+    headers?: Record<string, string>,
+  ) => Promise<JsonRpcResponse>;
   private reqCounter = 1;
 
   constructor(options?: McpClientOptions) {
@@ -41,7 +47,9 @@ export class StatelessMcpClient {
       name: "@devprism/desktop",
       version: "1.4.0",
     };
-    this.transport = options?.customTransport ? "custom" : (options?.transport || "tauri");
+    this.transport = options?.customTransport
+      ? "custom"
+      : options?.transport || "tauri";
     this.httpUrl = options?.httpUrl || "http://127.0.0.1:39200/mcp";
     this.customTransport = options?.customTransport;
   }
@@ -61,7 +69,7 @@ export class StatelessMcpClient {
       id,
       method,
       params: {
-        ...(params as Record<string, unknown> || {}),
+        ...((params as Record<string, unknown>) || {}),
         _meta: {
           "io.modelcontextprotocol/protocolVersion": MCP_PROTOCOL_VERSION,
           clientInfo: this.clientInfo,
@@ -81,7 +89,10 @@ export class StatelessMcpClient {
     let response: JsonRpcResponse<TResult>;
 
     if (this.customTransport) {
-      response = await this.customTransport(request, headers) as JsonRpcResponse<TResult>;
+      response = (await this.customTransport(
+        request,
+        headers,
+      )) as JsonRpcResponse<TResult>;
     } else if (this.transport === "http") {
       const httpRes = await fetch(this.httpUrl, {
         method: "POST",
@@ -93,26 +104,37 @@ export class StatelessMcpClient {
       });
 
       if (!httpRes.ok) {
-        throw new Error(`MCP HTTP transport failed with HTTP status ${httpRes.status}`);
+        throw new Error(
+          `MCP HTTP transport failed with HTTP status ${httpRes.status}`,
+        );
       }
 
       response = await httpRes.json();
     } else {
       // Tauri IPC
       try {
-        response = await invoke<JsonRpcResponse<TResult>>("mcp_execute_request", {
-          request,
-          headers,
-        });
+        response = await invoke<JsonRpcResponse<TResult>>(
+          "mcp_execute_request",
+          {
+            request,
+            headers,
+          },
+        );
       } catch (err: unknown) {
-        throw new Error(`Tauri MCP execution error: ${err instanceof Error ? err.message : String(err)}`);
+        throw new Error(
+          `Tauri MCP execution error: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     }
 
     if (response.error) {
-      const err = new Error(`MCP Error [${response.error.code}]: ${response.error.message}`);
-      (err as unknown as { code: number; data?: unknown }).code = response.error.code;
-      (err as unknown as { code: number; data?: unknown }).data = response.error.data;
+      const err = new Error(
+        `MCP Error [${response.error.code}]: ${response.error.message}`,
+      );
+      (err as unknown as { code: number; data?: unknown }).code =
+        response.error.code;
+      (err as unknown as { code: number; data?: unknown }).data =
+        response.error.data;
       throw err;
     }
 
@@ -138,8 +160,12 @@ export class StatelessMcpClient {
       name,
       arguments: {
         ...args,
-        ...(options?.inputResponses ? { input_responses: options.inputResponses } : {}),
-        ...(options?.requestState ? { request_state: options.requestState } : {}),
+        ...(options?.inputResponses
+          ? { input_responses: options.inputResponses }
+          : {}),
+        ...(options?.requestState
+          ? { request_state: options.requestState }
+          : {}),
       },
     };
 
@@ -149,7 +175,9 @@ export class StatelessMcpClient {
   // --- Resources API ---
 
   async listResources(): Promise<ResourceDefinition[]> {
-    const res = await this.execute<{ resources: ResourceDefinition[] }>("resources/list");
+    const res = await this.execute<{ resources: ResourceDefinition[] }>(
+      "resources/list",
+    );
     return res.resources;
   }
 
@@ -160,7 +188,9 @@ export class StatelessMcpClient {
   // --- Prompts API ---
 
   async listPrompts(): Promise<PromptDefinition[]> {
-    const res = await this.execute<{ prompts: PromptDefinition[] }>("prompts/list");
+    const res = await this.execute<{ prompts: PromptDefinition[] }>(
+      "prompts/list",
+    );
     return res.prompts;
   }
 
@@ -177,12 +207,17 @@ export class StatelessMcpClient {
   // --- Tasks API (SEP-2663) ---
 
   async getTask(taskId: string): Promise<TaskRecord | null> {
-    const res = await this.execute<{ task: TaskRecord }>("tasks/get", { taskId });
+    const res = await this.execute<{ task: TaskRecord }>("tasks/get", {
+      taskId,
+    });
     return res.task || null;
   }
 
   async cancelTask(taskId: string): Promise<boolean> {
-    const res = await this.execute<{ taskId: string; cancelled: boolean }>("tasks/cancel", { taskId });
+    const res = await this.execute<{ taskId: string; cancelled: boolean }>(
+      "tasks/cancel",
+      { taskId },
+    );
     return res.cancelled;
   }
 
@@ -221,7 +256,9 @@ export class StatelessMcpClient {
       }
 
       if (task.status === "failed") {
-        throw new Error(`Task '${taskId}' failed: ${task.error || "Unknown error"}`);
+        throw new Error(
+          `Task '${taskId}' failed: ${task.error || "Unknown error"}`,
+        );
       }
 
       if (task.status === "cancelled") {

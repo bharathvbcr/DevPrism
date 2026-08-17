@@ -17,26 +17,29 @@ describe("Stage 7.5 Layout Feedback & Page-Overflow Auto-Condenser", () => {
           personas: ["ai"],
           domains: ["ai"],
           skills: [{ name: "Rust", level: 5 }],
-          seniorityLevel: 5,
+          seniorityLevel: "lead",
           bullets: [
             {
               id: "b1",
-              canonical: "Architected core inference engine in Rust with 4x throughput.",
+              canonical:
+                "Architected core inference engine in Rust with 4x throughput.",
               variants: {},
-              metrics: [{ id: "m1", value: "4x" }],
+              metrics: [{ value: "4x", kind: "multiplier" }],
               evidenceRefs: [],
               locked: false,
             },
             {
               id: "b2",
-              canonical: "Reduced memory consumption by 30% using custom arena allocators.",
+              canonical:
+                "Reduced memory consumption by 30% using custom arena allocators.",
               variants: {},
-              metrics: [{ id: "m2", value: "30%" }],
+              metrics: [{ value: "30%", kind: "percentage" }],
               evidenceRefs: [],
               locked: false,
             },
           ],
           facts: [],
+          updatedAt: new Date().toISOString(),
         },
         {
           id: "blk2",
@@ -47,19 +50,21 @@ describe("Stage 7.5 Layout Feedback & Page-Overflow Auto-Condenser", () => {
           personas: ["ai"],
           domains: ["ai"],
           skills: [{ name: "Distributed Systems", level: 4 }],
-          seniorityLevel: 4,
+          seniorityLevel: "senior",
           bullets: [
             {
               id: "b3",
-              canonical: "Managed migration to Kubernetes cluster across 3 availability zones.",
+              canonical:
+                "Managed migration to Kubernetes cluster across 3 availability zones.",
               variants: {},
-              metrics: [{ id: "m3", value: "3" }],
+              metrics: [{ value: "3", kind: "number" }],
               evidenceRefs: [],
               locked: false,
             },
             {
               id: "b4",
-              canonical: "Built telemetry dashboards in Grafana with Prometheus alerting.",
+              canonical:
+                "Built telemetry dashboards in Grafana with Prometheus alerting.",
               variants: {},
               metrics: [],
               evidenceRefs: [],
@@ -67,17 +72,17 @@ describe("Stage 7.5 Layout Feedback & Page-Overflow Auto-Condenser", () => {
             },
           ],
           facts: [],
+          updatedAt: new Date().toISOString(),
         },
       ],
       listPersonas: async () => [
         {
           id: "ai",
-          name: "AI Engineer",
+          label: "AI Engineer",
           toneDirective: "Technical",
           sectionOrder: ["experience", "skills", "education"],
           defaultTemplateId: "typst-ats-single-column",
           skillWeights: {},
-          domainAffinities: {},
         },
       ],
       vectorSearch: async () => [],
@@ -97,20 +102,64 @@ describe("Stage 7.5 Layout Feedback & Page-Overflow Auto-Condenser", () => {
         if (label?.startsWith("distill:")) {
           return {
             bullets: [
-              { id: "b1", text: "Architected core inference engine in Rust with 4x throughput.", sourceBulletId: "b1", sourceFactIds: [] },
-              { id: "b2", text: "Reduced memory consumption by 30% using custom arena allocators.", sourceBulletId: "b2", sourceFactIds: [] },
-              { id: "b3", text: "Managed migration to Kubernetes cluster across 3 availability zones.", sourceBulletId: "b3", sourceFactIds: [] },
-              { id: "b4", text: "Built telemetry dashboards in Grafana with Prometheus alerting.", sourceBulletId: "b4", sourceFactIds: [] },
+              {
+                id: "b1",
+                text: "Architected core inference engine in Rust with 4x throughput.",
+                sourceBulletId: "b1",
+                sourceFactIds: [],
+              },
+              {
+                id: "b2",
+                text: "Reduced memory consumption by 30% using custom arena allocators.",
+                sourceBulletId: "b2",
+                sourceFactIds: [],
+              },
+              {
+                id: "b3",
+                text: "Managed migration to Kubernetes cluster across 3 availability zones.",
+                sourceBulletId: "b3",
+                sourceFactIds: [],
+              },
+              {
+                id: "b4",
+                text: "Built telemetry dashboards in Grafana with Prometheus alerting.",
+                sourceBulletId: "b4",
+                sourceFactIds: [],
+              },
             ],
           } as any;
         }
         if (label === "critic") {
           return {
             verdicts: [
-              { blockId: "blk1", bulletId: "b1", grounded: true, keywordHits: ["Rust"], flags: [] },
-              { blockId: "blk1", bulletId: "b2", grounded: true, keywordHits: [], flags: [] },
-              { blockId: "blk2", bulletId: "b3", grounded: true, keywordHits: [], flags: [] },
-              { blockId: "blk2", bulletId: "b4", grounded: true, keywordHits: [], flags: [] },
+              {
+                blockId: "blk1",
+                bulletId: "b1",
+                grounded: true,
+                keywordHits: ["Rust"],
+                flags: [],
+              },
+              {
+                blockId: "blk1",
+                bulletId: "b2",
+                grounded: true,
+                keywordHits: [],
+                flags: [],
+              },
+              {
+                blockId: "blk2",
+                bulletId: "b3",
+                grounded: true,
+                keywordHits: [],
+                flags: [],
+              },
+              {
+                blockId: "blk2",
+                bulletId: "b4",
+                grounded: true,
+                keywordHits: [],
+                flags: [],
+              },
             ],
           } as any;
         }
@@ -133,7 +182,8 @@ describe("Stage 7.5 Layout Feedback & Page-Overflow Auto-Condenser", () => {
     };
 
     const res = await synthesizeResume({
-      jdText: "Looking for a Staff Engineer with strong Rust and AI inference experience.",
+      jdText:
+        "Looking for a Staff Engineer with strong Rust and AI inference experience.",
       personaId: "ai",
       templateId: "typst-ats-single-column",
       deps: mockDeps,
@@ -141,6 +191,8 @@ describe("Stage 7.5 Layout Feedback & Page-Overflow Auto-Condenser", () => {
 
     expect(res.compileOk).toBe(true);
     expect(compileAttempts).toBe(2);
-    expect(res.report.notices.some((n) => n.includes("Layout auto-condensed"))).toBe(true);
+    expect(
+      res.report.notices.some((n) => n.includes("Layout auto-condensed")),
+    ).toBe(true);
   });
 });

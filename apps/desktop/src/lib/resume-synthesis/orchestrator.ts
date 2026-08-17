@@ -1717,6 +1717,7 @@ export async function synthesizeResume(
           type: "stage-finish",
           stage: "assembling",
           at: Date.now(),
+          durationMs: stageTimingsMs.assembling ?? 0,
           detail: msg,
         });
       }

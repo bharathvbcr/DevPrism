@@ -229,9 +229,7 @@ export function metricPreservedInText(
   const commaMatch = v.match(/^(\d{1,3}(?:,\d{3})+)$/);
   if (commaMatch) {
     const rawDigits = v.replace(/,/g, "");
-    if (
-      new RegExp(`(?:^|[^\\d,])${rawDigits}(?:[^\\d,]|$)`).test(text)
-    ) {
+    if (new RegExp(`(?:^|[^\\d,])${rawDigits}(?:[^\\d,]|$)`).test(text)) {
       return true;
     }
     const asK = `${parseInt(rawDigits, 10) / 1000}k`;
@@ -245,6 +243,13 @@ export function metricPreservedInText(
   }
 
   return false;
+}
+
+export function metricsPreserved(
+  canonical: Pick<Bullet, "metrics">,
+  text: string,
+): boolean {
+  return metricsValuesPreserved(canonical.metrics, text);
 }
 
 export function metricsValuesPreserved(

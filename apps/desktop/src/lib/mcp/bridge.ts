@@ -108,11 +108,7 @@ export class CareerResumeBridge {
   /**
    * Tailor experience block bullets with strict anti-hallucination provenance.
    */
-  async rewriteBullets(
-    blockId: string,
-    jdText: string,
-    bulletIds?: string[],
-  ) {
+  async rewriteBullets(blockId: string, jdText: string, bulletIds?: string[]) {
     return this.client.callTool("resume_rewrite_bullets", {
       block_id: blockId,
       jd_text: jdText,
@@ -131,15 +127,15 @@ export class CareerResumeBridge {
       onProgress?: (progress: number, message?: string) => void;
     },
   ): Promise<SynthesisResult> {
-    const taskInit = await this.client.callTool<{ taskId: string; status: string }>(
-      "resume_synthesize",
-      {
-        jd_text: jdText,
-        persona_id: options?.personaId || "ai",
-        template_id: options?.templateId || "modern-cv",
-        async: true,
-      },
-    ) as { taskId: string; status: string };
+    const taskInit = (await this.client.callTool<{
+      taskId: string;
+      status: string;
+    }>("resume_synthesize", {
+      jd_text: jdText,
+      persona_id: options?.personaId || "ai",
+      template_id: options?.templateId || "modern-cv",
+      async: true,
+    })) as { taskId: string; status: string };
 
     return this.client.waitForTask<SynthesisResult>(taskInit.taskId, {
       onProgress: options?.onProgress,
@@ -158,11 +154,7 @@ export class CareerResumeBridge {
   /**
    * Fine-tune a single bullet point for Google X-Y-Z metric impact and JD alignment.
    */
-  async fineTuneBullet(
-    bulletText: string,
-    jdText: string,
-    context?: string,
-  ) {
+  async fineTuneBullet(bulletText: string, jdText: string, context?: string) {
     return this.client.callTool("resume_finetune_bullet", {
       bullet_text: bulletText,
       jd_text: jdText,

@@ -9,22 +9,23 @@ import type { Persona } from "@/lib/career/types";
 
 const mockProfile: JDProfile = {
   roleTitle: "Staff Software Engineer",
-  seniority: "Staff",
+  seniority: "lead",
   mustHaveSkills: ["Rust", "Distributed Systems"],
   niceToHaveSkills: ["Typst"],
+  domains: ["systems"],
   atsKeywords: ["Rust", "Latency", "Distributed Systems"],
   toneSignals: ["ownership"],
-  domainKeywords: ["Systems"],
+  responsibilitiesText: "Build distributed storage in Rust",
+  qualificationsText: "5+ years systems engineering",
 };
 
 const mockPersona: Persona = {
   id: "ai",
-  name: "AI Engineer",
+  label: "AI Engineer",
   toneDirective: "Technical, impactful",
   sectionOrder: ["experience", "skills", "projects", "education"],
   defaultTemplateId: "typst-ats-single-column",
   skillWeights: {},
-  domainAffinities: {},
 };
 
 describe("repairFlagged with fact-only distilled bullets", () => {
@@ -40,7 +41,7 @@ describe("repairFlagged with fact-only distilled bullets", () => {
           personas: ["ai"],
           domains: ["systems"],
           skills: [],
-          seniorityLevel: 4,
+          seniorityLevel: "lead",
           bullets: [
             {
               id: "b_canonical_1",
@@ -56,10 +57,12 @@ describe("repairFlagged with fact-only distilled bullets", () => {
               id: "fact_1",
               text: "Reduced P99 read latency from 45ms to 12ms (73% drop) using raft consensus.",
               skills: ["Rust", "Raft"],
-              metrics: [{ id: "m1", value: "73%" }],
+              metrics: [{ value: "73%", kind: "percentage" }],
               source: "manual",
+              createdAt: new Date().toISOString(),
             },
           ],
+          updatedAt: new Date().toISOString(),
         },
         bullets: [
           {
@@ -78,7 +81,13 @@ describe("repairFlagged with fact-only distilled bullets", () => {
         ],
         evidence: ["Raft consensus implementation in Rust"],
         score: 0.95,
-        components: { embedding: 0.95, skills: 0.95, persona: 0.95, recency: 0.95, seniority: 0.95 },
+        components: {
+          embedding: 0.95,
+          skills: 0.95,
+          persona: 0.95,
+          recency: 0.95,
+          seniority: 0.95,
+        },
       },
     ];
 
@@ -116,7 +125,9 @@ describe("repairFlagged with fact-only distilled bullets", () => {
     );
 
     expect(repaired[0]!.bullets.length).toBe(2);
-    const factBullet = repaired[0]!.bullets.find((b) => b.id === "distill_fact_1");
+    const factBullet = repaired[0]!.bullets.find(
+      (b) => b.id === "distill_fact_1",
+    );
     expect(factBullet).toBeDefined();
     expect(factBullet!.text).toContain("73%");
     expect(factBullet!.usedCanonical).toBe(false);
@@ -134,7 +145,7 @@ describe("repairFlagged with fact-only distilled bullets", () => {
           personas: ["ai"],
           domains: ["systems"],
           skills: [],
-          seniorityLevel: 4,
+          seniorityLevel: "lead",
           bullets: [
             {
               id: "b_canonical_1",
@@ -146,6 +157,7 @@ describe("repairFlagged with fact-only distilled bullets", () => {
             },
           ],
           facts: [],
+          updatedAt: new Date().toISOString(),
         },
         bullets: [
           {
@@ -164,7 +176,13 @@ describe("repairFlagged with fact-only distilled bullets", () => {
         ],
         evidence: [],
         score: 0.95,
-        components: { embedding: 0.95, skills: 0.95, persona: 0.95, recency: 0.95, seniority: 0.95 },
+        components: {
+          embedding: 0.95,
+          skills: 0.95,
+          persona: 0.95,
+          recency: 0.95,
+          seniority: 0.95,
+        },
       },
     ];
 

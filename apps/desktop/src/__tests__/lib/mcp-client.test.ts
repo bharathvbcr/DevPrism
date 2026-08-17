@@ -1,9 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   CareerResumeBridge,
   InputRequiredResult,
-  JsonRpcRequest,
-  JsonRpcResponse,
   MCP_HEADERS,
   MCP_PROTOCOL_VERSION,
   StatelessMcpClient,
@@ -11,7 +9,7 @@ import {
 
 describe("StatelessMcpClient (MCP 2.0 Spec)", () => {
   it("attaches inline _meta and standard HTTP headers on every request", async () => {
-    let capturedRequest: JsonRpcRequest | null = null;
+    let capturedRequest: any = null;
     let capturedHeaders: Record<string, string> | undefined;
 
     const client = new StatelessMcpClient({
@@ -33,7 +31,9 @@ describe("StatelessMcpClient (MCP 2.0 Spec)", () => {
     expect(capturedRequest?.method).toBe("tools/list");
     expect(capturedRequest?.params?._meta).toBeDefined();
     expect(
-      capturedRequest?.params?._meta?.["io.modelcontextprotocol/protocolVersion"],
+      capturedRequest?.params?._meta?.[
+        "io.modelcontextprotocol/protocolVersion"
+      ],
     ).toBe(MCP_PROTOCOL_VERSION);
     expect(capturedRequest?.params?._meta?.clientInfo?.name).toBe(
       "@devprism/desktop",
@@ -68,7 +68,7 @@ describe("StatelessMcpClient (MCP 2.0 Spec)", () => {
 
   it("handles MRTR elicitation request and stateless round-trip", async () => {
     let callCount = 0;
-    let secondRequestPayload: Record<string, unknown> | null = null;
+    let secondRequestPayload: any = null;
 
     const client = new StatelessMcpClient({
       customTransport: async (req) => {
@@ -200,7 +200,9 @@ describe("CareerResumeBridge", () => {
   it("executes high-level resume gap analysis and JD profiling", async () => {
     const client = new StatelessMcpClient({
       customTransport: async (req) => {
-        if ((req.params as Record<string, unknown>)?.name === "resume_analyze_jd") {
+        if (
+          (req.params as Record<string, unknown>)?.name === "resume_analyze_jd"
+        ) {
           return {
             jsonrpc: "2.0",
             id: req.id,
@@ -218,7 +220,10 @@ describe("CareerResumeBridge", () => {
           };
         }
 
-        if ((req.params as Record<string, unknown>)?.name === "resume_gap_analysis") {
+        if (
+          (req.params as Record<string, unknown>)?.name ===
+          "resume_gap_analysis"
+        ) {
           return {
             jsonrpc: "2.0",
             id: req.id,
@@ -242,11 +247,16 @@ describe("CareerResumeBridge", () => {
 
     const bridge = new CareerResumeBridge(client);
 
-    const jdAnalysis = await bridge.analyzeJobDescription("Looking for Staff AI Engineer with Rust & Python");
+    const jdAnalysis = await bridge.analyzeJobDescription(
+      "Looking for Staff AI Engineer with Rust & Python",
+    );
     expect(jdAnalysis.profile.title).toBe("Staff AI Engineer");
     expect(jdAnalysis.profile.requiredSkills).toContain("rust");
 
-    const gapReport = await bridge.runGapAnalysis("Looking for Staff AI Engineer with Rust & Python", "ai");
+    const gapReport = await bridge.runGapAnalysis(
+      "Looking for Staff AI Engineer with Rust & Python",
+      "ai",
+    );
     expect(gapReport.coveragePercentage).toBe(90);
     expect(gapReport.requiredSkillsMissing).toHaveLength(0);
   });

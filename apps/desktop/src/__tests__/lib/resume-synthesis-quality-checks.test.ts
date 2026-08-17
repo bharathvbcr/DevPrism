@@ -15,9 +15,10 @@ describe("runQualityChecks", () => {
           personas: ["ai"],
           domains: ["software"],
           skills: [],
-          seniorityLevel: 3,
+          seniorityLevel: "senior",
           bullets: [],
           facts: [],
+          updatedAt: new Date().toISOString(),
         },
         bullets: [
           {
@@ -38,7 +39,13 @@ describe("runQualityChecks", () => {
         ],
         evidence: [],
         score: 0.9,
-        components: { embedding: 0.9, skills: 0.9, persona: 0.9, recency: 0.9, seniority: 0.9 },
+        components: {
+          embedding: 0.9,
+          skills: 0.9,
+          persona: 0.9,
+          recency: 0.9,
+          seniority: 0.9,
+        },
       },
     ];
 
@@ -60,9 +67,10 @@ describe("runQualityChecks", () => {
           personas: ["ai"],
           domains: ["software"],
           skills: [],
-          seniorityLevel: 3,
+          seniorityLevel: "senior",
           bullets: [],
           facts: [],
+          updatedAt: new Date().toISOString(),
         },
         bullets: [
           {
@@ -78,7 +86,13 @@ describe("runQualityChecks", () => {
         ],
         evidence: [],
         score: 0.9,
-        components: { embedding: 0.9, skills: 0.9, persona: 0.9, recency: 0.9, seniority: 0.9 },
+        components: {
+          embedding: 0.9,
+          skills: 0.9,
+          persona: 0.9,
+          recency: 0.9,
+          seniority: 0.9,
+        },
       },
     ];
 
@@ -98,9 +112,10 @@ describe("runQualityChecks", () => {
           personas: ["ai"],
           domains: ["software"],
           skills: [],
-          seniorityLevel: 3,
+          seniorityLevel: "senior",
           bullets: [],
           facts: [],
+          updatedAt: new Date().toISOString(),
         },
         bullets: [
           {
@@ -111,7 +126,13 @@ describe("runQualityChecks", () => {
         ],
         evidence: [],
         score: 0.9,
-        components: { embedding: 0.9, skills: 0.9, persona: 0.9, recency: 0.9, seniority: 0.9 },
+        components: {
+          embedding: 0.9,
+          skills: 0.9,
+          persona: 0.9,
+          recency: 0.9,
+          seniority: 0.9,
+        },
       },
     ];
 
@@ -131,9 +152,10 @@ describe("runQualityChecks", () => {
           personas: ["ai"],
           domains: ["software"],
           skills: [],
-          seniorityLevel: 3,
+          seniorityLevel: "senior",
           bullets: [],
           facts: [],
+          updatedAt: new Date().toISOString(),
         },
         bullets: [
           {
@@ -149,7 +171,13 @@ describe("runQualityChecks", () => {
         ],
         evidence: [],
         score: 0.9,
-        components: { embedding: 0.9, skills: 0.9, persona: 0.9, recency: 0.9, seniority: 0.9 },
+        components: {
+          embedding: 0.9,
+          skills: 0.9,
+          persona: 0.9,
+          recency: 0.9,
+          seniority: 0.9,
+        },
       },
     ];
 

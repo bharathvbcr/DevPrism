@@ -10,6 +10,7 @@
 \usepackage{tikz}
 \usepackage{enumitem}
 \usepackage{booktabs}
+\usepackage{url}
 \usepackage{microtype}
 
 \pagestyle{empty}
@@ -41,7 +42,7 @@
 % HEADER
 % ════════════════════════════════════════════
 \begin{tikzpicture}[remember picture, overlay]
-  \fill[headerblue] ([yshift=0cm]current page.north west) rectangle ([yshift=-18cm]current page.north east);
+  \fill[headerblue] ([yshift=0cm]current page.north west) rectangle ([yshift=-21cm]current page.north east);
 \end{tikzpicture}
 
 \vspace*{-1cm}
@@ -297,7 +298,7 @@ GCN baseline (no attention)  & 1.52 \\
   \item \textbf{Interpretable} attention mechanism reveals binding site interactions
   \item \textbf{Practical impact}: identified 4 potent M$^{\text{pro}}$ inhibitors from virtual screening
   \item Inference time: \textbf{0.3ms per complex} (GPU), enabling large-scale screening
-  \item Code and models available at \texttt{github.com/oxbiochem/affinitygnn}
+  \item Code and models available at \url{github.com/oxbiochem/affinitygnn}
 \end{itemize}
 
 \vspace{2cm}

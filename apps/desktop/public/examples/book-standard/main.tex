@@ -1,27 +1,290 @@
-\documentclass[12pt,a4paper]{book}
+\documentclass[12pt,a4paper,openany]{book}
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
-\usepackage{amsmath,amssymb}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb,amsthm}
 \usepackage{graphicx}
 \usepackage[margin=1in]{geometry}
 \usepackage{hyperref}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage{epigraph}
+\usepackage{lipsum}
+\usepackage{listings}
 
-\title{Book Title}
-\author{Author Name}
-\date{\today}
+\definecolor{chaptercolor}{HTML}{2C3E50}
+\definecolor{linkblue}{HTML}{2E86C1}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=chaptercolor,
+  citecolor=linkblue,
+  urlcolor=linkblue
+}
+
+% Chapter heading style
+\titleformat{\chapter}[display]
+  {\normalfont\huge\bfseries\color{chaptercolor}}
+  {\fontsize{60}{60}\selectfont\color{chaptercolor!30}\thechapter}
+  {10pt}{\Huge}
+\titlespacing*{\chapter}{0pt}{-30pt}{30pt}
+
+% Header/footer
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[LE]{\small\thepage\quad\textit{\nouppercase{\leftmark}}}
+\fancyhead[RO]{\small\textit{\nouppercase{\rightmark}}\quad\thepage}
+\renewcommand{\headrulewidth}{0.3pt}
+
+% Theorem environments
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}[chapter]
+\newtheorem{example}[definition]{Example}
+\theoremstyle{plain}
+\newtheorem{theorem}[definition]{Theorem}
+\newtheorem{proposition}[definition]{Proposition}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{linkblue}\bfseries,
+  commentstyle=\color{green!50!black}\itshape,
+  frame=single,
+  breaklines=true,
+  numbers=left,
+  numberstyle=\tiny\color{gray}
+}
 
 \begin{document}
 
+% ──── Title Page ────
+\begin{titlepage}
+\centering
+\vspace*{3cm}
+{\color{chaptercolor}\rule{\textwidth}{2pt}}\\[1.5cm]
+{\fontsize{36}{44}\selectfont\bfseries\color{chaptercolor}
+  An Introduction to\\[0.5cm]
+  Modern Cryptography}\\[1cm]
+{\color{chaptercolor}\rule{0.5\textwidth}{1pt}}\\[1.5cm]
+{\Large\textit{From Classical Ciphers to Post-Quantum Security}}\\[2cm]
+{\LARGE\bfseries Prof.\ Daniel Hartmann}\\[0.3cm]
+{\large Department of Mathematics\\ETH Zurich}\\[3cm]
+{\large First Edition\\2025}
+\vfill
+{\small Published by Academic Press International}
+\end{titlepage}
+
+% ──── Copyright Page ────
+\thispagestyle{empty}
+\vspace*{\fill}
+\noindent\textit{An Introduction to Modern Cryptography: From Classical Ciphers to Post-Quantum Security}\\[0.5cm]
+\noindent Copyright \copyright\ 2025 by Daniel Hartmann. All rights reserved.\\[0.5cm]
+\noindent Published by Academic Press International\\
+1 University Avenue, Zurich, Switzerland\\[0.5cm]
+\noindent ISBN 978-0-000-00000-0 (hardcover)\\
+ISBN 978-0-000-00000-0 (ebook)\\[0.5cm]
+\noindent Typeset in \LaTeX\\
+First printing: January 2025
+\clearpage
+
+% ──── Front Matter ────
 \frontmatter
-\maketitle
+
+% Dedication
+\thispagestyle{empty}
+\vspace*{5cm}
+\begin{center}
+\textit{To my students, past and present,\\who remind me every day why\\these ideas matter.}
+\end{center}
+\clearpage
+
+% Preface
+\chapter{Preface}
+
+Cryptography is one of the oldest and most fascinating branches of mathematics, yet it has never been more relevant than it is today. Every time we send a message, make an online purchase, or unlock our phones, we rely on cryptographic protocols that protect our privacy and security. The mathematical foundations of these protocols are both deep and beautiful, connecting number theory, algebra, complexity theory, and more recently, quantum computing and lattice theory.
+
+This book grew out of lecture notes for the introductory cryptography course I have taught at ETH Zurich since 2015. My goal was to write a textbook that is mathematically rigorous yet accessible to students with a solid undergraduate background in mathematics or computer science. Each chapter begins with motivation and historical context before diving into the formal treatment, and I have included numerous examples and exercises to reinforce the material.
+
+The book is organized into three parts. Part I covers the classical foundations: historical ciphers, Shannon's information-theoretic framework, and the basic tools of modern cryptography including pseudorandom generators and hash functions. Part II treats public-key cryptography in depth, from the RSA and Diffie--Hellman systems to elliptic curve cryptography. Part III addresses the emerging challenges posed by quantum computing and introduces the lattice-based and code-based systems that are leading candidates for post-quantum cryptographic standards.
+
+\vspace{0.5cm}
+\noindent\textit{Daniel Hartmann}\\
+Zurich, January 2025
+
 \tableofcontents
 
+% ──── Main Matter ────
 \mainmatter
 
-\chapter{First Chapter}
+% ════════════════════════════════════════
+\part{Classical Foundations}
+% ════════════════════════════════════════
 
-\chapter{Second Chapter}
+\chapter{Historical Ciphers and the Emergence of Cryptography}
 
+\epigraph{\textit{The desire to keep secrets gave rise to the art of cryptography---writing in secret code.}}{--- Simon Singh, \textit{The Code Book}}
+
+\section{What Is Cryptography?}
+
+Cryptography, from the Greek \textit{krypt\'{o}s} (hidden) and \textit{gr\'{a}phein} (to write), is the science and art of secure communication. At its core, cryptography addresses a simple yet fundamental problem: how can two parties (traditionally called Alice and Bob) communicate over an insecure channel in such a way that an eavesdropper (Eve) cannot understand their messages?
+
+\begin{definition}[Cryptosystem]
+A \textbf{cryptosystem} (or cipher) is a tuple $(\mathcal{M}, \mathcal{C}, \mathcal{K}, E, D)$ where:
+\begin{itemize}
+  \item $\mathcal{M}$ is the set of possible plaintexts (the message space),
+  \item $\mathcal{C}$ is the set of possible ciphertexts,
+  \item $\mathcal{K}$ is the set of possible keys (the key space),
+  \item $E: \mathcal{K} \times \mathcal{M} \to \mathcal{C}$ is the encryption function,
+  \item $D: \mathcal{K} \times \mathcal{C} \to \mathcal{M}$ is the decryption function,
+\end{itemize}
+satisfying $D(k, E(k, m)) = m$ for all $k \in \mathcal{K}$ and $m \in \mathcal{M}$.
+\end{definition}
+
+\section{Substitution Ciphers}
+
+The simplest and oldest class of ciphers are \textbf{substitution ciphers}, in which each letter of the plaintext is replaced by another letter (or symbol) according to a fixed rule.
+
+\begin{example}[Caesar Cipher]
+The Caesar cipher, attributed to Julius Caesar, shifts each letter of the alphabet by a fixed number of positions. With a shift of $k = 3$:
+\begin{center}
+\texttt{A B C D E F G H I J K L M N O P Q R S T U V W X Y Z}\\
+\texttt{D E F G H I J K L M N O P Q R S T U V W X Y Z A B C}
+\end{center}
+Thus, the plaintext \texttt{ATTACK AT DAWN} encrypts to \texttt{DWWDFN DW GDZQ}.
+
+Formally, the Caesar cipher operates on $\mathcal{M} = \mathcal{C} = \mathcal{K} = \mathbb{Z}_{26}$, with:
+\begin{align}
+  E(k, m) &= (m + k) \bmod 26 \\
+  D(k, c) &= (c - k) \bmod 26
+\end{align}
+\end{example}
+
+The Caesar cipher is trivially broken by exhaustive search over the 26 possible keys. More generally, a \textbf{monoalphabetic substitution cipher} uses an arbitrary permutation $\sigma$ of the alphabet as the key, giving $|\mathcal{K}| = 26! \approx 4 \times 10^{26}$ possible keys. Despite this enormous key space, monoalphabetic substitution ciphers are easily broken by \textbf{frequency analysis}, a technique first described by the Arab polymath Al-Kindi in the 9th century.
+
+\section{The Vigen\`{e}re Cipher}
+
+To resist frequency analysis, Blaise de Vigen\`{e}re popularized a polyalphabetic cipher in the 16th century. The Vigen\`{e}re cipher uses a keyword to determine a different Caesar shift for each position in the plaintext.
+
+\begin{definition}[Vigen\`{e}re Cipher]
+Let $\mathbf{k} = (k_1, k_2, \ldots, k_d)$ be a keyword of length $d$ over $\mathbb{Z}_{26}$. The encryption of plaintext $\mathbf{m} = (m_1, m_2, \ldots, m_n)$ is:
+\begin{equation}
+  c_i = (m_i + k_{(i \bmod d) + 1}) \bmod 26
+\end{equation}
+\end{definition}
+
+The Vigen\`{e}re cipher was considered ``unbreakable'' for nearly three centuries until Charles Babbage and Friedrich Kasiski independently discovered methods to determine the keyword length and then reduce the cipher to a collection of Caesar ciphers.
+
+\section{Exercises}
+
+\begin{enumerate}[label=\textbf{\thechapter.\arabic*}]
+  \item Decrypt the following Caesar ciphertext (shift unknown):\\
+  \texttt{WKHUHLVQRVXFKWKLQJDVDQXQEUHDNDEOHFLSKHU}
+  \item Prove that the composition of two Caesar ciphers with keys $k_1$ and $k_2$ is equivalent to a single Caesar cipher. What is the key?
+  \item Show that the Vigen\`{e}re cipher is a special case of the Hill cipher.
+  \item A substitution cipher on the English alphabet maps each of the 26 letters to a unique letter. If we know that \texttt{E} maps to \texttt{T} and \texttt{T} maps to \texttt{A}, how many possible keys remain?
+\end{enumerate}
+
+% ════════════════════════════════════════
+\chapter{Shannon's Theory of Secrecy}
+
+\epigraph{\textit{The enemy knows the system.}}{--- Auguste Kerckhoffs, 1883}
+
+\section{Perfect Secrecy}
+
+In his groundbreaking 1949 paper, Claude Shannon established the information-theoretic foundations of cryptography. Shannon's framework allows us to reason precisely about what it means for a cipher to be ``secure'' and to prove fundamental limits on what is achievable.
+
+\begin{definition}[Perfect Secrecy]
+A cryptosystem has \textbf{perfect secrecy} if for every plaintext distribution over $\mathcal{M}$, every message $m \in \mathcal{M}$, and every ciphertext $c \in \mathcal{C}$ with $\Pr[C = c] > 0$:
+\begin{equation}
+  \Pr[M = m \mid C = c] = \Pr[M = m]
+\end{equation}
+\end{definition}
+
+In other words, observing the ciphertext gives the adversary \textit{no additional information} about the plaintext beyond what was already known a priori. This is the strongest possible notion of security.
+
+\begin{theorem}[Shannon, 1949]
+If a cryptosystem has perfect secrecy, then $|\mathcal{K}| \geq |\mathcal{M}|$.
+\end{theorem}
+
+\begin{proof}
+Suppose for contradiction that $|\mathcal{K}| < |\mathcal{M}|$. Fix a ciphertext $c$ with $\Pr[C = c] > 0$. For each key $k \in \mathcal{K}$, there is at most one message $m = D(k, c)$. Since $|\mathcal{K}| < |\mathcal{M}|$, there exists a message $m^*$ such that no key decrypts $c$ to $m^*$. Therefore $\Pr[M = m^* \mid C = c] = 0$. If $\Pr[M = m^*] > 0$, this violates perfect secrecy.
+\end{proof}
+
+This theorem tells us that perfectly secret encryption is expensive: the key must be at least as long as the message. The \textbf{one-time pad}, independently invented by Vernam (1917) and proved optimal by Shannon, achieves this bound with equality.
+
+\section{The One-Time Pad}
+
+\begin{definition}[One-Time Pad]
+The one-time pad operates on binary strings: $\mathcal{M} = \mathcal{C} = \mathcal{K} = \{0, 1\}^n$. The key $k$ is chosen uniformly at random, and:
+\begin{align}
+  E(k, m) &= m \oplus k \\
+  D(k, c) &= c \oplus k
+\end{align}
+where $\oplus$ denotes bitwise XOR.
+\end{definition}
+
+\begin{proposition}
+The one-time pad has perfect secrecy.
+\end{proposition}
+
+Despite its theoretical perfection, the one-time pad is impractical for most applications because it requires a key as long as the message and each key can be used only once. This motivates the study of \textit{computational} security, where we relax the requirement of perfect secrecy and instead demand that no \textit{efficient} adversary can break the system.
+
+\section{Exercises}
+
+\begin{enumerate}[label=\textbf{\thechapter.\arabic*}]
+  \item Prove that the one-time pad has perfect secrecy directly from the definition.
+  \item Show that if a one-time pad key is reused for two messages, the adversary can compute $m_1 \oplus m_2$, which often reveals both messages.
+  \item Prove that perfect secrecy implies that every key is used with equal probability for any given plaintext--ciphertext pair.
+\end{enumerate}
+
+% ──── Back Matter ────
 \backmatter
+
+\chapter{Notation and Symbols}
+
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\toprule
+\textbf{Symbol} & \textbf{Meaning} \\
+\midrule
+$\mathcal{M}$ & Message (plaintext) space \\
+$\mathcal{C}$ & Ciphertext space \\
+$\mathcal{K}$ & Key space \\
+$\oplus$ & Bitwise exclusive-or (XOR) \\
+$\mathbb{Z}_n$ & Integers modulo $n$ \\
+$\mathbb{F}_q$ & Finite field with $q$ elements \\
+$\|x\|$ & Euclidean norm of vector $x$ \\
+$\text{negl}(n)$ & Negligible function in $n$ \\
+$\text{poly}(n)$ & Polynomial function of $n$ \\
+PPT & Probabilistic polynomial time \\
+\bottomrule
+\end{tabularx}
+
+\begin{thebibliography}{10}
+
+\bibitem{shannon1949}
+C.~E. Shannon.
+\newblock Communication theory of secrecy systems.
+\newblock \textit{Bell System Technical Journal}, 28(4):656--715, 1949.
+
+\bibitem{katz2020}
+J.~Katz and Y.~Lindell.
+\newblock \textit{Introduction to Modern Cryptography}.
+\newblock CRC Press, 3rd edition, 2020.
+
+\bibitem{goldreich2004}
+O.~Goldreich.
+\newblock \textit{Foundations of Cryptography}, volumes I--II.
+\newblock Cambridge University Press, 2001--2004.
+
+\bibitem{boneh2020}
+D.~Boneh and V.~Shoup.
+\newblock \textit{A Graduate Course in Applied Cryptography}.
+\newblock Draft version 0.5, 2020. Available online.
+
+\end{thebibliography}
 
 \end{document}

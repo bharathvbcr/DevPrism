@@ -135,7 +135,9 @@ describe("bulletQualityScore", () => {
   it("scores strong bullets higher than weak ones", () => {
     const weak = analyzeBulletQuality(WEAK_BULLETS);
     const strong = analyzeBulletQuality(STRONG_BULLETS);
-    expect(bulletQualityScore(strong)).toBeGreaterThan(bulletQualityScore(weak));
+    expect(bulletQualityScore(strong)).toBeGreaterThan(
+      bulletQualityScore(weak),
+    );
     expect(bulletQualityGrade(bulletQualityScore(strong))).toBe("Strong");
   });
 });
@@ -150,10 +152,12 @@ describe("diagnoseBulletItems", () => {
 
 describe("suggestionIdForInsight", () => {
   it("maps insights to fix ids", () => {
-    expect(suggestionIdForInsight("2 bullets lack metrics")).toBe("add-metrics");
-    expect(suggestionIdForInsight("Some bullets overlap — consider merging")).toBe(
-      "remove-redundancy",
+    expect(suggestionIdForInsight("2 bullets lack metrics")).toBe(
+      "add-metrics",
     );
+    expect(
+      suggestionIdForInsight("Some bullets overlap — consider merging"),
+    ).toBe("remove-redundancy");
   });
 
   it("finds suggestions by id", () => {

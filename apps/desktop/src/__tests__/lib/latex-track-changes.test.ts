@@ -76,7 +76,8 @@ describe("latex-track-changes", () => {
   });
 
   it("injects ulem and xcolor after documentclass", () => {
-    const src = "\\documentclass{article}\n\\begin{document}\nHi\n\\end{document}\n";
+    const src =
+      "\\documentclass{article}\n\\begin{document}\nHi\n\\end{document}\n";
     const out = injectTrackChangesPackages(src);
     expect(out).toContain("\\usepackage[normalem]{ulem}");
     expect(out).toContain("\\definecolor{trackdel}");
@@ -132,7 +133,17 @@ describe("latex-track-changes", () => {
 
   it("isPlainLatexText flags LaTeX specials", () => {
     expect(isPlainLatexText("just words and, punctuation!")).toBe(true);
-    for (const s of ["a%b", "\\textbf{x}", "$x$", "a&b", "a_b", "a^b", "a#b", "a~b", "{x}"]) {
+    for (const s of [
+      "a%b",
+      "\\textbf{x}",
+      "$x$",
+      "a&b",
+      "a_b",
+      "a^b",
+      "a#b",
+      "a~b",
+      "{x}",
+    ]) {
       expect(isPlainLatexText(s)).toBe(false);
     }
   });
@@ -159,7 +170,10 @@ describe("latex-track-changes", () => {
 
   it("does not wrap inline math in \\sout / split $...$ across spans", () => {
     // Findings #3/#4: `$a + b$` -> `$a + c$` must stay brace/`$`-balanced.
-    const out = applyTrackChangesMarkup("value $a + b$ end", "value $a + c$ end");
+    const out = applyTrackChangesMarkup(
+      "value $a + b$ end",
+      "value $a + c$ end",
+    );
     expect(braceBalance(out)).toBe(0);
     expect(out).not.toMatch(/\\sout\{[^}]*\$/);
     expect(out).toContain("$a + c$");
@@ -276,7 +290,14 @@ describe("latex-track-changes", () => {
   it("escapes a backslash in a report label without mangling it into \\{}", () => {
     // Pass-2 #3: escapeLatexText must not double-escape its own braces.
     const report = buildTrackChangesReport(
-      [{ filePath: "a.tex", status: "modified", oldContent: "x", newContent: "y" }],
+      [
+        {
+          filePath: "a.tex",
+          status: "modified",
+          oldContent: "x",
+          newContent: "y",
+        },
+      ],
       { fromLabel: "C:\\Users\\me", toLabel: "v2" },
     );
     expect(report).toContain("\\textbackslash{}");
@@ -289,13 +310,15 @@ describe("latex-track-changes", () => {
         filePath: "chapter.tex",
         status: "modified",
         oldContent: "\\documentclass{article}\n",
-        newContent: "\\documentclass{article}\n\\begin{document}\nx\\end{document}",
+        newContent:
+          "\\documentclass{article}\n\\begin{document}\nx\\end{document}",
       },
       {
         filePath: "main.tex",
         status: "modified",
         oldContent: "\\documentclass{article}\n",
-        newContent: "\\documentclass{article}\n\\begin{document}\ny\\end{document}",
+        newContent:
+          "\\documentclass{article}\n\\begin{document}\ny\\end{document}",
       },
     ]);
     expect(target?.filePath).toBe("main.tex");

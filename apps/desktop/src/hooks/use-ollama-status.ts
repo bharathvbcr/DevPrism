@@ -1,8 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  getOllamaStatus,
-  type OllamaStatus,
-} from "@/lib/ollama";
+import { getOllamaStatus, type OllamaStatus } from "@/lib/ollama";
 
 export function useOllamaStatus(
   baseUrl: string,
@@ -21,7 +18,9 @@ export function useOllamaStatus(
       const next = await getOllamaStatus(baseUrl);
       if (id !== requestIdRef.current) return;
       setStatus(next);
-      setError(next.connected ? null : `Ollama is not reachable at ${next.baseUrl}`);
+      setError(
+        next.connected ? null : `Ollama is not reachable at ${next.baseUrl}`,
+      );
     } catch (err: unknown) {
       if (id !== requestIdRef.current) return;
       setStatus(null);

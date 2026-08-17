@@ -43,7 +43,11 @@ const SPACE_META_SYSTEM =
 export async function generateAbstract(text: string): Promise<string> {
   const excerpt = text.trim().slice(0, 6000);
   if (excerpt.length < 80) return "";
-  return aiComplete({ system: ABSTRACT_SYSTEM, prompt: excerpt, temperature: 0.3 });
+  return aiComplete({
+    system: ABSTRACT_SYSTEM,
+    prompt: excerpt,
+    temperature: 0.3,
+  });
 }
 
 /** One-sentence safety verdict on a proposed text replacement. */

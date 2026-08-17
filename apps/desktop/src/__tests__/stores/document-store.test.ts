@@ -500,7 +500,8 @@ describe("useDocumentStore", () => {
             name: "cover.tex",
             relativePath: "cover.tex",
             absolutePath: "/project/cover.tex",
-            content: "\\documentclass{letter}\\begin{document}Hi\\end{document}",
+            content:
+              "\\documentclass{letter}\\begin{document}Hi\\end{document}",
           }),
         ],
         activeFileId: "main.tex",

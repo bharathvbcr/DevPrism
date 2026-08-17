@@ -37,17 +37,17 @@ describe("resolvePreviewCompileRoot", () => {
   ];
 
   it("follows the active editor when no target is pinned", () => {
-    expect(
-      resolvePreviewCompileRoot("/proj", "ch1.tex", files),
-    ).toBe("main.tex");
+    expect(resolvePreviewCompileRoot("/proj", "ch1.tex", files)).toBe(
+      "main.tex",
+    );
   });
 
   it("uses the pinned preview target instead of the active editor", () => {
     setCompileRootPreference("/proj", "cover.tex");
     expect(hasPinnedCompileRoot("/proj", files)).toBe(true);
-    expect(
-      resolvePreviewCompileRoot("/proj", "ch1.tex", files),
-    ).toBe("cover.tex");
+    expect(resolvePreviewCompileRoot("/proj", "ch1.tex", files)).toBe(
+      "cover.tex",
+    );
   });
 });
 

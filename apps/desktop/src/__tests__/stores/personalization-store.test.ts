@@ -12,7 +12,7 @@ vi.mock("@/lib/ai-assist", () => ({
 describe("usePersonalizationStore", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    
+
     // Reset store state
     usePersonalizationStore.setState({
       personalizationEnabled: true,
@@ -50,9 +50,13 @@ describe("usePersonalizationStore", () => {
   it("should toggle personalizationEnabled and call set_personalization_enabled invoke", () => {
     const store = usePersonalizationStore.getState();
     store.setPersonalizationEnabled(false);
-    
-    expect(usePersonalizationStore.getState().personalizationEnabled).toBe(false);
-    expect(invoke).toHaveBeenCalledWith("set_personalization_enabled", { enabled: false });
+
+    expect(usePersonalizationStore.getState().personalizationEnabled).toBe(
+      false,
+    );
+    expect(invoke).toHaveBeenCalledWith("set_personalization_enabled", {
+      enabled: false,
+    });
   });
 
   it("should toggle autoExtractEnabled", () => {
@@ -64,7 +68,7 @@ describe("usePersonalizationStore", () => {
   it("should update profile fields", () => {
     const store = usePersonalizationStore.getState();
     store.updateProfile({ name: "Alice", role: "Researcher" });
-    
+
     expect(usePersonalizationStore.getState().profile).toEqual({
       name: "Alice",
       role: "Researcher",
@@ -77,57 +81,67 @@ describe("usePersonalizationStore", () => {
 
   it("should add and remove research interests", () => {
     const store = usePersonalizationStore.getState();
-    
+
     // Add new interest
     store.addResearchInterest("Quantum Computing");
-    expect(usePersonalizationStore.getState().profile.researchInterests).toEqual(["Quantum Computing"]);
-    
+    expect(
+      usePersonalizationStore.getState().profile.researchInterests,
+    ).toEqual(["Quantum Computing"]);
+
     // Add duplicate (should be ignored)
     store.addResearchInterest("Quantum Computing");
-    expect(usePersonalizationStore.getState().profile.researchInterests).toEqual(["Quantum Computing"]);
+    expect(
+      usePersonalizationStore.getState().profile.researchInterests,
+    ).toEqual(["Quantum Computing"]);
 
     // Add empty/trimmed (should be ignored)
     store.addResearchInterest("   ");
-    expect(usePersonalizationStore.getState().profile.researchInterests).toEqual(["Quantum Computing"]);
-    
+    expect(
+      usePersonalizationStore.getState().profile.researchInterests,
+    ).toEqual(["Quantum Computing"]);
+
     // Add another
     store.addResearchInterest("Machine Learning");
-    expect(usePersonalizationStore.getState().profile.researchInterests).toEqual(["Quantum Computing", "Machine Learning"]);
+    expect(
+      usePersonalizationStore.getState().profile.researchInterests,
+    ).toEqual(["Quantum Computing", "Machine Learning"]);
 
     // Remove interest
     store.removeResearchInterest("Quantum Computing");
-    expect(usePersonalizationStore.getState().profile.researchInterests).toEqual(["Machine Learning"]);
+    expect(
+      usePersonalizationStore.getState().profile.researchInterests,
+    ).toEqual(["Machine Learning"]);
   });
 
   it("should increment document class usage", () => {
     const store = usePersonalizationStore.getState();
-    
+
     store.incrementDocumentClass("IEEEtran");
     expect(usePersonalizationStore.getState().favoriteDocumentClasses).toEqual({
-      "ieeetran": 1,
+      ieeetran: 1,
     });
 
     store.incrementDocumentClass("ieeetran ");
     expect(usePersonalizationStore.getState().favoriteDocumentClasses).toEqual({
-      "ieeetran": 2,
+      ieeetran: 2,
     });
 
     store.incrementDocumentClass("article");
     expect(usePersonalizationStore.getState().favoriteDocumentClasses).toEqual({
-      "ieeetran": 2,
-      "article": 1,
+      ieeetran: 2,
+      article: 1,
     });
   });
 
   it("should reset profile and call clear_personalization_profile invoke", () => {
     const store = usePersonalizationStore.getState();
-    
+
     store.updateProfile({ name: "Alice", affiliation: "MIT" });
     store.incrementDocumentClass("article");
     store.addResearchInterest("Math");
-    
+
     store.resetProfile();
-    
+
     const state = usePersonalizationStore.getState();
     expect(state.profile.name).toBe("");
     expect(state.profile.affiliation).toBe("");
@@ -147,10 +161,10 @@ describe("usePersonalizationStore", () => {
         hello world
         \\end{document}
       `;
-      
+
       const store = usePersonalizationStore.getState();
       store.analyzeLaTeXContent("main.tex", content);
-      
+
       const state = usePersonalizationStore.getState();
       expect(state.profile.name).toBe("John Doe");
       expect(state.profile.affiliation).toBe("MIT");
@@ -165,11 +179,11 @@ describe("usePersonalizationStore", () => {
         \\documentclass{article}
         \\author{John Doe}
       `;
-      
+
       const store = usePersonalizationStore.getState();
       store.setAutoExtractEnabled(false);
       store.analyzeLaTeXContent("main.tex", content);
-      
+
       const state = usePersonalizationStore.getState();
       expect(state.profile.name).toBe("");
       expect(state.favoriteDocumentClasses["article"]).toBeUndefined();
@@ -180,24 +194,28 @@ describe("usePersonalizationStore", () => {
         \\documentclass{book}
         \\author{Bob}
       `;
-      
+
       const store = usePersonalizationStore.getState();
       store.analyzeLaTeXContent("main.tex", content);
-      
+
       expect(usePersonalizationStore.getState().profile.name).toBe("Bob");
-      
+
       // Update name to something else manually
       store.updateProfile({ name: "ManualOverride" });
-      
+
       // Run analyze again on same file & content - should be skipped
       store.analyzeLaTeXContent("main.tex", content);
-      expect(usePersonalizationStore.getState().profile.name).toBe("ManualOverride");
+      expect(usePersonalizationStore.getState().profile.name).toBe(
+        "ManualOverride",
+      );
 
       // Change content, should run again
       store.analyzeLaTeXContent("main.tex", content + "\n% change");
       // Since manual override was set, it won't overwrite name (profile.name is already set)
       // but it will increment document class again
-      expect(usePersonalizationStore.getState().favoriteDocumentClasses["book"]).toBe(2);
+      expect(
+        usePersonalizationStore.getState().favoriteDocumentClasses["book"],
+      ).toBe(2);
     });
   });
 
@@ -217,10 +235,10 @@ describe("usePersonalizationStore", () => {
           },
         },
       ];
-      
+
       const store = usePersonalizationStore.getState();
       await store.analyzeChatConversation(messages);
-      
+
       const state = usePersonalizationStore.getState();
       expect(state.profile.name).toBe("Alice");
       expect(state.profile.role).toBe("phd student");
@@ -233,15 +251,17 @@ describe("usePersonalizationStore", () => {
           id: "1",
           type: "user" as const,
           message: {
-            content: [{ type: "text" as const, text: "Hello, my name is Alice." }],
+            content: [
+              { type: "text" as const, text: "Hello, my name is Alice." },
+            ],
           },
         },
       ];
-      
+
       const store = usePersonalizationStore.getState();
       store.setAutoExtractEnabled(false);
       await store.analyzeChatConversation(messages);
-      
+
       expect(usePersonalizationStore.getState().profile.name).toBe("");
     });
   });
@@ -251,7 +271,7 @@ describe("usePersonalizationStore", () => {
       const store = usePersonalizationStore.getState();
       store.setPersonalizationEnabled(false);
       store.updateProfile({ name: "Bob" });
-      
+
       expect(buildPersonalizationContext()).toBe("");
     });
 
@@ -266,10 +286,12 @@ describe("usePersonalizationStore", () => {
       });
       store.addResearchInterest("Astrobiology");
       store.incrementDocumentClass("IEEEtran");
-      
+
       const context = buildPersonalizationContext();
-      
-      expect(context).toContain("## USER PROFILE (Local on-device personalization)");
+
+      expect(context).toContain(
+        "## USER PROFILE (Local on-device personalization)",
+      );
       expect(context).toContain("- Name: Alice");
       expect(context).toContain("- Role: Professor");
       expect(context).toContain("- Affiliation: Harvard");
@@ -283,13 +305,15 @@ describe("usePersonalizationStore", () => {
   describe("triggerAiRefinement", () => {
     it("should run AI assist extraction and update store when enabled", async () => {
       vi.mocked(canUseAiAssist).mockReturnValue(true);
-      vi.mocked(aiComplete).mockResolvedValue(JSON.stringify({
-        name: "Charlie",
-        role: "Postdoc",
-        affiliation: "Caltech",
-        writingStyle: "Technical, direct",
-        researchInterests: ["Cosmology", "String Theory"],
-      }));
+      vi.mocked(aiComplete).mockResolvedValue(
+        JSON.stringify({
+          name: "Charlie",
+          role: "Postdoc",
+          affiliation: "Caltech",
+          writingStyle: "Technical, direct",
+          researchInterests: ["Cosmology", "String Theory"],
+        }),
+      );
 
       const store = usePersonalizationStore.getState();
       await store.triggerAiRefinement("some document text", "LaTeX document");
@@ -305,12 +329,14 @@ describe("usePersonalizationStore", () => {
 
     it("should handle partial updates and invalid JSON safely", async () => {
       vi.mocked(canUseAiAssist).mockReturnValue(true);
-      
+
       // Return invalid JSON - should handle gracefully without throwing
       vi.mocked(aiComplete).mockResolvedValue("invalid json string");
-      
+
       const store = usePersonalizationStore.getState();
-      await expect(store.triggerAiRefinement("some text", "context")).resolves.not.toThrow();
+      await expect(
+        store.triggerAiRefinement("some text", "context"),
+      ).resolves.not.toThrow();
     });
   });
 });

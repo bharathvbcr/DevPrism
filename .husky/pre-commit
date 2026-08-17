@@ -1,1 +1,103 @@
-pnpm exec biome check --staged --write --no-errors-on-unmatched
+# Format and lint staged files with biome.
+#
+# Resolving biome: `pnpm exec` only searches the current project's
+# node_modules/.bin, so it fails inside a git worktree (.claude/worktrees/*),
+# which has no install of its own and inherits the main checkout's
+# dependencies through parent-directory resolution. Walk up instead, bounded
+# at the main worktree so a stray node_modules higher up is never used.
+#
+# Staging: `biome check --write` rewrites files in the working tree but does
+# not touch the index. Without the re-staging below, a commit would keep the
+# unformatted content while the working tree showed the fixed version.
+#
+# This runs under husky's `sh -e`, so every command that can return non-zero
+# is guarded by a condition or `||`.
+
+toplevel=$(git rev-parse --show-toplevel 2>/dev/null) || toplevel=""
+if [ -z "$toplevel" ]; then
+	echo "pre-commit: not inside a git working tree" >&2
+	exit 1
+fi
+
+main_root=$(git worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p') || main_root=""
+
+# Only search above this checkout when it actually sits inside the main one.
+walk_up=0
+if [ -n "$main_root" ]; then
+	case "$toplevel/" in
+	"$main_root"/*) walk_up=1 ;;
+	esac
+fi
+
+biome=""
+dir="$toplevel"
+while :; do
+	if [ -x "$dir/node_modules/.bin/biome" ]; then
+		biome="$dir/node_modules/.bin/biome"
+		break
+	fi
+	[ "$walk_up" = 1 ] || break
+	[ "$dir" != "$main_root" ] || break
+	parent=$(dirname "$dir")
+	[ "$parent" != "$dir" ] || break
+	dir="$parent"
+done
+
+# A worktree created outside the main checkout never passes through it above.
+if [ -z "$biome" ] && [ -n "$main_root" ] && [ -x "$main_root/node_modules/.bin/biome" ]; then
+	biome="$main_root/node_modules/.bin/biome"
+fi
+
+if [ -z "$biome" ]; then
+	echo "pre-commit: biome not found in node_modules/.bin between $toplevel and ${main_root:-/} — run 'pnpm install'" >&2
+	exit 1
+fi
+
+# biome's `--staged` runs `git diff --name-only` and does not decode git's
+# C-style quoting, so every staged path containing non-ASCII bytes is skipped
+# in silence — the file goes unchecked while the hook still reports success.
+# Turn quoting off for the git calls biome makes. This goes through the
+# environment rather than `git config` so no repository setting is mutated,
+# and it appends to any injected config already present instead of clobbering.
+gc_n=${GIT_CONFIG_COUNT:-0}
+eval "GIT_CONFIG_KEY_${gc_n}=core.quotePath"
+eval "GIT_CONFIG_VALUE_${gc_n}=false"
+export "GIT_CONFIG_KEY_${gc_n}" "GIT_CONFIG_VALUE_${gc_n}"
+GIT_CONFIG_COUNT=$((gc_n + 1))
+export GIT_CONFIG_COUNT
+
+# Control characters (and quotes) in a path keep it C-quoted even with
+# quotePath off, so biome would skip those files while still exiting 0. Refuse
+# the commit rather than report success for a file that was never checked.
+unquotable=$(git -c core.quotePath=false diff --cached --name-only --diff-filter=ACMR | grep -c '^"' || true)
+if [ "${unquotable:-0}" -gt 0 ]; then
+	echo "pre-commit: ${unquotable} staged path(s) contain control characters or quotes," >&2
+	echo "which biome cannot receive from git and would skip silently. Rename them." >&2
+	exit 1
+fi
+
+# With a clean working tree, biome's only edits are to staged files, so they
+# can be re-staged wholesale. Otherwise `git add` here could sweep unrelated
+# unstaged work into the commit, so check without writing and let the author
+# apply the fixes deliberately.
+if git diff --quiet; then
+	status=0
+	"$biome" check --staged --write --no-errors-on-unmatched || status=$?
+	[ "$status" -eq 0 ] || exit "$status"
+	if git diff --quiet; then
+		exit 0
+	fi
+	git add -u || {
+		echo "pre-commit: failed to stage biome's fixes" >&2
+		exit 1
+	}
+	exit 0
+fi
+
+status=0
+"$biome" check --staged --no-errors-on-unmatched || status=$?
+if [ "$status" -ne 0 ]; then
+	echo "pre-commit: the working tree has unstaged changes, so fixes were not applied" >&2
+	echo "automatically. Run 'pnpm lint:fix', stage the result, and commit again." >&2
+fi
+exit "$status"

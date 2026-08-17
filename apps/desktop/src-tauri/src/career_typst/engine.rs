@@ -64,10 +64,26 @@ pub const EMBEDDED_FAMILIES: &[&str] = &[
     "DejaVu Sans Mono",
 ];
 
+/// The single file every resume compile resolves.
+const MAIN_FILE_NAME: &str = "resume.typ";
+
 fn main_file_id() -> FileId {
     // `FileId::new` interns and reuses by path, so repeated compiles of
-    // "resume.typ" share one id rather than leaking a new one each time.
-    let vpath = VirtualPath::new("resume.typ").expect("static virtual path");
+    // `MAIN_FILE_NAME` share one id rather than leaking a new one each time.
+    //
+    // `VirtualPath::new` is fallible in general, but *every* constructor in
+    // `typst_syntax::path` is fallible, so there is no infallible fallback to
+    // build this id from. Returning an error instead would mean making
+    // `ResumeWorld::new` fallible, and that construction must stay inside
+    // `compile_world`'s `catch_unwind` because `Source::new` parses untrusted
+    // resume text — so the error could only be reported as a compile failure
+    // whose message is unreachable for a compile-time constant.
+    //
+    // The suppression is therefore deliberate, and `main_file_id_is_infallible`
+    // below proves the branch is unreachable rather than leaving it asserted in
+    // a comment.
+    #[allow(clippy::expect_used)]
+    let vpath = VirtualPath::new(MAIN_FILE_NAME).expect("MAIN_FILE_NAME is a valid virtual path");
     FileId::new(RootedPath::new(VirtualRoot::Project, vpath))
 }
 
@@ -478,6 +494,21 @@ mod tests {
              succeeds, verify the payload rendered literally before relaxing \
              the code-mode contract"
         );
+    }
+
+    /// Pins the invariant that justifies the `expect_used` suppression in
+    /// `main_file_id`. If `MAIN_FILE_NAME` is ever changed to something
+    /// `VirtualPath` rejects, this fails here instead of panicking mid-compile.
+    #[test]
+    fn main_file_id_is_infallible() {
+        assert!(
+            VirtualPath::new(MAIN_FILE_NAME).is_ok(),
+            "MAIN_FILE_NAME ({MAIN_FILE_NAME:?}) must be a valid virtual path — \
+             the `expect` in main_file_id relies on it"
+        );
+        // And the id it builds is stable across calls, which is what lets the
+        // interning claim in that comment hold.
+        assert_eq!(main_file_id(), main_file_id());
     }
 
     #[test]

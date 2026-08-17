@@ -174,22 +174,23 @@ impl World for ProjectWorld {
 
 /// Compile `main_rel` inside `project_dir` to PDF.
 pub fn compile_project_pdf(project_dir: &Path, main_rel: &str) -> TypstCompileResult {
-    let root = project_dir.to_path_buf();
-    let main = main_rel.to_string();
     let ident = format!("devprism-project:{main_rel}");
 
-    // Validate the root before entering the compile driver so a bad path is a
-    // clear message rather than a generic compile failure.
-    if let Err(message) = ProjectWorld::new(&root, &main) {
-        return TypstCompileResult::failure(message, 0);
-    }
+    // Build the world ONCE, before entering the compile driver, so a bad path is
+    // a clear message rather than a generic compile failure. This previously
+    // built it twice and `expect`ed the second attempt to succeed; building once
+    // removes both the duplicate canonicalize and the panic path.
+    //
+    // Constructing outside `compile_world`'s `catch_unwind` is safe because
+    // `ProjectWorld::new` only canonicalizes and interns a `FileId` — it reads no
+    // project files. Every untrusted read stays lazy, inside `source()`/`file()`,
+    // and so remains contained.
+    let world = match ProjectWorld::new(project_dir, main_rel) {
+        Ok(world) => world,
+        Err(message) => return TypstCompileResult::failure(message, 0),
+    };
 
-    compile_world(
-        move || {
-            ProjectWorld::new(&root, &main).expect("root validated above")
-        },
-        &ident,
-    )
+    compile_world(move || world, &ident)
 }
 
 #[cfg(test)]

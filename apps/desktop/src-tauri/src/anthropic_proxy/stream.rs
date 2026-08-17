@@ -101,8 +101,12 @@ fn decode_utf8_prefix(bytes: &mut Vec<u8>, out: &mut String) {
             Err(e) => {
                 let valid = e.valid_up_to();
                 if valid > 0 {
-                    // valid_up_to() bytes are valid UTF-8 by definition.
-                    out.push_str(std::str::from_utf8(&bytes[..valid]).unwrap());
+                    // `valid_up_to()` bytes are valid UTF-8 by definition, so the
+                    // lossy decoder borrows them and never substitutes anything —
+                    // it costs no allocation over `from_utf8(..).unwrap()` here.
+                    // Using it means a future change to the slice bounds degrades
+                    // to U+FFFD instead of panicking inside the streaming proxy.
+                    out.push_str(&String::from_utf8_lossy(&bytes[..valid]));
                 }
                 match e.error_len() {
                     // Incomplete trailing sequence: keep it for the next chunk.

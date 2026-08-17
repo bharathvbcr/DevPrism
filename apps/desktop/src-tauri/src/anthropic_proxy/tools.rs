@@ -1,4 +1,6 @@
 use serde_json::{json, Value};
+use std::collections::VecDeque;
+use std::sync::{Mutex, OnceLock};
 
 pub(super) fn repaired_tool_arguments_value(arguments: &str) -> Value {
     serde_json::from_str::<Value>(&repair_tool_arguments(arguments)).unwrap_or_else(|_| json!({}))
@@ -11,6 +13,105 @@ pub(super) fn normalized_tool_call_id(id: Option<&str>) -> String {
     } else {
         id.to_string()
     }
+}
+
+/// What a provider needs handed back verbatim for one tool call it issued.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct ToolCallEcho {
+    /// The provider's own `tool_calls[].id`, which may differ from the Anthropic
+    /// `tool_use.id` we showed the client (see `normalized_tool_call_id`).
+    pub(super) provider_id: String,
+    /// Opaque per-call metadata. Gemini 3 carries its thought signature here as
+    /// `{"google":{"thought_signature":"…"}}`; the provider rejects the next
+    /// request with HTTP 400 if it does not come back unchanged.
+    pub(super) extra_content: Value,
+}
+
+/// Tool-call metadata parked between the response that produced a call and the
+/// follow-up request that has to echo it back.
+///
+/// The Anthropic wire format has nowhere to put opaque provider metadata, and the
+/// client (Claude Code) reliably returns only the `tool_use` id — so the id is the
+/// join key and the payload waits here. Kept in this process, which lives exactly
+/// as long as the proxied session.
+///
+/// Bounded, oldest-evicted-first: a long session cannot grow it without limit, and
+/// losing an entry degrades to the pre-fix behavior (the provider rejects the
+/// request) rather than to a silently wrong answer. Only calls that actually
+/// carry metadata are stored, so providers that send none never touch this.
+const TOOL_ECHO_CAPACITY: usize = 512;
+
+#[allow(clippy::type_complexity)]
+fn tool_echoes() -> &'static Mutex<VecDeque<(String, ToolCallEcho)>> {
+    static ECHOES: OnceLock<Mutex<VecDeque<(String, ToolCallEcho)>>> = OnceLock::new();
+    ECHOES.get_or_init(|| Mutex::new(VecDeque::new()))
+}
+
+/// Remember what `anthropic_id` has to send back. A no-op when the provider
+/// attached no metadata and issued the same id we surfaced, so the common path
+/// stores nothing.
+pub(super) fn remember_tool_echo(
+    anthropic_id: &str,
+    provider_id: &str,
+    extra_content: Option<&Value>,
+) {
+    let extra_content = extra_content
+        .filter(|value| !value.is_null())
+        .cloned()
+        .unwrap_or(Value::Null);
+    if extra_content.is_null() && provider_id == anthropic_id {
+        return;
+    }
+    let echo = ToolCallEcho {
+        provider_id: provider_id.to_string(),
+        extra_content,
+    };
+    if let Ok(mut echoes) = tool_echoes().lock() {
+        insert_bounded(&mut echoes, anthropic_id, echo);
+    }
+}
+
+/// Insert or replace `anthropic_id`'s entry, evicting oldest-first past the cap.
+/// Split out from the shared registry so the bound is testable without mutating
+/// global state other tests are using.
+fn insert_bounded(
+    echoes: &mut VecDeque<(String, ToolCallEcho)>,
+    anthropic_id: &str,
+    echo: ToolCallEcho,
+) {
+    if let Some(slot) = echoes
+        .iter_mut()
+        .find(|(id, _)| id == anthropic_id)
+        .map(|(_, existing)| existing)
+    {
+        *slot = echo;
+        return;
+    }
+    echoes.push_back((anthropic_id.to_string(), echo));
+    while echoes.len() > TOOL_ECHO_CAPACITY {
+        echoes.pop_front();
+    }
+}
+
+/// What to send back for `anthropic_id`, if anything was recorded. Entries are
+/// retained rather than consumed: a client may replay the same tool call across
+/// several requests (retries, resumed sessions), and each replay needs it again.
+pub(super) fn recall_tool_echo(anthropic_id: &str) -> Option<ToolCallEcho> {
+    tool_echoes()
+        .lock()
+        .ok()?
+        .iter()
+        .find(|(id, _)| id == anthropic_id)
+        .map(|(_, echo)| echo.clone())
+}
+
+/// The id this tool call must use on the wire: the provider's own id when we know
+/// it, otherwise the Anthropic id unchanged. The assistant `tool_calls` entry and
+/// its matching `tool` result must both resolve through here or they stop pairing.
+pub(super) fn wire_tool_call_id(anthropic_id: &str) -> String {
+    recall_tool_echo(anthropic_id)
+        .map(|echo| echo.provider_id)
+        .unwrap_or_else(|| anthropic_id.to_string())
 }
 
 pub(super) fn repair_tool_arguments(arguments: &str) -> String {
@@ -557,5 +658,99 @@ mod tests {
     #[test]
     fn preserves_provider_tool_call_ids() {
         assert_eq!(normalized_tool_call_id(Some("call_abc")), "call_abc");
+    }
+
+    fn echo(provider_id: &str, signature: &str) -> ToolCallEcho {
+        ToolCallEcho {
+            provider_id: provider_id.to_string(),
+            extra_content: json!({ "google": { "thought_signature": signature } }),
+        }
+    }
+
+    // NOTE: the registry is process-global, so tests touching it use ids unique to
+    // the test. Capacity behavior is exercised against a local deque instead.
+
+    #[test]
+    fn remembers_and_recalls_per_call_metadata() {
+        let id = "toolu_registry_recall_case";
+        remember_tool_echo(
+            id,
+            "function-call-55",
+            Some(&json!({ "google": { "thought_signature": "SIG_R" } })),
+        );
+
+        let recalled = recall_tool_echo(id).expect("entry should be present");
+        assert_eq!(recalled.provider_id, "function-call-55");
+        assert_eq!(
+            recalled.extra_content["google"]["thought_signature"],
+            "SIG_R"
+        );
+        assert_eq!(wire_tool_call_id(id), "function-call-55");
+        // Recall must not consume: a client may replay the same call.
+        assert!(recall_tool_echo(id).is_some());
+    }
+
+    #[test]
+    fn stores_nothing_when_there_is_nothing_to_echo() {
+        let id = "toolu_registry_noop_case";
+        // Same id, no metadata — there is nothing the provider needs back.
+        remember_tool_echo(id, id, None);
+        assert!(recall_tool_echo(id).is_none());
+        remember_tool_echo(id, id, Some(&Value::Null));
+        assert!(recall_tool_echo(id).is_none());
+        // Unknown ids pass through untouched.
+        assert_eq!(wire_tool_call_id(id), id);
+    }
+
+    #[test]
+    fn re_remembering_an_id_replaces_rather_than_duplicates() {
+        let id = "toolu_registry_replace_case";
+        remember_tool_echo(id, "provider-first", Some(&json!({ "google": { "x": 1 } })));
+        remember_tool_echo(
+            id,
+            "provider-second",
+            Some(&json!({ "google": { "thought_signature": "SIG_SECOND" } })),
+        );
+
+        let recalled = recall_tool_echo(id).unwrap();
+        assert_eq!(recalled.provider_id, "provider-second");
+        assert_eq!(
+            recalled.extra_content["google"]["thought_signature"],
+            "SIG_SECOND"
+        );
+    }
+
+    #[test]
+    fn bounded_insert_evicts_oldest_first_and_never_exceeds_the_cap() {
+        let mut echoes: VecDeque<(String, ToolCallEcho)> = VecDeque::new();
+        for i in 0..(TOOL_ECHO_CAPACITY + 25) {
+            insert_bounded(
+                &mut echoes,
+                &format!("id_{i}"),
+                echo(&format!("provider_{i}"), "SIG"),
+            );
+        }
+
+        assert_eq!(echoes.len(), TOOL_ECHO_CAPACITY);
+        // The 25 oldest are gone; the newest survive.
+        assert!(!echoes.iter().any(|(id, _)| id == "id_0"));
+        assert!(!echoes.iter().any(|(id, _)| id == "id_24"));
+        assert!(echoes.iter().any(|(id, _)| id == "id_25"));
+        assert!(echoes
+            .iter()
+            .any(|(id, _)| id == &format!("id_{}", TOOL_ECHO_CAPACITY + 24)));
+    }
+
+    #[test]
+    fn bounded_insert_replacement_does_not_grow_or_reorder() {
+        let mut echoes: VecDeque<(String, ToolCallEcho)> = VecDeque::new();
+        insert_bounded(&mut echoes, "a", echo("p_a", "SIG_A"));
+        insert_bounded(&mut echoes, "b", echo("p_b", "SIG_B"));
+        insert_bounded(&mut echoes, "a", echo("p_a2", "SIG_A2"));
+
+        assert_eq!(echoes.len(), 2);
+        assert_eq!(echoes[0].0, "a");
+        assert_eq!(echoes[0].1.provider_id, "p_a2");
+        assert_eq!(echoes[1].0, "b");
     }
 }

@@ -1217,6 +1217,19 @@ pub async fn run_native_agent(
                 "input": tc.args,
             }));
         }
+        // Ids used on the wire, which are NOT the ids used in the UI. When an
+        // OpenAI-compatible provider issued its own tool-call id we must hand that
+        // exact id back — Gemini 3 binds per-call reasoning state (its thought
+        // signature) to it, and substituting a locally minted `native_…` id makes
+        // the next request fail. Providers that issue no id (Ollama) keep the
+        // internal id, so their wire format is unchanged. The assistant message
+        // and its matching `tool` results must agree, so both read this vector.
+        let wire_ids: Vec<String> = turn
+            .tool_calls
+            .iter()
+            .enumerate()
+            .map(|(idx, tc)| openai_compat::wire_tool_call_id(tc, &call_ids[idx]))
+            .collect();
         // Pre-register the answer slot for any AskUser call BEFORE its tool_use
         // block reaches the UI, so an answer submitted while an earlier tool in
         // the same round is still running can never miss the registry.
@@ -1297,16 +1310,7 @@ pub async fn run_native_agent(
             .enumerate()
             .map(|(idx, tc)| {
                 if use_openai {
-                    let args_str = if tc.args.is_string() {
-                        tc.args.as_str().unwrap_or("{}").to_string()
-                    } else {
-                        serde_json::to_string(&tc.args).unwrap_or_else(|_| "{}".to_string())
-                    };
-                    json!({
-                        "id": call_ids[idx],
-                        "type": "function",
-                        "function": { "name": tc.name, "arguments": args_str }
-                    })
+                    openai_compat::assistant_tool_call_entry(tc, &call_ids[idx])
                 } else {
                     json!({
                         "type": "function",
@@ -1444,9 +1448,11 @@ pub async fn run_native_agent(
 
             if let Some(arr) = messages.as_array_mut() {
                 if use_openai {
+                    // Must match the id on the assistant `tool_calls` entry above,
+                    // which is the provider's own id when it issued one.
                     arr.push(json!({
                         "role": "tool",
-                        "tool_call_id": id,
+                        "tool_call_id": wire_ids[idx],
                         "content": result,
                     }));
                 } else {
@@ -2409,6 +2415,87 @@ mod tests {
     }
     fn content(m: &Value) -> Option<&str> {
         m.get("content").and_then(|c| c.as_str())
+    }
+
+    /// Context compaction sheds bulky tool OUTPUT. It must never touch the
+    /// provider metadata on an assistant tool call: stripping a thought signature
+    /// out of retained history is exactly what makes the next request fail with
+    /// HTTP 400, and compaction runs on nearly every long conversation.
+    #[test]
+    fn compaction_sheds_tool_output_but_preserves_tool_call_signatures() {
+        let signature = "CvcQAdHN2OekY10ClPFkYA==";
+        let big = "x".repeat(9000);
+        let mut messages = json!([
+            { "role": "system", "content": "rules" },
+            { "role": "user", "content": "read both files" },
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "function-call-compaction",
+                    "type": "function",
+                    "extra_content": { "google": { "thought_signature": signature } },
+                    "function": { "name": "Read", "arguments": "{\"file_path\":\"a.tex\"}" }
+                }]
+            },
+            { "role": "tool", "tool_name": "Read", "tool_call_id": "function-call-compaction", "content": big },
+            { "role": "user", "content": "and now?" },
+            { "role": "assistant", "content": "done" }
+        ]);
+
+        let result = compact_tool_results(&mut messages, 2048);
+
+        // The bulky result was shed…
+        assert!(!result.dropped.is_empty());
+        assert!(messages[3]["content"]
+            .as_str()
+            .unwrap()
+            .contains("elided to fit the context window"));
+        // …while the signature and the provider's call id survived untouched.
+        assert_eq!(
+            messages[2]["tool_calls"][0]["extra_content"]["google"]["thought_signature"],
+            signature
+        );
+        assert_eq!(
+            messages[2]["tool_calls"][0]["id"],
+            "function-call-compaction"
+        );
+    }
+
+    /// History trimming works on whole messages, so an assistant turn is kept with
+    /// its signatures or dropped entirely — never kept with them stripped.
+    #[test]
+    fn persisted_history_keeps_tool_call_signatures_intact() {
+        let tab = "signature-persistence-tab";
+        let signature = "SIG_PERSISTED";
+        let history = vec![
+            json!({ "role": "user", "content": "go" }),
+            json!({
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "function-call-persist",
+                    "type": "function",
+                    "extra_content": { "google": { "thought_signature": signature } },
+                    "function": { "name": "LS", "arguments": "{}" }
+                }]
+            }),
+            json!({ "role": "tool", "tool_call_id": "function-call-persist", "content": "a.tex" }),
+            json!({ "role": "assistant", "content": "found it" }),
+        ];
+
+        save_history(tab, history);
+        let loaded = load_history(tab);
+
+        let assistant = loaded
+            .iter()
+            .find(|message| message.get("tool_calls").is_some())
+            .expect("the tool-calling assistant turn should survive");
+        assert_eq!(
+            assistant["tool_calls"][0]["extra_content"]["google"]["thought_signature"],
+            signature
+        );
+        assert_eq!(assistant["tool_calls"][0]["id"], "function-call-persist");
     }
 
     #[test]

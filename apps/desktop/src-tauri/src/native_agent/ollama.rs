@@ -45,9 +45,21 @@ pub(crate) fn canonicalize_tool_name(raw: &str) -> String {
     }
 }
 
+#[derive(Default)]
 pub struct ToolCall {
     pub name: String,
     pub args: Value,
+    /// Id the provider assigned to this call (`tool_calls[].id` on an
+    /// OpenAI-compatible response). Echoed back verbatim instead of a locally
+    /// minted id: Gemini 3 binds per-call reasoning state to it. `None` for
+    /// Ollama, which issues no ids.
+    pub provider_id: Option<String>,
+    /// Opaque per-call provider metadata that must be returned unmodified on the
+    /// next request. Gemini 3 ships its thought signature here as
+    /// `{"google":{"thought_signature":"…"}}`; dropping it makes the *next*
+    /// request fail with HTTP 400 "function call … is missing a
+    /// thought_signature". Never interpreted — only carried and echoed.
+    pub extra_content: Option<Value>,
 }
 
 /// Kind of streamed text fragment from Ollama (`message.thinking` vs `message.content`).
@@ -102,7 +114,11 @@ fn accumulate_stream_line<F: FnMut(StreamDeltaKind, &str)>(
                         None => json!({}),
                     };
                     if !name.is_empty() {
-                        tool_calls.push(ToolCall { name, args });
+                        tool_calls.push(ToolCall {
+                            name,
+                            args,
+                            ..Default::default()
+                        });
                     }
                 }
             }

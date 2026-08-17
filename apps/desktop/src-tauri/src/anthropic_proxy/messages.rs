@@ -1,4 +1,7 @@
-use super::tools::{normalized_tool_call_id, repair_tool_arguments, repaired_tool_arguments_value};
+use super::tools::{
+    normalized_tool_call_id, recall_tool_echo, remember_tool_echo, repair_tool_arguments,
+    repaired_tool_arguments_value, wire_tool_call_id,
+};
 use super::transformers::ProxyTransformerChain;
 use super::OpenAiProxyCredential;
 use serde_json::{json, Value};
@@ -99,7 +102,11 @@ pub(super) fn openai_to_anthropic_message(
                 continue;
             }
             let input = repaired_tool_arguments_value(arguments);
-            let id = normalized_tool_call_id(call.get("id").and_then(|value| value.as_str()));
+            let provider_id = call.get("id").and_then(|value| value.as_str());
+            let id = normalized_tool_call_id(provider_id);
+            // Park the provider's own id and per-call metadata (Gemini 3's thought
+            // signature) under the id the client will hand back.
+            remember_tool_echo(&id, provider_id.unwrap_or(&id), call.get("extra_content"));
             content.push(json!({
                 "type": "tool_use",
                 "id": id,
@@ -211,7 +218,9 @@ fn append_openai_messages_for_anthropic_message(messages: &mut Vec<Value>, messa
             };
             messages.push(json!({
                 "role": "tool",
-                "tool_call_id": tool_call_id,
+                // Must resolve to the same id as the assistant `tool_calls` entry
+                // this result answers, which is the provider's id when known.
+                "tool_call_id": wire_tool_call_id(tool_call_id),
                 "content": content,
             }));
             if !image_parts.is_empty() {
@@ -446,14 +455,29 @@ fn assistant_content_to_openai(content: &Value) -> (String, Vec<Value>, Option<V
                     .and_then(|value| value.as_str())
                     .unwrap_or("unknown");
                 let input = block.get("input").cloned().unwrap_or_else(|| json!({}));
-                tool_calls.push(json!({
-                    "id": id,
+                // Restore what the provider issued for this call: its own id, and
+                // any per-call metadata it requires back verbatim. Unknown ids
+                // (nothing recorded) pass through exactly as before.
+                let echo = recall_tool_echo(id);
+                let mut call = json!({
+                    "id": echo
+                        .as_ref()
+                        .map(|echo| echo.provider_id.clone())
+                        .unwrap_or_else(|| id.to_string()),
                     "type": "function",
                     "function": {
                         "name": name,
                         "arguments": input.to_string(),
                     },
-                }));
+                });
+                if let Some(extra) = echo
+                    .as_ref()
+                    .map(|echo| &echo.extra_content)
+                    .filter(|value| !value.is_null())
+                {
+                    call["extra_content"] = extra.clone();
+                }
+                tool_calls.push(call);
             }
             Some("thinking") => {
                 if let Some(value) = block.get("thinking").and_then(|value| value.as_str()) {
@@ -866,6 +890,173 @@ mod tests {
                 .get("content")
                 .and_then(|value| value.as_str())
                 .is_some_and(|content| content.contains("Tool mode is active"))));
+    }
+
+    /// The whole point of the fix: a Gemini 3 thought signature must survive the
+    /// round trip out to the client (as an Anthropic `tool_use`) and back into the
+    /// next provider request. Before the fix `extra_content` was dropped on the
+    /// response leg and never rebuilt on the request leg, so the provider rejected
+    /// the follow-up with HTTP 400 "missing a thought_signature".
+    #[test]
+    fn round_trips_gemini_thought_signature_from_response_into_the_next_request() {
+        let signature = "CvcQAdHN2OekY10ClPFkYA==";
+        let provider_call_id = "function-call-round-trip-1";
+        let response = json!({
+            "id": "chatcmpl_rt1",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": provider_call_id,
+                        "type": "function",
+                        "extra_content": { "google": { "thought_signature": signature } },
+                        "function": { "name": "Read", "arguments": "{\"file_path\":\"main.tex\"}" }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        });
+
+        // Response leg: what the client (Claude Code) is handed.
+        let anthropic = openai_to_anthropic_message(
+            &json!({ "model": "claude-sonnet-4" }),
+            &response,
+            &credential(),
+        )
+        .unwrap();
+        let tool_use = anthropic["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|block| block["type"] == "tool_use")
+            .expect("a tool_use block");
+        let tool_use_id = tool_use["id"].as_str().unwrap().to_string();
+        assert_eq!(anthropic["stop_reason"], "tool_use");
+
+        // Request leg: the client replays that assistant turn plus the result.
+        let follow_up = json!({
+            "messages": [
+                { "role": "user", "content": "read it" },
+                { "role": "assistant", "content": [tool_use.clone()] },
+                { "role": "user", "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": "\\documentclass{article}"
+                }] }
+            ]
+        });
+        let converted =
+            anthropic_to_openai_request(&follow_up, &credential(), &transformers(&[])).unwrap();
+
+        let messages = converted["messages"].as_array().unwrap();
+        let assistant = messages
+            .iter()
+            .find(|message| message["role"] == "assistant")
+            .expect("an assistant message");
+        let call = &assistant["tool_calls"][0];
+        assert_eq!(
+            call["extra_content"]["google"]["thought_signature"], signature,
+            "the signature must go back verbatim"
+        );
+        assert_eq!(
+            call["id"], provider_call_id,
+            "the provider's own call id must go back, not ours"
+        );
+
+        // …and the result must still pair with it, or the provider 400s for a
+        // different reason.
+        let tool_message = messages
+            .iter()
+            .find(|message| message["role"] == "tool")
+            .expect("a tool message");
+        assert_eq!(tool_message["tool_call_id"], provider_call_id);
+    }
+
+    /// A provider id that `normalized_tool_call_id` had to rewrite (all-digit ids
+    /// are replaced) must still be restored to the ORIGINAL on the way back out.
+    #[test]
+    fn restores_the_original_provider_id_even_when_it_had_to_be_normalized() {
+        let response = json!({
+            "id": "chatcmpl_rt2",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "9078601",
+                        "type": "function",
+                        "extra_content": { "google": { "thought_signature": "SIG_NUMERIC" } },
+                        "function": { "name": "LS", "arguments": "{}" }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        });
+
+        let anthropic = openai_to_anthropic_message(&json!({}), &response, &credential()).unwrap();
+        let tool_use = anthropic["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|block| block["type"] == "tool_use")
+            .unwrap()
+            .clone();
+        // The Anthropic-facing id was rewritten, so it is NOT the provider's.
+        assert_ne!(tool_use["id"], "9078601");
+
+        let converted = anthropic_to_openai_request(
+            &json!({ "messages": [{ "role": "assistant", "content": [tool_use] }] }),
+            &credential(),
+            &transformers(&[]),
+        )
+        .unwrap();
+
+        let call = &converted["messages"][0]["tool_calls"][0];
+        assert_eq!(call["id"], "9078601");
+        assert_eq!(
+            call["extra_content"]["google"]["thought_signature"],
+            "SIG_NUMERIC"
+        );
+    }
+
+    /// Providers that send no per-call metadata must produce exactly the request
+    /// body they produced before signatures existed — no stray `extra_content`, and
+    /// the tool id untouched.
+    #[test]
+    fn requests_are_unchanged_for_providers_that_send_no_metadata() {
+        let request = json!({
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "toolu_no_metadata_provider",
+                        "name": "Read",
+                        "input": { "file_path": "a.tex" }
+                    }]
+                },
+                {
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_no_metadata_provider",
+                        "content": "ok"
+                    }]
+                }
+            ]
+        });
+
+        let converted =
+            anthropic_to_openai_request(&request, &credential(), &transformers(&[])).unwrap();
+
+        let call = &converted["messages"][0]["tool_calls"][0];
+        assert!(call.get("extra_content").is_none());
+        assert_eq!(call["id"], "toolu_no_metadata_provider");
+        assert_eq!(
+            converted["messages"][1]["tool_call_id"],
+            "toolu_no_metadata_provider"
+        );
     }
 
     #[test]

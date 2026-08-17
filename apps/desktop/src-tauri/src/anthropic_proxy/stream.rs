@@ -1,4 +1,4 @@
-use super::tools::{normalized_tool_call_id, repair_tool_arguments};
+use super::tools::{normalized_tool_call_id, remember_tool_echo, repair_tool_arguments};
 use super::{http_response, OpenAiProxyCredential};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -27,6 +27,12 @@ struct StreamToolBlock {
     id: Option<String>,
     name: Option<String>,
     buffered_arguments: String,
+    /// The provider's raw `tool_calls[].id`, before `normalized_tool_call_id`
+    /// possibly replaced it for the Anthropic side.
+    provider_id: Option<String>,
+    /// The provider's `extra_content` for this call (Gemini 3's thought
+    /// signature), to be echoed back on the follow-up request.
+    extra_content: Option<Value>,
 }
 
 pub(super) async fn stream_openai_sse_to_anthropic(
@@ -101,8 +107,12 @@ fn decode_utf8_prefix(bytes: &mut Vec<u8>, out: &mut String) {
             Err(e) => {
                 let valid = e.valid_up_to();
                 if valid > 0 {
-                    // valid_up_to() bytes are valid UTF-8 by definition.
-                    out.push_str(std::str::from_utf8(&bytes[..valid]).unwrap());
+                    // `valid_up_to()` bytes are valid UTF-8 by definition, so
+                    // the lossy decoder never substitutes anything here. It is
+                    // used instead of `from_utf8(..).unwrap()` so a future
+                    // change to the slice bounds degrades instead of panicking
+                    // inside the streaming proxy.
+                    out.push_str(&String::from_utf8_lossy(&bytes[..valid]));
                 }
                 match e.error_len() {
                     // Incomplete trailing sequence: keep it for the next chunk.
@@ -410,6 +420,12 @@ fn push_stream_tool_delta(state: &mut OpenAiStreamState, call: &Value) {
     let block = state.tool_blocks.entry(openai_index).or_default();
     if let Some(id) = call.get("id").and_then(|value| value.as_str()) {
         block.id = Some(normalized_tool_call_id(Some(id)));
+        block.provider_id = Some(id.to_string());
+    }
+    // Latched, never clobbered: the id and `extra_content` arrive on the first
+    // delta for this index while the arguments stream in over later ones.
+    if let Some(extra) = call.get("extra_content").filter(|value| !value.is_null()) {
+        block.extra_content = Some(extra.clone());
     }
     let function = call.get("function").unwrap_or(&Value::Null);
     if let Some(name) = function.get("name").and_then(|value| value.as_str()) {
@@ -509,6 +525,17 @@ fn finish_anthropic_stream(state: &mut OpenAiStreamState) -> String {
     for (_, block) in tool_blocks {
         let index = state.next_block_index;
         state.next_block_index += 1;
+        let tool_use_id = block
+            .id
+            .clone()
+            .unwrap_or_else(|| normalized_tool_call_id(None));
+        // Park the provider's own id and per-call metadata under the id the client
+        // will hand back, so the follow-up request can restore both verbatim.
+        remember_tool_echo(
+            &tool_use_id,
+            block.provider_id.as_deref().unwrap_or(&tool_use_id),
+            block.extra_content.as_ref(),
+        );
         push_sse(
             &mut body,
             "content_block_start",
@@ -517,7 +544,7 @@ fn finish_anthropic_stream(state: &mut OpenAiStreamState) -> String {
                 "index": index,
                 "content_block": {
                     "type": "tool_use",
-                    "id": block.id.clone().unwrap_or_else(|| normalized_tool_call_id(None)),
+                    "id": tool_use_id,
                     "name": block.name.clone().unwrap_or_else(|| "unknown".to_string()),
                     "input": {},
                 },
@@ -948,6 +975,64 @@ mod tests {
         assert!(combined.contains("\"type\":\"input_json_delta\""));
         assert!(combined.contains("{\\\"file_path\\\":\\\"main.tex\\\"}"));
         assert!(combined.contains("\"stop_reason\":\"tool_use\""));
+    }
+
+    /// The streaming leg must capture Gemini 3's per-call `extra_content` even
+    /// though the Anthropic SSE format it emits has nowhere to carry it, so the
+    /// follow-up request can echo it back. Before the fix it was parsed and thrown
+    /// away.
+    #[test]
+    fn captures_streamed_thought_signature_for_the_follow_up_request() {
+        use super::super::tools::recall_tool_echo;
+
+        let request = json!({ "model": "claude-sonnet-4" });
+        let mut state = OpenAiStreamState::default();
+        let first_chunk = json!({
+            "id": "chatcmpl_sig",
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "function-call-stream-sig",
+                        "type": "function",
+                        "extra_content": { "google": { "thought_signature": "SIG_STREAMED" } },
+                        "function": { "name": "Read", "arguments": "{\"file_path\":" }
+                    }]
+                },
+                "finish_reason": null
+            }]
+        });
+        // A later fragment carries neither id nor extra_content; neither may be lost.
+        let second_chunk = json!({
+            "id": "chatcmpl_sig",
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "function": { "arguments": "\"main.tex\"}" }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        });
+
+        let first =
+            openai_stream_chunk_to_anthropic(&mut state, &first_chunk, &request, &credential());
+        let second =
+            openai_stream_chunk_to_anthropic(&mut state, &second_chunk, &request, &credential());
+        let done = finish_anthropic_stream(&mut state);
+        let combined = format!("{first}{second}{done}");
+
+        assert!(combined.contains("\"id\":\"function-call-stream-sig\""));
+        assert!(combined.contains("\"stop_reason\":\"tool_use\""));
+
+        let echo = recall_tool_echo("function-call-stream-sig")
+            .expect("the streamed signature should have been recorded");
+        assert_eq!(echo.provider_id, "function-call-stream-sig");
+        assert_eq!(
+            echo.extra_content["google"]["thought_signature"],
+            "SIG_STREAMED"
+        );
     }
 
     #[test]

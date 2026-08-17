@@ -117,9 +117,53 @@ fn extract_error_lines(log: &str) -> String {
         return "No pages of output. Add visible content to the document body.".to_string();
     }
 
-    // Fallback: return tail of log
-    let start = log.len().saturating_sub(500);
+    // Fallback: return tail of log.
+    //
+    // `saturating_sub` bounds the offset but says nothing about char boundaries,
+    // and slicing a `str` at a non-boundary byte *panics*. TeX logs routinely
+    // carry non-ASCII (font names, package warnings, file paths), so a multi-byte
+    // character straddling `len - 500` was a crash — on the UI path, outside any
+    // `spawn_blocking`, which meant the compile promise never resolved and the
+    // spinner hung for the session.
+    let mut start = log.len().saturating_sub(500);
+    while start < log.len() && !log.is_char_boundary(start) {
+        start += 1;
+    }
     log[start..].to_string()
+}
+
+/// Read a TeX log for diagnostics: bounded, and never fatal on encoding.
+///
+/// Two problems with `read_to_string(&log_path).unwrap_or_default()`:
+///
+/// * **Unbounded.** A document can emit an arbitrarily large log — `\loop
+///   \message{...}\repeat` writes for the whole 180s engine timeout — and the
+///   whole thing was pulled into memory before anything truncated it.
+/// * **Encoding-fatal.** `read_to_string` fails on invalid UTF-8, and TeX writes
+///   logs in the input encoding, so Latin-1 bytes in a font name or a
+///   `\PackageWarning` turned the entire log into `""`. An empty log is
+///   indistinguishable from "no errors", so the actionable message
+///   (`! LaTeX Error: File 'r\xe9sum\xe9.sty' not found`) was silently discarded and
+///   the user saw only "Compilation failed: no PDF generated".
+///
+/// Keeps the tail, which is where TeX puts the error block and the summary.
+fn read_log_bounded(log_path: &Path) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+
+    const MAX_LOG_BYTES: u64 = 1024 * 1024;
+
+    let Ok(mut file) = std::fs::File::open(log_path) else {
+        return String::new();
+    };
+    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    if len > MAX_LOG_BYTES {
+        let _ = file.seek(SeekFrom::Start(len - MAX_LOG_BYTES));
+    }
+    let mut bytes = Vec::new();
+    if file.take(MAX_LOG_BYTES).read_to_end(&mut bytes).is_err() {
+        return String::new();
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 /// Check if the log contains real TeX errors (! lines or Error: messages).
@@ -408,6 +452,44 @@ pub struct AgentCompileResult {
     pub summary: String,
 }
 
+/// Normalize and validate a caller-supplied TeX root, returning it
+/// project-relative.
+///
+/// **The rewrite must happen before the check, not after.** `agent_compile_project`
+/// used to normalize separators with `main_file.trim().replace('\\', "/")` and
+/// join the result — *after* its caller had validated the raw string. On Unix a
+/// backslash is an ordinary filename character, so `a\..\..\..\etc\x.tex` is a
+/// single `Component::Normal` and passes every traversal check; the rewrite then
+/// turned it into `a/../../../etc/x.tex` and every subsequent `join` followed it
+/// out of the project. Because the `Compile` tool takes `main_file` from the
+/// model, that was a model-reachable arbitrary-file read (the TeX log echoes
+/// source lines back into the agent's context) and write
+/// (`prepend_xetex_compat_input` rewrites the file it compiles).
+///
+/// Validating here rather than in the caller also means no future caller can
+/// reintroduce the gap by forgetting to check.
+fn validated_main_rel(project_dir: &Path, main_file: &str) -> Result<String, String> {
+    let normalized = main_file.trim().replace('\\', "/");
+    if normalized.is_empty() {
+        return Err("No main file specified.".to_string());
+    }
+
+    // Rejects a leading '-' (argv injection into the TeX engine), absolute
+    // paths, `..`, and symlinks that resolve outside the project.
+    let absolute = crate::export::resolve_project_relative(project_dir, &normalized)?;
+
+    let root = project_dir
+        .canonicalize()
+        .map_err(|e| format!("Project folder not found: {e}"))?;
+    let relative = absolute
+        .strip_prefix(&root)
+        .map_err(|_| format!("Path must not leave the project: {normalized}"))?;
+
+    // Re-derive from the *validated* path rather than reusing the input string,
+    // so the value that reaches every `join` is the one that was checked.
+    Ok(relative.to_string_lossy().replace('\\', "/"))
+}
+
 /// Compile a project TeX root for the native agent `Compile` tool. Uses the same
 /// persistent build dir as the UI compile path but skips the global semaphore.
 pub fn agent_compile_project(
@@ -415,9 +497,20 @@ pub fn agent_compile_project(
     main_file: &str,
     use_texlive: bool,
 ) -> AgentCompileResult {
+    let main_rel = match validated_main_rel(project_dir, main_file) {
+        Ok(rel) => rel,
+        Err(summary) => {
+            return AgentCompileResult {
+                success: false,
+                main_file: main_file.to_string(),
+                errors: vec![],
+                summary,
+            }
+        }
+    };
+
     let project_str = project_dir.to_string_lossy();
     let work_dir = persistent_build_dir(&project_str);
-    let main_rel = main_file.trim().replace('\\', "/");
     let main_tex_path = work_dir.join(&main_rel);
 
     if let Err(e) = (|| {
@@ -488,15 +581,30 @@ pub fn agent_compile_project(
     };
 
     if pdf_path.exists() {
+        // A PDF on disk is not by itself proof the run succeeded.
+        //
+        // `compile_with_texlive` makes up to three passes; `run_texlive_pass`
+        // returns `Err` on a spawn failure or a *timeout*, and pass 1 has already
+        // written a PDF by then. Reporting "Compiled successfully" while
+        // discarding that `Err` handed the agent a PDF with unresolved `??`
+        // references and swallowed the timeout entirely.
+        let summary = match &compile_result {
+            Ok(_) => format!("Compiled `{}` successfully.", main_rel),
+            Err(e) => format!(
+                "Compiled `{}` to a PDF, but the run did not finish cleanly: {e}. \
+                 References, citations or the page count may be stale.",
+                main_rel
+            ),
+        };
         return AgentCompileResult {
-            success: true,
+            success: compile_result.is_ok(),
             main_file: main_rel.clone(),
             errors: vec![],
-            summary: format!("Compiled `{}` successfully.", main_rel),
+            summary,
         };
     }
 
-    let log_content = std::fs::read_to_string(&log_path).unwrap_or_default();
+    let log_content = read_log_bounded(&log_path);
     let mut errors = parse_structured_latex_errors(&log_content);
     if errors.is_empty() {
         let fallback = extract_error_lines(&log_content);
@@ -2012,7 +2120,7 @@ async fn compile_latex_inner(
     // Explain, from this run's own log, every way the result can differ from the
     // same source built on another toolchain. Without this a page count that
     // disagrees with Overleaf looks like a defect with no visible cause.
-    let final_log = std::fs::read_to_string(&log_path).unwrap_or_default();
+    let final_log = read_log_bounded(&log_path);
     let mut fidelity = collect_fidelity_notes(
         &main_tex_content,
         &final_log,
@@ -2091,7 +2199,7 @@ async fn compile_latex_inner(
         }
         Ok(pdf_bytes)
     } else {
-        let log_content = std::fs::read_to_string(&log_path).unwrap_or_default();
+        let log_content = read_log_bounded(&log_path);
         let details = extract_error_lines(&log_content);
         let msg = if details.is_empty() {
             match compile_result {
@@ -2225,6 +2333,59 @@ pub async fn cleanup_all_builds(state: &LatexCompilerState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `Compile` tool's `main_file` is model-supplied. Its caller validated
+    /// the raw string, but `agent_compile_project` then rewrote `\` to `/`,
+    /// manufacturing traversal the check had already approved.
+    #[test]
+    fn a_backslash_path_cannot_escape_the_project_after_normalization() {
+        let root = tempfile::tempdir().expect("tempdir");
+        std::fs::write(root.path().join("main.tex"), "\\documentclass{article}")
+            .expect("write main");
+
+        // On Unix this is ONE Normal component pre-rewrite, so a lexical `..`
+        // check on the raw string passes it. Post-rewrite it is real traversal.
+        let escaping = "a\\..\\..\\..\\etc\\passwd.tex";
+        assert!(
+            validated_main_rel(root.path(), escaping).is_err(),
+            "a backslash-encoded traversal must be refused"
+        );
+
+        for bad in ["../outside.tex", "/etc/passwd", "-shell-escape", "  "] {
+            assert!(
+                validated_main_rel(root.path(), bad).is_err(),
+                "'{bad}' must be refused"
+            );
+        }
+
+        // The ordinary case still works, and comes back project-relative.
+        assert_eq!(
+            validated_main_rel(root.path(), "main.tex").expect("valid"),
+            "main.tex"
+        );
+    }
+
+    /// A `-` prefix would reach the TeX engine's argv as a flag.
+    #[test]
+    fn a_flag_shaped_main_file_is_refused_before_reaching_the_engine() {
+        let root = tempfile::tempdir().expect("tempdir");
+        std::fs::write(root.path().join("-shell-escape"), "x").expect("write");
+        assert!(validated_main_rel(root.path(), "-shell-escape").is_err());
+    }
+
+    /// The log tail was byte-sliced at `len - 500` with no boundary check.
+    #[test]
+    fn the_log_tail_does_not_panic_on_a_multibyte_boundary() {
+        // Sweep offsets so a multi-byte char lands across the 500-byte cut.
+        for pad in 0..8usize {
+            let log = format!("{}é{}", "x".repeat(pad), "y".repeat(600));
+            let tail = extract_error_lines(&log);
+            assert!(!tail.is_empty(), "pad {pad} produced an empty tail");
+        }
+        // And a log that is entirely multi-byte.
+        let cjk = "日本語テキスト".repeat(200);
+        let _ = extract_error_lines(&cjk);
+    }
 
     // --- detect_bib_tool ---
 

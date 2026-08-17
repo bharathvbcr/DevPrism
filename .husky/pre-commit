@@ -1,1 +1,14 @@
-pnpm exec biome check --staged --write --no-errors-on-unmatched
+# Resolve biome from the nearest node_modules/.bin, walking up from the repo
+# root. `pnpm exec` only looks in the current project's node_modules/.bin, so it
+# fails in a git worktree (.claude/worktrees/*), which has no install of its own
+# and inherits the main checkout's dependencies by parent-directory resolution.
+dir=$(git rev-parse --show-toplevel)
+while [ -n "$dir" ] && [ "$dir" != "/" ]; do
+  if [ -x "$dir/node_modules/.bin/biome" ]; then
+    exec "$dir/node_modules/.bin/biome" check --staged --write --no-errors-on-unmatched
+  fi
+  dir=$(dirname "$dir")
+done
+
+echo "pre-commit: biome not found in any parent node_modules/.bin — run 'pnpm install'" >&2
+exit 1

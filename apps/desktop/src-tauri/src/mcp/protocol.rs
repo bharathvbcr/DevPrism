@@ -213,6 +213,27 @@ impl HttpHeaders {
     /// Validates standard HTTP headers against the incoming JSON-RPC request body.
     /// Rejects mismatches with JSON-RPC error `-32020`.
     pub fn validate_against_request(&self, req: &JsonRpcRequest) -> Result<(), JsonRpcError> {
+        // 0. Validate Mcp-Protocol-Version if supplied.
+        //
+        // This header was previously parsed and then ignored, so a client
+        // declaring a protocol this server does not speak was silently served
+        // anyway — the failure would surface later as a confusing shape
+        // mismatch rather than as the version error SEP-2243 defines.
+        if let Some(ref header_version) = self.protocol_version {
+            if header_version != MCP_PROTOCOL_VERSION {
+                return Err(JsonRpcError::with_data(
+                    ERR_HEADER_MISMATCH,
+                    format!(
+                        "Header '{MCP_HEADER_PROTOCOL_VERSION}: {header_version}' is not supported by this server"
+                    ),
+                    serde_json::json!({
+                        "supported": [MCP_PROTOCOL_VERSION],
+                        "requested": header_version,
+                    }),
+                ));
+            }
+        }
+
         // 1. Validate Mcp-Method header if supplied
         if let Some(ref header_method) = self.method {
             if header_method != &req.method {
@@ -258,13 +279,47 @@ pub struct InputRequiredResult {
     pub request_state: String, // self-contained serialized/base64 state
 }
 
+/// The field carrying the server-issued nonce inside `requestState`.
+///
+/// The nonce lives *inside* the existing base64 envelope rather than beside it,
+/// so the wire format is unchanged and clients round-trip it without knowing it
+/// is there.
+pub const REQUEST_STATE_NONCE_FIELD: &str = "__nonce";
+
+/// Upper bound on an inbound `requestState` blob.
+///
+/// `requestState` is echoed back by the client, so its size is caller-controlled;
+/// without a cap, base64-decoding then JSON-parsing it is an unbounded
+/// allocation driven by a single request. 64 KiB is far above any state this
+/// server issues (a few hundred bytes).
+pub const MAX_REQUEST_STATE_CHARS: usize = 64 * 1024;
+
 impl InputRequiredResult {
-    pub fn new(
+    /// Build an elicitation whose `requestState` is bound to a server-issued
+    /// nonce.
+    ///
+    /// There is deliberately no unbound constructor: an elicitation that gates a
+    /// side effect is only a gate if the state coming back can be proven to be
+    /// the state that went out. See `mcp::elicitation` for why the nonce is
+    /// server-side rather than a signature.
+    pub fn new_bound(
         input_requests: HashMap<String, InputRequest>,
         state_payload: &Value,
+        nonce: &str,
     ) -> Result<Self, String> {
         use base64::prelude::*;
-        let serialized = serde_json::to_string(state_payload)
+        let mut payload = state_payload.clone();
+        match payload.as_object_mut() {
+            Some(obj) => {
+                obj.insert(
+                    REQUEST_STATE_NONCE_FIELD.to_string(),
+                    Value::String(nonce.to_string()),
+                );
+            }
+            None => return Err("requestState payload must be a JSON object".to_string()),
+        }
+
+        let serialized = serde_json::to_string(&payload)
             .map_err(|e| format!("Failed to serialize requestState: {e}"))?;
         let base64_state = BASE64_STANDARD.encode(serialized.as_bytes());
         Ok(Self {
@@ -276,12 +331,26 @@ impl InputRequiredResult {
 
     pub fn decode_state(request_state: &str) -> Result<Value, String> {
         use base64::prelude::*;
+        let trimmed = request_state.trim();
+        if trimmed.len() > MAX_REQUEST_STATE_CHARS {
+            return Err(format!(
+                "requestState exceeds the {MAX_REQUEST_STATE_CHARS}-byte limit"
+            ));
+        }
         let decoded_bytes = BASE64_STANDARD
-            .decode(request_state.trim())
+            .decode(trimmed)
             .map_err(|e| format!("Invalid base64 in requestState: {e}"))?;
         let val: Value = serde_json::from_slice(&decoded_bytes)
             .map_err(|e| format!("Invalid JSON in requestState: {e}"))?;
         Ok(val)
+    }
+
+    /// Read the server-issued nonce out of a decoded `requestState`.
+    ///
+    /// Absent means the blob did not come from this server's `new_bound`, which
+    /// callers must treat exactly like a nonce that fails to validate.
+    pub fn nonce_from_state(state: &Value) -> Option<&str> {
+        state.get(REQUEST_STATE_NONCE_FIELD)?.as_str()
     }
 }
 

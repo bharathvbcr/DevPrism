@@ -64,10 +64,22 @@ pub const EMBEDDED_FAMILIES: &[&str] = &[
     "DejaVu Sans Mono",
 ];
 
+/// Name of the single virtual document a `ResumeWorld` compiles.
+const RESUME_VPATH: &str = "resume.typ";
+
 fn main_file_id() -> FileId {
     // `FileId::new` interns and reuses by path, so repeated compiles of
     // "resume.typ" share one id rather than leaking a new one each time.
-    let vpath = VirtualPath::new("resume.typ").expect("static virtual path");
+    //
+    // `VirtualPath::new` is fallible, but the argument is a compile-time
+    // literal relative path, so this branch is unreachable. `ResumeWorld::new`
+    // is infallible by signature and has several callers, so propagating an
+    // error that cannot occur would be worse than allowing the lint here.
+    // `a_resume_virtual_path_is_always_constructible` pins the invariant, so an
+    // upstream change to typst's path validation fails a test rather than
+    // panicking in production.
+    #[allow(clippy::expect_used)]
+    let vpath = VirtualPath::new(RESUME_VPATH).expect("resume.typ is a valid relative path");
     FileId::new(RootedPath::new(VirtualRoot::Project, vpath))
 }
 
@@ -423,6 +435,18 @@ mod tests {
         assert_eq!(r.page_count, 1);
         let pdf = r.pdf_bytes.expect("pdf bytes");
         assert!(pdf.starts_with(b"%PDF-"), "not a pdf");
+    }
+
+    #[test]
+    fn a_resume_virtual_path_is_always_constructible() {
+        // `main_file_id` allows `expect_used` on the strength of this literal
+        // being a valid relative path. If an upstream change to typst's path
+        // validation ever breaks that, it must fail here rather than panic
+        // inside a compile.
+        assert!(
+            VirtualPath::new(RESUME_VPATH).is_ok(),
+            "main_file_id()'s infallibility assumption no longer holds"
+        );
     }
 
     #[test]

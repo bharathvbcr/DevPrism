@@ -12,6 +12,7 @@ use crate::mcp::protocol::{
     HttpHeaders, JsonRpcError, JsonRpcRequest, JsonRpcResponse, PromptDefinition,
     ResourceDefinition, ToolDefinition, MCP_PROTOCOL_VERSION,
 };
+use crate::mcp::elicitation::ElicitationStore;
 use crate::mcp::tasks::TaskManager;
 use crate::mcp::tools_career::{
     execute_career_tool, list_career_resources, list_career_tools, read_career_resource,
@@ -27,6 +28,10 @@ use std::sync::Arc;
 pub struct StatelessMcpServer {
     pub career_db: CareerDbState,
     pub task_manager: Arc<TaskManager>,
+    /// Outstanding MRTR confirmations. Shared across clones so a confirmation
+    /// issued on one connection can be redeemed on the next — the round trip is
+    /// stateless on the wire, not in this process.
+    pub elicitations: Arc<ElicitationStore>,
 }
 
 impl StatelessMcpServer {
@@ -34,6 +39,7 @@ impl StatelessMcpServer {
         Self {
             career_db,
             task_manager: Arc::new(TaskManager::new()),
+            elicitations: Arc::new(ElicitationStore::new()),
         }
     }
 
@@ -108,7 +114,8 @@ impl StatelessMcpServer {
                 let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
                 if tool_name.starts_with("career_") {
-                    execute_career_tool(&self.career_db, tool_name, &arguments).await
+                    execute_career_tool(&self.career_db, &self.elicitations, tool_name, &arguments)
+                        .await
                 } else if tool_name.starts_with("resume_") {
                     execute_resume_tool(&self.career_db, &self.task_manager, tool_name, &arguments).await
                 } else {
@@ -202,6 +209,12 @@ impl StatelessMcpServer {
                     "count": tasks.len()
                 }))
             }
+
+            // Notifications (JSON-RPC 2.0 §4.1). These carry no `id` and take no
+            // reply; transports drop the result. Accepting them explicitly keeps
+            // a client's `notifications/initialized` from being answered with
+            // "method not found", which strict clients treat as fatal.
+            m if m.starts_with("notifications/") => Ok(Value::Null),
 
             // Fallback for unrecognized method
             _ => Err(JsonRpcError::method_not_found(method)),

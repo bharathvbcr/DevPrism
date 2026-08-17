@@ -131,7 +131,14 @@ pub fn chunk_text_minimal(text: &str) -> Vec<String> {
         } else {
             chunks.push(buf.clone());
             let overlap = if buf.len() > OVERLAP_CHARS {
-                buf[buf.len() - OVERLAP_CHARS..].to_string()
+                // `buf.len() - OVERLAP_CHARS` is a byte offset, and slicing a
+                // `str` at a non-boundary byte panics. The two slices a few lines
+                // below already guard with `floor_char_boundary`; this one did
+                // not, so any multi-byte character straddling `len - 180` — an
+                // apostrophe, an em dash, any CJK or emoji text — crashed the
+                // ingest and poisoned the career DB mutex for the process.
+                let start = floor_char_boundary(&buf, buf.len() - OVERLAP_CHARS);
+                buf[start..].to_string()
             } else {
                 buf.clone()
             };
@@ -231,15 +238,31 @@ pub fn ingest_source(
                 title,
             });
         }
-        let old_ids = list_chunk_ids(conn, &source_id)?;
-        delete_chunks_and_embeddings(conn, &old_ids)?;
-        conn.execute(
+        // Re-ingest must be all-or-nothing.
+        //
+        // These three steps ran in autocommit, so each committed independently:
+        // the old chunks and their embeddings were deleted, the source row was
+        // updated to record the *new* content hash, and then the insert could
+        // still fail (a panic in the chunker, or plain `SQLITE_BUSY`). The
+        // source was then permanently recorded as ingested with zero chunks —
+        // and because the stored hash already matched, re-ingesting the same
+        // file short-circuits as `skipped: true`, so it could never self-heal.
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| format!("Failed to begin re-ingest transaction: {e}"))?;
+
+        let old_ids = list_chunk_ids(&tx, &source_id)?;
+        delete_chunks_and_embeddings(&tx, &old_ids)?;
+        tx.execute(
             "UPDATE kb_sources SET source_type = ?1, title = ?2, content_hash = ?3, ingested_at = ?4 WHERE id = ?5",
             params![source_type, title, hash, now_ms(), source_id],
         )
         .map_err(|e| format!("Failed to update kb_sources: {e}"))?;
 
-        return insert_chunks_minimal(conn, &source_id, &title, &text, &hash);
+        let report = insert_chunks_minimal(&tx, &source_id, &title, &text, &hash)?;
+        tx.commit()
+            .map_err(|e| format!("Failed to commit re-ingest: {e}"))?;
+        return Ok(report);
     }
 
     let source_id = format!("src_{}", Uuid::new_v4().simple());
@@ -682,6 +705,37 @@ pub fn delete_kb_source(conn: &Connection, source_id: &str) -> Result<(), String
 
 #[cfg(test)]
 mod tests {
+
+    /// The overlap slice was the one byte-offset cut in this function without a
+    /// `floor_char_boundary` guard, while the two below it had one. Any
+    /// multi-byte character straddling `len - OVERLAP_CHARS` panicked — and the
+    /// panic poisoned the career DB mutex for the rest of the process.
+    #[test]
+    fn chunking_survives_multibyte_text_at_the_overlap_boundary() {
+        // Sweep paragraph lengths so a multi-byte char lands on the cut.
+        for pad in 0..12usize {
+            let para_a = format!("{}é", "a".repeat(TARGET_CHUNK_CHARS - pad));
+            let para_b = "b".repeat(TARGET_CHUNK_CHARS);
+            let text = format!("{para_a}\n\n{para_b}");
+            let chunks = chunk_text_minimal(&text);
+            assert!(!chunks.is_empty(), "pad {pad} produced no chunks");
+        }
+    }
+
+    #[test]
+    fn chunking_survives_text_that_is_entirely_multibyte() {
+        let text = format!(
+            "{}\n\n{}",
+            "日本語のテキストです。".repeat(400),
+            "🙂🙃".repeat(400)
+        );
+        let chunks = chunk_text_minimal(&text);
+        assert!(!chunks.is_empty());
+        // Every chunk must still be valid UTF-8 that round-trips.
+        for c in &chunks {
+            assert_eq!(c.as_str(), String::from_utf8_lossy(c.as_bytes()));
+        }
+    }
     use super::*;
 
     fn mem_conn() -> Connection {

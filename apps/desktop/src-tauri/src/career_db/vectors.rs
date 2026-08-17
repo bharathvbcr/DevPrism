@@ -446,7 +446,16 @@ fn vector_search_brute(
             (score, row)
         })
         .collect();
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    // `total_cmp` rather than `partial_cmp(...).unwrap_or(Equal)`.
+    //
+    // Mapping NaN to `Equal` is an intransitive comparator, and since Rust 1.81
+    // the standard sort detects order violations and may panic outright with
+    // "user-provided comparison function does not correctly implement a total
+    // order"; where it does not panic, the ranking is simply garbage. NaN reaches
+    // here whenever a stored vector holds a non-finite component (a corrupt BLOB,
+    // or a frontend-supplied `1e40` that becomes `inf` on the `as f32` cast),
+    // because `cosine_similarity` guards only the zero-norm case.
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0));
     scored.truncate(k);
 
     let mut hits = Vec::with_capacity(scored.len());

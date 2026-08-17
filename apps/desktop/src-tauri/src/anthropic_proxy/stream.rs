@@ -101,8 +101,13 @@ fn decode_utf8_prefix(bytes: &mut Vec<u8>, out: &mut String) {
             Err(e) => {
                 let valid = e.valid_up_to();
                 if valid > 0 {
-                    // valid_up_to() bytes are valid UTF-8 by definition.
-                    out.push_str(std::str::from_utf8(&bytes[..valid]).unwrap());
+                    // `valid_up_to()` bytes are valid UTF-8 by definition, so
+                    // this always matches — written as a conditional rather than
+                    // an `unwrap` so the invariant is enforced by the type system
+                    // instead of by a comment.
+                    if let Ok(s) = std::str::from_utf8(&bytes[..valid]) {
+                        out.push_str(s);
+                    }
                 }
                 match e.error_len() {
                     // Incomplete trailing sequence: keep it for the next chunk.

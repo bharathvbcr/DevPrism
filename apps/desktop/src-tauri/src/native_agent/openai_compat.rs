@@ -11,6 +11,26 @@ const REQUEST_TIMEOUT_SECS: u64 = 600;
 const STREAM_IDLE_TIMEOUT_SECS: u64 = 90;
 const CONNECT_TIMEOUT_SECS: u64 = 15;
 
+/// Upper bound on distinct tool calls assembled from one streamed turn.
+///
+/// `index` arrives verbatim from the provider and is used as a `Vec` grow
+/// target. Unbounded, a single chunk claiming `"index": 18446744073709551615`
+/// pushes elements until the allocator gives up — and Rust *aborts* on
+/// allocation failure, so the whole app dies rather than raising a catchable
+/// error. Well above any real tool count.
+const MAX_TOOL_CALLS_PER_TURN: usize = 64;
+
+/// Largest partial line held while waiting for a newline.
+///
+/// The framing loop only drains `buf` when it finds `\n`, so a server that
+/// streams without newlines grows it without limit. The idle timeout does not
+/// help — data *is* arriving — and the 600s deadline is a time bound, not a size
+/// one, which on loopback is a very large number of bytes.
+const MAX_PENDING_LINE_BYTES: usize = 1024 * 1024;
+
+/// Largest accumulated assistant text (content + reasoning) per turn.
+const MAX_STREAM_ACCUMULATION_BYTES: usize = 8 * 1024 * 1024;
+
 fn build_client() -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
@@ -163,9 +183,14 @@ fn accumulate_openai_stream_line<F: FnMut(StreamDeltaKind, &str)>(
     eval_tokens: &mut u64,
     on_delta: &mut F,
 ) -> Result<bool, String> {
+    // A bare top-level `message` only means "error envelope" when this is *not*
+    // a chunk. Gateways and aggregators legitimately attach informational
+    // top-level `message` strings (status notes, queue position) alongside
+    // `choices`; treating those as fatal aborted a healthy stream mid-generation.
+    let has_choices = v.get("choices").and_then(|c| c.as_array()).is_some();
     if let Some(err) = v
         .pointer("/error/message")
-        .or_else(|| v.get("message"))
+        .or_else(|| if has_choices { None } else { v.get("message") })
         .and_then(|e| e.as_str())
     {
         return Err(format!("OpenAI API error: {err}"));
@@ -205,6 +230,13 @@ fn accumulate_openai_stream_line<F: FnMut(StreamDeltaKind, &str)>(
         if let Some(arr) = delta.get("tool_calls").and_then(|t| t.as_array()) {
             for call in arr {
                 let idx = call.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
+                // Bound before growing: see MAX_TOOL_CALLS_PER_TURN. Skipping the
+                // delta is right rather than erroring — a provider that emits a
+                // wild index has already produced garbage for that slot, and the
+                // rest of the turn may still be usable.
+                if idx >= MAX_TOOL_CALLS_PER_TURN {
+                    continue;
+                }
                 while tool_calls.len() <= idx {
                     tool_calls.push(ToolCall {
                         name: String::new(),
@@ -329,7 +361,7 @@ impl OpenAiCompatClient {
 
         let status = resp.status();
         if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
+            let text = super::ollama::read_error_body(resp).await;
             let snippet: String = text.chars().take(300).collect();
             let label = provider_label(&self.base_url);
             if status.as_u16() == 429 {
@@ -368,18 +400,51 @@ impl OpenAiCompatClient {
                 }
             };
             buf.extend_from_slice(&chunk);
+            if buf.len() > MAX_PENDING_LINE_BYTES {
+                return Err(format!(
+                    "OpenAI stream error: {} bytes arrived without a line terminator, exceeding the {MAX_PENDING_LINE_BYTES}-byte limit",
+                    buf.len()
+                ));
+            }
+            if content.len() + thinking.len() > MAX_STREAM_ACCUMULATION_BYTES {
+                return Err(format!(
+                    "OpenAI stream error: response exceeded the {MAX_STREAM_ACCUMULATION_BYTES}-byte accumulation limit"
+                ));
+            }
             while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
                 let line_bytes: Vec<u8> = buf.drain(..=pos).collect();
                 let line = String::from_utf8_lossy(&line_bytes).trim().to_string();
-                if line.is_empty() || line == "data: [DONE]" {
+                if line.is_empty() {
                     continue;
                 }
-                let json_str = line.strip_prefix("data: ").unwrap_or(&line);
-                if json_str.trim().is_empty() {
+
+                // Server-Sent Events carries more than `data:` lines. Comment
+                // heartbeats (`: ping`), `event:`, `id:` and `retry:` fields are
+                // all legal and are emitted by common reverse proxies and
+                // gateways. The previous code fed every non-empty line to
+                // `serde_json` and propagated the failure with `?`, so one
+                // keep-alive comment aborted an otherwise healthy turn — and the
+                // resulting message matched nothing in `is_retryable_chat_error`,
+                // so the outer loop did not even retry it.
+                let Some(payload) = line.strip_prefix("data:") else {
+                    continue;
+                };
+                let payload = payload.trim();
+
+                // Some providers send `data:[DONE]` with no space, which the
+                // previous `line == "data: [DONE]"` equality test missed — so the
+                // terminator itself was parsed as JSON and failed, discarding a
+                // fully generated response at the very last line.
+                if payload.is_empty() || payload == "[DONE]" {
                     continue;
                 }
-                let v: Value =
-                    serde_json::from_str(json_str).map_err(|e| format!("Bad SSE JSON: {e}"))?;
+
+                // A malformed payload skips the line rather than killing the
+                // turn, matching what the Ollama adapter already does with the
+                // same hazard.
+                let Ok(v) = serde_json::from_str::<Value>(payload) else {
+                    continue;
+                };
                 let _done = accumulate_openai_stream_line(
                     &v,
                     &mut content,
@@ -393,14 +458,73 @@ impl OpenAiCompatClient {
             }
         }
 
-        for (idx, tc) in tool_calls.iter_mut().enumerate() {
-            if let Some(buf) = tool_arg_buffers.get(idx).filter(|b| !b.is_empty()) {
-                tc.args =
-                    serde_json::from_str(buf).unwrap_or_else(|_| json!({ "raw": buf.clone() }));
+        // Flush a trailing event that arrived without a terminating newline.
+        // Without this the last `data:` line of a stream is silently dropped —
+        // which is exactly how a tool call's final argument fragment goes
+        // missing. The Ollama adapter already does this; this one did not.
+        if let Some(payload) = String::from_utf8_lossy(&buf)
+            .trim()
+            .strip_prefix("data:")
+            .map(str::trim)
+            .map(str::to_string)
+        {
+            if !payload.is_empty() && payload != "[DONE]" {
+                if let Ok(v) = serde_json::from_str::<Value>(&payload) {
+                    let _ = accumulate_openai_stream_line(
+                        &v,
+                        &mut content,
+                        &mut thinking,
+                        &mut tool_calls,
+                        &mut tool_arg_buffers,
+                        &mut prompt_tokens,
+                        &mut eval_tokens,
+                        &mut on_delta,
+                    )?;
+                }
             }
         }
 
+        // Argument fragments that do not reassemble into valid JSON mean the
+        // stream was cut mid-call. Substituting `{"raw": "<partial text>"}` — as
+        // this did — hands the dispatcher a fabricated argument object: an
+        // `Edit` whose `file_path` simply vanished, reported to the user as the
+        // model misbehaving rather than as a truncated response.
+        let mut truncated: Vec<String> = Vec::new();
+        for (idx, tc) in tool_calls.iter_mut().enumerate() {
+            if let Some(buf) = tool_arg_buffers.get(idx).filter(|b| !b.is_empty()) {
+                match serde_json::from_str(buf) {
+                    Ok(parsed) => tc.args = parsed,
+                    Err(_) => truncated.push(if tc.name.is_empty() {
+                        format!("#{idx}")
+                    } else {
+                        tc.name.clone()
+                    }),
+                }
+            }
+        }
+        if !truncated.is_empty() {
+            // Marked retryable: a cut stream is transient, and the outer loop's
+            // bounded retry is the right response.
+            return Err(format!(
+                "OpenAI stream error: [E_BAD_TOOL_ARGS] arguments for {} were truncated and did not parse as JSON",
+                truncated.join(", ")
+            ));
+        }
+
         tool_calls.retain(|tc| !tc.name.is_empty());
+
+        // A stream that yielded nothing usable is an error, not an empty reply.
+        // Returning `Ok` with empty content made a quota-exhausted or
+        // 200-then-EOF response look like the model choosing to say nothing, so
+        // the loop neither retried nor reported anything. Mirrors the Ollama
+        // adapter's `[E_OLLAMA_EMPTY]`.
+        if content.is_empty() && thinking.is_empty() && tool_calls.is_empty() {
+            return Err(
+                "[E_OPENAI_EMPTY] The model returned no content and no tool calls. Check the provider's quota and that the model name is correct."
+                    .to_string(),
+            );
+        }
+
         Ok(ChatTurn {
             content,
             thinking,

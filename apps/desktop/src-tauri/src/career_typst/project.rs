@@ -178,18 +178,21 @@ pub fn compile_project_pdf(project_dir: &Path, main_rel: &str) -> TypstCompileRe
     let main = main_rel.to_string();
     let ident = format!("devprism-project:{main_rel}");
 
-    // Validate the root before entering the compile driver so a bad path is a
-    // clear message rather than a generic compile failure.
-    if let Err(message) = ProjectWorld::new(&root, &main) {
-        return TypstCompileResult::failure(message, 0);
-    }
+    // Build the world once and move it into the driver.
+    //
+    // This used to construct it, discard it purely as a validity check, then
+    // construct it a *second* time inside the closure and `expect` that the
+    // second attempt matched the first. Besides the denied `expect`, that was a
+    // genuine check-then-use race: `ProjectWorld::new` canonicalizes the root
+    // and resolves the main file, so a directory removed or replaced between
+    // the two calls turned a clear error message into a panic inside the
+    // compile driver.
+    let world = match ProjectWorld::new(&root, &main) {
+        Ok(world) => world,
+        Err(message) => return TypstCompileResult::failure(message, 0),
+    };
 
-    compile_world(
-        move || {
-            ProjectWorld::new(&root, &main).expect("root validated above")
-        },
-        &ident,
-    )
+    compile_world(move || world, &ident)
 }
 
 #[cfg(test)]

@@ -178,18 +178,16 @@ pub fn compile_project_pdf(project_dir: &Path, main_rel: &str) -> TypstCompileRe
     let main = main_rel.to_string();
     let ident = format!("devprism-project:{main_rel}");
 
-    // Validate the root before entering the compile driver so a bad path is a
-    // clear message rather than a generic compile failure.
-    if let Err(message) = ProjectWorld::new(&root, &main) {
-        return TypstCompileResult::failure(message, 0);
-    }
+    // Build the world ONCE, before entering the compile driver, so a bad path
+    // is a clear message rather than a generic compile failure. This previously
+    // constructed it twice and `expect`ed the second attempt to succeed;
+    // constructing once removes both the duplicate work and the panic path.
+    let world = match ProjectWorld::new(&root, &main) {
+        Ok(world) => world,
+        Err(message) => return TypstCompileResult::failure(message, 0),
+    };
 
-    compile_world(
-        move || {
-            ProjectWorld::new(&root, &main).expect("root validated above")
-        },
-        &ident,
-    )
+    compile_world(move || world, &ident)
 }
 
 #[cfg(test)]

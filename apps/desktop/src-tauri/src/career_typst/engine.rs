@@ -64,11 +64,29 @@ pub const EMBEDDED_FAMILIES: &[&str] = &[
     "DejaVu Sans Mono",
 ];
 
+/// The single file every resume compile resolves.
+const MAIN_FILE_NAME: &str = "resume.typ";
+
 fn main_file_id() -> FileId {
     // `FileId::new` interns and reuses by path, so repeated compiles of
-    // "resume.typ" share one id rather than leaking a new one each time.
-    let vpath = VirtualPath::new("resume.typ").expect("static virtual path");
-    FileId::new(RootedPath::new(VirtualRoot::Project, vpath))
+    // "resume.typ" share one id rather than leaking a new one each time; the
+    // `OnceLock` makes that explicit and removes the per-call construction.
+    //
+    // `VirtualPath::new` is fallible in general, but every constructor in
+    // `typst_syntax::path` is fallible, so there is no infallible fallback to
+    // build this id from. Propagating the error instead would mean changing
+    // `compile_world`'s `FnOnce() -> W` contract, which `project.rs` also uses,
+    // for an argument that is a compile-time constant.
+    //
+    // The suppression is therefore deliberate and matches the existing idiom at
+    // `lib.rs:783`. `main_file_id_is_infallible` below proves the branch is
+    // unreachable rather than leaving it asserted in a comment.
+    static MAIN_ID: std::sync::OnceLock<FileId> = std::sync::OnceLock::new();
+    *MAIN_ID.get_or_init(|| {
+        #[allow(clippy::expect_used)]
+        let vpath = VirtualPath::new(MAIN_FILE_NAME).expect("MAIN_FILE_NAME is a valid vpath");
+        FileId::new(RootedPath::new(VirtualRoot::Project, vpath))
+    })
 }
 
 /// A single-file, filesystem-isolated Typst world.
@@ -414,6 +432,18 @@ mod tests {
     /// straight into markup, where `#` still opens code mode.
     fn doc_with_markup_splice(payload: &str) -> String {
         format!("{PRELUDE}- {}\n", lit(payload))
+    }
+
+    /// Proves the `expect` in `main_file_id` is unreachable, so the
+    /// suppression there rests on a checked fact rather than a comment.
+    #[test]
+    fn main_file_id_is_infallible() {
+        assert!(
+            VirtualPath::new(MAIN_FILE_NAME).is_ok(),
+            "MAIN_FILE_NAME stopped being a valid virtual path"
+        );
+        // And the id is stable across calls (the OnceLock does its job).
+        assert_eq!(main_file_id(), main_file_id());
     }
 
     #[test]

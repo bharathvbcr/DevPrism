@@ -802,20 +802,6 @@ impl OllamaClient {
         self
     }
 
-    /// Explicitly send `think: false`.
-    ///
-    /// Leaving `think` unset omits the field, which lets the *model's* default
-    /// apply — and thinking-capable models such as Qwen3.5 default to on. For a
-    /// one-shot structured extraction (`format: "json"` with a fixed schema and
-    /// a downstream verifier) the reasoning trace is pure latency: a JD skill
-    /// extraction measured 17.1s with thinking and 0.7s without, for the same
-    /// answer. `with_think` can only turn thinking *on*, so disabling needs its
-    /// own constructor.
-    pub fn without_think(mut self) -> Self {
-        self.think = Some(json!(false));
-        self
-    }
-
     /// The effective context window (after clamp/default), so the caller can
     /// budget the in-turn message list against it.
     pub fn num_ctx(&self) -> u32 {

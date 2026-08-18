@@ -36,13 +36,16 @@ MCP client (Claude Code / kon / any agent)
         │
         ▼
   career_match/              ← deterministic core, ported from TypeScript
-    jd.rs         JDProfile + section-aware lexicon extraction
-    scoring.rs    0.40 embedding + 0.30 skills + 0.15 persona
-                  + 0.10 recency + 0.05 seniority
-    selection.rs  knapsack + per-section caps + one-per-org + MMR
-    metrics.rs    metric preservation AND fabrication detection
-    language.rs   the pluggable model layer + verify_rewrite
-    typst_emit.rs plain text → Typst string literals → document
+    jd.rs           JdProfile: lexicon extraction, or normalise a model's JSON
+    scoring.rs      0.40 embedding + 0.30 skills + 0.15 persona
+                    + 0.10 recency + 0.05 seniority
+    selection.rs    knapsack + per-section caps + one-per-org + coverage
+                    repair; mmr_select is a primitive, not part of packing
+    metrics.rs      metric preservation AND fabrication detection
+    gap.rs          must-have coverage and ATS percentage
+    text.rs         skill normalisation and word-boundary matching
+    typst_escape.rs NFC + plain text → Typst string literals
+    render.rs       document assembly + rendered-literal audit
         │
         ▼
   career_typst::engine       ← sandboxed in-process Typst → PDF
@@ -54,50 +57,69 @@ at its definition and pinned by a test.
 
 ## Who supplies the language
 
-Only two of the seven stages need a model. Every tool takes a `language`
-argument:
+**This server contains no model and makes no model calls.** Only two of the
+seven stages need one — JD analysis and bullet rewriting — and for both, the
+language comes from the caller. Everything else is deterministic Rust.
 
-```json
-{"mode": "deterministic"}                            // default — no model
-{"mode": "agent"}                                    // the MCP client writes
-{"mode": "ollama", "model": "qwen3.8:27b-mlx",
- "numCtx": 16384}                                    // local, zero external tokens
-```
+That is a deliberate contract, not a gap. An MCP client is almost always an
+agent that already has a model, so a second model inside the server would
+duplicate what the caller brings while adding outbound network calls, model
+configuration and timeouts to a headless process.
 
-`numCtx` matters: Ollama defaults `/api/chat` to ~2048 tokens and will silently
-truncate a real job description.
+* **JD analysis.** `resume_analyze_jd` extracts deterministically from a
+  controlled vocabulary and reports `extractionMethod: "heuristic"` plus a
+  warning when the JD is too short or nothing matched. A caller with a model
+  can produce a better profile itself; `career_match::jd::normalize` coerces
+  arbitrary model JSON into the canonical `JdProfile` shape.
+* **Bullet rewriting.** `resume_rewrite_bullets` does not generate text. Called
+  without `drafts` it returns a work order — each bullet's canonical text and
+  the JD keywords it should target — and reports `provenanceVerified: false`,
+  because nothing was verified. Called with `drafts`, every draft is checked
+  and the canonical text is substituted on failure.
 
-### The invariant that makes all three safe
+### The invariant that makes that safe
 
-`verify_rewrite` is a single gate every candidate bullet passes, whatever
-produced it — a local 27B, a frontier model over MCP, or a hand-typed string.
-A bullet is accepted only if:
+One gate applies to every candidate bullet, whatever produced it — a local
+model, a frontier model, or a hand-typed string. A draft is accepted only if:
 
 1. it is not locked,
 2. every ground-truth metric survives (`25%` may become `25 percent`, but not `125%`),
-3. **it introduces no figure** absent from the canonical text and its declared metrics,
-4. it fits the character budget (140 single-column).
+3. **it introduces no figure** absent from the canonical text and its declared
+   metrics (`metrics::introduced_numbers`),
+4. it fits the character budget.
 
-A failing candidate is replaced by the canonical bullet and the reason is
-reported. The floor is the user's own verified text, so a weaker model cannot
-lower factual quality — only tailoring quality. That is what makes the local
-path worth using.
+A failing draft is replaced by the canonical bullet and the reason is reported
+in `droppedMetrics`. The floor is the user's own verified text, so a weak model
+cannot lower factual quality — only tailoring quality. Drafts naming a bullet
+id that is not in the block are rejected outright, never accepted on the
+caller's word.
 
 ### The agent loop
 
 ```
-resume_score_and_select   → which blocks and bullets matter, with score components
-resume_rewrite_bullets    → language:{"mode":"agent"} returns a work order
-                            listing each bullet's protectedMetrics
+resume_analyze_jd         → JdProfile + extractionMethod (or send your own)
+resume_score_and_select   → which blocks and bullets matter, with components
+resume_rewrite_bullets    → without drafts: a work order listing each bullet's
+                            protected metrics
   (you write the bullets)
-resume_verify_rewrite     → accept/reject per bullet, with droppedMetrics
+resume_rewrite_bullets    → with drafts: accept/reject per bullet, with
+                            droppedMetrics
 resume_synthesize         → compiled PDF + measured match report
 ```
 
-`resume_verify_rewrite` matches submissions against the real canonical text by
-id — an unknown id is rejected, never accepted on the caller's word.
+## Appendix: local-model evaluation of a path that is NOT in the tree
 
-## Local-model evaluation
+> **Not implemented.** A prototype `career_match::language` drove Ollama from
+> inside the server (`language: {"mode": "ollama"}`). It is not part of this
+> codebase: it duplicated the metric verification `resume_rewrite_bullets`
+> already performs, and its model interaction could not be tested without a
+> live Ollama, so it was dropped rather than merged. The source is recoverable
+> from the `pre-merge-main` tag.
+>
+> The measurements below are kept because the two tuning findings are the
+> valuable part, and they would apply to any future in-server model path. Treat
+> the `language:` arguments in this section as describing the prototype, not
+> the current tool surface.
 
 Measured on an **Apple M5 Pro (18-core, 64 GB)**, Ollama 0.32.13.
 
@@ -124,16 +146,16 @@ which lets the *model's* default apply — and Qwen3.5 defaults to thinking on.
 A JD extraction spent 567 characters of reasoning to produce the same JSON:
 **17.1 s with thinking, 0.7 s without**. Across the whole pipeline that was
 109.8 s → 28.2 s, a 3.9× reduction. `OllamaClient::with_think` can only turn
-thinking *on*, so `without_think()` was added; `career_match` uses it for both
-stages. Both prompts request a fixed JSON schema and the output is checked by
-`verify_rewrite` afterwards rather than trusted, so the reasoning trace was
-buying nothing.
+thinking *on*, so the prototype added a `without_think()` and used it for both
+stages. That method was removed with the prototype — it had no other caller —
+so an in-server model path would need to reintroduce it. Both prompts requested
+a fixed JSON schema and the output was verified afterwards rather than trusted,
+so the reasoning trace was buying nothing.
 
 **2. One temperature does not fit both stages.** At `0.1` — correct for
-extraction — both local models simply echoed the canonical bullet back.
-`verify_rewrite` reported that honestly as `no-change` rather than counting it
-as AI work, which is exactly what that divergence exists for, but it meant zero
-tailoring. Splitting the stages (`JD_TEMPERATURE = 0.1`,
+extraction — both local models simply echoed the canonical bullet back. That
+was reported honestly as `no-change` rather than counted as AI work, but it
+meant zero tailoring. Splitting the stages (`JD_TEMPERATURE = 0.1`,
 `REWRITE_TEMPERATURE = 0.45`) plus an explicit "returning the input unchanged is
 a failure" instruction restored genuine rewrites on both models. Because output
 is verified regardless, a higher rewrite temperature costs nothing factually.
@@ -156,9 +178,9 @@ They have different risk profiles, and this is now measured rather than assumed.
 
 The e4b model completed the whole pipeline **3.6× faster** with comparable
 output and identical safety guarantees, so it is the better default for
-rewriting. `language` is per-call, so tiering needs no new code: call
-`resume_analyze_jd` with the 27B and `resume_rewrite_bullets` with the small
-model.
+rewriting. The same tiering applies to the shipped design without any server
+change: the caller picks the model per call, using a stronger one to build a
+`JdProfile` and a cheap one to write bullet drafts.
 
 ### On `kon` and alternative harnesses
 
@@ -166,14 +188,13 @@ model.
 any OpenAI-compatible `/v1` endpoint. It is a *client*, not a replacement for
 anything here: this MCP server is transport-agnostic, so kon, Claude Code,
 Cline, Goose or LocalHarness all drive the same tools identically. Adopting kon
-is a preference about the outer loop, not an architectural change — and it is
-worth nothing to the résumé path that `language:{"mode":"ollama"}` does not
-already provide, because that path skips the agent loop entirely.
+is a preference about the outer loop, not an architectural change.
 
 The genuine cost lever is **which stages need an agent at all**. Scoring,
 selection, gap analysis, materialization and compilation are deterministic Rust
 and cost zero tokens in every mode. Only JD analysis and rewriting consume any,
-and `mode: "ollama"` takes those to zero external tokens as well.
+and pointing those two at a local model in your own client takes them to zero
+external tokens as well.
 
 ## Verifying
 
@@ -181,13 +202,8 @@ and `mode: "ollama"` takes those to zero external tokens as well.
 cd apps/desktop/src-tauri && cargo test --lib career_match
 ```
 
-Live local-model tests are `#[ignore]`d (they need a running Ollama):
-
-```bash
-cargo test --lib -- --ignored --nocapture live_ollama
-```
-
-Override with `DEVPRISM_TEST_OLLAMA_MODEL` / `DEVPRISM_TEST_OLLAMA_URL`.
+There are no live-model tests: the server makes no model calls, so every stage
+above is exercised deterministically and the whole suite runs offline.
 
 `cargo check` needs the wrapper toolchain for the vendored tectonic natives —
 see the notes in `career_db/CLAUDE.md` and the repo's build docs.

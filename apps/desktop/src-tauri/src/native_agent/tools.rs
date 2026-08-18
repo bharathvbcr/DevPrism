@@ -811,6 +811,54 @@ fn slice_lines(
     (out, false)
 }
 
+/// Dispatch one of the MCP career/résumé tools from the agent loop.
+///
+/// Each of these arms used to inline its own dispatch and return
+/// `val.to_string()` directly. That skipped three things every other tool in
+/// this file gets right:
+///
+/// * **The output cap.** Every other tool funnels through `cap`. These did not,
+///   so an unbounded JSON blob went straight into `messages`. `resume_compile`
+///   is the worst case: `include_pdf` defaults to *true*, so a routine call
+///   pushed a base64-encoded PDF — hundreds of kilobytes — into a context window
+///   whose byte budget at the default `num_ctx` is around 15 KB. The agent has
+///   no use for PDF bytes; `byteLength` and `pageCount` are the useful fields.
+/// * **`async: false`.** `resume_synthesize` honours an `async` argument by
+///   spawning against the `TaskManager` and returning a `taskId`. The manager
+///   built here is dropped the moment this function returns, and the agent loop
+///   exposes no `tasks/get` tool — so a model that passed `async: true` got a
+///   task id nothing could poll or cancel, while the pipeline ran on detached.
+/// * **A shared knowledgebase handle.** Still a per-call `CareerDbState`, which
+///   is a wart, but forcing the two above keeps it from compounding.
+///
+/// Arguments reach here verbatim from the model, so both keys are overwritten
+/// rather than defaulted — a model that supplies them cannot opt back in.
+async fn run_mcp_tool(tool: &str, args: &Value) -> (String, bool) {
+    let mut args = args.clone();
+    if let Some(obj) = args.as_object_mut() {
+        obj.insert("async".to_string(), Value::Bool(false));
+        if tool == "resume_compile" {
+            obj.insert("include_pdf".to_string(), Value::Bool(false));
+        }
+    }
+
+    let db = crate::career_db::CareerDbState::default();
+    let result = if tool.starts_with("career_") {
+        // None of the tools reachable from this loop elicit, so a per-call store
+        // is correct: it cannot accumulate, and no confirmation spans calls.
+        let elicitations = crate::mcp::elicitation::ElicitationStore::new();
+        crate::mcp::tools_career::execute_career_tool(&db, &elicitations, tool, &args).await
+    } else {
+        let task_mgr = std::sync::Arc::new(crate::mcp::tasks::TaskManager::new());
+        crate::mcp::tools_resume::execute_resume_tool(&db, &task_mgr, tool, &args).await
+    };
+
+    match result {
+        Ok(val) => (cap(val.to_string(), MAX_OUTPUT_BYTES), false),
+        Err(err) => (err.message, true),
+    }
+}
+
 fn cap(mut s: String, max: usize) -> String {
     if s.len() > max {
         let mut cut = max;
@@ -1030,36 +1078,8 @@ async fn execute_inner(project_dir: &Path, name: &str, args: &Value) -> (String,
                 Err(e) => (e, true),
             }
         }
-        "career_search_kb" => {
-            let db = crate::career_db::CareerDbState::default();
-            match crate::mcp::tools_career::execute_career_tool(&db, "career_search_kb", args).await {
-                Ok(val) => (val.to_string(), false),
-                Err(err) => (err.message, true),
-            }
-        }
-        "resume_gap_analysis" => {
-            let db = crate::career_db::CareerDbState::default();
-            let task_mgr = std::sync::Arc::new(crate::mcp::tasks::TaskManager::new());
-            match crate::mcp::tools_resume::execute_resume_tool(&db, &task_mgr, "resume_gap_analysis", args).await {
-                Ok(val) => (val.to_string(), false),
-                Err(err) => (err.message, true),
-            }
-        }
-        "resume_synthesize" => {
-            let db = crate::career_db::CareerDbState::default();
-            let task_mgr = std::sync::Arc::new(crate::mcp::tasks::TaskManager::new());
-            match crate::mcp::tools_resume::execute_resume_tool(&db, &task_mgr, "resume_synthesize", args).await {
-                Ok(val) => (val.to_string(), false),
-                Err(err) => (err.message, true),
-            }
-        }
-        "resume_compile" => {
-            let db = crate::career_db::CareerDbState::default();
-            let task_mgr = std::sync::Arc::new(crate::mcp::tasks::TaskManager::new());
-            match crate::mcp::tools_resume::execute_resume_tool(&db, &task_mgr, "resume_compile", args).await {
-                Ok(val) => (val.to_string(), false),
-                Err(err) => (err.message, true),
-            }
+        "career_search_kb" | "resume_gap_analysis" | "resume_synthesize" | "resume_compile" => {
+            run_mcp_tool(name, args).await
         }
         other => (
             format!(

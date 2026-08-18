@@ -29,6 +29,205 @@ use sha1::Digest;
 use std::collections::HashMap;
 use uuid::Uuid;
 
+// --- Input bounds ---
+//
+// Every argument here arrives as arbitrary JSON from any MCP client, and several
+// of them are written straight into SQLite. Before these caps existed, a single
+// `career_ingest_knowledge` call could hand the server an arbitrarily large
+// `text`, which `ingest` splits into one row per paragraph and inserts one
+// statement at a time while holding the process-wide DB mutex — freezing the
+// desktop UI along with every other tool for as long as it took.
+//
+// The JSON Schemas in the tool definitions are advisory: MCP clients are not
+// obliged to honour them and a hostile one certainly will not. These are the
+// enforcement.
+
+/// Longest search query accepted. Every hit does a substring scan against it.
+const MAX_QUERY_CHARS: usize = 1_000;
+/// Largest single body of text accepted for ingest or distillation.
+const MAX_TEXT_BYTES: usize = 1024 * 1024;
+/// Longest short identifier-ish field (titles, ids, source kinds).
+const MAX_LABEL_CHARS: usize = 512;
+/// Longest source URI.
+const MAX_URI_CHARS: usize = 2_048;
+/// Most facts appended in one call.
+const MAX_FACTS_PER_CALL: usize = 500;
+/// Largest experience block accepted, measured on its serialized JSON.
+const MAX_BLOCK_JSON_BYTES: usize = 1024 * 1024;
+/// Largest `limit` a caller may request, and the default when absent.
+const MAX_SEARCH_LIMIT: usize = 200;
+const DEFAULT_SEARCH_LIMIT: usize = 10;
+
+/// What an overwrite of an existing block would destroy.
+///
+/// Counting bullets was not enough. `upsert_block_blocking` replaces the whole
+/// document, so a payload with the *same number* of bullets silently discards
+/// every original `canonical`, `metrics`, `evidence_refs`, and — because
+/// `Bullet::locked` is `#[serde(default)]` — every `locked` flag, while a
+/// count-based check reports no loss at all. The gate has to compare identities
+/// and protected content, not cardinality.
+#[derive(Default)]
+struct OverwriteLoss {
+    dropped_bullet_ids: Vec<String>,
+    dropped_fact_ids: Vec<String>,
+    /// Locked bullets whose text or metrics the payload would change. `locked`
+    /// exists precisely to mean "do not rewrite this".
+    modified_locked_bullets: Vec<String>,
+}
+
+impl OverwriteLoss {
+    fn is_destructive(&self) -> bool {
+        !self.dropped_bullet_ids.is_empty()
+            || !self.dropped_fact_ids.is_empty()
+            || !self.modified_locked_bullets.is_empty()
+    }
+
+    fn describe(&self) -> String {
+        let mut parts = Vec::new();
+        if !self.dropped_bullet_ids.is_empty() {
+            parts.push(format!("{} bullet(s)", self.dropped_bullet_ids.len()));
+        }
+        if !self.dropped_fact_ids.is_empty() {
+            parts.push(format!("{} fact(s)", self.dropped_fact_ids.len()));
+        }
+        if !self.modified_locked_bullets.is_empty() {
+            parts.push(format!(
+                "{} locked bullet(s) rewritten",
+                self.modified_locked_bullets.len()
+            ));
+        }
+        parts.join(", ")
+    }
+}
+
+fn overwrite_loss(prior: &ExperienceBlock, next: &ExperienceBlock) -> OverwriteLoss {
+    let next_bullets: HashMap<&str, &crate::career_db::Bullet> =
+        next.bullets.iter().map(|b| (b.id.as_str(), b)).collect();
+    let next_fact_ids: std::collections::HashSet<&str> =
+        next.facts.iter().map(|f| f.id.as_str()).collect();
+
+    let mut loss = OverwriteLoss::default();
+    for bullet in &prior.bullets {
+        match next_bullets.get(bullet.id.as_str()) {
+            None => loss.dropped_bullet_ids.push(bullet.id.clone()),
+            Some(incoming) if bullet.locked => {
+                let text_changed = incoming.canonical != bullet.canonical;
+                let metrics_changed = incoming.metrics.len() != bullet.metrics.len()
+                    || incoming
+                        .metrics
+                        .iter()
+                        .zip(&bullet.metrics)
+                        .any(|(a, b)| a.value != b.value || a.kind != b.kind);
+                // Silently clearing `locked` is itself the loss.
+                if text_changed || metrics_changed || !incoming.locked {
+                    loss.modified_locked_bullets.push(bullet.id.clone());
+                }
+            }
+            Some(_) => {}
+        }
+    }
+    for fact in &prior.facts {
+        if !next_fact_ids.contains(fact.id.as_str()) {
+            loss.dropped_fact_ids.push(fact.id.clone());
+        }
+    }
+    loss
+}
+
+/// Digest of the exact payload a confirmation approves.
+///
+/// The confirmation subject must identify the *change*, not just the block. Bound
+/// to the id alone, a token issued for "drop 1 of 20 bullets" — which is what the
+/// human was shown and approved — could be redeemed on a second call carrying an
+/// empty block of the same id, gutting all 20. Binding to the payload makes the
+/// approved write the only write the token authorises.
+fn overwrite_subject(block_id: &str, block: &Value) -> String {
+    let canonical = serde_json::to_string(block).unwrap_or_default();
+    let digest = sha1::Sha1::digest(canonical.as_bytes());
+    format!("{block_id}:{digest:x}")
+}
+
+/// Read a required string argument.
+fn require_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, JsonRpcError> {
+    match args.get(key) {
+        Some(Value::String(s)) => Ok(s.as_str()),
+        Some(other) => Err(JsonRpcError::invalid_params(format!(
+            "Argument '{key}' must be a string, got {}",
+            json_type_name(other)
+        ))),
+        None => Err(JsonRpcError::invalid_params(format!(
+            "Missing required '{key}' argument"
+        ))),
+    }
+}
+
+/// Read an optional string argument, rejecting a present-but-wrong-typed value.
+///
+/// The previous `arguments.get(k).and_then(|v| v.as_str())` collapsed "absent"
+/// and "wrong type" into the same `None`. For a filter argument that means
+/// `{"persona_id": 123}` is read as *no persona filter* and silently returns the
+/// entire unscoped profile — a wrong answer that looks like a right one.
+fn optional_str<'a>(args: &'a Value, key: &str) -> Result<Option<&'a str>, JsonRpcError> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.as_str())),
+        Some(other) => Err(JsonRpcError::invalid_params(format!(
+            "Argument '{key}' must be a string, got {}",
+            json_type_name(other)
+        ))),
+    }
+}
+
+fn json_type_name(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
+/// Reject an over-long string, counting characters.
+fn bounded_chars<'a>(value: &'a str, key: &str, max: usize) -> Result<&'a str, JsonRpcError> {
+    let len = value.chars().count();
+    if len > max {
+        return Err(JsonRpcError::invalid_params(format!(
+            "Argument '{key}' is {len} characters, exceeding the {max}-character limit"
+        )));
+    }
+    Ok(value)
+}
+
+/// Reject an over-long body of text, counting bytes (what actually hits storage).
+fn bounded_bytes<'a>(value: &'a str, key: &str, max: usize) -> Result<&'a str, JsonRpcError> {
+    if value.len() > max {
+        return Err(JsonRpcError::invalid_params(format!(
+            "Argument '{key}' is {} bytes, exceeding the {max}-byte limit",
+            value.len()
+        )));
+    }
+    Ok(value)
+}
+
+/// Read a `limit`, clamped to `MAX_SEARCH_LIMIT`.
+fn bounded_limit(args: &Value) -> Result<usize, JsonRpcError> {
+    match args.get("limit") {
+        None | Some(Value::Null) => Ok(DEFAULT_SEARCH_LIMIT),
+        Some(Value::Number(n)) => {
+            let raw = n.as_u64().ok_or_else(|| {
+                JsonRpcError::invalid_params("Argument 'limit' must be a non-negative integer")
+            })?;
+            Ok((raw as usize).clamp(1, MAX_SEARCH_LIMIT))
+        }
+        Some(other) => Err(JsonRpcError::invalid_params(format!(
+            "Argument 'limit' must be a number, got {}",
+            json_type_name(other)
+        ))),
+    }
+}
+
 pub fn list_career_tools() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
@@ -87,13 +286,21 @@ pub fn list_career_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "career_upsert_block".to_string(),
-            description: "Create or update an experience block (work, project, education, skill_group, leadership) in the candidate's career database.".to_string(),
+            description: "Create or update an experience block (work, project, education, skill_group, leadership) in the candidate's career database. This is a whole-document replace: any bullet or fact absent from the payload is discarded. If the update would drop existing bullets or facts, it requires MRTR confirmation first.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "block": {
                         "type": "object",
                         "description": "The ExperienceBlock object to insert or update"
+                    },
+                    "input_responses": {
+                        "type": "object",
+                        "description": "Elicitation responses from a previous roundtrip, when the update discards content"
+                    },
+                    "request_state": {
+                        "type": "string",
+                        "description": "Server-issued state from a previous roundtrip. Must be the exact value the server returned; a forged or reused value is rejected."
                     }
                 },
                 "required": ["block"]
@@ -260,23 +467,18 @@ pub fn list_career_resources() -> Vec<ResourceDefinition> {
 
 pub async fn execute_career_tool(
     db: &career_db::CareerDbState,
+    elicitations: &crate::mcp::elicitation::ElicitationStore,
     name: &str,
     arguments: &Value,
 ) -> Result<Value, JsonRpcError> {
     match name {
         "career_search_kb" => {
-            let query = arguments
-                .get("query")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| JsonRpcError::invalid_params("Missing required 'query' argument"))?;
-            // Bounded: `limit` reaches an over-fetch multiplier and a Vec
-            // truncate, so an unbounded value is an allocation lever.
-            const MAX_SEARCH_LIMIT: usize = 200;
-            let limit = arguments
-                .get("limit")
-                .and_then(|v| v.as_u64())
-                .map(|n| (n as usize).clamp(1, MAX_SEARCH_LIMIT))
-                .unwrap_or(10);
+            let query = bounded_chars(
+                require_str(arguments, "query")?,
+                "query",
+                MAX_QUERY_CHARS,
+            )?;
+            let limit = bounded_limit(arguments)?;
 
             let owner_kinds = arguments
                 .get("owner_kinds")
@@ -598,9 +800,9 @@ pub async fn execute_career_tool(
 
         "career_get_profile" => {
             let db_clone = db.clone();
-            let persona_filter = arguments
-                .get("persona_id")
-                .and_then(|v| v.as_str())
+            let persona_filter = optional_str(arguments, "persona_id")?
+                .map(|s| bounded_chars(s, "persona_id", MAX_LABEL_CHARS))
+                .transpose()?
                 .map(str::to_string);
 
             let profile = tokio::task::spawn_blocking(move || {
@@ -632,11 +834,127 @@ pub async fn execute_career_tool(
             let block_val = arguments
                 .get("block")
                 .ok_or_else(|| JsonRpcError::invalid_params("Missing required 'block' object"))?;
+
+            // Bound before deserializing: `ExperienceBlock` has unbounded `Vec`
+            // fields, and the whole document is written to one SQLite row.
+            let encoded = serde_json::to_string(block_val)
+                .map_err(|e| JsonRpcError::invalid_params(format!("Unserializable block: {e}")))?;
+            bounded_bytes(&encoded, "block", MAX_BLOCK_JSON_BYTES)?;
+
             let block: ExperienceBlock = serde_json::from_value(block_val.clone())
                 .map_err(|e| JsonRpcError::invalid_params(format!("Invalid ExperienceBlock schema: {e}")))?;
 
-            let db_clone = db.clone();
+            // `upsert_block_blocking` is `ON CONFLICT(id) DO UPDATE SET json =
+            // excluded.json` — a whole-document replace. The caller supplies the
+            // id, so naming an existing block silently discards every bullet,
+            // fact, metric and `locked` flag the payload omits. Overwriting a
+            // block with an empty one was strictly more destructive than
+            // `career_delete_block`, and it was the one of the two with no gate
+            // at all.
+            //
+            // Growth and in-place edits stay a single call. Only *losing*
+            // content needs the same confirmation round trip as a delete.
             let block_id = block.id.clone();
+            let db_probe = db.clone();
+            let probe_id = block_id.clone();
+            let existing = tokio::task::spawn_blocking(move || {
+                db_probe.with_conn(|conn| {
+                    let blocks = career_db::list_blocks_blocking(conn, false)?;
+                    Ok(blocks.into_iter().find(|b| b.id == probe_id))
+                })
+            })
+            .await
+            .map_err(|e| JsonRpcError::internal_error(format!("block probe error: {e}")))?
+            .map_err(JsonRpcError::internal_error)?;
+
+            if let Some(prior) = &existing {
+                let loss = overwrite_loss(prior, &block);
+
+                if loss.is_destructive() {
+                    let subject = overwrite_subject(&block_id, block_val);
+                    let request_state = optional_str(arguments, "request_state")?;
+                    match request_state {
+                        Some(state_str) => {
+                            let state_val = InputRequiredResult::decode_state(state_str).map_err(
+                                |e| {
+                                    JsonRpcError::new(
+                                        crate::mcp::protocol::ERR_ELICITATION_FAILED,
+                                        e,
+                                    )
+                                },
+                            )?;
+                            let nonce = InputRequiredResult::nonce_from_state(&state_val)
+                                .ok_or_else(|| {
+                                    JsonRpcError::new(
+                                        crate::mcp::protocol::ERR_ELICITATION_FAILED,
+                                        "requestState is not bound to a server-issued confirmation",
+                                    )
+                                })?;
+                            // Subject is the payload digest, so the token only
+                            // authorises the exact write the user approved.
+                            elicitations
+                                .consume(nonce, "career_upsert_block", &subject)
+                                .map_err(|rejection| {
+                                    JsonRpcError::with_data(
+                                        crate::mcp::protocol::ERR_ELICITATION_FAILED,
+                                        rejection.detail(),
+                                        json!({ "blockId": block_id }),
+                                    )
+                                })?;
+
+                            let confirmed = arguments
+                                .get("input_responses")
+                                .and_then(|r| r.get("confirm"))
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
+                            if !confirmed {
+                                return Ok(json!({
+                                    "success": false,
+                                    "cancelled": true,
+                                    "message": "Block overwrite was cancelled by the user"
+                                }));
+                            }
+                        }
+                        None => {
+                            let mut requests = HashMap::new();
+                            requests.insert(
+                                "confirm".to_string(),
+                                InputRequest {
+                                    kind: "confirmation".to_string(),
+                                    message: format!(
+                                        "Overwriting block '{}' at '{}' will permanently discard {}. Continue?",
+                                        prior.title,
+                                        prior.org,
+                                        loss.describe()
+                                    ),
+                                    schema: json!({
+                                        "type": "boolean",
+                                        "description": "True to overwrite and discard the missing content, false to cancel"
+                                    }),
+                                },
+                            );
+
+                            let state_payload = json!({
+                                "tool": "career_upsert_block",
+                                "blockId": block_id,
+                                "droppedBulletIds": loss.dropped_bullet_ids,
+                                "droppedFactIds": loss.dropped_fact_ids,
+                                "modifiedLockedBullets": loss.modified_locked_bullets,
+                                "timestamp": chrono::Utc::now().timestamp_millis()
+                            });
+                            let nonce = elicitations.issue("career_upsert_block", &subject);
+                            let mrtr =
+                                InputRequiredResult::new_bound(requests, &state_payload, &nonce)
+                                    .map_err(JsonRpcError::internal_error)?;
+                            return serde_json::to_value(mrtr)
+                                .map_err(|e| JsonRpcError::internal_error(e.to_string()));
+                        }
+                    }
+                }
+            }
+
+            let created = existing.is_none();
+            let db_clone = db.clone();
             tokio::task::spawn_blocking(move || {
                 db_clone.with_conn(|conn| career_db::upsert_block_blocking(conn, &block))
             })
@@ -647,7 +965,11 @@ pub async fn execute_career_tool(
             Ok(json!({
                 "success": true,
                 "blockId": block_id,
-                "message": format!("Block '{block_id}' saved successfully")
+                "created": created,
+                "message": format!(
+                    "Block '{block_id}' {}",
+                    if created { "created" } else { "updated" }
+                )
             }))
         }
 
@@ -659,12 +981,38 @@ pub async fn execute_career_tool(
 
             // Check if MRTR response or state was provided
             let input_responses = arguments.get("input_responses");
-            let request_state = arguments.get("request_state").and_then(|v| v.as_str());
+            let request_state = optional_str(arguments, "request_state")?;
 
             if let Some(state_str) = request_state {
                 // Decode stateless requestState
                 let state_val = InputRequiredResult::decode_state(state_str)
                     .map_err(|e| JsonRpcError::new(crate::mcp::protocol::ERR_ELICITATION_FAILED, e))?;
+
+                // Prove this state came from *this* server's confirmation prompt
+                // for *this* block, and has not already been spent.
+                //
+                // Before this check the mere presence of a `request_state`
+                // argument put the call on the deletion path: any caller could
+                // attach `{"request_state":"e30=","input_responses":{"confirm":
+                // true}}` and permanently delete a block plus its embeddings
+                // without a human ever seeing the prompt. The confirmation is
+                // only a gate if the token coming back is proven to be the token
+                // that went out.
+                let nonce = InputRequiredResult::nonce_from_state(&state_val).ok_or_else(|| {
+                    JsonRpcError::new(
+                        crate::mcp::protocol::ERR_ELICITATION_FAILED,
+                        "requestState is not bound to a server-issued confirmation",
+                    )
+                })?;
+                elicitations
+                    .consume(nonce, "career_delete_block", block_id)
+                    .map_err(|rejection| {
+                        JsonRpcError::with_data(
+                            crate::mcp::protocol::ERR_ELICITATION_FAILED,
+                            rejection.detail(),
+                            json!({ "blockId": block_id }),
+                        )
+                    })?;
 
                 let confirmed = input_responses
                     .and_then(|r| r.get("confirm"))
@@ -679,29 +1027,10 @@ pub async fn execute_career_tool(
                     }));
                 }
 
-                // The signed state is the authority on WHAT was confirmed.
-                // Previously this fell back to the caller's `block_id` and then
-                // reported that id as deleted, so a client could confirm
-                // deleting block A and have block B's id echoed back, and a
-                // state without a blockId would delete whatever the caller
-                // named. Both defeat the confirmation gate.
-                let bid = state_val
-                    .get("blockId")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        JsonRpcError::new(
-                            crate::mcp::protocol::ERR_ELICITATION_FAILED,
-                            "request_state carries no blockId; re-run the deletion to obtain a \
-                             fresh confirmation".to_string(),
-                        )
-                    })?
-                    .to_string();
-                if bid != block_id {
-                    return Err(JsonRpcError::invalid_params(format!(
-                        "block_id '{block_id}' does not match the confirmed block '{bid}'. \
-                         Re-run the deletion for the block you intend to delete."
-                    )));
-                }
+                // Delete exactly the block the token was issued for. `consume`
+                // has already established that `state_val`'s subject and
+                // `block_id` agree, so this is the same id either way.
+                let bid = block_id.to_string();
 
                 let db_clone = db.clone();
                 let bid_for_delete = bid.clone();
@@ -765,7 +1094,8 @@ pub async fn execute_career_tool(
                     "timestamp": chrono::Utc::now().timestamp_millis()
                 });
 
-                let mrtr = InputRequiredResult::new(requests, &state_payload)
+                let nonce = elicitations.issue("career_delete_block", &block.id);
+                let mrtr = InputRequiredResult::new_bound(requests, &state_payload, &nonce)
                     .map_err(|e| JsonRpcError::internal_error(e))?;
 
                 return Ok(serde_json::to_value(mrtr)
@@ -789,13 +1119,10 @@ pub async fn execute_career_tool(
         }
 
         "career_distill_facts" => {
-            let text = arguments
-                .get("text")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| JsonRpcError::invalid_params("Missing required 'text' argument"))?;
-            let source = arguments
-                .get("source")
-                .and_then(|v| v.as_str())
+            let text = bounded_bytes(require_str(arguments, "text")?, "text", MAX_TEXT_BYTES)?;
+            let source = optional_str(arguments, "source")?
+                .map(|s| bounded_chars(s, "source", MAX_LABEL_CHARS))
+                .transpose()?
                 .unwrap_or("manual");
 
             // Extract bullet points / sentences into atomic facts
@@ -844,14 +1171,28 @@ pub async fn execute_career_tool(
         }
 
         "career_add_facts" => {
-            let block_id = arguments
-                .get("block_id")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| JsonRpcError::invalid_params("Missing required 'block_id'"))?;
+            let block_id = bounded_chars(
+                require_str(arguments, "block_id")?,
+                "block_id",
+                MAX_LABEL_CHARS,
+            )?;
             let facts_val = arguments
                 .get("facts")
                 .and_then(|v| v.as_array())
                 .ok_or_else(|| JsonRpcError::invalid_params("Missing required 'facts' array"))?;
+            if facts_val.len() > MAX_FACTS_PER_CALL {
+                return Err(JsonRpcError::invalid_params(format!(
+                    "'facts' has {} entries, exceeding the {MAX_FACTS_PER_CALL}-entry limit",
+                    facts_val.len()
+                )));
+            }
+
+            // Count alone is not a bound: `BlockFact.text` is an unbounded
+            // `String`, so 500 facts of 10 MB each is a ~5 GB row written through
+            // the process-wide DB mutex — the freeze these caps exist to prevent.
+            let facts_encoded = serde_json::to_string(facts_val)
+                .map_err(|e| JsonRpcError::invalid_params(format!("Unserializable facts: {e}")))?;
+            bounded_bytes(&facts_encoded, "facts", MAX_BLOCK_JSON_BYTES)?;
 
             let mut new_facts = Vec::new();
             for f in facts_val {
@@ -909,8 +1250,28 @@ pub async fn execute_career_tool(
             let p_val = arguments
                 .get("persona")
                 .ok_or_else(|| JsonRpcError::invalid_params("Missing required 'persona' object"))?;
+            // `Persona` carries an unbounded `skill_weights` map and an
+            // unbounded `tone_directive`; neither was capped.
+            let persona_encoded = serde_json::to_string(p_val)
+                .map_err(|e| JsonRpcError::invalid_params(format!("Unserializable persona: {e}")))?;
+            bounded_bytes(&persona_encoded, "persona", MAX_BLOCK_JSON_BYTES)?;
+
             let persona: Persona = serde_json::from_value(p_val.clone())
                 .map_err(|e| JsonRpcError::invalid_params(format!("Invalid Persona: {e}")))?;
+
+            // `career_delete_persona` refuses to remove a built-in persona, but
+            // upsert had no such guard — so a tool call could not delete `ai`
+            // yet could replace its label, skill weights, template, section
+            // order and tone directive wholesale. The invariant "built-in
+            // personas are stable" was enforced on one path and not the other.
+            // The user's own UI path is unaffected; this refuses only remote
+            // callers.
+            if career_db::is_seeded_persona_id(&persona.id) {
+                return Err(JsonRpcError::invalid_params(format!(
+                    "Persona '{}' is built-in and cannot be redefined over MCP; use a new id to create a custom persona",
+                    persona.id
+                )));
+            }
 
             let pid = persona.id.clone();
             let db_clone = db.clone();
@@ -928,24 +1289,41 @@ pub async fn execute_career_tool(
         }
 
         "career_ingest_knowledge" => {
-            let title = arguments
-                .get("title")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| JsonRpcError::invalid_params("Missing required 'title'"))?;
-            let text = arguments
-                .get("text")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| JsonRpcError::invalid_params("Missing required 'text'"))?;
-            let source_type = arguments
-                .get("source_type")
-                .and_then(|v| v.as_str())
+            let title =
+                bounded_chars(require_str(arguments, "title")?, "title", MAX_LABEL_CHARS)?;
+            let text = bounded_bytes(require_str(arguments, "text")?, "text", MAX_TEXT_BYTES)?;
+            let source_type = optional_str(arguments, "source_type")?
+                .map(|s| bounded_chars(s, "source_type", MAX_LABEL_CHARS))
+                .transpose()?
                 .unwrap_or("notes")
                 .to_string();
-            let uri = arguments
-                .get("uri")
-                .and_then(|v| v.as_str())
-                .unwrap_or("notes://direct")
-                .to_string();
+
+            // `uri` is the dedup key: `upsert_prepared_source` matches an
+            // existing row by it, then deletes every chunk (and embedding) whose
+            // content hash is absent from the new payload and rewrites the
+            // title. A caller that names an existing source therefore *destroys*
+            // it — silently, with no confirmation, unlike `career_delete_block`.
+            // Source URIs are readable from `career://kb/sources`, so the target
+            // is trivially discoverable.
+            //
+            // MCP-ingested content now lives under its own namespace, so a tool
+            // call cannot address a source ingested through the app. Replacing a
+            // specific MCP-ingested source stays possible by passing its exact
+            // `mcp://ingest/...` uri back.
+            const MCP_INGEST_PREFIX: &str = "mcp://ingest/";
+            let uri = match optional_str(arguments, "uri")? {
+                None => format!("{MCP_INGEST_PREFIX}{}", Uuid::new_v4()),
+                Some(supplied) => {
+                    let supplied = bounded_chars(supplied, "uri", MAX_URI_CHARS)?;
+                    if supplied.starts_with(MCP_INGEST_PREFIX) {
+                        supplied.to_string()
+                    } else {
+                        return Err(JsonRpcError::invalid_params(format!(
+                            "Argument 'uri' must begin with '{MCP_INGEST_PREFIX}' — a tool call may not overwrite a source ingested outside MCP. Omit 'uri' to create a new source."
+                        )));
+                    }
+                }
+            };
 
             let title_owned = title.to_string();
             let text_owned = text.to_string();

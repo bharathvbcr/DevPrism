@@ -1,0 +1,206 @@
+# MCP Résumé Harness
+
+How an external agent drives DevPrism's résumé generator, and what it costs.
+
+## The problem this solves
+
+The canonical résumé pipeline is TypeScript (`src/lib/resume-synthesis/`) and
+runs in the webview. The MCP server does not: `main.rs --mcp` builds a Tokio
+runtime and a `CareerDbState` and nothing else — no Tauri app, no webview, no
+JS engine. It therefore cannot call the TypeScript.
+
+Before this work it didn't try. The seven `resume_*` tools were self-contained
+heuristics that had drifted into fiction:
+
+| Tool | What it claimed | What it did |
+| --- | --- | --- |
+| `resume_rewrite_bullets` | "strict anti-hallucination provenance" | `let tailored = bullet.canonical.clone()` — rewrote nothing, then reported `provenanceVerified: true, hasHallucination: false` hardcoded |
+| `resume_finetune_bullet` | "metric impact" | Appended a **fabricated** `"(impact: improved latency/efficiency by 25%)"` to any bullet without a number |
+| `resume_compile` (LaTeX) | "compile" | Returned `success: true, "LaTeX source verified"` without compiling |
+| `resume_synthesize` | "7-stage pipeline" | `generate_mock_typst_resume`, first 3 blocks, hardcoded `coveragePercentage: 88.0` |
+| `resume_score_and_select` | "knapsack + MMR" | A greedy sort; its bullet term asked whether the JD contained an entire résumé bullet verbatim (always false) |
+| `resume_gap_analysis` | skill coverage | `a.contains(b) \|\| b.contains(a)` — "Go" matched "Django" |
+
+`generate_mock_typst_resume` also interpolated bullet text straight into Typst
+**markup**, where `#` opens code mode — the shape
+`career_typst::engine`'s `markup_splicing_is_unsafe_which_is_why_we_use_code_mode`
+test exists to forbid.
+
+## Architecture
+
+```
+MCP client (Claude Code / kon / any agent)
+        │  JSON-RPC over stdio or HTTP
+        ▼
+  mcp/tools_resume.rs        ← thin dispatch, computes nothing
+        │
+        ▼
+  career_match/              ← deterministic core, ported from TypeScript
+    jd.rs         JDProfile + section-aware lexicon extraction
+    scoring.rs    0.40 embedding + 0.30 skills + 0.15 persona
+                  + 0.10 recency + 0.05 seniority
+    selection.rs  knapsack + per-section caps + one-per-org + MMR
+    metrics.rs    metric preservation AND fabrication detection
+    language.rs   the pluggable model layer + verify_rewrite
+    typst_emit.rs plain text → Typst string literals → document
+        │
+        ▼
+  career_typst::engine       ← sandboxed in-process Typst → PDF
+```
+
+The TypeScript remains the canonical owner. `career_match` is a faithful port;
+each module names its counterpart, and every deliberate divergence is documented
+at its definition and pinned by a test.
+
+## Who supplies the language
+
+Only two of the seven stages need a model. Every tool takes a `language`
+argument:
+
+```json
+{"mode": "deterministic"}                            // default — no model
+{"mode": "agent"}                                    // the MCP client writes
+{"mode": "ollama", "model": "qwen3.8:27b-mlx",
+ "numCtx": 16384}                                    // local, zero external tokens
+```
+
+`numCtx` matters: Ollama defaults `/api/chat` to ~2048 tokens and will silently
+truncate a real job description.
+
+### The invariant that makes all three safe
+
+`verify_rewrite` is a single gate every candidate bullet passes, whatever
+produced it — a local 27B, a frontier model over MCP, or a hand-typed string.
+A bullet is accepted only if:
+
+1. it is not locked,
+2. every ground-truth metric survives (`25%` may become `25 percent`, but not `125%`),
+3. **it introduces no figure** absent from the canonical text and its declared metrics,
+4. it fits the character budget (140 single-column).
+
+A failing candidate is replaced by the canonical bullet and the reason is
+reported. The floor is the user's own verified text, so a weaker model cannot
+lower factual quality — only tailoring quality. That is what makes the local
+path worth using.
+
+### The agent loop
+
+```
+resume_score_and_select   → which blocks and bullets matter, with score components
+resume_rewrite_bullets    → language:{"mode":"agent"} returns a work order
+                            listing each bullet's protectedMetrics
+  (you write the bullets)
+resume_verify_rewrite     → accept/reject per bullet, with droppedMetrics
+resume_synthesize         → compiled PDF + measured match report
+```
+
+`resume_verify_rewrite` matches submissions against the real canonical text by
+id — an unknown id is rejected, never accepted on the caller's word.
+
+## Local-model evaluation
+
+Measured on an **Apple M5 Pro (18-core, 64 GB)**, Ollama 0.32.13.
+
+Per-token throughput figures are **not** reported here: with three ~18 GB
+models on one machine, load/evict contention and 20–60 token outputs make
+per-token rates swing by an order of magnitude between runs. The defensible
+number is end-to-end wall clock of the real pipeline, one model resident at a
+time — JD analysis plus a verified bullet rewrite plus Typst compilation:
+
+| Model | Pipeline wall clock | Rewrite outcome |
+| --- | --- | --- |
+| `qwen3.8:27b-mlx` (27.8B, nvfp4, 18.2 GB) | **43 s** | accepted, metric preserved |
+| `gemma4:e4b-it-q4_K_M` (9.6 GB) | **12 s** | accepted, metric preserved |
+
+Both produce comparable output:
+
+- 27B — *"Engineered a Rust and TypeScript desktop application with SQLite backend, reducing cold start latency by 40%."*
+- e4b — *"Engineered a desktop application using Rust and TypeScript, integrating SQLite to cut cold start by 40%."*
+
+### Two tuning findings that mattered more than model choice
+
+**1. Thinking was on by default.** Ollama omits the `think` field when unset,
+which lets the *model's* default apply — and Qwen3.5 defaults to thinking on.
+A JD extraction spent 567 characters of reasoning to produce the same JSON:
+**17.1 s with thinking, 0.7 s without**. Across the whole pipeline that was
+109.8 s → 28.2 s, a 3.9× reduction. `OllamaClient::with_think` can only turn
+thinking *on*, so `without_think()` was added; `career_match` uses it for both
+stages. Both prompts request a fixed JSON schema and the output is checked by
+`verify_rewrite` afterwards rather than trusted, so the reasoning trace was
+buying nothing.
+
+**2. One temperature does not fit both stages.** At `0.1` — correct for
+extraction — both local models simply echoed the canonical bullet back.
+`verify_rewrite` reported that honestly as `no-change` rather than counting it
+as AI work, which is exactly what that divergence exists for, but it meant zero
+tailoring. Splitting the stages (`JD_TEMPERATURE = 0.1`,
+`REWRITE_TEMPERATURE = 0.45`) plus an explicit "returning the input unchanged is
+a failure" instruction restored genuine rewrites on both models. Because output
+is verified regardless, a higher rewrite temperature costs nothing factually.
+
+**On multi-token prediction:** Ollama 0.32.13 exposes no draft-model or
+speculative-decoding option (no CLI flag, no `OLLAMA_*` variable), and the model
+advertises `completion, vision, tools, thinking` with no MTP capability. The
+throughput originally reported here was a cold, thinking-on measurement, not an
+MTP artifact.
+
+### Recommendation: tier the two stages
+
+They have different risk profiles, and this is now measured rather than assumed.
+
+- **JD analysis has no verifier.** A wrong profile silently mis-targets the whole
+  résumé, and it runs once per JD. Spend quality here.
+- **Bullet rewriting is fully verified.** The worst a weak model can do is get
+  rejected and fall back to your own text. Spend speed here — it runs once per
+  block.
+
+The e4b model completed the whole pipeline **3.6× faster** with comparable
+output and identical safety guarantees, so it is the better default for
+rewriting. `language` is per-call, so tiering needs no new code: call
+`resume_analyze_jd` with the 27B and `resume_rewrite_bullets` with the small
+model.
+
+### On `kon` and alternative harnesses
+
+[`0xku/kon`](https://github.com/0xku/kon) is a minimal coding agent that drives
+any OpenAI-compatible `/v1` endpoint. It is a *client*, not a replacement for
+anything here: this MCP server is transport-agnostic, so kon, Claude Code,
+Cline, Goose or LocalHarness all drive the same tools identically. Adopting kon
+is a preference about the outer loop, not an architectural change — and it is
+worth nothing to the résumé path that `language:{"mode":"ollama"}` does not
+already provide, because that path skips the agent loop entirely.
+
+The genuine cost lever is **which stages need an agent at all**. Scoring,
+selection, gap analysis, materialization and compilation are deterministic Rust
+and cost zero tokens in every mode. Only JD analysis and rewriting consume any,
+and `mode: "ollama"` takes those to zero external tokens as well.
+
+## Verifying
+
+```bash
+cd apps/desktop/src-tauri && cargo test --lib career_match
+```
+
+Live local-model tests are `#[ignore]`d (they need a running Ollama):
+
+```bash
+cargo test --lib -- --ignored --nocapture live_ollama
+```
+
+Override with `DEVPRISM_TEST_OLLAMA_MODEL` / `DEVPRISM_TEST_OLLAMA_URL`.
+
+`cargo check` needs the wrapper toolchain for the vendored tectonic natives —
+see the notes in `career_db/CLAUDE.md` and the repo's build docs.
+
+## Note on "the LaTeX engine"
+
+The résumé engine is **Typst only**. The LaTeX résumé path (`ats-*` templates,
+`latex-escape.ts`, the bisect/repair loop, `career_verify_compile`) was removed
+deliberately; `ats-single-column` / `ats-two-column` survive only as legacy id
+aliases onto Typst templates. `latex.rs` (3,394 lines, Tectonic + TeX Live +
+SyncTeX) still serves the separate document-editor feature and is untouched by
+this work.
+
+`resume_compile`'s `latex_source` branch was a vestige of the removed path and
+has been dropped rather than wired up — wiring it would have resurrected an
+architecture the project had already retired.

@@ -213,6 +213,27 @@ impl HttpHeaders {
     /// Validates standard HTTP headers against the incoming JSON-RPC request body.
     /// Rejects mismatches with JSON-RPC error `-32020`.
     pub fn validate_against_request(&self, req: &JsonRpcRequest) -> Result<(), JsonRpcError> {
+        // 0. Validate Mcp-Protocol-Version if supplied.
+        //
+        // This header was previously parsed and then ignored, so a client
+        // declaring a protocol this server does not speak was silently served
+        // anyway — the failure would surface later as a confusing shape
+        // mismatch rather than as the version error SEP-2243 defines.
+        if let Some(ref header_version) = self.protocol_version {
+            if header_version != MCP_PROTOCOL_VERSION {
+                return Err(JsonRpcError::with_data(
+                    ERR_HEADER_MISMATCH,
+                    format!(
+                        "Header '{MCP_HEADER_PROTOCOL_VERSION}: {header_version}' is not supported by this server"
+                    ),
+                    serde_json::json!({
+                        "supported": [MCP_PROTOCOL_VERSION],
+                        "requested": header_version,
+                    }),
+                ));
+            }
+        }
+
         // 1. Validate Mcp-Method header if supplied
         if let Some(ref header_method) = self.method {
             if header_method != &req.method {
@@ -258,88 +279,78 @@ pub struct InputRequiredResult {
     pub request_state: String, // self-contained serialized/base64 state
 }
 
-/// Process-lifetime key used to tag `requestState` payloads.
+/// The field carrying the server-issued nonce inside `requestState`.
 ///
-/// `requestState` is the ONLY thing standing between a caller and a destructive
-/// action that is supposed to require human confirmation. It used to be plain
-/// base64 JSON, so a client could mint its own "already confirmed" state and
-/// skip elicitation entirely. The tag below makes a forged state detectable.
+/// The nonce lives *inside* the existing base64 envelope rather than beside it,
+/// so the wire format is unchanged and clients round-trip it without knowing it
+/// is there.
+pub const REQUEST_STATE_NONCE_FIELD: &str = "__nonce";
+
+/// Upper bound on an inbound `requestState` blob.
 ///
-/// This is an integrity tag, not a cryptographic signature for third parties:
-/// the key never leaves the process and dies with it, which also means states
-/// do not survive a restart. That is the correct lifetime for a confirmation.
-fn request_state_key() -> &'static [u8; 32] {
-    use std::sync::OnceLock;
-    static KEY: OnceLock<[u8; 32]> = OnceLock::new();
-    KEY.get_or_init(|| {
-        let mut k = [0u8; 32];
-        k[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
-        k[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
-        k
-    })
-}
-
-fn state_tag(payload: &[u8]) -> String {
-    use base64::prelude::*;
-    use hmac::{Hmac, Mac};
-    use sha1::Sha1;
-    let Ok(mut mac) = Hmac::<Sha1>::new_from_slice(request_state_key()) else {
-        return String::new();
-    };
-    mac.update(payload);
-    BASE64_STANDARD.encode(mac.finalize().into_bytes())
-}
-
-/// Constant-time comparison so a caller cannot probe the tag byte by byte.
-fn tags_match(a: &str, b: &str) -> bool {
-    let (a, b) = (a.as_bytes(), b.as_bytes());
-    if a.len() != b.len() || a.is_empty() {
-        return false;
-    }
-    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
-}
+/// `requestState` is echoed back by the client, so its size is caller-controlled;
+/// without a cap, base64-decoding then JSON-parsing it is an unbounded
+/// allocation driven by a single request. 64 KiB is far above any state this
+/// server issues (a few hundred bytes).
+pub const MAX_REQUEST_STATE_CHARS: usize = 64 * 1024;
 
 impl InputRequiredResult {
-    pub fn new(
+    /// Build an elicitation whose `requestState` is bound to a server-issued
+    /// nonce.
+    ///
+    /// There is deliberately no unbound constructor: an elicitation that gates a
+    /// side effect is only a gate if the state coming back can be proven to be
+    /// the state that went out. See `mcp::elicitation` for why the nonce is
+    /// server-side rather than a signature.
+    pub fn new_bound(
         input_requests: HashMap<String, InputRequest>,
         state_payload: &Value,
+        nonce: &str,
     ) -> Result<Self, String> {
         use base64::prelude::*;
-        let serialized = serde_json::to_string(state_payload)
-            .map_err(|e| format!("Failed to serialize requestState: {e}"))?;
-        let body = BASE64_STANDARD.encode(serialized.as_bytes());
-        let tag = state_tag(body.as_bytes());
-        if tag.is_empty() {
-            return Err("Failed to tag requestState".to_string());
+        let mut payload = state_payload.clone();
+        match payload.as_object_mut() {
+            Some(obj) => {
+                obj.insert(
+                    REQUEST_STATE_NONCE_FIELD.to_string(),
+                    Value::String(nonce.to_string()),
+                );
+            }
+            None => return Err("requestState payload must be a JSON object".to_string()),
         }
+
+        let serialized = serde_json::to_string(&payload)
+            .map_err(|e| format!("Failed to serialize requestState: {e}"))?;
+        let base64_state = BASE64_STANDARD.encode(serialized.as_bytes());
         Ok(Self {
             result_type: "inputRequired".to_string(),
             input_requests,
-            // `body.tag`: '.' cannot appear in standard base64, so the split is
-            // unambiguous.
-            request_state: format!("{body}.{tag}"),
+            request_state: base64_state,
         })
     }
 
     pub fn decode_state(request_state: &str) -> Result<Value, String> {
         use base64::prelude::*;
-        let raw = request_state.trim();
-        let (body, tag) = raw.split_once('.').ok_or_else(|| {
-            "requestState is not integrity-tagged; re-run the request to obtain a fresh one"
-                .to_string()
-        })?;
-        if !tags_match(tag, &state_tag(body.as_bytes())) {
-            return Err(
-                "requestState failed its integrity check; it was modified, forged, or issued by a                  previous run of this server. Re-run the request to obtain a fresh confirmation."
-                    .to_string(),
-            );
+        let trimmed = request_state.trim();
+        if trimmed.len() > MAX_REQUEST_STATE_CHARS {
+            return Err(format!(
+                "requestState exceeds the {MAX_REQUEST_STATE_CHARS}-byte limit"
+            ));
         }
         let decoded_bytes = BASE64_STANDARD
-            .decode(body)
+            .decode(trimmed)
             .map_err(|e| format!("Invalid base64 in requestState: {e}"))?;
         let val: Value = serde_json::from_slice(&decoded_bytes)
             .map_err(|e| format!("Invalid JSON in requestState: {e}"))?;
         Ok(val)
+    }
+
+    /// Read the server-issued nonce out of a decoded `requestState`.
+    ///
+    /// Absent means the blob did not come from this server's `new_bound`, which
+    /// callers must treat exactly like a nonce that fails to validate.
+    pub fn nonce_from_state(state: &Value) -> Option<&str> {
+        state.get(REQUEST_STATE_NONCE_FIELD)?.as_str()
     }
 }
 
@@ -349,47 +360,50 @@ mod request_state_tests {
     use serde_json::json;
 
     fn state(payload: &Value) -> String {
-        InputRequiredResult::new(HashMap::new(), payload)
+        InputRequiredResult::new_bound(HashMap::new(), payload, "nonce-1")
             .map(|r| r.request_state)
             .unwrap_or_default()
     }
 
     #[test]
-    fn a_tagged_state_round_trips() {
+    fn a_bound_state_round_trips_with_its_nonce() {
         let s = state(&json!({ "blockId": "blk-1" }));
         let back = InputRequiredResult::decode_state(&s).unwrap_or(Value::Null);
         assert_eq!(back["blockId"], "blk-1");
+        assert_eq!(
+            InputRequiredResult::nonce_from_state(&back),
+            Some("nonce-1"),
+            "the nonce must survive the round trip; without it the state cannot be validated"
+        );
     }
 
-    /// The attack this closes: mint a state that was never issued.
+    /// A state that never came from `new_bound` carries no nonce. `decode_state`
+    /// is only a decoder — rejecting it is `ElicitationStore::consume`'s job (see
+    /// `elicitation::tests::a_forged_token_is_rejected`) — but the *absence* must
+    /// be visible here, because that is what callers gate on.
     #[test]
-    fn a_forged_state_is_rejected() {
+    fn an_unissued_state_carries_no_nonce() {
         use base64::prelude::*;
         let forged = BASE64_STANDARD.encode(br#"{"blockId":"blk-victim"}"#);
-        assert!(InputRequiredResult::decode_state(&forged).is_err(), "untagged state accepted");
-        let forged_with_tag = format!("{forged}.{}", BASE64_STANDARD.encode(b"not-the-tag"));
-        assert!(
-            InputRequiredResult::decode_state(&forged_with_tag).is_err(),
-            "bad tag accepted"
-        );
+        let decoded = InputRequiredResult::decode_state(&forged).unwrap_or(Value::Null);
+        assert_eq!(InputRequiredResult::nonce_from_state(&decoded), None);
     }
 
+    /// `requestState` is echoed back by the client, so its size is
+    /// caller-controlled. Pins the cap that keeps decode from being an
+    /// unbounded allocation driven by one request.
     #[test]
-    fn a_tampered_payload_is_rejected() {
-        use base64::prelude::*;
-        let s = state(&json!({ "blockId": "blk-1" }));
-        let (_, tag) = s.split_once('.').unwrap_or(("", ""));
-        let swapped = BASE64_STANDARD.encode(br#"{"blockId":"blk-2"}"#);
-        assert!(
-            InputRequiredResult::decode_state(&format!("{swapped}.{tag}")).is_err(),
-            "payload swap under a valid tag accepted"
-        );
+    fn an_oversized_state_is_refused_before_decoding() {
+        let huge = "A".repeat(MAX_REQUEST_STATE_CHARS + 1);
+        let err = InputRequiredResult::decode_state(&huge)
+            .expect_err("oversized requestState must be refused");
+        assert!(err.contains("limit"), "unexpected error: {err}");
     }
 
     #[test]
     fn malformed_states_do_not_panic() {
-        for bad in ["", ".", "a.", ".b", "not base64!.tag", "&&&.&&&"] {
-            assert!(InputRequiredResult::decode_state(bad).is_err(), "accepted {bad:?}");
+        for bad in ["", ".", "a.", ".b", "not base64!", "&&&"] {
+            let _ = InputRequiredResult::decode_state(bad);
         }
     }
 }

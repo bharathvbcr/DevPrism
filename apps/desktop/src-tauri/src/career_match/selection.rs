@@ -1,4 +1,12 @@
-//! Budget-constrained block selection: knapsack, MMR, bullet trimming.
+//! Budget-constrained block selection: knapsack, bullet trimming, and the MMR
+//! primitive.
+//!
+//! [`knapsack_select`] packs by score under a line budget with per-section caps,
+//! one-entry-per-org de-duplication and must-have coverage repair. It does
+//! **not** run MMR. [`mmr_select`] is provided as a tested primitive for callers
+//! that have embeddings and want diversity, and is deliberately described that
+//! way rather than as part of the packing path — claiming MMR while running a
+//! greedy pass is the exact defect this module replaced.
 //!
 //! Faithful Rust port of `src/lib/resume-synthesis/selection.ts`.
 //!
@@ -14,6 +22,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::scoring::ScoredBlock;
 use super::text::text_covers_skill;
+use crate::semantic_layer::math::cosine_similarity;
 
 /// Approximate printable characters per rendered resume line.
 pub const CHARS_PER_LINE: usize = 95;
@@ -328,6 +337,93 @@ pub fn trim_selected_bullets(
     // Restore document order among the survivors.
     kept.sort_by_key(|(i, _)| *i);
     kept.into_iter().map(|(_, id)| id).collect()
+}
+
+/// Budget/cap violations in an already-made selection, for callers that report
+/// what a selection cost rather than recomputing it.
+///
+/// Returns human-readable strings in a deterministic order so the message is
+/// stable across runs (`HashMap` iteration order is not).
+pub fn budget_violations(selected: &[ScoredBlock], budget: &SelectionBudget) -> Vec<String> {
+    let mut violations = Vec::new();
+    let mut section_counts: HashMap<String, usize> = HashMap::new();
+    let mut lines = 0usize;
+    for s in selected {
+        *section_counts.entry(section_for_block(&s.block)).or_insert(0) += 1;
+        lines += estimate_block_lines(&s.block, CHARS_PER_LINE);
+    }
+    let mut sections: Vec<(&String, &usize)> = section_counts.iter().collect();
+    sections.sort_by_key(|(k, _)| (*k).clone());
+    for (section, count) in sections {
+        let cap = budget.section_cap(section);
+        if *count > cap {
+            violations.push(format!("{section}: {count} blocks exceeds cap {cap}"));
+        }
+    }
+    if lines > budget.total_lines && !selected.is_empty() {
+        let min_cost = selected
+            .iter()
+            .map(|s| estimate_block_lines(&s.block, CHARS_PER_LINE))
+            .min()
+            .unwrap_or(0);
+        // A single block that alone exceeds the budget is allowed to overflow;
+        // `knapsack_select` admits it deliberately rather than emitting nothing.
+        if !(selected.len() == 1 && min_cost > budget.total_lines) {
+            violations.push(format!(
+                "totalLines {lines} exceeds budget {}",
+                budget.total_lines
+            ));
+        }
+    }
+    violations
+}
+
+/// One candidate for [`mmr_select`]: the item, its relevance, and the embedding
+/// diversity is measured over.
+pub struct MmrCandidate<T> {
+    pub item: T,
+    pub relevance: f64,
+    pub vec: Vec<f32>,
+}
+
+/// Maximal Marginal Relevance: `lambda` toward 1 favours relevance, toward 0
+/// favours diversity.
+///
+/// Similarity goes through [`crate::semantic_layer::math::cosine_similarity`],
+/// the canonical owner already used by `career_db::vectors`, rather than a
+/// second local copy.
+pub fn mmr_select<T: Clone>(candidates: &[MmrCandidate<T>], k: usize, lambda: f64) -> Vec<T> {
+    if k == 0 || candidates.is_empty() {
+        return Vec::new();
+    }
+    let mut remaining: Vec<usize> = (0..candidates.len()).collect();
+    let mut chosen: Vec<usize> = Vec::new();
+
+    while chosen.len() < k && !remaining.is_empty() {
+        let mut best_pos = 0usize;
+        let mut best_score = f64::NEG_INFINITY;
+        for (pos, &idx) in remaining.iter().enumerate() {
+            let c = &candidates[idx];
+            let mut max_sim = 0.0f64;
+            for &s in &chosen {
+                let sim = cosine_similarity(&c.vec, &candidates[s].vec) as f64;
+                if sim > max_sim {
+                    max_sim = sim;
+                }
+            }
+            let mmr = lambda * c.relevance - (1.0 - lambda) * max_sim;
+            if mmr > best_score {
+                best_score = mmr;
+                best_pos = pos;
+            }
+        }
+        chosen.push(remaining.remove(best_pos));
+    }
+
+    chosen
+        .into_iter()
+        .map(|i| candidates[i].item.clone())
+        .collect()
 }
 
 #[cfg(test)]
@@ -652,5 +748,108 @@ mod tests {
         let r = knapsack_select(&[long_role], &budget, &["rust".into()], DEFAULT_ORG_SCORE_GAP);
         assert_eq!(r.selected.len(), 1);
         assert!(r.estimated_lines <= budget.total_lines);
+    }
+
+    #[test]
+    fn budget_violations_is_silent_on_a_selection_that_fits() {
+        let b = SelectionBudget::for_pages(2);
+        let sel = vec![
+            scored("a", "OrgA", 0.9, vec![bullet("b1", "Short.")], &[]),
+            scored("b", "OrgB", 0.8, vec![bullet("b2", "Also short.")], &[]),
+        ];
+        assert!(budget_violations(&sel, &b).is_empty());
+        // And an empty selection cannot violate anything.
+        assert!(budget_violations(&[], &b).is_empty());
+    }
+
+    #[test]
+    fn budget_violations_flags_an_over_capped_section() {
+        let b = SelectionBudget::for_pages(4);
+        // DEFAULT_SECTION_CAP is 3; five "experience" blocks exceed it.
+        let sel: Vec<ScoredBlock> = (0..5)
+            .map(|i| {
+                scored(
+                    &format!("blk{i}"),
+                    &format!("Org{i}"),
+                    0.5,
+                    vec![bullet("b", "Short.")],
+                    &[],
+                )
+            })
+            .collect();
+        let v = budget_violations(&sel, &b);
+        assert!(
+            v.iter().any(|m| m.contains("experience") && m.contains("cap")),
+            "expected a section-cap violation, got {v:?}"
+        );
+    }
+
+    #[test]
+    fn budget_violations_flags_an_overrun_but_spares_one_oversized_block() {
+        let b = SelectionBudget::for_pages(1);
+        let huge = || bullet("b", &"x".repeat(CHARS_PER_LINE * 40));
+
+        // A single block that alone cannot fit is admitted deliberately by
+        // `knapsack_select`, so reporting it as a violation would be noise.
+        let one = vec![scored("solo", "OrgA", 0.9, vec![huge()], &[])];
+        assert!(
+            !budget_violations(&one, &b).iter().any(|m| m.contains("totalLines")),
+            "a lone oversized block must not be reported as an overrun"
+        );
+
+        // Two of them is a genuine overrun.
+        let two = vec![
+            scored("a", "OrgA", 0.9, vec![huge()], &[]),
+            scored("b", "OrgB", 0.8, vec![huge()], &[]),
+        ];
+        assert!(
+            budget_violations(&two, &b).iter().any(|m| m.contains("totalLines")),
+            "an overrun across several blocks must be reported"
+        );
+    }
+
+    #[test]
+    fn mmr_at_lambda_one_is_pure_relevance() {
+        let cands = vec![
+            MmrCandidate { item: "low", relevance: 0.1, vec: vec![1.0, 0.0] },
+            MmrCandidate { item: "high", relevance: 0.9, vec: vec![1.0, 0.0] },
+            MmrCandidate { item: "mid", relevance: 0.5, vec: vec![0.0, 1.0] },
+        ];
+        assert_eq!(mmr_select(&cands, 3, 1.0), vec!["high", "mid", "low"]);
+    }
+
+    #[test]
+    fn mmr_below_one_prefers_a_dissimilar_second_pick() {
+        // "near" is more relevant than "far" but is a duplicate of "top".
+        let cands = vec![
+            MmrCandidate { item: "top", relevance: 0.90, vec: vec![1.0, 0.0] },
+            MmrCandidate { item: "near", relevance: 0.80, vec: vec![1.0, 0.0] },
+            MmrCandidate { item: "far", relevance: 0.70, vec: vec![0.0, 1.0] },
+        ];
+        assert_eq!(
+            mmr_select(&cands, 2, 1.0),
+            vec!["top", "near"],
+            "pure relevance takes the near-duplicate"
+        );
+        assert_eq!(
+            mmr_select(&cands, 2, 0.5),
+            vec!["top", "far"],
+            "diversity must break the near-duplicate tie"
+        );
+    }
+
+    #[test]
+    fn mmr_handles_degenerate_requests() {
+        let cands = vec![MmrCandidate { item: "a", relevance: 0.5, vec: vec![1.0] }];
+        assert!(mmr_select(&cands, 0, 0.7).is_empty());
+        assert_eq!(mmr_select(&cands, 99, 0.7), vec!["a"], "k above len yields all");
+        let empty: Vec<MmrCandidate<&str>> = Vec::new();
+        assert!(mmr_select(&empty, 3, 0.7).is_empty());
+        // A zero vector cannot produce a NaN similarity and stall the loop.
+        let zeros = vec![
+            MmrCandidate { item: "z1", relevance: 0.5, vec: vec![0.0, 0.0] },
+            MmrCandidate { item: "z2", relevance: 0.4, vec: vec![0.0, 0.0] },
+        ];
+        assert_eq!(mmr_select(&zeros, 2, 0.5).len(), 2);
     }
 }

@@ -108,21 +108,46 @@ export interface PromptDefinition {
 
 // --- MRTR Multi Round-Trip Requests (SEP-2322) ---
 
+/**
+ * One elicitation the server needs answered before it will proceed.
+ *
+ * Mirrors `mcp::protocol::InputRequest`. The previous declaration here
+ * (`{ id, type: "text"|"select"|"confirm"|"form", label }`) shared no field and
+ * no enum member with what the server actually sends: `type` is
+ * `"elicitation" | "confirmation" | "selection"`, the prompt text is `message`
+ * not `label`, and there is no `id` — the id is the key in `inputRequests`.
+ * A `switch` on the old union fell through every arm, so a confirmation could
+ * not be rendered and the round trip could never complete.
+ */
 export interface InputRequest {
-  id: string;
-  type: "text" | "select" | "confirm" | "form";
-  label: string;
-  description?: string;
-  options?: string[];
-  defaultValue?: string | boolean;
+  type: "elicitation" | "confirmation" | "selection";
+  /** Human-readable prompt. Render this — it names what is about to happen. */
+  message: string;
+  /** JSON Schema describing the expected answer. */
+  schema?: Record<string, unknown>;
 }
 
 export interface InputRequiredResult {
   resultType: "inputRequired";
-  action: string;
-  message: string;
-  requiredInputs: InputRequest[];
-  requestState: string; // Base64 encoded state for stateless resume
+  /** Keyed by input id; the key is what goes in `inputResponses`. */
+  inputRequests: Record<string, InputRequest>;
+  /**
+   * Opaque server-issued state. Echo it back **verbatim** with the answers.
+   *
+   * Single-use and bound to the tool and subject it was issued for: a modified,
+   * reused, or hand-made value is rejected, so it cannot be synthesised to skip
+   * a confirmation.
+   */
+  requestState: string;
+}
+
+/** Narrow a tool result that may instead be an elicitation. */
+export function isInputRequired(value: unknown): value is InputRequiredResult {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { resultType?: unknown }).resultType === "inputRequired"
+  );
 }
 
 // --- Tasks Extension (SEP-2663) ---

@@ -127,7 +127,11 @@ fn is_trailing_boundary(c: char) -> bool {
 
 /// True when `needle` occurs in `hay` at a word boundary. Both must already be
 /// lowercase. Replaces the canonical regex without pulling in a regex crate.
-fn contains_at_boundary(hay: &str, needle: &str) -> bool {
+///
+/// Public so `jd::normalize_seniority` can match bare tokens ("sr", "ic")
+/// without going through `text_covers_skill`, whose alias expansion is wrong
+/// for seniority words.
+pub fn contains_at_boundary(hay: &str, needle: &str) -> bool {
     if needle.is_empty() || needle.len() > hay.len() {
         return false;
     }

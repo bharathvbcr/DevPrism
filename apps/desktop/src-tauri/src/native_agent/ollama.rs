@@ -20,6 +20,47 @@ const STREAM_IDLE_TIMEOUT_SECS: u64 = 90;
 /// rather than waiting out the whole request budget.
 const CONNECT_TIMEOUT_SECS: u64 = 15;
 
+/// Largest partial line held while waiting for a newline.
+///
+/// The NDJSON framing loop drains `buf` only when it finds `\n`. A server that
+/// streams bytes without ever emitting one grows it without bound, and neither
+/// existing guard catches it: the idle timeout does not fire because data *is*
+/// arriving, and `REQUEST_TIMEOUT_SECS` is a time budget, not a size one.
+const MAX_PENDING_LINE_BYTES: usize = 1024 * 1024;
+
+/// Largest accumulated assistant text (content + thinking) per turn.
+const MAX_STREAM_ACCUMULATION_BYTES: usize = 8 * 1024 * 1024;
+
+/// Output-token ceiling per turn, mirroring the OpenAI-compat path's
+/// `max_tokens`. Without it a looping model generates until the request budget
+/// expires.
+const MAX_PREDICT_TOKENS: u32 = 4096;
+
+/// Cap on an error-response body read into memory.
+///
+/// The error paths did `resp.text().await` and *then* took a 300-character
+/// snippet — so the full body was buffered first. reqwest applies no default
+/// response size limit, which makes a multi-gigabyte error body an OOM before
+/// the truncation ever runs.
+const MAX_ERROR_BODY_BYTES: usize = 8 * 1024;
+
+/// Read at most `MAX_ERROR_BODY_BYTES` of a response body.
+///
+/// Returns whatever arrived; an error body is diagnostic text, so a truncated
+/// read is strictly better than an unbounded one.
+pub(crate) async fn read_error_body(resp: reqwest::Response) -> String {
+    let mut resp = resp;
+    let mut out: Vec<u8> = Vec::new();
+    while out.len() < MAX_ERROR_BODY_BYTES {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => out.extend_from_slice(&chunk),
+            Ok(None) | Err(_) => break,
+        }
+    }
+    out.truncate(MAX_ERROR_BODY_BYTES);
+    String::from_utf8_lossy(&out).to_string()
+}
+
 fn build_client() -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
@@ -618,7 +659,7 @@ pub async fn pull_model<F: FnMut(OllamaPullProgress)>(
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
+        let text = read_error_body(resp).await;
         let snippet: String = text.chars().take(300).collect();
         return Err(format!("Ollama returned HTTP {}: {}", status, snippet));
     }
@@ -761,6 +802,20 @@ impl OllamaClient {
         self
     }
 
+    /// Explicitly send `think: false`.
+    ///
+    /// Leaving `think` unset omits the field, which lets the *model's* default
+    /// apply — and thinking-capable models such as Qwen3.5 default to on. For a
+    /// one-shot structured extraction (`format: "json"` with a fixed schema and
+    /// a downstream verifier) the reasoning trace is pure latency: a JD skill
+    /// extraction measured 17.1s with thinking and 0.7s without, for the same
+    /// answer. `with_think` can only turn thinking *on*, so disabling needs its
+    /// own constructor.
+    pub fn without_think(mut self) -> Self {
+        self.think = Some(json!(false));
+        self
+    }
+
     /// The effective context window (after clamp/default), so the caller can
     /// budget the in-turn message list against it.
     pub fn num_ctx(&self) -> u32 {
@@ -836,6 +891,11 @@ impl OllamaClient {
             "options": {
                 "num_ctx": self.num_ctx,
                 "temperature": self.temperature,
+                // Bound the generation. The OpenAI-compat path has always sent
+                // `max_tokens`; this path sent nothing, so a model that fell
+                // into a repetition loop streamed into memory — and into the UI,
+                // one event per fragment — for the full 600s request budget.
+                "num_predict": MAX_PREDICT_TOKENS,
             },
             // Keep the model resident between rounds so it isn't reloaded each turn.
             "keep_alive": self.keep_alive,
@@ -870,7 +930,7 @@ impl OllamaClient {
         let status = resp.status();
         if !status.is_success() {
             // On an error status the body is a single JSON object, not a stream.
-            let text = resp.text().await.unwrap_or_default();
+            let text = read_error_body(resp).await;
             let snippet: String = text.chars().take(300).collect();
             // Surface the common "model doesn't support tools" case clearly.
             let lower = snippet.to_lowercase();
@@ -920,6 +980,17 @@ impl OllamaClient {
                 }
             };
             buf.extend_from_slice(&chunk);
+            if buf.len() > MAX_PENDING_LINE_BYTES {
+                return Err(format!(
+                    "Ollama stream error: {} bytes arrived without a line terminator, exceeding the {MAX_PENDING_LINE_BYTES}-byte limit",
+                    buf.len()
+                ));
+            }
+            if content.len() + thinking.len() > MAX_STREAM_ACCUMULATION_BYTES {
+                return Err(format!(
+                    "Ollama stream error: response exceeded the {MAX_STREAM_ACCUMULATION_BYTES}-byte accumulation limit"
+                ));
+            }
             while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
                 let line: Vec<u8> = buf.drain(..=pos).collect();
                 let line_str = String::from_utf8_lossy(&line);

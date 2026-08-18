@@ -178,12 +178,14 @@ impl CareerDbState {
         }
     }
 
-    /// Open a private in-memory career DB with the full schema applied.
+    /// A private, in-memory career database with the schema and default
+    /// personas already applied.
     ///
-    /// `open_default` resolves to the user's real `career.db`, so any test that
-    /// built state through it was reading and writing production career data.
-    /// Tests must use this instead: each call is an isolated database that dies
-    /// with the connection.
+    /// `open_default` resolves to the user's real `career.db` under their
+    /// config directory, so any test built on it both depends on whatever the
+    /// user happens to have stored and — for tests that upsert or delete —
+    /// mutates their actual career data. Tests must use this instead: each call
+    /// is an isolated database that dies with the connection.
     pub fn open_in_memory() -> Result<Self, String> {
         let _ = vectors::ensure_sqlite_vec_registered();
         let conn = Connection::open_in_memory()
@@ -206,14 +208,21 @@ impl CareerDbState {
         }
     }
 
+
     pub fn with_conn<F, T>(&self, f: F) -> Result<T, String>
     where
         F: FnOnce(&Connection) -> Result<T, String>,
     {
-        let guard = self
-            .inner
-            .lock()
-            .map_err(|e| format!("career db lock poisoned: {e}"))?;
+        // Recover from poisoning rather than propagating it.
+        //
+        // `f(conn)` runs while this guard is held, so *any* panic in *any*
+        // closure poisoned the mutex — and propagating that made every
+        // subsequent career operation, UI and MCP alike, fail with "lock
+        // poisoned" for the rest of the process. A `Connection` is not left in
+        // an invalid state by an unwind (rusqlite holds no cross-call borrow),
+        // so the honest recovery is to keep using it: one bad ingest should cost
+        // that ingest, not the whole career subsystem until the app restarts.
+        let guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         match &*guard {
             DbSlot::Ready(conn) => f(conn),
             DbSlot::Failed(err) => Err(format!("career db unavailable: {err}")),
@@ -237,8 +246,22 @@ fn open_connection() -> Result<Connection, String> {
     }
     let conn =
         Connection::open(&path).map_err(|e| format!("Failed to open {}: {e}", path.display()))?;
-    conn.execute_batch("PRAGMA foreign_keys = ON;")
-        .map_err(|e| format!("Failed to enable foreign keys: {e}"))?;
+    // WAL + a busy timeout, because `career.db` genuinely has multiple writers:
+    // `lib.rs` manages one `CareerDbState` for the UI and a second for the MCP
+    // server, and `--mcp-stdio` opens a third from a *separate process*. Each has
+    // its own `Mutex`, so the mutex serializes nothing across them.
+    //
+    // Under the default rollback journal a writer blocks every reader, and with
+    // no busy handler SQLite returns SQLITE_BUSY immediately rather than waiting —
+    // which surfaces as spurious "database is locked" errors and, mid-ingest, as
+    // the partial-write data loss the transaction above now prevents.
+    conn.execute_batch(
+        "PRAGMA foreign_keys = ON;\
+         PRAGMA journal_mode = WAL;\
+         PRAGMA busy_timeout = 5000;\
+         PRAGMA synchronous = NORMAL;",
+    )
+    .map_err(|e| format!("Failed to configure career db: {e}"))?;
     schema::init_schema(&conn)?;
     schema::seed_default_personas(&conn)?;
     Ok(conn)
@@ -395,7 +418,12 @@ pub(crate) fn upsert_persona_blocking(conn: &Connection, persona: &Persona) -> R
 /// Built-in persona ids from `schema::seed_default_personas`. Not deletable.
 const SEEDED_PERSONA_IDS: &[&str] = &["ai", "life-sciences", "management"];
 
-fn is_seeded_persona_id(id: &str) -> bool {
+/// Is this one of the built-in personas seeded on first open?
+///
+/// `pub(crate)` so the MCP tool layer can refuse to let a *remote* caller
+/// redefine a built-in. The Tauri command path deliberately stays unrestricted:
+/// that is the user editing their own personas in the app.
+pub(crate) fn is_seeded_persona_id(id: &str) -> bool {
     SEEDED_PERSONA_IDS.iter().any(|s| *s == id)
 }
 
@@ -416,6 +444,16 @@ pub(crate) fn delete_persona_blocking(conn: &Connection, id: &str) -> Result<(),
 
 pub(crate) fn store_embeddings_blocking(conn: &Connection, items: &[EmbeddingItem]) -> Result<(), String> {
     for item in items {
+        // Reject non-finite components at the boundary rather than letting them
+        // poison every later similarity score. `Vec<f32>` arrives straight from
+        // the frontend, and serde_json parses an out-of-range literal like `1e40`
+        // to `f64`, which becomes `inf` on the `as f32` cast.
+        if let Some(bad) = item.vec.iter().position(|v| !v.is_finite()) {
+            return Err(format!(
+                "Embedding for {} contains a non-finite value at index {bad}",
+                item.owner_id
+            ));
+        }
         let blob = vectors::pack_f32_le(&item.vec);
         let dim = item.vec.len() as i64;
         let model = if item.model.trim().is_empty() {

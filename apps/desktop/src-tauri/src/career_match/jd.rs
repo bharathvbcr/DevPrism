@@ -23,8 +23,9 @@
 //! extraction. The old code hardcoded a 20-item skill list and split it
 //! "first four are required, rest are preferred", which is not an analysis.
 
-use super::text::text_covers_skill;
+use super::text::{contains_at_boundary, text_covers_skill};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// How a profile was produced. Lets callers avoid presenting a keyword scan as
 /// if it were semantic extraction.
@@ -50,6 +51,18 @@ pub struct JdProfile {
     pub tone_signals: Vec<String>,
     pub responsibilities_text: String,
     pub qualifications_text: String,
+}
+
+impl JdProfile {
+    /// Mirrors `isExtractionEmpty`: the scan found nothing usable to match on.
+    ///
+    /// Single owner for this rule — `extract_profile` and the language layer
+    /// both go through it, so a change cannot apply to only one of them.
+    pub fn is_extraction_empty(&self) -> bool {
+        self.must_have_skills.is_empty()
+            && self.nice_to_have_skills.is_empty()
+            && self.ats_keywords.is_empty()
+    }
 }
 
 /// A profile plus provenance about how it was derived.
@@ -428,7 +441,20 @@ pub fn extract_profile(jd_text: &str) -> JdExtraction {
         }
     }
 
-    let extraction_empty = must.is_empty() && nice.is_empty() && ats_keywords.is_empty();
+    let profile = JdProfile {
+        role_title: detect_role_title(jd_text),
+        seniority: detect_seniority(&seniority_scope(jd_text), &lower),
+        must_have_skills: must,
+        nice_to_have_skills: nice,
+        domains,
+        ats_keywords,
+        tone_signals,
+        responsibilities_text: responsibilities.trim().to_string(),
+        qualifications_text: qualifications.trim().to_string(),
+    };
+    // Single owner for the rule; the language layer asks the same question of
+    // model-derived profiles.
+    let extraction_empty = profile.is_extraction_empty();
     let warning = if jd_text.trim().chars().count() < JD_NONTRIVIAL_MIN_CHARS {
         Some(format!(
             "Job description is under {JD_NONTRIVIAL_MIN_CHARS} characters; \
@@ -445,20 +471,101 @@ pub fn extract_profile(jd_text: &str) -> JdExtraction {
     };
 
     JdExtraction {
-        profile: JdProfile {
-            role_title: detect_role_title(jd_text),
-            seniority: detect_seniority(&seniority_scope(jd_text), &lower),
-            must_have_skills: must,
-            nice_to_have_skills: nice,
-            domains,
-            ats_keywords,
-            tone_signals,
-            responsibilities_text: responsibilities.trim().to_string(),
-            qualifications_text: qualifications.trim().to_string(),
-        },
+        profile,
         extraction_method: ExtractionMethod::Heuristic,
         extraction_empty,
         warning,
+    }
+}
+
+/// Port of `normalizeSeniority`. Order matters: director before manager before
+/// lead before senior, so "Senior Engineering Manager" resolves to manager.
+pub fn normalize_seniority(value: &str) -> String {
+    let v = value.trim().to_lowercase();
+    if matches!(v.as_str(), "ic" | "senior" | "lead" | "manager" | "director") {
+        return v;
+    }
+    if v.contains("director") || v.contains("vp") || v.contains("head of") {
+        return "director".into();
+    }
+    if v.contains("manager") || v.contains("mgmt") {
+        return "manager".into();
+    }
+    if v.contains("lead") || v.contains("staff") || v.contains("principal") {
+        return "lead".into();
+    }
+    // `sr\b` in TS — require a word boundary after "sr" so "usr" does not match.
+    if v.contains("senior") || contains_at_boundary(&v, "sr") {
+        return "senior".into();
+    }
+    if v.contains("junior")
+        || v.contains("entry")
+        || v.contains("associate")
+        || contains_at_boundary(&v, "ic")
+    {
+        return "ic".into();
+    }
+    "senior".into()
+}
+
+fn as_string_array(v: Option<&Value>) -> Vec<String> {
+    v.and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Char-safe prefix. Never splits a multi-byte character.
+pub fn truncate_chars(s: &str, max: usize) -> String {
+    s.chars().take(max).collect()
+}
+
+/// Port of `normalizeJDProfile`: accept whatever a language model returned and
+/// coerce it into the canonical shape, falling back to JD slices for the facet
+/// text.
+///
+/// This is the model-supplied counterpart to [`extract_profile`], which is the
+/// deterministic fallback used when the caller supplies no model. Callers that
+/// use this path report [`ExtractionMethod::Model`].
+pub fn normalize(value: &Value, jd_text: &str) -> JdProfile {
+    let obj = value.as_object();
+    let get = |k: &str| obj.and_then(|o| o.get(k));
+    let get_str = |k: &str| {
+        get(k)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    };
+
+    let role_title = get_str("roleTitle")
+        .or_else(|| get_str("role"))
+        .unwrap_or("Role")
+        .to_string();
+
+    // TS slices by UTF-16 code unit; we slice by char boundary. The cap is a
+    // budget, not a contract, so a few characters of difference is harmless —
+    // but it must never panic on a multi-byte boundary.
+    let slice_1200 = || truncate_chars(jd_text, 1200);
+
+    JdProfile {
+        role_title,
+        seniority: normalize_seniority(get_str("seniority").unwrap_or("")),
+        must_have_skills: as_string_array(get("mustHaveSkills")),
+        nice_to_have_skills: as_string_array(get("niceToHaveSkills")),
+        domains: as_string_array(get("domains")),
+        ats_keywords: as_string_array(get("atsKeywords")),
+        tone_signals: as_string_array(get("toneSignals")),
+        responsibilities_text: get_str("responsibilitiesText")
+            .map(str::to_string)
+            .unwrap_or_else(slice_1200),
+        qualifications_text: get_str("qualificationsText")
+            .map(str::to_string)
+            .unwrap_or_else(slice_1200),
     }
 }
 

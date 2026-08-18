@@ -74,23 +74,31 @@ describe("StatelessMcpClient (MCP 2.0 Spec)", () => {
       customTransport: async (req) => {
         callCount++;
         if (callCount === 1) {
-          // Return inputRequired elicitation (SEP-2322)
+          // Return inputRequired elicitation (SEP-2322).
+          //
+          // This mirrors what `mcp::protocol::InputRequiredResult` actually
+          // serializes: `inputRequests` is an object keyed by input id, each
+          // entry carrying `type`/`message`/`schema`. The mock previously
+          // hand-wrote `requiredInputs: [{id, type: "confirm", label}]`, a shape
+          // the server has never emitted — so this test passed against a fiction
+          // and the UI types drifted unchecked.
           return {
             jsonrpc: "2.0",
             id: req.id,
             result: {
               resultType: "inputRequired",
-              action: "confirm_deletion",
-              message: "Are you sure you want to delete block 'b1'?",
-              requiredInputs: [
-                {
-                  id: "confirm",
-                  type: "confirm",
-                  label: "Confirm permanent deletion",
+              inputRequests: {
+                confirm: {
+                  type: "confirmation",
+                  message: "Are you sure you want to delete block 'b1'?",
+                  schema: {
+                    type: "boolean",
+                    description: "True to permanently delete, false to cancel",
+                  },
                 },
-              ],
+              },
               requestState: "base64_encoded_state_data",
-            } as InputRequiredResult,
+            } satisfies InputRequiredResult,
           };
         }
 
@@ -208,14 +216,19 @@ describe("CareerResumeBridge", () => {
             id: req.id,
             result: {
               profile: {
-                title: "Staff AI Engineer",
-                company: "Google",
-                requiredSkills: ["rust", "python"],
-                preferredSkills: ["typst"],
-                seniority: "Staff",
-                domain: "AI",
-                cultureKeywords: ["scale"],
+                roleTitle: "Staff AI Engineer",
+                seniority: "lead",
+                mustHaveSkills: ["rust", "python"],
+                niceToHaveSkills: ["typst"],
+                domains: ["AI"],
+                atsKeywords: ["rust", "python", "AI"],
+                toneSignals: ["scale"],
+                responsibilitiesText: "Build AI systems.",
+                qualificationsText: "Rust and Python.",
               },
+              source: "deterministic",
+              notices: [],
+              extractionEmpty: false,
             },
           };
         }
@@ -228,15 +241,25 @@ describe("CareerResumeBridge", () => {
             jsonrpc: "2.0",
             id: req.id,
             result: {
-              coveragePercentage: 90,
               personaId: "ai",
-              requiredSkillsTotal: 2,
-              requiredSkillsCovered: ["rust", "python"],
-              requiredSkillsMissing: [],
-              preferredSkillsCovered: ["typst"],
-              preferredSkillsMissing: [],
+              source: "deterministic",
+              coveragePercentage: 90,
+              mustHave: {
+                total: 2,
+                covered: [
+                  { skill: "rust", evidenceBlockIds: ["block-1"] },
+                  { skill: "python", evidenceBlockIds: ["block-2"] },
+                ],
+                missing: [],
+              },
+              niceToHave: {
+                total: 1,
+                covered: [{ skill: "typst", evidenceBlockIds: ["block-1"] }],
+                missing: [],
+              },
+              uncoveredAfterSelection: [],
+              blocksInKnowledgebase: 2,
               warnings: [],
-              recommendedFocus: "Emphasize leadership",
             },
           };
         }
@@ -250,14 +273,79 @@ describe("CareerResumeBridge", () => {
     const jdAnalysis = await bridge.analyzeJobDescription(
       "Looking for Staff AI Engineer with Rust & Python",
     );
-    expect(jdAnalysis.profile.title).toBe("Staff AI Engineer");
-    expect(jdAnalysis.profile.requiredSkills).toContain("rust");
+    // Canonical JDProfile shape, shared with the in-app pipeline.
+    expect(jdAnalysis.profile.roleTitle).toBe("Staff AI Engineer");
+    expect(jdAnalysis.profile.mustHaveSkills).toContain("rust");
+    expect(jdAnalysis.profile.seniority).toBe("lead");
+    // The response says how the profile was derived.
+    expect(jdAnalysis.source).toBe("deterministic");
 
     const gapReport = await bridge.runGapAnalysis(
       "Looking for Staff AI Engineer with Rust & Python",
       "ai",
     );
     expect(gapReport.coveragePercentage).toBe(90);
-    expect(gapReport.requiredSkillsMissing).toHaveLength(0);
+    expect(gapReport.mustHave.missing).toHaveLength(0);
+    // Every coverage claim names the block that evidences it.
+    expect(gapReport.mustHave.covered[0]?.evidenceBlockIds).toEqual([
+      "block-1",
+    ]);
+  });
+
+  it("passes the language provider through to the server", async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const client = new StatelessMcpClient({
+      customTransport: async (req) => {
+        seen.push((req.params as Record<string, unknown>) ?? {});
+        return { jsonrpc: "2.0", id: req.id, result: {} };
+      },
+    });
+    const bridge = new CareerResumeBridge(client);
+    await bridge.analyzeJobDescription("JD", {
+      mode: "ollama",
+      model: "qwen3.8:27b-mlx",
+      numCtx: 16384,
+    });
+    const args = seen[0]?.arguments as Record<string, unknown>;
+    expect(args.language).toEqual({
+      mode: "ollama",
+      model: "qwen3.8:27b-mlx",
+      numCtx: 16384,
+    });
+  });
+
+  it("surfaces a rejected rewrite instead of silently accepting it", async () => {
+    const client = new StatelessMcpClient({
+      customTransport: async (req) => ({
+        jsonrpc: "2.0",
+        id: req.id,
+        result: {
+          results: [
+            {
+              bulletId: "b1",
+              blockId: "block-1",
+              accepted: false,
+              reason: "fabricated-metric",
+              droppedMetrics: ["999"],
+              text: "Improved throughput across the fleet",
+              canonical: "Improved throughput across the fleet",
+            },
+          ],
+          submitted: 1,
+          accepted: 0,
+          rejected: 1,
+          unknownBullets: 0,
+          perBulletChars: 140,
+        },
+      }),
+    });
+    const bridge = new CareerResumeBridge(client);
+    const out = await bridge.verifyRewrite([
+      { bullet_id: "b1", text: "Improved throughput by 999%" },
+    ]);
+    expect(out.accepted).toBe(0);
+    expect(out.results[0]?.reason).toBe("fabricated-metric");
+    // A rejection returns the user's verified text, not the model's.
+    expect(out.results[0]?.text).toBe(out.results[0]?.canonical);
   });
 });

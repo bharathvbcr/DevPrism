@@ -43,6 +43,10 @@ fn is_retryable_chat_error(err: &str) -> bool {
         || err.contains("E_OPENAI_UNREACHABLE")
         || err.contains("E_OPENAI_STALLED")
         || err.contains("E_RATE_LIMIT")
+        // A truncated tool-call argument buffer means the stream was cut, which
+        // is transient in exactly the way a stalled stream is.
+        || err.contains("E_BAD_TOOL_ARGS")
+        || err.contains("E_OPENAI_EMPTY")
         || err.contains("Ollama stream error")
         || err.contains("OpenAI stream error")
         || err.contains("Ollama returned HTTP 5")
@@ -862,22 +866,28 @@ pub async fn run_native_agent(
     // Register the cancel handle, refusing a second concurrent turn for this tab:
     // a new turn would clobber the in-flight one's handle (making it un-stoppable)
     // and the two would race on the persisted history. Check-and-insert atomically.
-    let already_running = match cancels().lock() {
-        Ok(mut guard) => {
-            if guard.contains_key(&tab_id) {
-                true
-            } else {
-                guard.insert(
-                    tab_id.clone(),
-                    CancelHandle {
-                        flag: cancel.clone(),
-                        notify: notify.clone(),
-                    },
-                );
-                false
-            }
+    //
+    // A poisoned lock must not take the "not already running" path: that
+    // branch used to proceed *without inserting the handle*, so the turn ran
+    // with a `CancelHandle` reachable only from this stack frame —
+    // `stop_native_agent` looked the tab up, found nothing, and returned
+    // silently. "Registration failed" was indistinguishable from
+    // "registration succeeded", leaving an unstoppable turn. Recovering the
+    // guard keeps the registry authoritative.
+    let already_running = {
+        let mut guard = cancels().lock().unwrap_or_else(|e| e.into_inner());
+        if guard.contains_key(&tab_id) {
+            true
+        } else {
+            guard.insert(
+                tab_id.clone(),
+                CancelHandle {
+                    flag: cancel.clone(),
+                    notify: notify.clone(),
+                },
+            );
+            false
         }
-        Err(_) => false,
     };
     if already_running {
         let msg = "[E_ALREADY_RUNNING] A task is already running in this tab. Stop it before starting another."
@@ -886,6 +896,18 @@ pub async fn run_native_agent(
         finish(&window, &tab_id, false);
         return Err(msg);
     }
+
+    // Release the registry slot unconditionally.
+    //
+    // Removal used to happen only on the normal fall-through at the end of this
+    // function. Anything that unwound past it — a panic in a tool, or this
+    // command's future being dropped on window teardown — left the entry behind
+    // forever. `StreamFinishGuard` still emitted `claude-complete` on drop, so
+    // the UI looked idle while every later turn in that tab failed with
+    // `[E_ALREADY_RUNNING]`, with no command able to clear it short of an app
+    // restart. The completion event already used RAII for exactly this reason;
+    // the registry now does too.
+    let _registration = TurnRegistration::new(tab_id.clone());
 
     let finish_guard = StreamFinishGuard::new(window.clone(), tab_id.clone());
 
@@ -1494,11 +1516,34 @@ pub async fn run_native_agent(
     // Drop any answer slots this turn registered but never consumed (cancel or
     // error paths can exit mid-round), so a stale widget can't answer a dead turn.
     sweep_pending_answers(&tab_id);
-    if let Ok(mut guard) = cancels().lock() {
-        guard.remove(&tab_id);
-    }
+    // The registry slot and any leftover answer slots are released by
+    // `TurnRegistration::drop` when this frame unwinds, on every path.
     finish_guard.complete(success);
     Ok(())
+}
+
+/// Owns a tab's entry in the cancel registry for the duration of one turn.
+///
+/// Exists so the entry is released on panic and on future-drop, not only on the
+/// happy path — see the comment at its construction site.
+struct TurnRegistration {
+    tab_id: String,
+}
+
+impl TurnRegistration {
+    fn new(tab_id: String) -> Self {
+        Self { tab_id }
+    }
+}
+
+impl Drop for TurnRegistration {
+    fn drop(&mut self) {
+        sweep_pending_answers(&self.tab_id);
+        cancels()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.tab_id);
+    }
 }
 
 fn finish(window: &WebviewWindow, tab_id: &str, success: bool) {

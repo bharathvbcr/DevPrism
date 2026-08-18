@@ -22,6 +22,39 @@ import {
   ToolDefinition,
 } from "./types";
 
+/**
+ * Default ceiling on a single JSON-RPC call.
+ *
+ * Neither transport was bounded from this side: `fetch` carried no
+ * `AbortSignal` and Tauri's `invoke` has no cancellation at all, so any call
+ * that bottoms out in a model request simply hung for as long as the Rust side
+ * allowed — up to its own 600s budget — with no way for a caller to give up.
+ */
+const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
+
+/**
+ * Default ceiling on polling an async task, matching the server's 600s task TTL.
+ */
+const TASK_POLL_TIMEOUT_MS = 600_000;
+
+/** Reject after `ms`, so an uncancellable transport still releases its caller. */
+function rejectAfter(
+  ms: number,
+  label: string,
+): {
+  promise: Promise<never>;
+  cancel: () => void;
+} {
+  let timer: ReturnType<typeof setTimeout>;
+  const promise = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`MCP request '${label}' timed out after ${ms}ms`)),
+      ms,
+    );
+  });
+  return { promise, cancel: () => clearTimeout(timer) };
+}
+
 export interface McpClientOptions {
   clientInfo?: ClientInfo;
   transport?: "tauri" | "http";
@@ -61,6 +94,7 @@ export class StatelessMcpClient {
     method: string,
     params?: TParams,
     toolOrPromptName?: string,
+    options?: { timeoutMs?: number; signal?: AbortSignal },
   ): Promise<TResult> {
     const id = `req-${Date.now()}-${this.reqCounter++}`;
 
@@ -88,43 +122,68 @@ export class StatelessMcpClient {
 
     let response: JsonRpcResponse<TResult>;
 
-    if (this.customTransport) {
-      response = (await this.customTransport(
-        request,
-        headers,
-      )) as JsonRpcResponse<TResult>;
-    } else if (this.transport === "http") {
-      const httpRes = await fetch(this.httpUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...headers,
-        },
-        body: JSON.stringify(request),
-      });
+    const timeoutMs = options?.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    const deadline = rejectAfter(timeoutMs, toolOrPromptName ?? method);
 
-      if (!httpRes.ok) {
-        throw new Error(
-          `MCP HTTP transport failed with HTTP status ${httpRes.status}`,
-        );
-      }
+    try {
+      if (this.customTransport) {
+        response = (await Promise.race([
+          this.customTransport(request, headers),
+          deadline.promise,
+        ])) as JsonRpcResponse<TResult>;
+      } else if (this.transport === "http") {
+        // The fetch path can be aborted for real, so the request is dropped
+        // rather than merely abandoned.
+        const controller = new AbortController();
+        const onAbort = () => controller.abort();
+        options?.signal?.addEventListener("abort", onAbort);
+        const abortTimer = setTimeout(() => controller.abort(), timeoutMs);
 
-      response = await httpRes.json();
-    } else {
-      // Tauri IPC
-      try {
-        response = await invoke<JsonRpcResponse<TResult>>(
-          "mcp_execute_request",
-          {
-            request,
-            headers,
-          },
-        );
-      } catch (err: unknown) {
-        throw new Error(
-          `Tauri MCP execution error: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        let httpRes: Response;
+        try {
+          httpRes = await fetch(this.httpUrl, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              ...headers,
+            },
+            body: JSON.stringify(request),
+            signal: controller.signal,
+          });
+        } finally {
+          clearTimeout(abortTimer);
+          options?.signal?.removeEventListener("abort", onAbort);
+        }
+
+        if (!httpRes.ok) {
+          throw new Error(
+            `MCP HTTP transport failed with HTTP status ${httpRes.status}`,
+          );
+        }
+
+        response = await httpRes.json();
+      } else {
+        // Tauri IPC. `invoke` cannot be cancelled, so the race only releases
+        // the caller — the command keeps running to completion on the Rust side.
+        try {
+          response = (await Promise.race([
+            invoke<JsonRpcResponse<TResult>>("mcp_execute_request", {
+              request,
+              headers,
+            }),
+            deadline.promise,
+          ])) as JsonRpcResponse<TResult>;
+        } catch (err: unknown) {
+          if (err instanceof Error && err.message.startsWith("MCP request ")) {
+            throw err;
+          }
+          throw new Error(
+            `Tauri MCP execution error: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
       }
+    } finally {
+      deadline.cancel();
     }
 
     if (response.error) {
@@ -238,7 +297,11 @@ export class StatelessMcpClient {
     },
   ): Promise<T> {
     const interval = options?.pollIntervalMs || 250;
-    const timeout = options?.timeoutMs || 120_000;
+    // Match the server's own budget. `resume_synthesize` creates its task with a
+    // 600s TTL and, in `ollama` mode, runs JD analysis plus a per-block rewrite
+    // loop plus a Typst compile — routinely past the old 120s default, which
+    // abandoned work that was still progressing normally.
+    const timeout = options?.timeoutMs ?? TASK_POLL_TIMEOUT_MS;
     const startTime = Date.now();
 
     while (Date.now() - startTime < timeout) {
@@ -268,6 +331,15 @@ export class StatelessMcpClient {
       await new Promise((r) => setTimeout(r, interval));
     }
 
+    // Giving up on the poll must also stop the work. Without this the model kept
+    // generating and the Typst compile kept running against a result nobody
+    // would read, and a retry stacked a second full pipeline on top of the first.
+    try {
+      await this.cancelTask(taskId);
+    } catch {
+      // Best effort: the task may already be gone. The timeout below is the
+      // error the caller needs either way.
+    }
     throw new Error(`Task '${taskId}' timed out after ${timeout}ms`);
   }
 }

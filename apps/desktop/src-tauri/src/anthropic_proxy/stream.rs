@@ -110,8 +110,10 @@ fn decode_utf8_prefix(bytes: &mut Vec<u8>, out: &mut String) {
                     // `valid_up_to()` bytes are valid UTF-8 by definition, so
                     // the lossy decoder never substitutes anything here. It is
                     // used instead of `from_utf8(..).unwrap()` so a future
-                    // change to the slice bounds degrades instead of panicking
-                    // inside the streaming proxy.
+                    // change to the slice bounds degrades to U+FFFD instead of
+                    // panicking inside the streaming proxy. Preferred over
+                    // `if let Ok(s)`, which would silently drop the whole valid
+                    // prefix if that invariant ever broke.
                     out.push_str(&String::from_utf8_lossy(&bytes[..valid]));
                 }
                 match e.error_len() {

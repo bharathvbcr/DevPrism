@@ -4,6 +4,7 @@
 //! MRTR stateless elicitations (SEP-2322), and Tasks extension (SEP-2663)
 //! across Career Knowledgebase and Resume Synthesis pipelines.
 
+pub mod elicitation;
 pub mod protocol;
 pub mod server;
 pub mod tasks;
@@ -12,6 +13,8 @@ pub mod tools_resume;
 pub mod transport_http;
 pub mod transport_stdio;
 
+#[cfg(test)]
+pub(crate) mod stress;
 #[cfg(test)]
 mod tests;
 

@@ -47,6 +47,9 @@ pub mod selection;
 pub mod text;
 pub mod typst_escape;
 
+#[cfg(test)]
+pub(crate) mod stress;
+
 pub use jd::{JdExtraction, JdProfile};
 pub use scoring::{ScoreComponents, ScoredBlock};
 pub use selection::{SelectionBudget, SelectionResult};

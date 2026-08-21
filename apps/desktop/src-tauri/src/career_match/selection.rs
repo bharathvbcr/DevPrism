@@ -239,10 +239,22 @@ pub fn knapsack_select(
             continue;
         };
         let cand_cost = estimate_block_lines(&candidate.block, CHARS_PER_LINE);
+        let cand_section = section_for_block(&candidate.block);
 
-        if lines + cand_cost <= budget.total_lines {
+        // The repair pass may not undo what the main loop guarantees: a fresh
+        // selection must never violate its own budget, section caps included.
+        // A skill that cannot be covered within the caps stays in
+        // `uncovered_must_haves` instead of silently overflowing the page.
+        let section_has_room = |counts: &HashMap<String, usize>, section: &str| {
+            counts.get(section).copied().unwrap_or(0) < budget.section_cap(section)
+        };
+
+        if lines + cand_cost <= budget.total_lines
+            && section_has_room(&section_counts, &cand_section)
+        {
             selected.push(candidate.clone());
             lines += cand_cost;
+            *section_counts.entry(cand_section).or_insert(0) += 1;
             swaps.push(SelectionSwap {
                 dropped_id: String::new(),
                 added_id: candidate.block.id.clone(),
@@ -278,10 +290,20 @@ pub fn knapsack_select(
         if lines.saturating_sub(freed) + cand_cost > budget.total_lines {
             continue;
         }
+        // The candidate's section needs headroom *after* the victim leaves it
+        // (they are usually different sections).
+        let victim_section = section_for_block(&weakest.block);
+        let mut projected = section_counts.clone();
+        let freed_slot = projected.entry(victim_section).or_insert(1);
+        *freed_slot = freed_slot.saturating_sub(1);
+        if !section_has_room(&projected, &cand_section) {
+            continue;
+        }
         lines = lines.saturating_sub(freed);
         selected.remove(idx);
         selected.push(candidate.clone());
         lines += cand_cost;
+        section_counts = projected;
         swaps.push(SelectionSwap {
             dropped_id: weakest.block.id.clone(),
             added_id: candidate.block.id.clone(),
@@ -565,11 +587,14 @@ mod tests {
 
     #[test]
     fn coverage_repair_pulls_in_a_block_for_an_uncovered_must_have() {
-        let mut budget = SelectionBudget::for_pages(1);
-        budget.blocks_per_section.insert("experience".into(), 1);
+        // Same org, so the main loop's de-duplication skips the Rust block and
+        // the repair pass must pull it in. The budget keeps its default caps:
+        // a repair that only worked by pushing a section past its cap was the
+        // defect `coverage_repair_respects_section_caps` pins.
+        let budget = SelectionBudget::for_pages(1);
         let blocks = vec![
             scored("top", "A", 0.99, vec![bullet("x", "generic work")], &["Excel"]),
-            scored("rust", "B", 0.10, vec![bullet("y", "wrote Rust systems")], &["Rust"]),
+            scored("rust", "A", 0.10, vec![bullet("y", "wrote Rust systems")], &["Rust"]),
         ];
         let r = knapsack_select(&blocks, &budget, &["rust".into()], DEFAULT_ORG_SCORE_GAP);
         assert!(
@@ -579,6 +604,36 @@ mod tests {
         );
         assert!(r.uncovered_must_haves.is_empty());
         assert!(!r.swaps.is_empty());
+        assert!(budget_violations(&r.selected, &budget).is_empty());
+    }
+
+    /// Coverage repair may add or swap in a must-have cover, but it may not
+    /// push a section past its cap: the main loop enforces caps, and
+    /// `budget_violations` — the engine's own auditor — would reject any
+    /// selection that ignored them. Found by `career_match::stress` (seed 169).
+    #[test]
+    fn coverage_repair_respects_section_caps() {
+        let budget = SelectionBudget::for_pages(1);
+        let blocks = vec![
+            scored("a", "org-a", 0.90, vec![bullet("x", "wrote Rust services")], &["Rust"]),
+            scored("b", "org-b", 0.89, vec![bullet("y", "more Rust work")], &["Rust"]),
+            scored("c", "org-c", 0.88, vec![bullet("z", "yet more Rust")], &["Rust"]),
+            scored("d", "org-d", 0.40, vec![bullet("w", "runs Kubernetes fleets")], &["Kubernetes"]),
+        ];
+        let must = vec!["rust".into(), "kubernetes".into()];
+        let r = knapsack_select(&blocks, &budget, &must, DEFAULT_ORG_SCORE_GAP);
+
+        // Pre-fix this selected all four experience blocks: the repair pass
+        // added "d" for kubernetes with no cap check.
+        assert!(
+            budget_violations(&r.selected, &budget).is_empty(),
+            "a fresh selection violates its own budget: {:?}",
+            budget_violations(&r.selected, &budget)
+        );
+        assert_eq!(r.selected.len(), 3);
+        // The skill that cannot be covered within the caps is reported, not
+        // silently smuggled onto the page.
+        assert_eq!(r.uncovered_must_haves, vec!["kubernetes".to_string()]);
     }
 
     #[test]

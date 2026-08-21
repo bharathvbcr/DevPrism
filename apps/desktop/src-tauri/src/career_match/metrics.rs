@@ -412,6 +412,7 @@ pub fn introduced_numbers(
     // Spelled-out quantities absent from the canonical text and metrics.
     let canon_lower = canonical_text.to_lowercase();
     let draft_lower = draft.to_lowercase();
+    let canon_tokens = numeric_tokens(canonical_text);
     for w in QUANTITY_WORDS {
         if !occurs_word_bounded(&draft_lower, w) {
             continue;
@@ -437,6 +438,17 @@ pub fn introduced_numbers(
 
     for tok in numeric_tokens(draft) {
         if metric_preserved_in_text(&tok, canonical_text) {
+            continue;
+        }
+        // The canonical text may contain the same *written form* even when
+        // preservation semantics reject the bare number: "5th" yields the
+        // token "5", which `metric_preserved_in_text` deliberately refuses to
+        // see inside "5th". A draft that copies an ordinal from the canonical
+        // bullet invented nothing, so the identical token extracted from the
+        // canonical text licenses it. Membership in `numeric_tokens(canonical)`
+        // cannot license a genuinely invented figure — the form must literally
+        // be there already.
+        if canon_tokens.contains(&tok) {
             continue;
         }
         if canonical_metrics.iter().any(|m| {
@@ -769,6 +781,7 @@ mod differential {
 
 #[cfg(test)]
 mod adversarial_regressions {
+    use super::introduced_numbers;
     use super::metric_preserved_in_text as m;
     #[test]
     fn attacker_cases_are_closed() {
@@ -796,5 +809,27 @@ mod adversarial_regressions {
             if got != want { bad.push(format!("{metric:?} vs {text:?} => {got}, want {want}")); }
         }
         assert!(bad.is_empty(), "STILL BROKEN:\n{}", bad.join("\n"));
+    }
+
+    /// A draft that copies an ordinal straight from the canonical bullet
+    /// ("ranked 5th") must not be flagged as inventing the bare number ("5"):
+    /// `numeric_tokens` strips the suffix while `metric_preserved_in_text`
+    /// deliberately refuses to match inside one, so without the written-form
+    /// licence below every faithful rewrite of such a bullet was rejected with
+    /// `unsupported_number`. Found by `career_match::stress`.
+    #[test]
+    fn a_verbatim_ordinal_from_the_canonical_is_not_invention() {
+        let canonical = "Ranked 5th nationally, 3rd in the region";
+        assert!(introduced_numbers(canonical, &[], canonical).is_empty());
+        // A partial rewrite keeping the ordinals is equally clean.
+        assert!(introduced_numbers(canonical, &[], "Ranked 5th among peers").is_empty());
+        // The licence is per-form: an ordinal the canonical never stated is
+        // still invention.
+        assert_eq!(
+            introduced_numbers("Ranked 5th nationally", &[], "Jumped to 2nd place"),
+            vec!["2"]
+        );
+        // And plain invented quantities stay caught.
+        assert!(!introduced_numbers("Grew the team", &[], "Grew the team by 40%").is_empty());
     }
 }

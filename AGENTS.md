@@ -28,6 +28,6 @@ Important surfaces:
 3. `apps/desktop/src/` — src: App, career-view, debug-page [apps/desktop#2]
 4. `apps/desktop/src-tauri/` — src-tauri: lib, main, mod [apps/desktop#4]
 5. `docs/` — docs: threshold, __init__, cache [docs/semantic-layer-reference]
-6. `scripts/` — scripts: build-desktop, dev-desktop [apps/desktop#9]
+6. `scripts/` — scripts: build-manvi, build-desktop [apps/desktop#2]
 
 If the map and source disagree, trust the source and regenerate the map.

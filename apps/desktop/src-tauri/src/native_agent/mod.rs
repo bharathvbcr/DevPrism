@@ -8,6 +8,7 @@
 //! in stream-json shape, then `claude-complete`), so the existing chat UI renders
 //! its output and detects file changes without modification.
 
+pub mod manvi_sidecar;
 pub(crate) mod ollama;
 pub mod openai_compat;
 mod tools;
@@ -663,6 +664,25 @@ pub fn clear_native_session(tab_id: String) {
     if let Ok(mut g) = sessions().lock() {
         g.remove(&tab_id);
     }
+    // The sidecar holds this conversation's compaction ledger and calibrator.
+    // Left behind, they would shorten a fresh conversation's first tool result
+    // to text it never produced, and a desktop app that opens tabs all day
+    // would accumulate one ledger per closed tab.
+    //
+    // Spawned rather than awaited: this is called from a synchronous command
+    // whose caller is clearing the UI, and a missing sidecar must not make
+    // "new chat" fail.
+    //
+    // `tokio::spawn` panics outside a runtime, and this function is reachable
+    // from plain synchronous contexts as well as from Tauri commands. Asking
+    // for the handle instead means the no-runtime case skips the notification
+    // rather than taking the caller down — and skipping it is survivable: the
+    // ledger is bounded by the number of tabs and costs only memory in the
+    // sidecar, whereas panicking loses the user's "new chat".
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        let id = tab_id.clone();
+        handle.spawn(async move { manvi_sidecar::forget_session(&id).await });
+    }
 }
 
 #[derive(Serialize, Clone)]
@@ -941,16 +961,43 @@ pub async fn run_native_agent(
             finish_guard.complete(false);
             return Err(msg);
         }
+        // The same discovery the Ollama branch gets: a local OpenAI-compatible
+        // server (vLLM, llama.cpp, LM Studio) publishes its real window where
+        // the probe can read it, and 8192 under-drives it exactly as it would
+        // the native path. Cloud hosts are skipped by `host_is_probe_worthy`
+        // before any network traffic happens.
+        let effective_ctx = match num_ctx {
+            Some(explicit) => Some(explicit),
+            None => resolve_context_window(&openai_compat::probe_base(&base), &model).await,
+        };
         NativeChatClient::OpenAi(openai_compat::OpenAiCompatClient::new(
             &base,
             &model,
             &key,
-            num_ctx,
+            effective_ctx,
             temperature,
         ))
     } else {
-        let mut ollama_client = ollama::OllamaClient::new(&base, &model, num_ctx, temperature)
-            .with_keep_alive(keep_alive.as_deref());
+        // Ask the server what this model's window actually is before settling
+        // for a default. `num_ctx` here is whatever the user set in Settings,
+        // or `None` — and `None` becomes 8192, which is a floor chosen so the
+        // system prompt and tool schemas fit, not a description of the model.
+        // On a 262k-token model that is 3% of its capacity, and every token
+        // below the real window is history compacted away for no reason.
+        //
+        // Only an explicit user setting outranks the server: someone who typed
+        // a number meant it, and a probe that overruled them would be arguing
+        // with an operator about their own machine.
+        let effective_ctx = match num_ctx {
+            Some(explicit) => Some(explicit),
+            None => {
+                let probe_base = format!("{}/v1", ollama::native_base(&base));
+                resolve_context_window(&probe_base, &model).await
+            }
+        };
+        let mut ollama_client =
+            ollama::OllamaClient::new(&base, &model, effective_ctx, temperature)
+                .with_keep_alive(keep_alive.as_deref());
         if ollama_client.supports_thinking().await.unwrap_or(false) {
             ollama_client = ollama_client.with_think(effort_level.as_deref());
         }
@@ -1125,9 +1172,71 @@ pub async fn run_native_agent(
         }
 
         // Shed the oldest bulky tool results so a couple of large Reads can't push
-        // the prompt past 80% of num_ctx (which would crowd out the system rules).
-        // The returned byte size is the actual prompt we send this round.
-        let compaction = compact_tool_results(&mut messages, ctx_budget);
+        // the prompt past the model's window (which would crowd out the system rules).
+        //
+        // manvi plans this when it can, and the difference is not cosmetic. It
+        // counts tokens rather than bytes, corrects that count against what the
+        // server actually reported, and — the part that matters most on a local
+        // server — never re-shortens a result it has already shortened. The KV
+        // cache is keyed on an unchanged token prefix, so a result rewritten to
+        // a different string on a later step invalidates everything after it and
+        // costs a full re-prefill. The byte-budget compactor below re-derives
+        // its plan from scratch every step and aims *at* the budget rather than
+        // past it, so it re-triggers on the very next tool result.
+        //
+        // It stays as the fallback because the sidecar is optional: a build with
+        // no manvi binary must still bound its prompt.
+        let system_text = messages
+            .get(0)
+            .and_then(|m| m.get("content"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let plan = manvi_sidecar::prepare_context(
+            &tab_id,
+            &system_text,
+            &tools,
+            &to_wire_messages(&messages),
+            client.num_ctx(),
+            last_prompt_tokens,
+        )
+        .await;
+
+        let compaction = match plan {
+            manvi_sidecar::Verdict::Answered(plan) => {
+                if plan.insufficient {
+                    eprintln!(
+                        "[manvi] every tool result is compacted as far as it goes and the \
+                         request is still {} tokens against a {} threshold — the server will \
+                         truncate",
+                        plan.after_tokens, plan.threshold_tokens
+                    );
+                }
+                if !plan.steps.is_empty() {
+                    eprintln!(
+                        "[manvi] compaction {} → {} tokens ({} result(s), calibration {:.2} from \
+                         {} sample(s))",
+                        plan.before_tokens,
+                        plan.after_tokens,
+                        plan.steps.len(),
+                        plan.calibration_ratio,
+                        plan.calibration_samples
+                    );
+                }
+                apply_prepare_plan(&mut messages, &plan)
+            }
+            other => {
+                if let manvi_sidecar::Verdict::Unavailable(reason) = &other {
+                    if iter == 0 {
+                        eprintln!(
+                            "[manvi] context planning unavailable ({reason}); \
+                             using the byte-budget compactor"
+                        );
+                    }
+                }
+                compact_tool_results(&mut messages, ctx_budget)
+            }
+        };
         let sent_bytes = compaction.total_bytes;
         if !compaction.dropped.is_empty() {
             emit_context_truncation(&window, &tab_id, &compaction.dropped, "tool results");
@@ -1137,7 +1246,7 @@ pub async fn run_native_agent(
         // Text fragments stream straight to the UI as `streaming_delta` blocks
         // (the same protocol the direct-provider path uses); the finalized turn
         // is reconciled into a `streaming_final` message below.
-        let turn = {
+        let mut turn = {
             let mut attempt = 0u32;
             'chat: loop {
                 let r = tokio::select! {
@@ -1198,6 +1307,86 @@ pub async fn run_native_agent(
                 }
             }
         };
+
+        // Read the reply with manvi before deciding what it contained.
+        //
+        // Two things a local server routinely gets wrong land here. It may not
+        // have a tool parser for the model it serves, in which case the call
+        // arrives as prose and — without this — is rendered as an answer while
+        // the turn silently does nothing. And a model whose chat template
+        // prefills an opening <think> emits only the closing tag, so the whole
+        // chain of thought reads as the answer and is replayed on every later
+        // step.
+        //
+        // Recovery is skipped when the server did parse calls: text that merely
+        // looks like a call, in a reply whose real calls came back structured,
+        // is the model talking about a tool rather than asking for one.
+        if let manvi_sidecar::Verdict::Answered(settled) = manvi_sidecar::settle_reply(
+            &turn.content,
+            &tools,
+            !turn.tool_calls.is_empty(),
+            &turn.done_reason,
+        )
+        .await
+        {
+            if !settled.format.is_empty() {
+                // Never silent. Recovery works, but the same missing parser
+                // costs correctness elsewhere, and a compensation nobody sees
+                // is one nobody fixes.
+                eprintln!(
+                    "[manvi] recovered {} tool call(s) from unparsed text ({}) — the server has \
+                     no tool parser for this model",
+                    settled.calls.len(),
+                    settled.format
+                );
+            }
+            if settled.reclassified {
+                eprintln!("[manvi] reclassified a prefilled thinking block out of the answer");
+            }
+            if settled.truncated && !settled.truncated_mid_call {
+                // The answer itself was cut off at the output cap. Not fatal —
+                // the text so far is real — but the user must not read a
+                // sentence that stops mid-word as the model's whole answer.
+                emit_msg(
+                    &window,
+                    &tab_id,
+                    &json!({
+                        "type": "assistant",
+                        "subtype": "output_truncated",
+                        "message": { "content": [{
+                            "type": "text",
+                            "text": "_The reply hit the output limit and was cut off. \
+                                     Ask me to continue for the rest._",
+                        }]}
+                    }),
+                );
+            }
+
+            if settled.truncated_mid_call {
+                // The cap landed inside a call's arguments. Half an argument
+                // object is a different request, not a smaller one, so nothing
+                // is dispatched — but the completed steps of this turn are not
+                // thrown away either. The model is told to reissue.
+                eprintln!("[manvi] output cap landed mid tool call; asking the model to reissue");
+                if let Some(arr) = messages.as_array_mut() {
+                    arr.push(json!({ "role": "user", "content": settled.retry_message }));
+                }
+                continue;
+            }
+
+            turn.content = settled.text;
+            if turn.thinking.trim().is_empty() && !settled.reasoning.is_empty() {
+                turn.thinking = settled.reasoning;
+            }
+            for call in settled.calls {
+                let args: Value = serde_json::from_str(&call.arguments).unwrap_or_else(|_| json!({}));
+                turn.tool_calls.push(ollama::ToolCall {
+                    name: ollama::canonicalize_tool_name(&call.name),
+                    args,
+                    ..Default::default()
+                });
+            }
+        }
 
         // A model that returns neither text nor a tool call: nudge it a couple of
         // times before giving up, so a transient blank turn doesn't end the chat.
@@ -1526,6 +1715,207 @@ pub async fn run_native_agent(
 ///
 /// Exists so the entry is released on panic and on future-drop, not only on the
 /// happy path — see the comment at its construction site.
+/// Translate the live Ollama-shaped message array into the shape
+/// `chat.prepare` reads.
+///
+/// Only what the planner needs crosses: a role, the visible text, and the id
+/// that pairs a tool result with its call. Images are deliberately dropped —
+/// they are counted in bytes by the fallback compactor, and sending base64
+/// payloads through the sidecar to have their length measured would be the
+/// single largest thing on the wire for no gain.
+fn to_wire_messages(messages: &Value) -> Value {
+    let arr = match messages.as_array() {
+        Some(a) => a,
+        None => return json!([]),
+    };
+    let mut out = Vec::with_capacity(arr.len());
+    // messages[0] is the system prompt, which travels as its own field.
+    for m in arr.iter().skip(1) {
+        let role = m.get("role").and_then(Value::as_str).unwrap_or("user");
+        let text = m.get("content").and_then(Value::as_str).unwrap_or("");
+        let mut entry = json!({ "role": role, "text": text });
+        if role == "tool" {
+            if let Some(id) = m.get("tool_call_id").and_then(Value::as_str) {
+                entry["tool_call_id"] = json!(id);
+            }
+        }
+        if let Some(calls) = m.get("tool_calls").and_then(Value::as_array) {
+            let wire: Vec<Value> = calls
+                .iter()
+                .filter_map(|c| {
+                    let func = c.get("function")?;
+                    Some(json!({
+                        "id": c.get("id").and_then(Value::as_str).unwrap_or(""),
+                        "name": func.get("name").and_then(Value::as_str).unwrap_or(""),
+                        "arguments": match func.get("arguments") {
+                            Some(Value::String(s)) => s.clone(),
+                            Some(other) => other.to_string(),
+                            None => String::new(),
+                        },
+                    }))
+                })
+                .collect();
+            if !wire.is_empty() {
+                entry["tool_calls"] = json!(wire);
+            }
+        }
+        out.push(entry);
+    }
+    json!(out)
+}
+
+/// Apply a compaction plan to the live message array, by tool_call_id.
+///
+/// Returns the same shape the byte-budget compactor does, so the caller's
+/// reporting path is identical whichever planner ran.
+fn apply_prepare_plan(
+    messages: &mut Value,
+    plan: &manvi_sidecar::PrepareResult,
+) -> CompactionResult {
+    let mut dropped = Vec::new();
+    if let Some(arr) = messages.as_array_mut() {
+        for step in &plan.steps {
+            for m in arr.iter_mut() {
+                if m.get("role").and_then(Value::as_str) != Some("tool") {
+                    continue;
+                }
+                if m.get("tool_call_id").and_then(Value::as_str) != Some(step.tool_call_id.as_str())
+                {
+                    continue;
+                }
+                let name = m
+                    .get("tool_name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("tool")
+                    .to_string();
+                m["content"] = json!(step.text);
+                dropped.push(format!("{name} result"));
+                break;
+            }
+        }
+    }
+    let total_bytes: usize = messages
+        .as_array()
+        .map(|a| a.iter().map(|m| m.to_string().len()).sum())
+        .unwrap_or(0);
+    CompactionResult {
+        total_bytes,
+        dropped,
+    }
+}
+
+/// Ceiling on a discovered context window, in tokens.
+///
+/// A window is a request for KV-cache allocation, and Ollama honours it: asking
+/// for the full 262144 of a large model reserves memory proportional to it and
+/// can push the runner into swap or an out-of-memory kill on a laptop. This is
+/// well above the 8192 default — the point is to stop wasting a large model's
+/// capacity, not to consume all of it — while staying inside what a machine
+/// running the model locally can hold. A user who wants more sets num_ctx
+/// explicitly, which bypasses this path entirely.
+const DISCOVERED_CTX_CEILING: u32 = 65536;
+
+/// Ask manvi what context window the server reports for this model.
+///
+/// Returns `None` when the answer could not be obtained, which leaves the
+/// caller on its existing default. A failure here is never fatal: the sidecar
+/// is an optimisation, and a missing binary or a server that publishes nothing
+/// must cost the old behaviour rather than the turn.
+/// Whether this base URL points at a machine the probe can meaningfully ask.
+///
+/// Discovery exists for servers on the operator's own machine or LAN, which
+/// publish their model catalogue unauthenticated. A cloud provider refuses the
+/// listing (no API key crosses the probe), so probing one costs a network
+/// round-trip — up to the probe timeout on an offline machine, which for an
+/// offline-first app is the common case — to learn nothing. Those keep the
+/// configured default; a user who wants discovery against a public endpoint
+/// sets num_ctx explicitly anyway.
+fn host_is_probe_worthy(base_url: &str) -> bool {
+    let rest = match base_url.split_once("://") {
+        Some((_, r)) => r,
+        None => return false,
+    };
+    let host_port = rest.split('/').next().unwrap_or("");
+    let host = host_port
+        .rsplit_once(':')
+        .map(|(h, _)| h)
+        .unwrap_or(host_port)
+        .trim_start_matches('[')
+        .trim_end_matches(']');
+    let l = host.to_ascii_lowercase();
+    l == "localhost"
+        || l == "::1"
+        || l.starts_with("127.")
+        || l.starts_with("10.")
+        || l.starts_with("192.168.")
+        || l.starts_with("169.254.")
+        // 172.16.0.0/12: 172.16.x through 172.31.x only.
+        || (l.starts_with("172.") && l.split('.').nth(1).and_then(|o| o.parse::<u8>().ok()).is_some_and(|o| (16..=31).contains(&o)))
+}
+
+/// Ask manvi what context window the server reports for this model.
+///
+/// `probe_base` is the *final* OpenAI-compatible API root the probe should
+/// hit — each caller derives it from its own URL dialect (the Ollama branch
+/// normalises away `/v1` and re-appends it; the OpenAI-compat branch keeps a
+/// chat-API root as-is and appends `/v1` only when missing). This function
+/// deliberately does no URL surgery of its own.
+///
+/// Returns `None` when the answer could not be obtained, which leaves the
+/// caller on its existing default. A failure here is never fatal: the sidecar
+/// is an optimisation, and a missing binary or a server that publishes nothing
+/// must cost the old behaviour rather than the turn.
+async fn resolve_context_window(probe_base: &str, model: &str) -> Option<u32> {
+    use manvi_sidecar::Verdict;
+
+    if !host_is_probe_worthy(probe_base) {
+        return None;
+    }
+
+    match manvi_sidecar::probe_model(probe_base, model, ollama::DEFAULT_CONTEXT_WINDOW).await {
+        Verdict::Answered(result) => {
+            if result.embedding {
+                // An embedding model answers the listing beside every chat
+                // model and then fails at /api/chat. Leave the window alone —
+                // the chat-capability preflight below is what should refuse
+                // it, with a message about the model rather than about memory.
+                eprintln!("[manvi] {model} is an embedding-only model; not adjusting context");
+                return None;
+            }
+            if !result.discovered {
+                // The server published nothing, so this is our own declared
+                // value handed back. Adopting it would change nothing and log
+                // a discovery that did not happen.
+                return None;
+            }
+            if result.capabilities_known && !result.supports_tools {
+                // Not fatal here — the chat-capability preflight below still
+                // decides — but worth recording next to the window, because a
+                // tool-less model is the commonest reason an agent turn does
+                // nothing and reports no error.
+                eprintln!("[manvi] {model} does not advertise tool calling");
+            }
+            let capped = result.context_window.min(DISCOVERED_CTX_CEILING);
+            eprintln!(
+                "[manvi] {model}: context {} from {} (capped to {capped}) — {}",
+                result.context_window, result.source, result.describe
+            );
+            Some(capped)
+        }
+        Verdict::Refused(err) => {
+            eprintln!(
+                "[manvi] context probe refused for {model}: {} {} (retryable={})",
+                err.code, err.message, err.retryable
+            );
+            None
+        }
+        Verdict::Unavailable(reason) => {
+            eprintln!("[manvi] context probe unavailable ({reason}); using the configured default");
+            None
+        }
+    }
+}
+
 struct TurnRegistration {
     tab_id: String,
 }
@@ -2428,6 +2818,46 @@ pub async fn pull_ollama_model(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn probe_worthiness_covers_local_shapes_and_rejects_cloud() {
+        // Loopback spellings.
+        assert!(host_is_probe_worthy("http://localhost:11434"));
+        assert!(host_is_probe_worthy("http://127.0.0.1:11434"));
+        assert!(host_is_probe_worthy("http://127.0.0.1:8000/v1"));
+        assert!(host_is_probe_worthy("http://[::1]:8080/v1"));
+        // Private/LAN ranges.
+        assert!(host_is_probe_worthy("http://10.0.0.5:8000/v1"));
+        assert!(host_is_probe_worthy("http://192.168.1.20:8000"));
+        assert!(host_is_probe_worthy("http://172.16.5.4:8000/v1"));
+        assert!(host_is_probe_worthy("http://172.31.255.9:8000/v1"));
+        assert!(host_is_probe_worthy("http://169.254.1.2:8000/v1"));
+        // Public hosts: cloud providers refuse the unauthenticated listing, so
+        // probing them is a network round-trip that can only fail.
+        assert!(!host_is_probe_worthy("https://api.groq.com/openai/v1"));
+        assert!(!host_is_probe_worthy("https://openrouter.ai/api/v1"));
+        assert!(!host_is_probe_worthy("https://api.deepseek.com/v1"));
+        // 172.32+ is public; only 172.16/12 is private.
+        assert!(!host_is_probe_worthy("http://172.32.0.1:8000/v1"));
+        assert!(!host_is_probe_worthy("http://172.15.0.1:8000/v1"));
+        // Not a URL we understand.
+        assert!(!host_is_probe_worthy("unix:///tmp/ollama.sock"));
+        assert!(!host_is_probe_worthy(""));
+    }
+
+    #[test]
+    fn openai_probe_base_matches_the_chat_url_root_logic() {
+        use super::openai_compat::probe_base;
+        // Already chat-rooted: used as-is.
+        assert_eq!(probe_base("https://api.groq.com/openai/v1"), "https://api.groq.com/openai/v1");
+        assert_eq!(
+            probe_base("https://generativelanguage.googleapis.com/v1beta/openai"),
+            "https://generativelanguage.googleapis.com/v1beta/openai"
+        );
+        // Bare host: /v1 appended, exactly as the chat URL builder would.
+        assert_eq!(probe_base("http://127.0.0.1:8000"), "http://127.0.0.1:8000/v1");
+        assert_eq!(probe_base("http://localhost:1234/"), "http://localhost:1234/v1");
+    }
 
     #[test]
     fn retryable_chat_errors_are_transient_only() {

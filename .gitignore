@@ -173,3 +173,8 @@ Thumbs.db
 
 # Local AI coding agents
 .cursor/
+
+# manvi sidecar binaries, built by scripts/build-manvi.mjs (~8 MB per target).
+# The directory's README documents how they are produced and found.
+apps/desktop/src-tauri/binaries/*
+!apps/desktop/src-tauri/binaries/README.md

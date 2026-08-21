@@ -3,9 +3,10 @@
 
 use serde_json::{json, Value};
 
-use super::ollama::{canonicalize_tool_name, ChatTurn, StreamDeltaKind, ToolCall};
+use super::ollama::{
+    canonicalize_tool_name, ChatTurn, DEFAULT_CONTEXT_WINDOW, StreamDeltaKind, ToolCall,
+};
 
-const CONTEXT_WINDOW: u32 = 8192;
 const DEFAULT_MAX_COMPLETION_TOKENS: u32 = 4096;
 const REQUEST_TIMEOUT_SECS: u64 = 600;
 const STREAM_IDLE_TIMEOUT_SECS: u64 = 90;
@@ -87,6 +88,21 @@ fn models_url(base_url: &str) -> String {
         format!("{clean}/models")
     } else {
         format!("{clean}/v1/models")
+    }
+}
+
+/// The OpenAI-compatible API root for this base URL — what a capability probe
+/// should be pointed at, since `/models` lives there.
+///
+/// Mirrors `chat_completions_url`'s root logic: a base that already ends in a
+/// chat-API root is used as-is; anything else gets `/v1` appended, exactly as
+/// the chat URL builder would.
+pub fn probe_base(base_url: &str) -> String {
+    let clean = base_url.trim().trim_end_matches('/');
+    if openai_compatible_base_url_has_chat_root(clean) {
+        clean.to_string()
+    } else {
+        format!("{clean}/v1")
     }
 }
 
@@ -190,6 +206,7 @@ fn accumulate_openai_stream_line<F: FnMut(StreamDeltaKind, &str)>(
     tool_arg_buffers: &mut Vec<String>,
     prompt_tokens: &mut u64,
     eval_tokens: &mut u64,
+    finish_reason: &mut String,
     on_delta: &mut F,
 ) -> Result<bool, String> {
     // A bare top-level `message` only means "error envelope" when this is *not*
@@ -286,6 +303,11 @@ fn accumulate_openai_stream_line<F: FnMut(StreamDeltaKind, &str)>(
     }
 
     let finish = first.get("finish_reason").and_then(|f| f.as_str());
+    // Captured, not just tested. "length" means the output cap was hit, and a
+    // tool call cut off mid-arguments must never be dispatched as if complete.
+    if let Some(reason) = finish {
+        *finish_reason = reason.to_string();
+    }
     Ok(finish == Some("stop") || finish == Some("tool_calls"))
 }
 
@@ -350,7 +372,7 @@ impl OpenAiCompatClient {
             client: build_client(),
             num_ctx: num_ctx
                 .filter(|&n| (512..=131072).contains(&n))
-                .unwrap_or(CONTEXT_WINDOW),
+                .unwrap_or(DEFAULT_CONTEXT_WINDOW),
             temperature: temperature
                 .filter(|&t| (0.0..=2.0).contains(&t))
                 .unwrap_or(0.4),
@@ -456,6 +478,7 @@ impl OpenAiCompatClient {
         let mut tool_arg_buffers: Vec<String> = Vec::new();
         let mut prompt_tokens = 0u64;
         let mut eval_tokens = 0u64;
+        let mut finish_reason = String::new();
         let mut buf: Vec<u8> = Vec::new();
 
         loop {
@@ -528,6 +551,7 @@ impl OpenAiCompatClient {
                     &mut tool_arg_buffers,
                     &mut prompt_tokens,
                     &mut eval_tokens,
+                    &mut finish_reason,
                     &mut on_delta,
                 )?;
             }
@@ -553,6 +577,7 @@ impl OpenAiCompatClient {
                         &mut tool_arg_buffers,
                         &mut prompt_tokens,
                         &mut eval_tokens,
+                        &mut finish_reason,
                         &mut on_delta,
                     )?;
                 }
@@ -601,6 +626,7 @@ impl OpenAiCompatClient {
         }
 
         Ok(ChatTurn {
+            done_reason: finish_reason,
             content,
             thinking,
             tool_calls,
@@ -802,6 +828,7 @@ mod tests {
                 &mut arg_buffers,
                 &mut prompt_tokens,
                 &mut eval_tokens,
+                &mut String::new(),
                 &mut on_delta,
             )
             .expect("chunk should fold cleanly");

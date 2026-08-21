@@ -4,9 +4,14 @@
 
 use serde_json::{json, Value};
 
-/// Context window requested from Ollama (overrides the model's small default so
-/// the full system prompt + project context + history + tools are not truncated).
-const CONTEXT_WINDOW: u32 = 8192;
+/// Context window requested from Ollama when nothing better is known.
+///
+/// It overrides Ollama's own small default (often 2048) so the system prompt,
+/// project context, history and tool schemas are not truncated. It is a floor
+/// chosen to make the harness work on any model, *not* a description of any
+/// particular one — see `resolve_context_window` in this module's parent, which
+/// asks the server for the model's real window and only falls back here.
+pub const DEFAULT_CONTEXT_WINDOW: u32 = 8192;
 
 /// Overall per-request budget. Generous because a cold start can spend minutes
 /// loading a large model into VRAM before the first token; user-driven Stop is
@@ -122,6 +127,7 @@ fn accumulate_stream_line<F: FnMut(StreamDeltaKind, &str)>(
     tool_calls: &mut Vec<ToolCall>,
     prompt_tokens: &mut u64,
     eval_tokens: &mut u64,
+    done_reason: &mut String,
     on_delta: &mut F,
 ) -> Result<(), String> {
     if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
@@ -172,11 +178,20 @@ fn accumulate_stream_line<F: FnMut(StreamDeltaKind, &str)>(
         if let Some(n) = v.get("eval_count").and_then(|n| n.as_u64()) {
             *eval_tokens = n;
         }
+        // Why generation stopped. "length" means the output cap was hit, which
+        // is the case that must never be treated as a finished answer: a tool
+        // call cut off mid-arguments is a different request, not a shorter one.
+        if let Some(r) = v.get("done_reason").and_then(|r| r.as_str()) {
+            *done_reason = r.to_string();
+        }
     }
     Ok(())
 }
 
 pub struct ChatTurn {
+    /// Ollama's `done_reason` for the final line: "stop", "length", "load", …
+    /// Empty when the server did not report one.
+    pub done_reason: String,
     pub content: String,
     pub thinking: String,
     pub tool_calls: Vec<ToolCall>,
@@ -770,7 +785,7 @@ impl OllamaClient {
             client: build_client(),
             num_ctx: num_ctx
                 .filter(|&n| (512..=131072).contains(&n))
-                .unwrap_or(CONTEXT_WINDOW),
+                .unwrap_or(DEFAULT_CONTEXT_WINDOW),
             temperature: temperature
                 .filter(|&t| (0.0..=2.0).contains(&t))
                 .unwrap_or(0.4),
@@ -940,6 +955,7 @@ impl OllamaClient {
         let mut tool_calls: Vec<ToolCall> = Vec::new();
         let mut prompt_tokens = 0u64;
         let mut eval_tokens = 0u64;
+        let mut done_reason = String::new();
         let mut buf: Vec<u8> = Vec::new();
         let mut saw_line = false;
 
@@ -997,6 +1013,7 @@ impl OllamaClient {
                     &mut tool_calls,
                     &mut prompt_tokens,
                     &mut eval_tokens,
+                    &mut done_reason,
                     &mut on_delta,
                 )?;
             }
@@ -1015,6 +1032,7 @@ impl OllamaClient {
                     &mut tool_calls,
                     &mut prompt_tokens,
                     &mut eval_tokens,
+                    &mut done_reason,
                     &mut on_delta,
                 )?;
             }
@@ -1044,6 +1062,7 @@ impl OllamaClient {
             started.elapsed().as_millis()
         );
         Ok(ChatTurn {
+            done_reason,
             content,
             thinking,
             tool_calls,
@@ -1157,6 +1176,7 @@ mod tests {
                 &mut tool_calls,
                 &mut pt,
                 &mut et,
+                &mut String::new(),
                 &mut |kind, frag: &str| {
                     if kind == StreamDeltaKind::Text {
                         streamed.push_str(frag);
@@ -1197,6 +1217,7 @@ mod tests {
                 &mut tool_calls,
                 &mut pt,
                 &mut et,
+                &mut String::new(),
                 &mut |kind, frag: &str| match kind {
                     StreamDeltaKind::Thinking => thinking_streamed.push_str(frag),
                     StreamDeltaKind::Text => text_streamed.push_str(frag),
@@ -1224,6 +1245,7 @@ mod tests {
             &mut tool_calls,
             &mut pt,
             &mut et,
+            &mut String::new(),
             &mut |_: StreamDeltaKind, _: &str| {},
         );
         assert!(err.is_err());

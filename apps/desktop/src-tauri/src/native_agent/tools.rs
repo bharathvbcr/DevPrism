@@ -901,6 +901,13 @@ fn format_compile_result(result: &crate::latex::AgentCompileResult) -> String {
 /// Execute one tool call. Returns (result_text, is_error).
 pub async fn execute(project_dir: &Path, name: &str, args: &Value) -> (String, bool) {
     let started = std::time::Instant::now();
+    // The gate runs here, at the one point every tool call passes through,
+    // rather than inside each mutating arm of execute_inner. A per-tool check
+    // is a check somebody forgets to add to the next tool.
+    if let Some(refusal) = policy_refusal(project_dir, name, args).await {
+        eprintln!("[native-agent] tool={name} BLOCKED by policy");
+        return (refusal, true);
+    }
     let (output, is_error) = execute_inner(project_dir, name, args).await;
     // Log names/shape only (never argument values or output) so a failing tool
     // call leaves a server-side timeline without leaking file or prompt content.
@@ -914,6 +921,97 @@ pub async fn execute(project_dir: &Path, name: &str, args: &Value) -> (String, b
         output.len()
     );
     (output, is_error)
+}
+
+/// What a tool call is about to do, in the terms manvi's gates evaluate.
+///
+/// Read-only tools produce `None` and are never gated: they cannot damage the
+/// repository, and putting them through a round-trip would add latency to the
+/// operations the model performs most.
+enum GatedAction<'a> {
+    /// A write to a project-relative path.
+    Write(&'a str),
+    /// A shell command.
+    Command(&'a str),
+}
+
+fn gated_action<'a>(name: &str, args: &'a Value) -> Option<GatedAction<'a>> {
+    match name {
+        // Every tool that puts bytes on disk. `resume_compile` writes only a
+        // PDF the app itself renders and takes no caller-chosen path, so it
+        // has nothing for a path gate to evaluate.
+        "Write" | "Edit" | "MultiEdit" => arg(args, "file_path").map(GatedAction::Write),
+        "Bash" => arg(args, "command").map(GatedAction::Command),
+        _ => None,
+    }
+}
+
+/// Evaluate a tool call against manvi's policy gates, returning the message to
+/// hand back to the model when the call must not proceed.
+///
+/// Only a *hard* denial blocks. Those are the rungs that protect the
+/// repository and its credentials — a write to `.env` or a deploy key, a path
+/// that escapes the project root, a force push over a protected branch — and
+/// no task scope, in manvi or here, can authorise one. The soft rungs describe
+/// a DevCouncil task's declared scope, which DevPrism has no equivalent of;
+/// the sidecar already demotes those under its host posture, and blocking on
+/// them here would refuse ordinary edits the user asked for.
+///
+/// A sidecar that cannot answer does not block. That is a deliberate choice
+/// and worth naming: before this gate existed there was no check at all beyond
+/// `is_catastrophic`, so falling back to that is the status quo rather than a
+/// regression — but it is logged every time, because a check that could not
+/// run must never be silent.
+async fn policy_refusal(project_dir: &Path, name: &str, args: &Value) -> Option<String> {
+    use crate::native_agent::manvi_sidecar::{self, Verdict};
+
+    let action = gated_action(name, args)?;
+    let verdict = match action {
+        GatedAction::Write(path) => manvi_sidecar::check_file(project_dir, path).await,
+        GatedAction::Command(command) => manvi_sidecar::check_command(command).await,
+    };
+
+    match verdict {
+        Verdict::Answered(decision) if decision.blocked() && decision.hard() => Some(format!(
+            "Blocked by policy [{}]: {} This protects the repository and its credentials; \
+             it is not a scope decision and cannot be overridden from here. \
+             Target: {}",
+            decision.rule, decision.reason, decision.target
+        )),
+        // A soft denial that reached us anyway (the sidecar was run in the
+        // devcouncil posture, say). Reported, not enforced: DevPrism has no
+        // task model, so refusing here would block work the user asked for.
+        Verdict::Answered(decision) if decision.blocked() => {
+            eprintln!(
+                "[manvi] soft denial not enforced: {} — {}",
+                decision.rule, decision.reason
+            );
+            None
+        }
+        Verdict::Answered(decision) => {
+            // An allow the host posture produced, or one reached with a check
+            // that could not run, is not a clean pass and does not get to look
+            // like one in the log.
+            if !decision.demoted.is_empty() {
+                eprintln!("[manvi] {name} allowed by posture, not by rule: {}", decision.demoted);
+            }
+            if !decision.degraded.is_empty() {
+                eprintln!("[manvi] {name} allowed with checks skipped: {:?}", decision.degraded);
+            }
+            None
+        }
+        Verdict::Refused(err) => {
+            eprintln!(
+                "[manvi] policy check refused: {} {} (retryable={})",
+                err.code, err.message, err.retryable
+            );
+            None
+        }
+        Verdict::Unavailable(reason) => {
+            eprintln!("[manvi] policy check did not run ({reason}); tool proceeding ungated");
+            None
+        }
+    }
 }
 
 async fn execute_inner(project_dir: &Path, name: &str, args: &Value) -> (String, bool) {

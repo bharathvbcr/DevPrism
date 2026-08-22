@@ -7,7 +7,7 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -352,10 +352,15 @@ pub fn upsert_prepared_source(
 
         // Diff by per-chunk contentHash.
         let existing = load_source_chunks(conn, &source_id)?;
-        let mut by_hash: HashMap<String, String> = HashMap::new();
+        // One hash can legitimately match several rows: a document may repeat a
+        // paragraph verbatim. Keep a queue per hash so each occurrence claims a
+        // distinct row. A single-id map hands the same row to every duplicate,
+        // and the rest are then deleted below as "stale" — silently losing
+        // chunks on a re-ingest that changed nothing.
+        let mut by_hash: HashMap<String, VecDeque<String>> = HashMap::new();
         for row in &existing {
             if let Some(h) = meta_content_hash(&row.meta) {
-                by_hash.insert(h, row.id.clone());
+                by_hash.entry(h).or_default().push_back(row.id.clone());
             }
         }
 
@@ -365,7 +370,27 @@ pub fn upsert_prepared_source(
 
         for (i, chunk) in prepared.chunks.iter().enumerate() {
             let hash = meta_content_hash(&chunk.meta).unwrap_or_default();
-            if let Some(existing_id) = by_hash.get(&hash) {
+            let reuse = by_hash.get_mut(&hash).and_then(|q| q.pop_front());
+            if let Some(existing_id) = reuse.as_ref() {
+                // The text is unchanged but its position may not be. `index` is
+                // what the KB viewer sorts by (sortKbChunksForDisplay), so a
+                // reused row carrying its old index corrupts document order and
+                // can duplicate an index. Rewrite it when it has drifted.
+                if let Some(row) = existing.iter().find(|r| &r.id == existing_id) {
+                    if row.meta.get("index").and_then(|v| v.as_i64()) != Some(i as i64) {
+                        let mut meta = row.meta.clone();
+                        if let Some(obj) = meta.as_object_mut() {
+                            obj.insert("index".into(), serde_json::json!(i));
+                        }
+                        let meta_json = serde_json::to_string(&meta)
+                            .map_err(|e| format!("Failed to serialize chunk meta: {e}"))?;
+                        conn.execute(
+                            "UPDATE kb_chunks SET meta_json = ?1 WHERE id = ?2",
+                            params![meta_json, existing_id],
+                        )
+                        .map_err(|e| format!("Failed to refresh chunk index: {e}"))?;
+                    }
+                }
                 all_ids.push(existing_id.clone());
                 used_existing.insert(existing_id.clone(), true);
                 // Reuse id; only re-embed if embedding is missing.
@@ -776,6 +801,143 @@ mod tests {
         let chunks = chunk_text_minimal(text);
         assert!(!chunks.is_empty());
         assert!(chunks.iter().any(|c| c.contains("para one")));
+    }
+
+    fn chunk_of(text: &str, title: &str) -> PreparedChunk {
+        PreparedChunk {
+            text: text.into(),
+            meta: serde_json::json!({
+                "sourceTitle": title,
+                "headingPath": ["H"],
+                "contentHash": content_hash(text.as_bytes()),
+            }),
+        }
+    }
+
+    fn stored_indices(conn: &Connection) -> Vec<i64> {
+        let mut stmt = conn.prepare("SELECT meta_json FROM kb_chunks").unwrap();
+        let mut out: Vec<i64> = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .map(|m| {
+                serde_json::from_str::<serde_json::Value>(&m.unwrap())
+                    .unwrap()
+                    .get("index")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(-1)
+            })
+            .collect();
+        out.sort_unstable();
+        out
+    }
+
+    /// A reused chunk kept whatever `index` it was first written with. Insert a
+    /// paragraph at the top of a document and every chunk below it reuses its
+    /// row, so the stored indices go stale and collide — while
+    /// `sortKbChunksForDisplay` (kb-source-view.ts) orders the KB viewer by
+    /// exactly that field. Document order silently becomes wrong.
+    #[test]
+    fn prepared_upsert_refreshes_index_on_reused_chunks() {
+        let conn = mem_conn();
+        let base = |hash: &str, texts: &[&str]| PreparedSource {
+            uri: "/tmp/shift.md".into(),
+            source_type: "markdown".into(),
+            title: "shift".into(),
+            content_hash: hash.into(),
+            chunks: texts.iter().map(|s| chunk_of(s, "shift")).collect(),
+        };
+
+        upsert_prepared_source(&conn, &base("v1", &["alpha", "bravo", "charlie"])).unwrap();
+        assert_eq!(stored_indices(&conn), vec![0, 1, 2]);
+
+        // One new paragraph at the top; the other three are byte-identical and
+        // are therefore reused.
+        let r = upsert_prepared_source(
+            &conn,
+            &base("v2", &["inserted", "alpha", "bravo", "charlie"]),
+        )
+        .unwrap();
+        assert_eq!(r.chunk_count, 4);
+        assert_eq!(
+            stored_indices(&conn),
+            vec![0, 1, 2, 3],
+            "reused chunks kept stale indices; document order is corrupted"
+        );
+    }
+
+    /// A row whose `meta_json` is not parseable (a hand edit, a partial
+    /// migration) must not be able to abort the whole ingest. It has no
+    /// content hash, so it can never be matched for reuse — it is replaced and
+    /// the ingest completes, rather than one bad row taking the source down.
+    #[test]
+    fn prepared_upsert_survives_unparseable_meta_json() {
+        let conn = mem_conn();
+        let build = |hash: &str, texts: &[&str]| PreparedSource {
+            uri: "/tmp/corrupt.md".into(),
+            source_type: "markdown".into(),
+            title: "corrupt".into(),
+            content_hash: hash.into(),
+            chunks: texts.iter().map(|s| chunk_of(s, "corrupt")).collect(),
+        };
+        upsert_prepared_source(&conn, &build("v1", &["alpha", "bravo"])).unwrap();
+
+        // Corrupt one row three ways across two runs: invalid JSON, then a
+        // non-object JSON value.
+        for corruption in ["not json at all", "[1,2,3]"] {
+            conn.execute(
+                "UPDATE kb_chunks SET meta_json = ?1 WHERE text = 'alpha'",
+                params![corruption],
+            )
+            .unwrap();
+
+            let r = upsert_prepared_source(&conn, &build("v2", &["alpha", "bravo", "charlie"]))
+                .unwrap_or_else(|e| panic!("corrupt meta ({corruption}) aborted the ingest: {e}"));
+            assert_eq!(r.chunk_count, 3);
+            let n: i64 = conn
+                .query_row("SELECT count(*) FROM kb_chunks", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 3, "corrupt row was not replaced cleanly");
+            assert_eq!(stored_indices(&conn), vec![0, 1, 2]);
+            // reset for the next corruption shape
+            conn.execute("UPDATE kb_sources SET content_hash = 'v1'", [])
+                .unwrap();
+        }
+    }
+
+    /// `by_hash` mapped one hash to one id, so a document containing the same
+    /// text twice reused a single row for both occurrences and deleted the
+    /// others as "stale" — losing chunks on a re-ingest that changed nothing.
+    #[test]
+    fn prepared_upsert_keeps_duplicate_chunks_distinct() {
+        let conn = mem_conn();
+        let dup = "a repeated boilerplate paragraph";
+        let build = |hash: &str| PreparedSource {
+            uri: "/tmp/dup.md".into(),
+            source_type: "markdown".into(),
+            title: "dup".into(),
+            content_hash: hash.into(),
+            chunks: vec![
+                chunk_of(dup, "dup"),
+                chunk_of("unique", "dup"),
+                chunk_of(dup, "dup"),
+                chunk_of(dup, "dup"),
+            ],
+        };
+
+        let r1 = upsert_prepared_source(&conn, &build("v1")).unwrap();
+        assert_eq!(r1.chunk_count, 4);
+
+        // Same chunks, new source hash: every row must be reused, none dropped.
+        let r2 = upsert_prepared_source(&conn, &build("v2")).unwrap();
+        assert_eq!(
+            r2.chunk_count, 4,
+            "duplicate-text chunks collapsed onto one row"
+        );
+        let n: i64 = conn
+            .query_row("SELECT count(*) FROM kb_chunks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 4, "rows were deleted as stale on a no-change re-ingest");
+        assert_eq!(stored_indices(&conn), vec![0, 1, 2, 3]);
     }
 
     #[test]

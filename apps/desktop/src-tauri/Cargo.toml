@@ -82,3 +82,12 @@ tauri-plugin-updater = "2"
 # `test` gives the MockRuntime used by tests/ipc.rs to drive real IPC.
 tauri = { version = "2", features = ["devtools", "test"] }
 tempfile = "3"
+
+# Release build tuning: the binary links Tectonic + Typst + git2 + rusqlite;
+# thin LTO + one codegen unit meaningfully shrink and speed it, and stripping
+# symbols cuts installer/updater payload. `panic = "abort"` was deliberately
+# NOT set — the updater/plugin stack's unwinding behavior is unverified.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

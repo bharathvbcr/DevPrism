@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback, memo } from "react";
 import { XIcon, MessageSquareIcon } from "lucide-react";
 import { getMupdfClient } from "@/lib/mupdf/mupdf-client";
+import { getPageBitmap, putPageBitmap } from "@/lib/mupdf/page-bitmap-cache";
 import { createLogger } from "@/lib/debug/logger";
 import { APP_VISIBILITY_RESTORED } from "@/lib/debug/log-store";
 import type { StructuredTextData, LinkData, Rect } from "@/lib/mupdf/types";
@@ -185,19 +186,34 @@ export const MupdfPage = memo(function MupdfPage({
     if (!isVisible || docId <= 0) return;
 
     const gen = ++renderGenRef.current;
-    const client = getMupdfClient();
+    const canvas = canvasRef.current;
+    if (!canvas) return;
     const dpr = Math.min(
       MAX_RENDER_DPR,
       Math.max(MIN_RENDER_DPR, window.devicePixelRatio || 1),
     );
     const dpi = renderScale * 72 * dpr;
 
-    client
+    const blit = (bitmap: ImageBitmap) => {
+      if (gen !== renderGenRef.current) return;
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
+      const ctx = canvas.getContext("2d")!;
+      ctx.drawImage(bitmap, 0, 0);
+    };
+
+    // Zoom settles and visibility restores re-request identical renders;
+    // serve them from the bitmap cache instead of re-rasterizing.
+    const cachedBitmap = getPageBitmap(docId, pageIndex, dpi);
+    if (cachedBitmap) {
+      blit(cachedBitmap);
+      return;
+    }
+
+    getMupdfClient()
       .drawPage(docId, pageIndex, dpi)
       .then(async (imageData) => {
         if (gen !== renderGenRef.current) return;
-        const canvas = canvasRef.current;
-        if (!canvas) return;
         canvas.width = imageData.width;
         canvas.height = imageData.height;
         const bitmap = await createImageBitmap(imageData);
@@ -205,9 +221,9 @@ export const MupdfPage = memo(function MupdfPage({
           bitmap.close();
           return;
         }
-        const ctx = canvas.getContext("2d")!;
-        ctx.drawImage(bitmap, 0, 0);
-        bitmap.close();
+        // The cache owns the bitmap from here on.
+        putPageBitmap(docId, pageIndex, dpi, bitmap);
+        blit(bitmap);
       })
       .catch((err) => {
         if (gen !== renderGenRef.current) return;

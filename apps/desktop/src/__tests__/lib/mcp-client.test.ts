@@ -315,37 +315,79 @@ describe("CareerResumeBridge", () => {
   });
 
   it("surfaces a rejected rewrite instead of silently accepting it", async () => {
+    const seen: Array<Record<string, unknown>> = [];
     const client = new StatelessMcpClient({
-      customTransport: async (req) => ({
-        jsonrpc: "2.0",
-        id: req.id,
-        result: {
-          results: [
-            {
-              bulletId: "b1",
-              blockId: "block-1",
-              accepted: false,
-              reason: "fabricated-metric",
-              droppedMetrics: ["999"],
-              text: "Improved throughput across the fleet",
-              canonical: "Improved throughput across the fleet",
-            },
-          ],
-          submitted: 1,
-          accepted: 0,
-          rejected: 1,
-          unknownBullets: 0,
-          perBulletChars: 140,
-        },
-      }),
+      customTransport: async (req) => {
+        const args = (req.params as Record<string, unknown> | undefined)
+          ?.arguments;
+        seen.push((args ?? {}) as Record<string, unknown>);
+        return {
+          jsonrpc: "2.0",
+          id: req.id,
+          result: {
+            blockId: "block-1",
+            title: "Senior Systems Engineer",
+            org: "Fixture Corp",
+            bullets: [
+              {
+                bulletId: "b1",
+                canonical: "Improved throughput across the fleet",
+                accepted: "Improved throughput across the fleet",
+                status: "rejected_canonical_fallback",
+                provenanceVerified: false,
+                rejectionReasons: ["unsupported_number"],
+                introducedNumbers: ["999%"],
+              },
+            ],
+            verifiedCount: 0,
+            rejectedCount: 1,
+          },
+        };
+      },
     });
     const bridge = new CareerResumeBridge(client);
-    const out = await bridge.verifyRewrite([
-      { bullet_id: "b1", text: "Improved throughput by 999%" },
+    const out = await bridge.verifyRewriteDrafts("block-1", "Systems JD", [
+      { bulletId: "b1", text: "Improved throughput by 999%" },
     ]);
-    expect(out.accepted).toBe(0);
-    expect(out.results[0]?.reason).toBe("fabricated-metric");
+    // Arguments map onto the server's snake_case contract.
+    expect(seen[0]?.block_id).toBe("block-1");
+    expect(seen[0]?.jd_text).toBe("Systems JD");
+    expect(seen[0]?.drafts).toEqual([
+      { bulletId: "b1", text: "Improved throughput by 999%" },
+    ]);
+    expect(out.rejectedCount).toBe(1);
+    expect(out.bullets[0]?.status).toBe("rejected_canonical_fallback");
     // A rejection returns the user's verified text, not the model's.
-    expect(out.results[0]?.text).toBe(out.results[0]?.canonical);
+    expect(out.bullets[0]?.accepted).toBe(out.bullets[0]?.canonical);
+  });
+
+  it("omits pdf bytes from resume_compile unless explicitly requested", async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const client = new StatelessMcpClient({
+      customTransport: async (req) => {
+        const args = (req.params as Record<string, unknown> | undefined)
+          ?.arguments;
+        seen.push((args ?? {}) as Record<string, unknown>);
+        return {
+          jsonrpc: "2.0",
+          id: req.id,
+          result: {
+            engine: "typst",
+            success: true,
+            pageCount: 1,
+            errors: [],
+            warnings: [],
+            pdfOmitted: true,
+            pdfBase64: null,
+            byteLength: 4096,
+          },
+        };
+      },
+    });
+    const bridge = new CareerResumeBridge(client);
+    const out = await bridge.compileTypstResume("= Hi");
+    expect(seen[0]?.include_pdf).toBe(false);
+    expect(out.pdfBase64).toBeNull();
+    expect(out.byteLength).toBeGreaterThan(0);
   });
 });

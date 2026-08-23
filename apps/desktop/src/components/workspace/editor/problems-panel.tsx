@@ -9,7 +9,6 @@ import {
   SparklesIcon,
   WandSparklesIcon,
 } from "lucide-react";
-import { toast } from "sonner";
 import { showWorkspaceError } from "@/stores/workspace-banner-store";
 import {
   Popover,

@@ -12,7 +12,7 @@ import { useHistoryStore } from "@/stores/history-store";
 import { useProposedChangesStore } from "@/stores/proposed-changes-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { readTexFileContent } from "@/lib/tauri/fs";
-import { formatCompileError } from "@/lib/latex-compiler";
+import { formatCompileError, isSupersededCompile } from "@/lib/latex-compiler";
 import { compileTargetToPdf } from "@/lib/project-compile";
 import { resolveActiveCompileTarget } from "@/lib/compile-root-preference";
 import { createLogger } from "@/lib/debug/logger";
@@ -557,9 +557,11 @@ export function useClaudeEvents() {
             );
             useDocumentStore.getState().setPdfData(pdfData, rootId);
           } catch (err) {
-            useDocumentStore
-              .getState()
-              .setCompileError(formatCompileError(err), rootId);
+            if (!isSupersededCompile(err)) {
+              useDocumentStore
+                .getState()
+                .setCompileError(formatCompileError(err), rootId);
+            }
           } finally {
             useDocumentStore.getState().setIsCompiling(false);
           }

@@ -48,9 +48,10 @@ import {
 } from "@codemirror/lint";
 import {
   useDocumentStore,
-  resolveTexRoot,
+  registerEditorContentFlush,
   type ProjectFile,
 } from "@/stores/document-store";
+import { createDebouncedContentPush } from "@/lib/editor/debounced-content-push";
 import {
   useProposedChangesStore,
   type ProposedChange,
@@ -60,7 +61,7 @@ import {
   type PromptContextOverride,
 } from "@/stores/claude-chat-store";
 import { useHistoryStore, type FileDiff } from "@/stores/history-store";
-import { formatCompileError } from "@/lib/latex-compiler";
+import { formatCompileError, isSupersededCompile } from "@/lib/latex-compiler";
 import { triggerForwardSync } from "@/lib/forward-sync";
 import {
   resolveActiveCompileTarget,
@@ -131,7 +132,6 @@ import { InlineWordDiff } from "@/components/workspace/inline-word-diff";
 import {
   runInlineEdit,
   inlineEditSuccessMessage,
-  proposeLineReplacement,
   applyLintLineFix,
   type InlineEditAction,
   type InlineEditSelection,
@@ -174,6 +174,9 @@ const INLINE_GRAMMAR_HINT = IS_MAC ? "⇧⌘G" : "Ctrl+Shift+G";
 const BULLET_BLOCK_HINT = IS_MAC ? "⌥⇧B" : "Alt+Shift+B";
 
 const log = createLogger("merge-view");
+
+/** Max interval between editor→store content snapshots while typing. */
+const EDITOR_PUSH_INTERVAL_MS = 150;
 
 function getActiveFileContent(): string {
   const state = useDocumentStore.getState();
@@ -316,6 +319,46 @@ export function LatexEditor() {
   const handleKeepAllFilesRef = useRef<() => void>(() => {});
   const handleUndoAllFilesRef = useRef<() => void>(() => {});
   const diagnosticsRef = useRef<DiagnosticItem[]>([]);
+
+  // Debounced store pushes for typing. CodeMirror stays the source of truth
+  // while the user types; snapshots land in the document store at most once
+  // per EDITOR_PUSH_INTERVAL_MS so per-keystroke work doesn't re-render every
+  // store subscriber. Save/compile/file-switch paths flush explicitly.
+  const contentPushRef = useRef<ReturnType<
+    typeof createDebouncedContentPush
+  > | null>(null);
+  if (!contentPushRef.current) {
+    contentPushRef.current = createDebouncedContentPush(
+      EDITOR_PUSH_INTERVAL_MS,
+      (fileId, content) => {
+        const file = useDocumentStore
+          .getState()
+          .files.find((f) => f.id === fileId);
+        if (!file || file.content === content) return;
+        useDocumentStore.getState().updateFileContent(fileId, content);
+      },
+    );
+  }
+
+  useEffect(() => {
+    const push = contentPushRef.current;
+    if (!push) return;
+    registerEditorContentFlush(push.flush);
+    return () => {
+      push.flush();
+      registerEditorContentFlush(null);
+    };
+  }, []);
+
+  useEffect(() => {
+    const flush = () => contentPushRef.current?.flush();
+    window.addEventListener("blur", flush);
+    window.addEventListener("pagehide", flush);
+    return () => {
+      window.removeEventListener("blur", flush);
+      window.removeEventListener("pagehide", flush);
+    };
+  }, []);
 
   useEffect(() => {
     isSearchOpenRef.current = isSearchOpen;
@@ -540,6 +583,7 @@ export function LatexEditor() {
 
   // Compile: save all files first, then compile via Tauri command
   compileRef.current = async () => {
+    contentPushRef.current?.flush();
     const state = useDocumentStore.getState();
     if (!projectRoot || activeFile?.type !== "tex") return;
     if (state.isCompiling) {
@@ -582,7 +626,9 @@ export function LatexEditor() {
       );
       setPdfData(data, rootId);
     } catch (error) {
-      setCompileError(formatCompileError(error), rootId);
+      if (!isSupersededCompile(error)) {
+        setCompileError(formatCompileError(error), rootId);
+      }
     } finally {
       // Ensure the spinner is visible for at least 500ms for visual feedback
       const elapsed = Date.now() - compileStart;
@@ -655,7 +701,12 @@ export function LatexEditor() {
         }
         return;
       }
-      if (update.docChanged) setContent(update.state.doc.toString());
+      if (update.docChanged) {
+        contentPushRef.current?.schedule(
+          activeFileId,
+          update.state.doc.toString(),
+        );
+      }
       if (update.selectionSet) {
         const { from, to, head } = update.state.selection.main;
         setCursorPosition(head);
@@ -744,6 +795,7 @@ export function LatexEditor() {
         {
           key: "Mod-s",
           run: () => {
+            contentPushRef.current?.flush();
             const state = useDocumentStore.getState();
             state.setIsSaving(true);
             state
@@ -958,7 +1010,10 @@ export function LatexEditor() {
                       .files.find((file) => file.id === activeFileId);
                     return f?.relativePath ?? "main.tex";
                   },
-                  getContent: getActiveFileContent,
+                  getContent: () => {
+                    contentPushRef.current?.flush();
+                    return getActiveFileContent();
+                  },
                 }),
               ),
             ]
@@ -1087,6 +1142,12 @@ export function LatexEditor() {
     }
 
     return () => {
+      // Flush debounced edits for THIS file before the view is destroyed on
+      // file switch/unmount. Targets by fileId so it is correct even though
+      // the store's activeFileId has already moved to the next file.
+      if (contentPushRef.current?.hasPending(activeFileId)) {
+        contentPushRef.current?.flush();
+      }
       // Save per-file cursor + scroll before destroying
       editorStateCache.set(activeFileId, {
         cursor: view.state.selection.main.head,
@@ -1185,6 +1246,9 @@ export function LatexEditor() {
     const content = activeFileContent ?? "";
     const currentContent = view.state.doc.toString();
     if (currentContent !== content) {
+      // External content change (store-side edit, revert, file load):
+      // it supersedes any keystrokes not yet flushed to the store.
+      contentPushRef.current?.cancel();
       view.dispatch({
         changes: { from: 0, to: currentContent.length, insert: content },
       });

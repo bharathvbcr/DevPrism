@@ -45,11 +45,17 @@ credential is selected; otherwise they use local Ollama.
   edits to one file applied atomically — handy for multi-spot `.tex`/`.bib` edits),
   `LS`, `Grep` (with `glob`/`case_sensitive` scoping), `Glob`, `Bash` (runs in the
   project, activates `.venv`). All file access is confined to the project directory.
+  On top of these built-ins the agent advertises a curated subset of the plugin
+  registry — knowledge-base search, resume synthesis / gap analysis / compile,
+  and guarded resume document editing (`resume_doc_*`, `resume_variant_*`);
+  packs opt in per tool, see [PLUGINS.md](PLUGINS.md).
 - **Project context:** auto-discovers your master/instruction files, a project
   map, and installed skills (see [CONTEXT_FILES.md](CONTEXT_FILES.md)).
 - **Memory:** remembers the conversation per chat tab.
 - **Vision:** pasted images are sent to vision-capable models (e.g. `llava`,
   `llama3.2-vision`).
+- **Streaming:** text/thinking deltas are coalesced in Rust (~40 ms or 1 KiB
+  windows) before crossing IPC, so chatty local models don't flood the chat UI.
 
 ## Tuning (Settings → Provider, when native is on)
 

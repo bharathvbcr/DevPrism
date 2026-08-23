@@ -1,14 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
-import {
-  readDir,
-  readTextFile,
-  rename,
-  stat,
-  writeTextFile,
-} from "@tauri-apps/plugin-fs";
+import { readTextFile, rename, writeTextFile } from "@tauri-apps/plugin-fs";
 import {
   useDocumentStore,
+  registerEditorContentFlush,
   getCurrentPdfBytes,
   getCurrentPdfRootId,
   clearPdfBytesCache,
@@ -100,19 +95,44 @@ describe("useDocumentStore", () => {
   });
 
   describe("openProject", () => {
+    /** Canned scan result served by the mocked `scan_project_folder` command. */
+    function mockScan(
+      files: Array<{
+        relativePath: string;
+        absolutePath: string;
+        type: string;
+        fileSize?: number;
+      }>,
+      folders: string[] = [],
+    ) {
+      return { files, folders };
+    }
+
     it("re-authorizes the project directory before scanning", async () => {
       const projectPath = "E:\\overleaf-cache\\论文项目";
       let resolveAuthorization!: () => void;
       const authorizationPromise = new Promise<void>((resolve) => {
         resolveAuthorization = resolve;
       });
+      const scannedPaths: string[] = [];
 
-      vi.mocked(invoke).mockReturnValue(
-        authorizationPromise as ReturnType<typeof invoke>,
-      );
-      vi.mocked(readDir).mockResolvedValue([
-        { name: "main.tex", isDirectory: false },
-      ] as any);
+      vi.mocked(invoke).mockImplementation(async (cmd: string, args?: any) => {
+        if (cmd === "allow_project_directory") {
+          await authorizationPromise;
+          return undefined;
+        }
+        if (cmd === "scan_project_folder") {
+          scannedPaths.push(args?.rootPath);
+          return mockScan([
+            {
+              relativePath: "main.tex",
+              absolutePath: `${projectPath}/main.tex`,
+              type: "tex",
+            },
+          ]);
+        }
+        return undefined as never;
+      });
       vi.mocked(readTextFile).mockResolvedValue("\\documentclass{article}");
 
       const openProjectPromise = useDocumentStore
@@ -122,61 +142,92 @@ describe("useDocumentStore", () => {
       expect(invoke).toHaveBeenCalledWith("allow_project_directory", {
         rootPath: projectPath,
       });
-      expect(readDir).not.toHaveBeenCalled();
+      // The scan must not start until the directory is authorized.
+      expect(scannedPaths).toEqual([]);
 
       resolveAuthorization();
       await openProjectPromise;
 
-      expect(readDir).toHaveBeenCalled();
+      expect(scannedPaths).toEqual([projectPath]);
+      expect(
+        useDocumentStore.getState().files.map((f) => f.relativePath),
+      ).toEqual(["main.tex"]);
     });
 
-    it("skips Python cache directories and bytecode files during open", async () => {
-      vi.mocked(invoke).mockResolvedValue(undefined as never);
-      vi.mocked(readDir).mockImplementation(async (dir: string | URL) => {
-        const dirPath = String(dir);
-        if (dirPath === "/project") {
-          return [
-            { name: "__pycache__", isDirectory: true },
-            { name: "main.tex", isDirectory: false },
-            { name: "tool.py", isDirectory: false },
-            { name: "compiled.pyc", isDirectory: false },
-          ] as any;
+    it("loads text content concurrently for all scanned text files", async () => {
+      vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+        if (cmd === "scan_project_folder") {
+          return mockScan([
+            {
+              relativePath: "main.tex",
+              absolutePath: "/project/main.tex",
+              type: "tex",
+            },
+            {
+              relativePath: "chapters/intro.tex",
+              absolutePath: "/project/chapters/intro.tex",
+              type: "tex",
+            },
+            {
+              relativePath: "refs.bib",
+              absolutePath: "/project/refs.bib",
+              type: "bib",
+            },
+            {
+              relativePath: "figure.png",
+              absolutePath: "/project/figure.png",
+              type: "image",
+              fileSize: 2048,
+            },
+          ]);
         }
-
-        throw new Error(`Unexpected readDir path: ${dirPath}`);
+        return undefined as never;
       });
-      vi.mocked(stat).mockResolvedValue({ size: 32 } as any);
-      vi.mocked(readTextFile).mockImplementation(async (path: string | URL) => {
-        const filePath = String(path);
-        if (filePath === "/project/main.tex") {
-          return "\\documentclass{article}";
-        }
-        if (filePath === "/project/tool.py") {
-          return "print('hello')";
-        }
-        throw new Error(`Unexpected readTextFile path: ${filePath}`);
+      const readPaths: string[] = [];
+      vi.mocked(readTextFile).mockImplementation(async (path) => {
+        readPaths.push(String(path));
+        return `content of ${String(path)}`;
       });
 
       await useDocumentStore.getState().openProject("/project");
 
-      expect(readDir).toHaveBeenCalledWith("/project");
-      expect(readDir).not.toHaveBeenCalledWith("/project/__pycache__");
-      expect(stat).toHaveBeenCalledTimes(1);
-      expect(stat).toHaveBeenCalledWith("/project/tool.py");
-      expect(readTextFile).toHaveBeenCalledTimes(2);
-      expect(readTextFile).not.toHaveBeenCalledWith("/project/compiled.pyc");
-      expect(
-        useDocumentStore.getState().files.map((file) => file.relativePath),
-      ).toEqual(["main.tex", "tool.py"]);
+      // Text files are loaded; images are not embedded as dataUrls at open.
+      const state = useDocumentStore.getState();
+      expect(readPaths.sort()).toEqual([
+        "/project/chapters/intro.tex",
+        "/project/main.tex",
+        "/project/refs.bib",
+      ]);
+      expect(state.files.find((f) => f.id === "main.tex")?.content).toBe(
+        "content of /project/main.tex",
+      );
+      const image = state.files.find((f) => f.type === "image");
+      expect(image?.dataUrl).toBeUndefined();
     });
   });
 
   describe("renameProject", () => {
+    function mockScanCommand() {
+      vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+        if (cmd === "scan_project_folder") {
+          return {
+            files: [
+              {
+                relativePath: "main.tex",
+                absolutePath: "/work/renamed/main.tex",
+                type: "tex",
+                fileSize: 0,
+              },
+            ],
+            folders: [],
+          };
+        }
+        return undefined as never;
+      });
+    }
+
     it("renames the project folder and reopens the new path", async () => {
-      vi.mocked(invoke).mockResolvedValue(undefined as never);
-      vi.mocked(readDir).mockResolvedValue([
-        { name: "main.tex", isDirectory: false },
-      ] as any);
+      mockScanCommand();
       vi.mocked(readTextFile).mockResolvedValue("\\documentclass{article}");
       useProjectStore.setState({
         recentProjects: [{ path: "/work/old", name: "old", lastOpened: 1 }],
@@ -211,11 +262,8 @@ describe("useDocumentStore", () => {
     });
 
     it("saves dirty files before renaming the project folder", async () => {
-      vi.mocked(invoke).mockResolvedValue(undefined as never);
+      mockScanCommand();
       vi.mocked(writeTextFile).mockResolvedValue(undefined);
-      vi.mocked(readDir).mockResolvedValue([
-        { name: "main.tex", isDirectory: false },
-      ] as any);
       vi.mocked(readTextFile).mockResolvedValue("\\documentclass{article}");
       useDocumentStore.setState({
         projectRoot: "/work/old",
@@ -409,6 +457,63 @@ describe("useDocumentStore", () => {
         .files.find((f) => f.id === "other.tex")!;
       expect(other.content).toBe("Other");
       expect(other.isDirty).toBe(false);
+    });
+
+    it("flushes pending editor edits before writing", () => {
+      // Simulate un-flushed keystrokes held by the editor's debounce.
+      const flush = vi.fn(() => {
+        useDocumentStore.setState((s) => ({
+          files: s.files.map((f) =>
+            f.id === "main.tex" ? { ...f, content: "Hello Typed" } : f,
+          ),
+        }));
+      });
+      registerEditorContentFlush(flush);
+      try {
+        useDocumentStore.getState().updateFileContent("main.tex", "Replaced");
+        expect(flush).toHaveBeenCalledTimes(1);
+        // The external write wins, but it observed the flushed base.
+        expect(
+          useDocumentStore.getState().files.find((f) => f.id === "main.tex")
+            ?.content,
+        ).toBe("Replaced");
+      } finally {
+        registerEditorContentFlush(null);
+      }
+    });
+  });
+
+  describe("editor flush seam for store-side mutations", () => {
+    it("insertAtCursor flushes pending editor edits first", () => {
+      useDocumentStore.setState({ cursorPosition: 5 }); // after "Hello"
+      const flush = vi.fn(() => {
+        useDocumentStore.setState((s) => ({
+          files: s.files.map((f) =>
+            f.id === "main.tex" ? { ...f, content: "Hello Typed World" } : f,
+          ),
+          cursorPosition: 11,
+        }));
+      });
+      registerEditorContentFlush(flush);
+      try {
+        useDocumentStore.getState().insertAtCursor(" [x]");
+        const file = useDocumentStore
+          .getState()
+          .files.find((f) => f.id === "main.tex")!;
+        // Insertion applied against the flushed content, not the stale base.
+        expect(file.content).toBe("Hello Typed [x] World");
+      } finally {
+        registerEditorContentFlush(null);
+      }
+    });
+
+    it("findAndReplace works when no editor flush is registered", () => {
+      const result = useDocumentStore.getState().findAndReplace("World", "Bye");
+      expect(result).toBe(true);
+      expect(
+        useDocumentStore.getState().files.find((f) => f.id === "main.tex")
+          ?.content,
+      ).toBe("Hello Bye");
     });
   });
 

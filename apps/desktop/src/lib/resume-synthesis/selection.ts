@@ -3,7 +3,11 @@
  * Also: bullet-level trim after block selection, and embedding MMR helpers.
  */
 
-import type { BlockKind, Bullet, ExperienceBlock } from "@/lib/career/types";
+import type { Bullet, ExperienceBlock } from "@/lib/career/types";
+import {
+  BLOCK_KIND_TO_SECTION,
+  canonicalizeBlockKind,
+} from "@/lib/resume-sections";
 import type {
   ResumeTemplateBudget,
   SectionKind,
@@ -36,16 +40,9 @@ export const CHARS_PER_LINE = 95;
  */
 export const BUDGET_FIXED_OVERHEAD_LINES = 4 + 3 + 2 + 3; // header, summary, skills, ~3 section titles
 
-const KIND_TO_SECTION: Record<BlockKind, SectionKind> = {
-  experience: "experience",
-  project: "projects",
-  publication: "publications",
-  education: "education",
-  leadership: "leadership",
-};
-
 export function sectionForBlock(block: ExperienceBlock): SectionKind {
-  return KIND_TO_SECTION[block.kind] ?? "experience";
+  const kind = canonicalizeBlockKind(block.kind) ?? "experience";
+  return BLOCK_KIND_TO_SECTION[kind];
 }
 
 /** Estimate wrapped lines for a single bullet from its character length. */
@@ -65,13 +62,17 @@ export function estimateBulletLines(
  */
 export function estimateBlockLines(
   block: ExperienceBlock,
-  options?: { charsPerLine?: number },
+  options?: { charsPerLine?: number; maxBullets?: number },
 ): number {
   const width = options?.charsPerLine ?? CHARS_PER_LINE;
-  const bulletLines = block.bullets.reduce(
-    (sum, b) => sum + estimateBulletLines(b.canonical, width),
-    0,
+  const maxBullets = options?.maxBullets ?? DEFAULT_MAX_BULLETS_PER_BLOCK;
+  const costs = block.bullets.map((b) =>
+    estimateBulletLines(b.canonical, width),
   );
+  costs.sort((a, b) => b - a);
+  const bulletLines = costs
+    .slice(0, Math.max(1, maxBullets))
+    .reduce((sum, n) => sum + n, 0);
   return 2 + Math.max(1, bulletLines || 1);
 }
 

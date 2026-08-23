@@ -99,4 +99,25 @@ describe("BlockEditor save flow", () => {
     await user.clear(screen.getByPlaceholderText("Senior ML Engineer"));
     expect(screen.getByRole("button", { name: /save block/i })).toBeDisabled();
   });
+
+  it("shows a failure note instead of an empty KB when chunk lookup fails", async () => {
+    const { listKbChunks } = await import("@/lib/career");
+    vi.mocked(listKbChunks).mockRejectedValueOnce(new Error("db unavailable"));
+
+    render(
+      <BlockEditor
+        block={block}
+        personas={[persona]}
+        saving={false}
+        onSave={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Couldn't load the knowledge-base chunk list/),
+      ).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/No knowledge-base chunks yet/i)).toBeNull();
+  });
 });

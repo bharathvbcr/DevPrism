@@ -22,9 +22,21 @@ export function KnowledgePanel({
 
   // Avoid a false "0 sources" while the first readiness probe is in flight.
   const probing = readiness == null;
-  const kbSourceCount = readiness?.data.kbSourceCount ?? 0;
-  const kbMissing = readiness?.data.kbChunksMissingEmbeddings ?? 0;
+  const kbSourceCount = readiness?.data.kbSourceCount ?? null;
+  const kbMissing = readiness?.data.kbChunksMissingEmbeddings ?? null;
+  const unknown = !probing && kbSourceCount == null;
   const empty = !probing && kbSourceCount === 0;
+
+  const summary =
+    kbSourceCount == null
+      ? null
+      : `${kbSourceCount} source${kbSourceCount === 1 ? "" : "s"}${
+          kbMissing == null
+            ? ""
+            : kbMissing > 0
+              ? ` · ${kbMissing} chunk${kbMissing === 1 ? "" : "s"} pending embed`
+              : " · chunks embedded"
+        }`;
 
   return (
     <section
@@ -61,6 +73,23 @@ export function KnowledgePanel({
           </div>
           <Skeleton className="h-8 w-full" />
         </div>
+      ) : unknown ? (
+        <div className="space-y-2">
+          <p className="text-[11px] text-muted-foreground leading-relaxed">
+            Couldn't load knowledge coverage from the Career database — source
+            count unavailable.
+          </p>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-7 gap-1 text-[11px]"
+            onClick={() => setActiveTab("knowledge")}
+          >
+            <BookOpenIcon className="size-3" />
+            Open Knowledge tab
+          </Button>
+        </div>
       ) : empty ? (
         <div className="space-y-2">
           <p className="text-[11px] text-muted-foreground leading-relaxed">
@@ -80,10 +109,7 @@ export function KnowledgePanel({
       ) : (
         <div className="flex flex-wrap items-center gap-2">
           <p className="min-w-0 flex-1 text-[11px] text-muted-foreground">
-            {kbSourceCount} source{kbSourceCount === 1 ? "" : "s"}
-            {kbMissing > 0
-              ? ` · ${kbMissing} chunk${kbMissing === 1 ? "" : "s"} pending embed`
-              : " · chunks embedded"}
+            {summary}
           </p>
           <Button
             type="button"

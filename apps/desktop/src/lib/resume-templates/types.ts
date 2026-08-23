@@ -1,13 +1,7 @@
+import type { PersonaSectionId } from "../resume-sections";
+
 /** Section kinds supported by slot-based resume templates. */
-export type SectionKind =
-  | "header"
-  | "summary"
-  | "skills"
-  | "experience"
-  | "projects"
-  | "education"
-  | "publications"
-  | "leadership";
+export type SectionKind = PersonaSectionId | "header";
 
 /** One experience/project/education entry after rewrite (plain text only). */
 export interface RenderedBlock {
@@ -62,6 +56,9 @@ export interface ResumeContent {
   education?: RenderedBlock[];
   publications?: RenderedBlock[];
   leadership?: RenderedBlock[];
+  certifications?: RenderedBlock[];
+  awards?: RenderedBlock[];
+  volunteer?: RenderedBlock[];
 }
 
 /**

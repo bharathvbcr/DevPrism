@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/select";
 import {
   BLOCK_KINDS,
+  BLOCK_KIND_LABELS,
   createEmptyBlock,
   distillFactsFromNotes,
   ingestFilePath,
@@ -489,7 +490,7 @@ export function AddKnowledgeDialog({
                     <SelectContent>
                       {BLOCK_KINDS.map((k) => (
                         <SelectItem key={k} value={k}>
-                          {k}
+                          {BLOCK_KIND_LABELS[k]}
                         </SelectItem>
                       ))}
                     </SelectContent>

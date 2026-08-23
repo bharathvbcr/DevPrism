@@ -58,10 +58,14 @@ export interface EmbeddingReadiness {
 
 export interface DataReadiness {
   status: ReadinessLevel;
-  blockCount: number;
-  blocksMissingEmbeddings: number;
-  kbSourceCount: number;
-  kbChunksMissingEmbeddings: number;
+  /**
+   * `null` means the lookup itself failed (unknown) — never conflated with a
+   * confirmed zero, so UI can't claim absence for a check that couldn't run.
+   */
+  blockCount: number | null;
+  blocksMissingEmbeddings: number | null;
+  kbSourceCount: number | null;
+  kbChunksMissingEmbeddings: number | null;
   message: string;
 }
 
@@ -395,15 +399,35 @@ async function probeEmbeddings(force = false): Promise<EmbeddingReadiness> {
 }
 
 async function checkData(): Promise<DataReadiness> {
-  const [blocks, blocksMissing, sources, kbMissing] = await Promise.all([
-    listBlocks(),
-    countBlocksMissingEmbeddings().catch(() => 0),
-    listKbSources().catch(() => []),
-    countKbChunksMissingEmbeddings().catch(() => 0),
-  ]);
+  // Independent lookups: one failing table must not zero out the others.
+  const [blocksRes, blocksMissingRes, sourcesRes, kbMissingRes] =
+    await Promise.allSettled([
+      listBlocks(),
+      countBlocksMissingEmbeddings(),
+      listKbSources(),
+      countKbChunksMissingEmbeddings(),
+    ]);
 
-  const blockCount = blocks.length;
-  const kbSourceCount = sources.length;
+  const blockCount =
+    blocksRes.status === "fulfilled" ? blocksRes.value.length : null;
+  const blocksMissing =
+    blocksMissingRes.status === "fulfilled" ? blocksMissingRes.value : null;
+  const sources = sourcesRes.status === "fulfilled" ? sourcesRes.value : null;
+  const kbSourceCount = sources == null ? null : sources.length;
+  const kbMissing =
+    kbMissingRes.status === "fulfilled" ? kbMissingRes.value : null;
+
+  if (blockCount == null) {
+    return {
+      status: "error",
+      blockCount: null,
+      blocksMissingEmbeddings: blocksMissing,
+      kbSourceCount,
+      kbChunksMissingEmbeddings: kbMissing,
+      message:
+        "Could not load experience blocks from the Career DB — data coverage unknown.",
+    };
+  }
 
   if (blockCount === 0) {
     return {
@@ -418,25 +442,33 @@ async function checkData(): Promise<DataReadiness> {
   }
 
   const parts: string[] = [`${blockCount} block${blockCount === 1 ? "" : "s"}`];
-  if (blocksMissing > 0) {
+  if (blocksMissing == null) {
+    parts.push("block embed coverage unknown");
+  } else if (blocksMissing > 0) {
     parts.push(`${blocksMissing} block(s) missing embeddings`);
   }
-  if (kbSourceCount > 0) {
+  if (kbSourceCount == null) {
+    parts.push("knowledge source lookup failed");
+  } else if (kbSourceCount > 0) {
     parts.push(
       `${kbSourceCount} knowledge source${kbSourceCount === 1 ? "" : "s"}`,
     );
   } else {
     parts.push("no knowledge sources");
   }
-  if (kbMissing > 0) {
+  if (kbMissing == null) {
+    parts.push("KB embed coverage unknown");
+  } else if (kbMissing > 0) {
     parts.push(`${kbMissing} KB chunk(s) missing embeddings`);
   }
 
-  const hasPending = blocksMissing > 0 || kbMissing > 0;
+  const hasPending = (blocksMissing ?? 0) > 0 || (kbMissing ?? 0) > 0;
   const noKb = kbSourceCount === 0;
+  const anyUnknown =
+    blocksMissing == null || kbSourceCount == null || kbMissing == null;
 
   return {
-    status: hasPending || noKb ? "warn" : "ok",
+    status: hasPending || noKb || anyUnknown ? "warn" : "ok",
     blockCount,
     blocksMissingEmbeddings: blocksMissing,
     kbSourceCount,
@@ -467,10 +499,10 @@ export async function checkSynthesisReadiness(options?: {
   };
 }
 
-/** Pending items that can be backfilled (blocks + KB chunks). */
+/** Pending items that can be backfilled (blocks + KB chunks). Unknown counts contribute 0 — backfill recomputes server-side. */
 export function pendingEmbedCount(readiness: SynthesisReadiness): number {
   return (
-    readiness.data.blocksMissingEmbeddings +
-    readiness.data.kbChunksMissingEmbeddings
+    (readiness.data.blocksMissingEmbeddings ?? 0) +
+    (readiness.data.kbChunksMissingEmbeddings ?? 0)
   );
 }

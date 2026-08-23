@@ -24,6 +24,8 @@ import {
   type GapAnalysis,
   type GapCoverageStatus,
   type MatchReport,
+  type MatchReportAtsParse,
+  type MatchReportKeywordHeatmap,
 } from "@/lib/resume-synthesis";
 
 const FALLBACK_REASON_LABEL: Record<string, string> = {
@@ -170,6 +172,11 @@ export function MatchReportPanel({
       )}
 
       <GapAnalysisPanel gapAnalysis={report.gapAnalysis} />
+
+      <AtsParsePanel
+        atsParse={report.atsParse}
+        heatmap={report.keywordHeatmap}
+      />
 
       <BlockEvidenceSection report={report} />
 
@@ -717,6 +724,155 @@ function gapStatusClass(status: GapCoverageStatus): string {
     case "missing":
       return "border-destructive/30 bg-destructive/5";
   }
+}
+
+const HEAT_CLASS: Record<number, string> = {
+  0: "bg-muted text-muted-foreground",
+  1: "bg-sky-600/10 border-sky-600/30",
+  2: "bg-emerald-600/10 border-emerald-600/30",
+  3: "bg-emerald-500/15 border-emerald-500/40",
+  4: "bg-orange-500/15 border-orange-500/40",
+  5: "bg-red-500/15 border-red-500/40",
+};
+
+/**
+ * ATS parse check + keyword heatmap (IgniteCV port) — only renders when the
+ * run carries the summaries (older persisted runs hide it gracefully).
+ */
+export function AtsParsePanel({
+  atsParse,
+  heatmap,
+}: {
+  atsParse?: MatchReportAtsParse | null;
+  heatmap?: MatchReportKeywordHeatmap | null;
+}) {
+  if (!atsParse && !heatmap) return null;
+
+  const contact = atsParse?.contact;
+  const missingRequired = atsParse?.missingRequiredSections ?? [];
+  const warnings = atsParse?.warnings ?? [];
+  const hotSections =
+    heatmap?.sections
+      .filter((s) => s.heatLevel >= 4)
+      .sort((a, b) => b.density - a.density) ?? [];
+  const coldSections =
+    heatmap?.sections.filter((s) => s.heatLevel === 0).map((s) => s.name) ?? [];
+
+  return (
+    <section className="space-y-3 rounded-lg border border-border/70 bg-card/40 p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <h2 className="font-medium text-sm">ATS parse check</h2>
+        {atsParse && (
+          <Badge variant="outline" className="text-[9px] uppercase">
+            {atsParse.system}
+          </Badge>
+        )}
+        {warnings.length > 0 && (
+          <Badge
+            variant="outline"
+            className="border-amber-600/40 text-[9px] text-amber-700 dark:text-amber-300"
+          >
+            {warnings.length} warning{warnings.length === 1 ? "" : "s"}
+          </Badge>
+        )}
+      </div>
+
+      {contact && (
+        <p className="text-[11px] text-muted-foreground">
+          Contact parsed:{" "}
+          {[
+            ["name", contact.name],
+            ["email", contact.email],
+            ["phone", contact.phone],
+          ]
+            .map(([label, ok]) =>
+              ok ? (
+                <span
+                  key={String(label)}
+                  className="text-emerald-700 dark:text-emerald-300"
+                >
+                  ✓ {label}{" "}
+                </span>
+              ) : (
+                <span key={String(label)} className="text-destructive">
+                  ✗ {label}{" "}
+                </span>
+              ),
+            )
+            .concat(
+              contact.linkCount > 0
+                ? [
+                    <span
+                      key="links"
+                      className="text-emerald-700 dark:text-emerald-300"
+                    >
+                      ✓ {contact.linkCount} link
+                      {contact.linkCount === 1 ? "" : "s"}
+                    </span>,
+                  ]
+                : [],
+            )}
+        </p>
+      )}
+
+      {missingRequired.length > 0 && (
+        <InlineBanner
+          kind="warning"
+          title={`Missing section${missingRequired.length === 1 ? "" : "s"} this ATS expects`}
+          message={missingRequired.join(", ")}
+        />
+      )}
+
+      {warnings.length > 0 && (
+        <ul className="space-y-1 text-[11px] text-muted-foreground">
+          {warnings.map((w) => (
+            <li key={w}>• {w}</li>
+          ))}
+        </ul>
+      )}
+
+      {heatmap && heatmap.missingCriticalKeywords.length > 0 && (
+        <p className="text-[11px]">
+          <span className="font-medium">Critical keywords absent:</span>{" "}
+          <span className="text-destructive">
+            {heatmap.missingCriticalKeywords.join(", ")}
+          </span>
+        </p>
+      )}
+
+      {heatmap && hotSections.length > 0 && (
+        <p className="text-[11px]">
+          <span className="font-medium">Keyword-stuffed:</span>{" "}
+          {hotSections
+            .map((s) => `${s.name} (${s.density.toFixed(1)}%)`)
+            .join(", ")}
+        </p>
+      )}
+      {coldSections.length > 0 && (
+        <p className="text-[11px] text-muted-foreground">
+          No JD keywords in: {coldSections.join(", ")}
+        </p>
+      )}
+
+      {heatmap && heatmap.sections.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {heatmap.sections.map((s) => (
+            <Badge
+              key={s.name}
+              variant="outline"
+              className={cn(
+                "text-[10px] tabular-nums",
+                HEAT_CLASS[s.heatLevel],
+              )}
+              title={`${s.name}: ${s.density.toFixed(2)}% JD keyword density`}
+            >
+              {s.name} · {s.density.toFixed(1)}%
+            </Badge>
+          ))}
+        </div>
+      )}
+    </section>
+  );
 }
 
 function GapStatusBadge({ status }: { status: GapCoverageStatus }) {

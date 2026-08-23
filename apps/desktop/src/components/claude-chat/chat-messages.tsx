@@ -1,12 +1,4 @@
-import {
-  type FC,
-  memo,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from "react";
+import { type FC, memo, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircleIcon,
   AlertTriangleIcon,
@@ -36,6 +28,11 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useChatLabels } from "@/lib/chat-labels";
 import { isNativeOllamaBackend } from "@/lib/agent-backend";
+import {
+  buildDisplayEntries,
+  buildToolResultMap,
+  stabilizeToolResultMap,
+} from "@/lib/chat-message-display";
 import { NativeOllamaEmptyState } from "./native-ollama-empty-state";
 import { ChatStarterChips } from "./chat-starter-chips";
 import { buildChatStarterPromptsFromStore } from "@/lib/chat-starter-prompts";
@@ -111,6 +108,8 @@ const StreamingIndicator: FC<{
 });
 
 const EMPTY_PENDING_GUIDANCE: QueuedGuidance[] = [];
+/** Trailing refresh for starter prompts while the empty state is visible. */
+const STARTER_REFRESH_DEBOUNCE_MS = 400;
 const THREAD_MAX_WIDTH = "max-w-[44rem]";
 
 function latestContextTruncation(messages: ClaudeStreamMessage[]): {
@@ -379,74 +378,58 @@ export const ChatMessages: FC = () => {
   const chatLabels = useChatLabels();
   const activeTabId = useClaudeChatStore((s) => s.activeTabId);
   const saveDraft = useClaudeChatStore((s) => s.saveDraft);
-  const starterPrompts = useSyncExternalStore(
-    useDocumentStore.subscribe,
-    buildChatStarterPromptsFromStore,
-    buildChatStarterPromptsFromStore,
-  );
 
   const applyStarterPrompt = (prompt: string) => {
     saveDraft(activeTabId, { input: prompt, pinnedContexts: [] });
   };
 
-  // Build a map of tool_use_id → tool_result for inline display
-  const toolResultMap = useMemo(() => {
-    const map = new Map<string, ContentBlock>();
-    for (const msg of messages) {
-      if (msg.type === "user" && Array.isArray(msg.message?.content)) {
-        for (const block of msg.message.content) {
-          if (block.type === "tool_result" && block.tool_use_id) {
-            map.set(block.tool_use_id, block);
-          }
-        }
-      }
-    }
-    return map;
-  }, [messages]);
+  // Build a map of tool_use_id → tool_result for inline display.
+  // Identity-stabilized so memoized bubbles don't re-render per delta.
+  const rawToolResultMap = useMemo(
+    () => buildToolResultMap(messages),
+    [messages],
+  );
+  const stableToolResultsRef = useRef<Map<string, ContentBlock>>(new Map());
+  const toolResultMap = useMemo(
+    () =>
+      stabilizeToolResultMap(stableToolResultsRef.current, rawToolResultMap),
+    [rawToolResultMap],
+  );
+  stableToolResultsRef.current = toolResultMap;
 
-  // Filter displayable messages
-  const displayMessages = useMemo(() => {
-    // Collect all assistant text for dedup against result
-    const assistantTexts = new Set<string>();
-    for (const msg of messages) {
-      if (msg.type === "assistant" && Array.isArray(msg.message?.content)) {
-        for (const block of msg.message.content) {
-          if (block.type === "text" && block.text) {
-            assistantTexts.add(block.text.trim());
-          }
-        }
-      }
-    }
+  // Displayable messages with anchors — single forward pass; `rawIndex` is
+  // the stable React key (append-only streams never shift earlier indices,
+  // unlike positions within this filtered list).
+  const displayMessages = useMemo(
+    () => buildDisplayEntries(messages),
+    [messages],
+  );
 
-    return messages.filter((msg) => {
-      if (msg.type === "system" && msg.subtype === "init") return false;
-      if (
-        msg.type === "assistant" &&
-        (msg.subtype === "context_truncation" ||
-          msg.subtype === "context_compaction")
-      ) {
-        return false;
-      }
-      if (
-        msg.type !== "user" &&
-        msg.type !== "assistant" &&
-        msg.type !== "result"
-      )
-        return false;
-      if (msg.type === "user" && msg.message?.content) {
-        if (Array.isArray(msg.message.content)) {
-          const hasOnlyToolResults = msg.message.content.every(
-            (b: any) => b.type === "tool_result",
-          );
-          if (hasOnlyToolResults) return false;
-        }
-      }
-      if (msg.type === "result" && msg.result) {
-        if (assistantTexts.has(msg.result.trim())) return false;
-      }
-      return true;
+  // Starter prompts only matter for the empty conversation state. Computing
+  // them scans the project (citations, outline); subscribing unconditionally
+  // re-ran that scan on every debounced editor keystroke (~6Hz) because file
+  // contents change. Gate the work behind visibility, with a short trailing
+  // refresh while visible.
+  const needsStarters =
+    displayMessages.length === 0 &&
+    pendingGuidance.length === 0 &&
+    !isStreaming;
+  const [starterPrompts, setStarterPrompts] = useState<string[]>([]);
+  useEffect(() => {
+    if (!needsStarters) return;
+    setStarterPrompts(buildChatStarterPromptsFromStore());
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const unsubscribe = useDocumentStore.subscribe(() => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        setStarterPrompts(buildChatStarterPromptsFromStore());
+      }, STARTER_REFRESH_DEBOUNCE_MS);
     });
-  }, [messages]);
+    return () => {
+      unsubscribe();
+      if (timer) clearTimeout(timer);
+    };
+  }, [needsStarters]);
 
   // Auto-scroll to bottom (only if user hasn't scrolled up)
   useEffect(() => {
@@ -521,19 +504,11 @@ export const ChatMessages: FC = () => {
 
         <ContextTruncationNotice messages={messages} />
 
-        {displayMessages.map((msg, idx) => {
-          const rawIndex = messages.indexOf(msg);
-          let precedingUserIndex = -1;
-          for (let i = rawIndex; i >= 0; i--) {
-            if (messages[i]?.type === "user") {
-              precedingUserIndex = i;
-              break;
-            }
-          }
+        {displayMessages.map(({ msg, rawIndex, precedingUserIndex }, idx) => {
           const isLast = idx === displayMessages.length - 1;
           return (
             <div
-              key={idx}
+              key={rawIndex}
               className={cn("cv-auto-chat mx-auto w-full", THREAD_MAX_WIDTH)}
             >
               <MessageBubble

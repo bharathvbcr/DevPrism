@@ -11,8 +11,13 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tauri::Emitter;
 pub(crate) use vectors::{ScoredHit, SearchFilter};
+
+/// Tauri event emitted whenever another connection (in-app MCP server,
+/// `--mcp-stdio` process) commits to `career.db`. Career surfaces refetch on it.
+pub const CAREER_DB_CHANGED_EVENT: &str = "career-db-changed";
 
 // --- Domain types (camelCase JSON, mirrored in apps/desktop/src/lib/career/types.ts) ---
 
@@ -117,11 +122,13 @@ pub struct ExperienceBlock {
 pub struct Persona {
     pub id: String,
     pub label: String,
-    #[serde(default)]
+    #[serde(default, alias = "skillWeights")]
     pub skill_weights: serde_json::Map<String, serde_json::Value>,
+    #[serde(alias = "defaultTemplateId")]
     pub default_template_id: String,
-    #[serde(default)]
+    #[serde(default, alias = "sectionOrder")]
     pub section_order: Vec<String>,
+    #[serde(alias = "toneDirective")]
     pub tone_directive: String,
 }
 
@@ -274,6 +281,77 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+// --- External change watcher ---
+
+/// How often the watcher samples `PRAGMA data_version`. Each sample is an O(1)
+/// read on a dedicated connection; 3s keeps cross-process staleness well under
+/// a human-perceptible threshold without measurable load.
+pub const CHANGE_POLL_INTERVAL: Duration = Duration::from_secs(3);
+
+/// Tracks `PRAGMA data_version` for one connection. SQLite guarantees this
+/// value changes iff *some other* connection committed since the previous
+/// observation — so the app's own writes are invisible here and only genuine
+/// external commits (in-app MCP server, `--mcp-stdio` process) are flagged.
+struct ExternalChangeDetector {
+    last_version: Option<i64>,
+}
+
+impl ExternalChangeDetector {
+    fn new() -> Self {
+        Self { last_version: None }
+    }
+
+    /// Returns `Ok(true)` when another connection committed since the previous
+    /// call. The first call establishes the baseline and always returns false.
+    fn poll(&mut self, conn: &Connection) -> Result<bool, String> {
+        let version: i64 = conn
+            .query_row("PRAGMA data_version", [], |r| r.get(0))
+            .map_err(|e| format!("data_version query failed: {e}"))?;
+        let changed = self.last_version.is_some_and(|prev| prev != version);
+        self.last_version = Some(version);
+        Ok(changed)
+    }
+}
+
+/// Long-running loop (own thread, own connection) that emits
+/// [`CAREER_DB_CHANGED_EVENT`] whenever another connection commits to
+/// `career.db`, so the webview can refetch Career surfaces it has cached.
+///
+/// Best-effort by design: poll failures log once per transition and trigger a
+/// reconnect attempt on the next tick; they never take the app down.
+pub fn watch_external_changes(app: tauri::AppHandle) {
+    let mut detector = ExternalChangeDetector::new();
+    let mut conn = match open_connection() {
+        Ok(conn) => conn,
+        Err(e) => {
+            eprintln!("[career_db] change watcher: initial open failed: {e}");
+            return;
+        }
+    };
+
+    loop {
+        std::thread::sleep(CHANGE_POLL_INTERVAL);
+        match detector.poll(&conn) {
+            Ok(true) => {
+                if let Err(e) = app.emit(CAREER_DB_CHANGED_EVENT, ()) {
+                    eprintln!("[career_db] failed to emit {CAREER_DB_CHANGED_EVENT}: {e}");
+                }
+            }
+            Ok(false) => {}
+            Err(e) => {
+                eprintln!("[career_db] change watcher poll failed ({e}); reconnecting");
+                detector = ExternalChangeDetector::new();
+                match open_connection() {
+                    Ok(next) => conn = next,
+                    Err(reopen_err) => {
+                        eprintln!("[career_db] change watcher reopen failed: {reopen_err}");
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn parse_updated_at_ms(updated_at: &str) -> i64 {
     // Accept ISO-ish strings; fall back to now.
     if let Ok(n) = updated_at.parse::<i64>() {
@@ -424,7 +502,7 @@ const SEEDED_PERSONA_IDS: &[&str] = &["ai", "life-sciences", "management"];
 /// redefine a built-in. The Tauri command path deliberately stays unrestricted:
 /// that is the user editing their own personas in the app.
 pub(crate) fn is_seeded_persona_id(id: &str) -> bool {
-    SEEDED_PERSONA_IDS.iter().any(|s| *s == id)
+    SEEDED_PERSONA_IDS.contains(&id)
 }
 
 pub(crate) fn delete_persona_blocking(conn: &Connection, id: &str) -> Result<(), String> {
@@ -549,6 +627,81 @@ pub(crate) fn list_runs_blocking(conn: &Connection) -> Result<Vec<SynthesisRun>,
     Ok(out)
 }
 
+// --- Known projects (cross-process registry for the plugins layer) ---
+
+/// A workspace project registered by the desktop app when it is opened.
+///
+/// The MCP plugin surface refuses to touch any path that is not in this table:
+/// a headless agent has no other way to prove a path is one of *the user's*
+/// projects rather than an arbitrary directory on disk. The desktop app is the
+/// only writer (on project open); MCP reads it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct KnownProject {
+    /// Absolute filesystem path of the project folder.
+    pub path: String,
+    /// Display name (folder basename unless the user renamed it).
+    pub name: String,
+    /// Epoch millis of the last open.
+    pub last_opened_at: i64,
+}
+
+pub(crate) fn upsert_known_project_blocking(
+    conn: &Connection,
+    path: &str,
+    name: &str,
+) -> Result<(), String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("Project path cannot be empty.".to_string());
+    }
+    conn.execute(
+        "INSERT INTO known_projects (path, name, last_opened_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(path) DO UPDATE SET
+           name = CASE WHEN ?2 <> '' THEN ?2 ELSE known_projects.name END,
+           last_opened_at = excluded.last_opened_at",
+        params![trimmed, name.trim(), now_ms()],
+    )
+    .map_err(|e| format!("Failed to register project: {e}"))?;
+    Ok(())
+}
+
+pub(crate) fn remove_known_project_blocking(
+    conn: &Connection,
+    path: &str,
+) -> Result<bool, String> {
+    let n = conn
+        .execute("DELETE FROM known_projects WHERE path = ?1", params![path.trim()])
+        .map_err(|e| format!("Failed to forget project: {e}"))?;
+    Ok(n > 0)
+}
+
+pub(crate) fn list_known_projects_blocking(conn: &Connection) -> Result<Vec<KnownProject>, String> {
+    let mut stmt = conn
+        .prepare("SELECT path, name, last_opened_at FROM known_projects ORDER BY last_opened_at DESC")
+        .map_err(|e| format!("Failed to prepare list known projects: {e}"))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })
+        .map_err(|e| format!("Failed to query known projects: {e}"))?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (path, name, last_opened_at) =
+            row.map_err(|e| format!("Failed to read known project row: {e}"))?;
+        out.push(KnownProject {
+            path,
+            name,
+            last_opened_at,
+        });
+    }
+    Ok(out)
+}
+
 // --- Tauri commands ---
 
 #[tauri::command]
@@ -583,6 +736,43 @@ pub async fn career_delete_block(
     tokio::task::spawn_blocking(move || state.with_conn(|c| delete_block_blocking(c, &id)))
         .await
         .map_err(|e| format!("career_delete_block task failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn career_upsert_known_project(
+    state: tauri::State<'_, CareerDbState>,
+    path: String,
+    name: String,
+) -> Result<(), String> {
+    let state = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        state.with_conn(|c| upsert_known_project_blocking(c, &path, &name))
+    })
+    .await
+    .map_err(|e| format!("career_upsert_known_project task failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn career_remove_known_project(
+    state: tauri::State<'_, CareerDbState>,
+    path: String,
+) -> Result<bool, String> {
+    let state = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        state.with_conn(|c| remove_known_project_blocking(c, &path))
+    })
+    .await
+    .map_err(|e| format!("career_remove_known_project task failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn career_list_known_projects(
+    state: tauri::State<'_, CareerDbState>,
+) -> Result<Vec<KnownProject>, String> {
+    let state = state.inner().clone();
+    tokio::task::spawn_blocking(move || state.with_conn(list_known_projects_blocking))
+        .await
+        .map_err(|e| format!("career_list_known_projects task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -759,6 +949,163 @@ mod tests {
         CareerDbState {
             inner: Arc::new(Mutex::new(DbSlot::Ready(conn))),
         }
+    }
+
+    /// Two `CareerDbState`s over one DB file — mirrors production where lib.rs
+    /// holds a UI state and an MCP server state, plus a third stdio process.
+    /// Concurrent KB ingest + reads must all succeed (WAL + busy_timeout absorb
+    /// contention) and land every row visible to the *other* connection.
+    #[test]
+    fn concurrent_ingest_and_list_on_shared_db_file() {
+        let _ = vectors::ensure_sqlite_vec_registered();
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("career-stress.db");
+
+        let make_conn = || {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "PRAGMA foreign_keys = ON;\
+                 PRAGMA journal_mode = WAL;\
+                 PRAGMA busy_timeout = 5000;",
+            )
+            .unwrap();
+            schema::init_schema(&conn).unwrap();
+            conn
+        };
+
+        let ui = CareerDbState {
+            inner: Arc::new(Mutex::new(DbSlot::Ready(make_conn()))),
+        };
+        let mcp = CareerDbState {
+            inner: Arc::new(Mutex::new(DbSlot::Ready(make_conn()))),
+        };
+
+        const WRITERS: usize = 4;
+        const CHUNKS_PER_SOURCE: usize = 6;
+        const READER_ITERS: usize = 50;
+
+        let mut handles = Vec::new();
+        for w in 0..WRITERS {
+            let mcp = mcp.clone();
+            handles.push(std::thread::spawn(move || {
+                let prepared = PreparedSource {
+                    uri: format!("/tmp/career-stress-{w}.md"),
+                    source_type: "markdown".to_string(),
+                    title: format!("stress-{w}"),
+                    content_hash: format!("stress-hash-{w}"),
+                    chunks: (0..CHUNKS_PER_SOURCE)
+                        .map(|c| ingest::PreparedChunk {
+                            text: format!("writer {w} chunk {c} body text"),
+                            meta: serde_json::json!({
+                                "contentHash": format!("stress-{w}-{c}"),
+                            }),
+                        })
+                        .collect(),
+                };
+                mcp.with_conn(|conn| {
+                    ingest::upsert_prepared_source(conn, &prepared)?;
+                    Ok(())
+                })
+            }));
+        }
+        for _reader in 0..2 {
+            let ui = ui.clone();
+            handles.push(std::thread::spawn(move || {
+                for _ in 0..READER_ITERS {
+                    let _sources =
+                        ui.with_conn(ingest::list_kb_sources)?;
+                    let _chunks = ui.with_conn(|conn| {
+                        ingest::list_kb_chunks(conn, None, false)
+                    })?;
+                }
+                Ok(())
+            }));
+        }
+
+        for handle in handles {
+            let result = handle
+                .join()
+                .unwrap_or_else(|panic| Err(format!("thread panicked: {panic:?}")));
+            match result {
+                Ok(()) => {}
+                Err(e) => panic!("concurrent op failed: {e}"),
+            }
+        }
+
+        let sources = ui
+            .with_conn(ingest::list_kb_sources)
+            .unwrap_or_else(|e| panic!("final list_kb_sources failed: {e}"));
+        assert_eq!(sources.len(), WRITERS);
+        for w in 0..WRITERS {
+            let title = format!("stress-{w}");
+            assert!(
+                sources.iter().any(|s| s.title == Some(title.clone())),
+                "missing source {title}"
+            );
+        }
+        let total_chunks = ui
+            .with_conn(|conn| ingest::list_kb_chunks(conn, None, false))
+            .unwrap_or_else(|e| panic!("final list_kb_chunks failed: {e}"));
+        assert_eq!(total_chunks.len(), WRITERS * CHUNKS_PER_SOURCE);
+    }
+
+    /// The watcher must flag commits from *other* connections (in-app MCP
+    /// server, stdio process) and stay silent for the watched connection's own
+    /// writes — otherwise every app-initiated save would spam refresh events.
+    #[test]
+    fn external_change_detector_flags_other_connections_only() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("career-watch.db");
+
+        let open = || {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "PRAGMA foreign_keys = ON;\
+                 PRAGMA journal_mode = WAL;",
+            )
+            .unwrap();
+            schema::init_schema(&conn).unwrap();
+            conn
+        };
+
+        let watched = open();
+        let other = open();
+
+        let mut detector = ExternalChangeDetector::new();
+        assert!(
+            !detector.poll(&watched).unwrap(),
+            "baseline poll establishes version and reports no change"
+        );
+        assert!(
+            !detector.poll(&watched).unwrap(),
+            "no commits since baseline"
+        );
+
+        other
+            .execute(
+                "INSERT OR REPLACE INTO personas (id, json) VALUES ('ext', '{}')",
+                [],
+            )
+            .unwrap();
+        assert!(
+            detector.poll(&watched).unwrap(),
+            "commit from another connection must be detected"
+        );
+        assert!(
+            !detector.poll(&watched).unwrap(),
+            "no further commits since detection"
+        );
+
+        watched
+            .execute(
+                "INSERT OR REPLACE INTO personas (id, json) VALUES ('own', '{}')",
+                [],
+            )
+            .unwrap();
+        assert!(
+            !detector.poll(&watched).unwrap(),
+            "the watched connection's own commit must be invisible"
+        );
     }
 
     #[test]

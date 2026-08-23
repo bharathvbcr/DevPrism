@@ -227,7 +227,8 @@ function RunBlockedExplainer({
   const jdOk = jdLength >= 40;
   const blocksOk = blockCount > 0;
   const aiOk = readiness?.canRunWithAi ?? canUseAiAssist();
-  const embeddingsDown = Boolean(readiness?.embeddingsDown);
+  const embeddingsProbed = readiness != null;
+  const embeddingsDown = readiness?.embeddingsDown === true;
   const aiMessage =
     readiness?.text.message ??
     (aiOk ? "AI provider ready" : "Configure an AI chat provider in Settings");
@@ -275,12 +276,14 @@ function RunBlockedExplainer({
     },
     {
       id: "embeddings",
-      ok: !embeddingsDown,
-      warn: embeddingsDown,
+      ok: embeddingsProbed && !embeddingsDown,
+      warn: !embeddingsProbed || embeddingsDown,
       label: "Embeddings",
-      detail: embeddingsDown
-        ? "Optional — run will continue in degraded mode (weaker scoring / no KB evidence)"
-        : "Available for hybrid scoring and evidence",
+      detail: !embeddingsProbed
+        ? "Still checking availability…"
+        : embeddingsDown
+          ? "Optional — run will continue in degraded mode (weaker scoring / no KB evidence)"
+          : "Available for hybrid scoring and evidence",
       actionLabel: embeddingsDown ? "Add knowledge" : undefined,
       onAction: embeddingsDown ? onAddKnowledge : undefined,
     },

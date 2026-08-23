@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Loader2Icon, UploadIcon } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -14,7 +14,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { extractBlocksFromResume, type ExperienceBlock } from "@/lib/career";
+import {
+  extractBlocksFromResume,
+  readResumeSourceFromFile,
+  type ExperienceBlock,
+} from "@/lib/career";
 import { canUseAiAssist } from "@/lib/ai-assist";
 import { dispatchOpenSettings } from "@/lib/home-flow-events";
 import { useCareerStore } from "@/stores/career-store";
@@ -35,21 +39,40 @@ export function ResumeImportWizard({
 
   const [step, setStep] = useState<WizardStep>("source");
   const [source, setSource] = useState("");
+  const [sourceLabel, setSourceLabel] = useState<string | null>(null);
   const [extracting, setExtracting] = useState(false);
   const [drafts, setDrafts] = useState<ExperienceBlock[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
+  const [dragActive, setDragActive] = useState(false);
   const [commitProgress, setCommitProgress] = useState<IngestProgressItem[]>(
     [],
   );
 
+  // Source dropped/picked elsewhere in Career (e.g. a .zip onto the window)
+  // arrives through the store; consume it once the wizard is visible.
+  const pendingImportSource = useCareerStore((s) => s.resumeImportSource);
+  const clearResumeImportSource = useCareerStore(
+    (s) => s.clearResumeImportSource,
+  );
+  useEffect(() => {
+    if (!open || !pendingImportSource) return;
+    setStep("source");
+    setSource(pendingImportSource);
+    setSourceLabel(null);
+    setError(null);
+    clearResumeImportSource();
+  }, [open, pendingImportSource, clearResumeImportSource]);
+
   const reset = () => {
     setStep("source");
     setSource("");
+    setSourceLabel(null);
     setDrafts([]);
     setSelected(new Set());
     setError(null);
     setExtracting(false);
+    setDragActive(false);
     setCommitProgress([]);
   };
 
@@ -58,22 +81,38 @@ export function ResumeImportWizard({
     onOpenChange(next);
   };
 
-  const handleFile = async (file: File | undefined) => {
+  const applyResumeFile = async (file: File | undefined) => {
     if (!file) return;
-    if (
-      !file.name.toLowerCase().endsWith(".tex") &&
-      file.type !== "text/plain"
-    ) {
-      toast.error("Please upload a .tex (or plain text) file");
-      return;
-    }
     try {
-      const text = await file.text();
-      setSource(text);
+      const out = await readResumeSourceFromFile(file);
+      setStep("source");
+      setSource(out.source);
+      setSourceLabel(out.label);
       setError(null);
+      toast.success(`Loaded ${out.label}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+      toast.error(message);
     }
+  };
+
+  const handleDialogDragOver = (event: React.DragEvent) => {
+    if (step !== "source") return;
+    if (![...(event.dataTransfer?.types ?? [])].includes("Files")) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setDragActive(true);
+  };
+
+  const handleDialogDrop = async (event: React.DragEvent) => {
+    if (step !== "source") return;
+    if (!event.dataTransfer?.files?.length) return;
+    event.preventDefault();
+    // Keep the Career window-level drop handler from double-importing.
+    event.stopPropagation();
+    setDragActive(false);
+    await applyResumeFile(event.dataTransfer.files[0]);
   };
 
   const handleExtract = async () => {
@@ -177,17 +216,27 @@ export function ResumeImportWizard({
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col gap-4">
+      <DialogContent
+        className="flex max-h-[85vh] max-w-2xl flex-col gap-4"
+        onDragOver={handleDialogDragOver}
+        onDragLeave={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+            setDragActive(false);
+          }
+        }}
+        onDrop={(e) => void handleDialogDrop(e)}
+      >
         <DialogHeader>
           <DialogTitle>Import resume</DialogTitle>
           <DialogDescription>
-            Paste or upload LaTeX source. AI extracts draft experience blocks
-            for your review — nothing is saved until you confirm.
+            Paste, upload, or drag a LaTeX .tex file or a .zip archive. AI
+            extracts draft experience blocks for your review — nothing is saved
+            until you confirm.
           </DialogDescription>
         </DialogHeader>
 
         {step === "source" ? (
-          <div className="space-y-3">
+          <div className="relative space-y-3">
             <div className="flex items-center gap-2">
               <Button
                 type="button"
@@ -197,19 +246,27 @@ export function ResumeImportWizard({
                 onClick={() => fileInputRef.current?.click()}
               >
                 <UploadIcon className="size-3.5" />
-                Upload .tex
+                Upload .tex / .zip
               </Button>
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".tex,text/plain,text/x-tex"
+                accept=".tex,.ltx,.zip,text/plain,text/x-tex,application/zip,application/x-zip-compressed"
                 className="hidden"
-                onChange={(e) => void handleFile(e.target.files?.[0])}
+                onChange={(e) => void applyResumeFile(e.target.files?.[0])}
               />
               <span className="text-muted-foreground text-xs">
-                or paste below
+                or paste below — you can also drop files here
               </span>
             </div>
+            {sourceLabel && (
+              <p className="truncate text-[11px] text-muted-foreground">
+                Loaded from{" "}
+                <span className="font-medium text-foreground">
+                  {sourceLabel}
+                </span>
+              </p>
+            )}
             <Textarea
               value={source}
               onChange={(e) => setSource(e.target.value)}
@@ -239,6 +296,13 @@ export function ResumeImportWizard({
               <p className="text-destructive text-xs" role="alert">
                 {error}
               </p>
+            )}
+            {dragActive && (
+              <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-md border-2 border-primary/60 border-dashed bg-background/80">
+                <p className="font-medium text-sm">
+                  Drop a .zip archive or .tex file
+                </p>
+              </div>
             )}
           </div>
         ) : (

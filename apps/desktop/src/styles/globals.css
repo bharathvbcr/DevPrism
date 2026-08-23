@@ -1,3 +1,7 @@
+/* Self-hosted Geist / Geist Mono (variable, subset). Replaces the render-
+   blocking fonts.googleapis.com request — the app must cold-start offline. */
+@import "./fonts.css";
+
 @import "tailwindcss";
 @import "tw-animate-css";
 

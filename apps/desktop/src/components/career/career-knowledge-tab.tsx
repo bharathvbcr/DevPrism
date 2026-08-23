@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   BookMarkedIcon,
   BookOpenIcon,
+  EyeIcon,
   FileUpIcon,
   Loader2Icon,
   RefreshCwIcon,
@@ -26,6 +27,8 @@ import {
   type KbSourceRow,
   type ProcessingProgress,
 } from "@/lib/career";
+import { debounce, onCareerDbChanged } from "@/lib/career/db-events";
+import { useCareerStore } from "@/stores/career-store";
 import { pickProjectFiles } from "@/lib/platform-dialog";
 import {
   RECOMMENDED_EMBED_MODEL,
@@ -37,6 +40,7 @@ import { useOllamaPullStore } from "@/stores/ollama-pull-store";
 import { useClaudeSetupStore } from "@/stores/claude-setup-store";
 import { IngestProgressList, type IngestProgressItem } from "./ingest-progress";
 import { PublicationImportWizard } from "./publication-import-wizard";
+import { KbSourceViewerDialog } from "./kb-source-viewer-dialog";
 import { scratchSuffix, uniqueId } from "@/lib/unique-id";
 
 function fileLabel(path: string): string {
@@ -45,9 +49,11 @@ function fileLabel(path: string): string {
 
 export function CareerKnowledgeTab() {
   const [sources, setSources] = useState<KbSourceRow[]>([]);
-  const [missingBySource, setMissingBySource] = useState<Map<string, number>>(
-    () => new Map(),
-  );
+  /** null = the chunks lookup failed — embed coverage unknown, not clean. */
+  const [missingBySource, setMissingBySource] = useState<Map<
+    string,
+    number
+  > | null>(new Map());
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [pasteText, setPasteText] = useState("");
@@ -57,22 +63,30 @@ export function CareerKnowledgeTab() {
   const [notice, setNotice] = useState<string | null>(null);
   const [progressItems, setProgressItems] = useState<IngestProgressItem[]>([]);
   const [pubImportOpen, setPubImportOpen] = useState(false);
+  const [viewingSource, setViewingSource] = useState<KbSourceRow | null>(null);
   const pulling = useOllamaPullStore((s) => s.pulling);
   const pull = useOllamaPullStore((s) => s.pull);
 
   const refresh = useCallback(async () => {
     setLoading(true);
+    // Keep the shared coverage count (first-run guide) in sync with
+    // mutations made here.
+    void useCareerStore.getState().refreshKbCoverage();
     try {
       const [nextSources, missingChunks] = await Promise.all([
         listKbSources(),
-        listKbChunks(undefined, true).catch(() => []),
+        listKbChunks(undefined, true).catch(() => null),
       ]);
-      const counts = new Map<string, number>();
-      for (const chunk of missingChunks) {
-        counts.set(chunk.sourceId, (counts.get(chunk.sourceId) ?? 0) + 1);
+      if (missingChunks == null) {
+        setMissingBySource(null);
+      } else {
+        const counts = new Map<string, number>();
+        for (const chunk of missingChunks) {
+          counts.set(chunk.sourceId, (counts.get(chunk.sourceId) ?? 0) + 1);
+        }
+        setMissingBySource(counts);
       }
       setSources(nextSources);
-      setMissingBySource(counts);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));
     } finally {
@@ -82,6 +96,11 @@ export function CareerKnowledgeTab() {
 
   useEffect(() => {
     void refresh();
+  }, [refresh]);
+
+  // External career.db commits (e.g. MCP ingest while this tab is open).
+  useEffect(() => {
+    return onCareerDbChanged(debounce(() => void refresh(), 400));
   }, [refresh]);
 
   const patchItem = (
@@ -338,6 +357,13 @@ export function CareerKnowledgeTab() {
 
   return (
     <div className="flex h-full min-h-0 gap-4">
+      <KbSourceViewerDialog
+        source={viewingSource}
+        open={viewingSource != null}
+        onOpenChange={(next) => {
+          if (!next) setViewingSource(null);
+        }}
+      />
       <div className="flex min-w-0 flex-1 flex-col gap-3">
         <div className="flex flex-wrap items-center gap-2">
           <Button
@@ -464,6 +490,11 @@ export function CareerKnowledgeTab() {
             <RefreshCwIcon className="size-3.5" />
           </Button>
         </div>
+        {missingBySource == null && sources.length > 0 && !loading && (
+          <p className="text-[11px] text-amber-600 dark:text-amber-400">
+            Couldn't verify embed coverage — refresh to retry.
+          </p>
+        )}
         {loading && sources.length === 0 ? (
           <p className="text-muted-foreground text-xs">Loading…</p>
         ) : sources.length === 0 ? (
@@ -478,14 +509,19 @@ export function CareerKnowledgeTab() {
           <ScrollArea className="min-h-0 flex-1 rounded-lg border border-border/60">
             <ul className="space-y-1 p-2">
               {sources.map((s) => {
-                const missing = missingBySource.get(s.id) ?? 0;
+                const missing = missingBySource?.get(s.id) ?? 0;
                 return (
                   <li
                     key={s.id}
                     className="flex items-start gap-2 rounded-md border border-border/40 px-2 py-1.5"
                   >
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate font-medium text-xs">
+                    <button
+                      type="button"
+                      className="min-w-0 flex-1 rounded text-left outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                      onClick={() => setViewingSource(s)}
+                      aria-label={`View ${s.title || s.uri || s.id}`}
+                    >
+                      <p className="truncate font-medium text-xs underline-offset-2 hover:underline group-hover:underline">
                         {s.title || s.uri || s.id}
                       </p>
                       <div className="mt-1 flex flex-wrap gap-1">
@@ -495,7 +531,7 @@ export function CareerKnowledgeTab() {
                         <Badge variant="secondary" className="text-[10px]">
                           {s.chunkCount} chunks
                         </Badge>
-                        {missing > 0 && (
+                        {missingBySource != null && missing > 0 && (
                           <Badge
                             variant="destructive"
                             className="text-[10px]"
@@ -505,17 +541,29 @@ export function CareerKnowledgeTab() {
                           </Badge>
                         )}
                       </div>
+                    </button>
+                    <div className="flex shrink-0 items-center gap-0.5">
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="size-7 shrink-0 text-muted-foreground"
+                        disabled={busy}
+                        onClick={() => setViewingSource(s)}
+                        aria-label={`View contents of ${s.title || s.uri || s.id}`}
+                      >
+                        <EyeIcon className="size-3.5" />
+                      </Button>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="size-7 shrink-0 text-muted-foreground"
+                        disabled={busy}
+                        onClick={() => void handleDelete(s.id)}
+                        aria-label="Delete source"
+                      >
+                        <Trash2Icon className="size-3.5" />
+                      </Button>
                     </div>
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      className="size-7 shrink-0 text-muted-foreground"
-                      disabled={busy}
-                      onClick={() => void handleDelete(s.id)}
-                      aria-label="Delete source"
-                    >
-                      <Trash2Icon className="size-3.5" />
-                    </Button>
                   </li>
                 );
               })}

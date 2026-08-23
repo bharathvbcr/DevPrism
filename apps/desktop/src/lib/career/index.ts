@@ -46,6 +46,15 @@ export {
   distillFactsFromNotes,
   parseDistilledFacts,
 } from "./distill-facts";
+export {
+  isTexFileName,
+  isZipFileName,
+  pickResumeTexEntry,
+  readResumeSourceFromFile,
+  readResumeSourceFromPath,
+  readResumeSourceFromZipBytes,
+  type ResumeSource,
+} from "./resume-source";
 export * from "../mcp";
 
 export function listBlocks(

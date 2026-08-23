@@ -6,6 +6,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   SECTION_KINDS,
+  SECTION_DISPLAY,
   formatCommaList,
   parseCommaList,
   type Persona,
@@ -111,7 +112,8 @@ export function PersonaEditor({
       <div className="space-y-2">
         <Label>Section order</Label>
         <p className="text-[11px] text-muted-foreground">
-          Checked sections appear in the order listed below. Uncheck to omit.
+          Order is a sort key, not a filter. Sections with content still print
+          if unchecked, inserted at their default relative position.
         </p>
         <div className="flex flex-wrap gap-3">
           {SECTION_KINDS.map((section) => (
@@ -120,7 +122,7 @@ export function PersonaEditor({
                 checked={draft.sectionOrder.includes(section)}
                 onCheckedChange={(v) => toggleSection(section, v === true)}
               />
-              {section}
+              {SECTION_DISPLAY[section]}
             </label>
           ))}
         </div>

@@ -68,7 +68,11 @@ pub fn render_resume(
         ("experience", "Experience"),
         ("projects", "Projects"),
         ("education", "Education"),
+        ("publications", "Publications"),
         ("leadership", "Leadership"),
+        ("certifications", "Certifications"),
+        ("awards", "Awards"),
+        ("volunteer", "Volunteer"),
         ("skills", "Skills"),
     ] {
         let in_section: Vec<&ExperienceBlock> = blocks

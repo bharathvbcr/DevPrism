@@ -69,6 +69,31 @@ fn process_key(window_label: &str, tab_id: &str) -> String {
     format!("{}:{}", window_label, tab_id)
 }
 
+/// Put the agent CLI into its own POSIX process group.
+///
+/// Claude Code / Cursor spawn tool subprocesses of their own (dev servers,
+/// builds). Without a dedicated group, Stop only kills the direct child and
+/// those grandchildren survive as orphans. With one, `kill -9 -<pid>` reaches
+/// the whole tree.
+#[cfg(unix)]
+fn spawn_in_new_process_group(cmd: &mut Command) {
+    // tokio's Command exposes `pre_exec` directly; no trait import needed.
+    unsafe {
+        cmd.pre_exec(|| {
+            extern "C" {
+                fn setpgid(pid: i32, pgid: i32) -> i32;
+            }
+            if setpgid(0, 0) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(not(unix))]
+fn spawn_in_new_process_group(_cmd: &mut Command) {}
+
 /// Optional line transformer (e.g. Cursor stream-json → Claude NDJSON).
 pub type LineAdapter = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
@@ -89,6 +114,8 @@ pub async fn spawn_agent_process(
     if stdin_payload.is_some() {
         cmd.stdin(std::process::Stdio::piped());
     }
+
+    spawn_in_new_process_group(&mut cmd);
 
     let mut child = cmd.spawn().map_err(|e| {
         eprintln!(
@@ -251,8 +278,14 @@ pub async fn spawn_agent_process(
         let _ = stdout_task.await;
         let _ = stderr_task.await;
 
-        let mut processes = process_arc_wait.lock().await;
-        let success = if let Some(mut child) = processes.remove(&process_key_wait) {
+        // Take the child out under a short critical section, then wait for it
+        // outside the lock — holding the map's mutex across `wait()` would
+        // block every other tab's spawn/stop while this child lingers.
+        let mut child_opt = {
+            let mut processes = process_arc_wait.lock().await;
+            processes.remove(&process_key_wait)
+        };
+        let success = if let Some(ref mut child) = child_opt {
             match child.wait().await {
                 Ok(status) => {
                     let exit_success = status.success();
@@ -286,7 +319,6 @@ pub async fn spawn_agent_process(
             );
             false
         };
-        drop(processes);
 
         let _ = win_wait.emit(
             "claude-complete",
@@ -364,12 +396,27 @@ pub async fn stop_claude_process(
 #[cfg(unix)]
 async fn interrupt_or_terminate(child: &mut Child) -> bool {
     if let Some(pid) = child.id() {
+        // Signal the whole process group (negative pid), not just the CLI.
         let status = tokio::process::Command::new("kill")
             .arg("-INT")
-            .arg(pid.to_string())
+            .arg(format!("-{}", pid))
             .status()
             .await;
         if matches!(status, Ok(status) if status.success()) {
+            // Grace period: the CLI should persist session state and exit. If
+            // it ignores SIGINT we escalate — otherwise the stdout readers
+            // keep emitting into a stopped tab and `claude-complete` never
+            // fires.
+            const GRACE_POLLS: usize = 10; // 10 × 500ms = 5s
+            for _ in 0..GRACE_POLLS {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                match child.try_wait() {
+                    Ok(Some(_)) => return true,
+                    Ok(None) => continue,
+                    Err(_) => break,
+                }
+            }
+            terminate_process_tree(child).await;
             return true;
         }
     }
@@ -397,6 +444,18 @@ async fn terminate_process_tree(child: &mut Child) {
 
 #[cfg(not(windows))]
 async fn terminate_process_tree(child: &mut Child) {
+    if let Some(pid) = child.id() {
+        // The child runs in its own process group (see
+        // `spawn_in_new_process_group`); a negative pid targets the whole
+        // group so CLI-spawned tool subprocesses die too. If the group does
+        // not exist (child already gone, or setpgid unavailable), the signal
+        // fails harmlessly and the direct-kill below still applies.
+        let _ = tokio::process::Command::new("kill")
+            .arg("-9")
+            .arg(format!("-{}", pid))
+            .status()
+            .await;
+    }
     let _ = child.start_kill();
 }
 
@@ -423,5 +482,70 @@ mod tests {
     #[test]
     fn agent_stop_mode_alias_matches() {
         assert_eq!(ClaudeStopMode::Terminate, AgentStopMode::Terminate);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn terminate_process_tree_kills_the_whole_group() {
+        // The agent CLI spawns tool subprocesses of its own. Stop must reach
+        // them, not just the direct child.
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", "sleep 30 & wait"]);
+        spawn_in_new_process_group(&mut cmd);
+        let mut child = cmd.spawn().expect("spawn sh");
+        let pid = child.id().expect("pid");
+
+        // Give setpgid a moment to take effect.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        // Precondition: the group exists (proves the child leads its own
+        // group, so the negative-pid kill below targets it).
+        let group_members = |pid: u32| {
+            tokio::process::Command::new("pgrep")
+                .arg("-g")
+                .arg(pid.to_string())
+                .output()
+        };
+        let before = group_members(pid).await.expect("run pgrep");
+        assert!(
+            !before.status.success() || !before.stdout.is_empty(),
+            "expected the child to lead its own process group"
+        );
+
+        terminate_process_tree(&mut child).await;
+        let _ = child.wait().await;
+
+        // Orphaned grandchildren must be gone too.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let after = group_members(pid).await.expect("run pgrep");
+        assert!(
+            after.stdout.is_empty(),
+            "processes survived the group kill: {:?}",
+            String::from_utf8_lossy(&after.stdout)
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn interrupt_escales_to_termination_when_sigint_is_ignored() {
+        // `sh trap '' INT` ignores SIGINT; the interrupt path must not hang
+        // forever waiting for a CLI that never exits.
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", "trap '' INT; while :; do :; done"]);
+        spawn_in_new_process_group(&mut cmd);
+        let mut child = cmd.spawn().expect("spawn sh");
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        let started = std::time::Instant::now();
+        let stopped = interrupt_or_terminate(&mut child).await;
+        assert!(stopped);
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(15),
+            "interrupt took {elapsed:?} — escalation missing?"
+        );
+        let status = child.wait().await.expect("wait");
+        assert!(!status.success(), "child should have been killed");
     }
 }

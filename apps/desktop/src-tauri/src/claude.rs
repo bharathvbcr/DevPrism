@@ -1675,9 +1675,12 @@ fn run_login_shell_command(command: &str) -> Option<String> {
     }
 
     for shell in shells {
-        if let Ok(output) = std::process::Command::new(&shell)
-            .args(["-l", "-c", command])
-            .output()
+        // A login shell sources the user's profile; a broken profile can hang
+        // forever. Bound it so a wedged shell costs seconds, not the runtime.
+        let mut cmd = std::process::Command::new(&shell);
+        cmd.args(["-l", "-c", command]);
+        if let Ok(output) =
+            crate::proc::run_with_timeout(cmd, std::time::Duration::from_secs(10))
         {
             if output.status.success() {
                 let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -1957,6 +1960,20 @@ fn new_sync_command(program: &str) -> std::process::Command {
     std::process::Command::new(program)
 }
 
+/// Run a CLI probe with a bounded deadline.
+///
+/// `claude --version` / `auth status` are usually fast, but a wedged install
+/// (or an antivirus scan on Windows) can hang them indefinitely; the probe
+/// must fail instead of pinning its thread forever. The error is shaped like
+/// `std::process::Output`-based failures so call sites need no new handling.
+fn run_bounded_probe(
+    cmd: std::process::Command,
+) -> std::io::Result<std::process::Output> {
+    const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+    crate::proc::run_with_timeout(cmd, PROBE_TIMEOUT)
+        .map_err(|e| std::io::Error::other(e.to_message("claude")))
+}
+
 /// Create a tokio Command with appropriate environment variables.
 fn create_command(
     program: &str,
@@ -2211,6 +2228,15 @@ fn find_git_bash() -> Option<String> {
 
 #[tauri::command]
 pub async fn check_claude_status() -> Result<ClaudeStatus, String> {
+    // The probe spawns real subprocesses (binary lookup may consult login
+    // shells, then `--version` and `auth status`). Keep that blocking work off
+    // the async runtime workers so a slow CLI cannot stall other commands.
+    tauri::async_runtime::spawn_blocking(check_claude_status_blocking)
+        .await
+        .map_err(|e| format!("Claude status task failed: {e}"))?
+}
+
+fn check_claude_status_blocking() -> Result<ClaudeStatus, String> {
     let auth_config = read_claude_prism_auth_config()?;
     let claude_provider_configured = stored_claude_credential_from_config(&auth_config).is_some()
         || std::env::var("ANTHROPIC_API_KEY")
@@ -2258,7 +2284,9 @@ pub async fn check_claude_status() -> Result<ClaudeStatus, String> {
     };
 
     // Verify binary actually works by running --version
-    let version_output = new_sync_command(&binary_path).arg("--version").output();
+    let mut version_probe = new_sync_command(&binary_path);
+    version_probe.arg("--version");
+    let version_output = run_bounded_probe(version_probe);
 
     let version = match version_output {
         Ok(output) if output.status.success() => {
@@ -2298,9 +2326,9 @@ pub async fn check_claude_status() -> Result<ClaudeStatus, String> {
     }
 
     // Check auth status
-    let auth_output = new_sync_command(&binary_path)
-        .args(["auth", "status"])
-        .output();
+    let mut auth_probe = new_sync_command(&binary_path);
+    auth_probe.args(["auth", "status"]);
+    let auth_output = run_bounded_probe(auth_probe);
 
     let (authenticated, account_email) = match auth_output {
         Ok(output) if output.status.success() => {
@@ -2419,16 +2447,22 @@ async fn ensure_local_dirs(window: &WebviewWindow) -> Result<(), String> {
         "Requesting admin privileges to fix directory permissions...",
     );
 
-    let output = std::process::Command::new("osascript")
-        .args([
-            "-e",
-            &format!(
-                "do shell script \"{}\" with administrator privileges",
-                script
-            ),
-        ])
-        .output()
-        .map_err(|e| format!("Failed to run osascript: {}", e))?;
+    // The osascript prompt blocks until the user answers the password dialog;
+    // that wait is unbounded by design but must not pin an async worker.
+    let output = tauri::async_runtime::spawn_blocking(move || {
+        std::process::Command::new("osascript")
+            .args([
+                "-e",
+                &format!(
+                    "do shell script \"{}\" with administrator privileges",
+                    script
+                ),
+            ])
+            .output()
+            .map_err(|e| format!("Failed to run osascript: {}", e))
+    })
+    .await
+    .map_err(|e| format!("Elevation task failed: {e}"))??;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -2564,10 +2598,23 @@ pub async fn install_claude_cli(window: WebviewWindow) -> Result<bool, String> {
 
 #[tauri::command]
 pub async fn login_claude(window: WebviewWindow) -> Result<(), String> {
-    let binary_path = find_claude_binary().map_err(|e| format!("Claude CLI not found: {}", e))?;
+    let binary_path =
+        tauri::async_runtime::spawn_blocking(find_claude_binary)
+            .await
+            .map_err(|e| format!("Claude lookup task failed: {e}"))?
+            .map_err(|e| format!("Claude CLI not found: {}", e))?;
 
-    // Verify it actually exists
-    let version_check = new_sync_command(&binary_path).arg("--version").output();
+    // Verify it actually exists (bounded, off the async workers)
+    let version_check = {
+        let binary_path = binary_path.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut probe = new_sync_command(&binary_path);
+            probe.arg("--version");
+            run_bounded_probe(probe)
+        })
+        .await
+        .map_err(|e| format!("Claude probe task failed: {e}"))?
+    };
 
     if !version_check.as_ref().is_ok_and(|o| o.status.success()) {
         return Err("Claude CLI is not properly installed".to_string());
@@ -4337,19 +4384,17 @@ pub async fn list_claude_sessions(
     generate_titles: Option<bool>,
 ) -> Result<Vec<ClaudeSessionInfo>, String> {
     let _ = generate_titles;
-    eprintln!(
-        "[session] list_claude_sessions called with project_path={}",
-        project_path
-    );
-    let sessions_dir = get_sessions_dir(&project_path)?;
-    eprintln!(
-        "[session] sessions_dir={:?} exists={}",
-        sessions_dir,
-        sessions_dir.exists()
-    );
+    // Directory walk + JSONL parsing for uncached titles are blocking disk
+    // work; keep them off the async runtime workers.
+    tauri::async_runtime::spawn_blocking(move || list_claude_sessions_blocking(&project_path))
+        .await
+        .map_err(|e| format!("Session list task failed: {e}"))?
+}
+
+fn list_claude_sessions_blocking(project_path: &str) -> Result<Vec<ClaudeSessionInfo>, String> {
+    let sessions_dir = get_sessions_dir(project_path)?;
 
     if !sessions_dir.exists() {
-        eprintln!("[session] sessions_dir does not exist, returning empty");
         return Ok(Vec::new());
     }
 
@@ -4383,9 +4428,18 @@ pub async fn list_claude_sessions(
             })
             .unwrap_or(0);
 
-        let (first_message, _timestamp) = extract_first_user_message(&path);
-        let fallback_title = first_message.unwrap_or_else(|| "Untitled session".to_string());
+        // Cached titles answer without opening the JSONL at all; the
+        // line-by-line first-user-message scan is reserved for sessions that
+        // were never AI-titled. On a long-running project this turns the
+        // every-launch listing from O(all session bytes) into O(sessions).
         let title = read_session_title_cache(&path);
+        let fallback_title = if title.is_some() {
+            "Untitled session".to_string()
+        } else {
+            extract_first_user_message(&path)
+                .0
+                .unwrap_or_else(|| "Untitled session".to_string())
+        };
 
         candidates.push(SessionCandidate {
             session_id,
@@ -4407,14 +4461,6 @@ pub async fn list_claude_sessions(
         .collect();
 
     sessions.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
-
-    eprintln!("[session] found {} sessions", sessions.len());
-    for s in &sessions {
-        eprintln!(
-            "[session]   id={} title={} modified={}",
-            s.session_id, s.title, s.last_modified
-        );
-    }
 
     Ok(sessions)
 }
@@ -4479,6 +4525,23 @@ pub async fn generate_claude_session_title(
     Ok(Some(title))
 }
 
+/// Displayable session-entry filter.
+///
+/// The webview only renders `user`, `assistant` and `result` entries, plus the
+/// `system`/`init` record it uses to infer the provider. Session JSONL files
+/// also contain large tool-progress / stream records that were previously
+/// shipped across IPC on every project open just so the frontend could discard
+/// them; filtering here keeps multi-MB sessions off the bridge.
+fn is_displayable_session_entry(entry: &serde_json::Value) -> bool {
+    match entry.get("type").and_then(|t| t.as_str()) {
+        Some("user") | Some("assistant") | Some("result") => true,
+        Some("system") => {
+            entry.get("subtype").and_then(|s| s.as_str()) == Some("init")
+        }
+        _ => false,
+    }
+}
+
 /// Load the full JSONL history for a specific session.
 #[tauri::command]
 pub async fn load_session_history(
@@ -4489,42 +4552,85 @@ pub async fn load_session_history(
         return Err("Invalid session id".to_string());
     }
 
-    eprintln!(
-        "[session] load_session_history called: session_id={} project_path={}",
-        session_id, project_path
-    );
     let sessions_dir = get_sessions_dir(&project_path)?;
-    let session_path = sessions_dir.join(format!("{}.jsonl", session_id));
-    eprintln!(
-        "[session] session_path={:?} exists={}",
-        session_path,
-        session_path.exists()
-    );
+    let session_path =
+        sessions_dir.join(format!("{}.jsonl", session_id));
 
     if !session_path.exists() {
         return Err(format!("Session file not found: {}", session_id));
     }
 
-    let file = std::fs::File::open(&session_path)
-        .map_err(|e| format!("Failed to open session file: {}", e))?;
+    let messages = tauri::async_runtime::spawn_blocking(move || {
+        let file = std::fs::File::open(&session_path)
+            .map_err(|e| format!("Failed to open session file: {}", e))?;
 
-    let reader = std::io::BufReader::new(file);
-    use std::io::BufRead;
-    let mut messages = Vec::new();
+        let reader = std::io::BufReader::new(file);
+        use std::io::BufRead;
+        let mut messages = Vec::new();
 
-    for line in reader.lines().map_while(Result::ok) {
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
-            messages.push(json);
+        for line in reader.lines().map_while(Result::ok) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
+                if is_displayable_session_entry(&json) {
+                    messages.push(json);
+                }
+            }
         }
-    }
 
-    eprintln!(
-        "[session] loaded {} messages from session {}",
-        messages.len(),
-        session_id
-    );
+        Ok::<_, String>(messages)
+    })
+    .await
+    .map_err(|e| format!("Session load task failed: {}", e))??;
 
     Ok(messages)
+}
+
+#[cfg(test)]
+mod session_history_tests {
+    use super::is_displayable_session_entry;
+
+    #[test]
+    fn keeps_displayable_entries_and_the_init_record() {
+        let entry =
+            |v: &str| -> serde_json::Value { serde_json::from_str(v).unwrap() };
+
+        assert!(is_displayable_session_entry(
+            &entry(r#"{"type":"user"}"#)
+        ));
+        assert!(is_displayable_session_entry(
+            &entry(r#"{"type":"assistant"}"#)
+        ));
+        assert!(is_displayable_session_entry(
+            &entry(r#"{"type":"result"}"#)
+        ));
+        assert!(is_displayable_session_entry(&entry(
+            r#"{"type":"system","subtype":"init","model":"claude-x"}"#
+        )));
+
+        // Non-init system records (tool progress etc.) are dropped.
+        assert!(!is_displayable_session_entry(
+            &entry(r#"{"type":"system","subtype":"other"}"#)
+        ));
+        // Unknown / absent types are dropped.
+        assert!(!is_displayable_session_entry(
+            &entry(r#"{"type":"progress"}"#)
+        ));
+        assert!(!is_displayable_session_entry(&entry(r#"{}"#)));
+        // Adversarial shapes: wrong-typed fields must not panic or match.
+        assert!(!is_displayable_session_entry(
+            &entry(r#"{"type":123}"#)
+        ));
+        assert!(!is_displayable_session_entry(
+            &entry(r#"{"type":"system"}"#)
+        ));
+        assert!(!is_displayable_session_entry(
+            &entry(r#"{"subtype":"init"}"#)
+        ));
+        // A user entry carrying tool_result blocks stays displayable — the
+        // frontend sanitizer handles those blocks itself.
+        assert!(is_displayable_session_entry(&entry(
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"big payload"}]}}"#
+        )));
+    }
 }
 
 // 鈹€鈹€鈹€ Shell Command Execution 鈹€鈹€鈹€

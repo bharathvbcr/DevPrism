@@ -14,8 +14,11 @@
 
 ## Subprocess safety
 
-Every child process goes through `proc::run_with_timeout` — never
-`Command::output()`, which waits forever.
+Every child process goes through `proc::run_with_timeout` (or
+`proc::run_with_timeout_and_cancel` when a newer request supersedes the run) —
+never `Command::output()`, which waits forever. Retained stdout/stderr is
+capped at 64 MiB per stream (`MAX_CAPTURED_OUTPUT`); the pipe is still drained
+past the cap so a flooding child cannot deadlock.
 
 - TeX can loop forever on a recursive macro; `-interaction=nonstopmode` stops
   *interactive* hangs but not expansion hangs. A hung compile held a

@@ -1,3 +1,10 @@
+import {
+  BLOCK_KINDS as CANONICAL_BLOCK_KINDS,
+  BLOCK_KIND_LABELS,
+  PERSONA_SECTION_IDS,
+  SECTION_DISPLAY,
+  isBlockKind as isCanonicalBlockKind,
+} from "../resume-sections";
 import type {
   BlockFact,
   BlockKind,
@@ -9,13 +16,7 @@ import type {
   SkillTag,
 } from "./types";
 
-const BLOCK_KINDS: BlockKind[] = [
-  "experience",
-  "project",
-  "publication",
-  "education",
-  "leadership",
-];
+const BLOCK_KINDS: BlockKind[] = [...CANONICAL_BLOCK_KINDS];
 
 const SENIORITY_LEVELS: SeniorityLevel[] = [
   "ic",
@@ -25,17 +26,10 @@ const SENIORITY_LEVELS: SeniorityLevel[] = [
   "director",
 ];
 
-const SECTION_KINDS: SectionKind[] = [
-  "experience",
-  "projects",
-  "skills",
-  "education",
-  "publications",
-  "leadership",
-];
+const SECTION_KINDS: SectionKind[] = [...PERSONA_SECTION_IDS];
 
 export function isBlockKind(value: unknown): value is BlockKind {
-  return typeof value === "string" && (BLOCK_KINDS as string[]).includes(value);
+  return isCanonicalBlockKind(value);
 }
 
 export function isSeniorityLevel(value: unknown): value is SeniorityLevel {
@@ -116,11 +110,16 @@ export function createEmptyPersona(overrides: Partial<Persona> = {}): Persona {
     skillWeights: {},
     defaultTemplateId: "typst-ats-single-column",
     sectionOrder: [
+      "summary",
       "experience",
       "projects",
       "skills",
       "education",
       "publications",
+      "leadership",
+      "certifications",
+      "awards",
+      "volunteer",
     ],
     toneDirective: "",
     ...overrides,
@@ -169,4 +168,10 @@ export function parseSkillsList(raw: string): SkillTag[] {
   return parseCommaList(raw).map((name) => newSkillTag(name));
 }
 
-export { BLOCK_KINDS, SENIORITY_LEVELS, SECTION_KINDS };
+export {
+  BLOCK_KINDS,
+  SENIORITY_LEVELS,
+  SECTION_KINDS,
+  BLOCK_KIND_LABELS,
+  SECTION_DISPLAY,
+};

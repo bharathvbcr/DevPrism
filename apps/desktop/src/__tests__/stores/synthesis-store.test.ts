@@ -205,6 +205,23 @@ describe("useSynthesisStore events / readiness / pendingJd", () => {
     expect(useSynthesisStore.getState().readinessLoading).toBe(false);
   });
 
+  it("readiness fallback reports unknown data counts, not zeros", async () => {
+    checkSynthesisReadiness.mockRejectedValue(
+      new Error("career db unavailable"),
+    );
+
+    await useSynthesisStore.getState().refreshReadiness();
+
+    const r = useSynthesisStore.getState().readiness;
+    expect(r).not.toBeNull();
+    expect(r?.data.blockCount).toBeNull();
+    expect(r?.data.blocksMissingEmbeddings).toBeNull();
+    expect(r?.data.kbSourceCount).toBeNull();
+    expect(r?.data.kbChunksMissingEmbeddings).toBeNull();
+    expect(r?.data.status).toBe("error");
+    expect(r?.data.message).toMatch(/unknown/i);
+  });
+
   it("consumePendingJdText returns once then clears", () => {
     useSynthesisStore.getState().setPendingJdText("  JD body  ");
     expect(useSynthesisStore.getState().pendingJdText).toBe("  JD body  ");

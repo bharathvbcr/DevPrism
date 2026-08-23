@@ -76,12 +76,23 @@ impl SelectionBudget {
 
 /// Map a block kind to its resume section. Port of `KIND_TO_SECTION`.
 pub fn section_for_block(block: &ExperienceBlock) -> String {
-    match block.kind.as_str() {
-        "experience" | "work" => "experience",
-        "project" => "projects",
-        "education" => "education",
-        "skill_group" => "skills",
-        "leadership" => "leadership",
+    let n = block
+        .kind
+        .trim()
+        .to_ascii_lowercase()
+        .replace(['_', '-'], " ");
+    let n = n.split_whitespace().collect::<Vec<_>>().join(" ");
+    match n.as_str() {
+        "experience" | "work" | "employment" | "work experience" => "experience",
+        "project" | "projects" => "projects",
+        "publication" | "publications" | "papers" | "paper" => "publications",
+        "education" | "academic" | "academics" => "education",
+        "skill_group" | "skills" => "skills",
+        "leadership" | "positions of responsibility" => "leadership",
+        "certification" | "certifications" | "certificate" | "certificates"
+        | "license" | "licenses" => "certifications",
+        "award" | "awards" | "honor" | "honors" | "honours" => "awards",
+        "volunteer" | "volunteering" | "volunteer experience" => "volunteer",
         _ => "experience",
     }
     .to_string()
@@ -906,5 +917,18 @@ mod tests {
             MmrCandidate { item: "z2", relevance: 0.4, vec: vec![0.0, 0.0] },
         ];
         assert_eq!(mmr_select(&zeros, 2, 0.5).len(), 2);
+    }
+
+    #[test]
+    fn section_for_block_canonicalizes_plural_and_synonym_kinds() {
+        let mut block = scored("c", "Amazon", 0.9, vec![], &[]).block;
+        block.kind = "certifications".into();
+        assert_eq!(section_for_block(&block), "certifications");
+        block.kind = "Certificates".into();
+        assert_eq!(section_for_block(&block), "certifications");
+        block.kind = "volunteer experience".into();
+        assert_eq!(section_for_block(&block), "volunteer");
+        block.kind = "drop-table".into();
+        assert_eq!(section_for_block(&block), "experience");
     }
 }

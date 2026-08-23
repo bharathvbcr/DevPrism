@@ -9,7 +9,6 @@ import {
   PlusIcon,
   DownloadIcon,
   HistoryIcon,
-  MousePointerClickIcon,
   CrosshairIcon,
   ChevronUpIcon,
   ChevronDownIcon,
@@ -132,6 +131,7 @@ import { HistoryPanel } from "@/components/workspace/history-panel";
 import {
   synctexEdit,
   formatCompileError,
+  isSupersededCompile,
   buildCompileFixPrompt,
   getLatexBuildReport,
   type LatexBuildReport,
@@ -1035,7 +1035,9 @@ export function PdfPreview() {
         );
         setPdfData(data, rootId);
       } catch (error) {
-        setCompileError(formatCompileError(error));
+        if (!isSupersededCompile(error)) {
+          setCompileError(formatCompileError(error));
+        }
       } finally {
         setIsCompiling(false);
       }
@@ -1348,7 +1350,9 @@ export function PdfPreview() {
           : null,
       );
     } catch (error) {
-      setCompileError(formatCompileError(error), rootId);
+      if (!isSupersededCompile(error)) {
+        setCompileError(formatCompileError(error), rootId);
+      }
     } finally {
       // Ensure the spinner is visible for at least 500ms for visual feedback
       const elapsed = Date.now() - compileStart;

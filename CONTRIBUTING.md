@@ -38,7 +38,7 @@ vcpkg install harfbuzz[graphite2]:x64-windows freetype:x64-windows icu:x64-windo
 
 ```bash
 git clone https://github.com/bharathvbcr/DevPrism.git
-cd claude-prism
+cd DevPrism
 pnpm install
 ```
 
@@ -57,22 +57,32 @@ pnpm build:desktop
 ## Project Structure
 
 ```
-claude-prism/
+DevPrism/
 ├── apps/
-│   └── desktop/              # Tauri desktop app
-│       ├── src/              # React frontend (TypeScript)
-│       └── src-tauri/        # Rust backend
+│   └── desktop/               # Tauri desktop app
+│       ├── src/               # React frontend (TypeScript)
+│       │   ├── components/    # Workspace, career, chat, settings surfaces
+│       │   ├── stores/        # Zustand state
+│       │   └── lib/           # career/, resume-synthesis/, mcp/, mupdf/, editor/
+│       ├── scripts/           # generate-previews, bench-typing
+│       └── src-tauri/         # Rust backend
 │           ├── src/
-│           │   ├── lib.rs           # Tauri plugin registration
-│           │   ├── history.rs       # Git-based version history
-│           │   ├── latex.rs         # Tectonic compilation & SyncTeX
-│           │   ├── claude.rs        # Claude CLI integration & sessions
-│           │   ├── slash_commands.rs # Slash command discovery & CRUD
-│           │   └── zotero.rs        # Zotero OAuth & citations
+│           │   ├── lib.rs            # Tauri bootstrap & command registration
+│           │   ├── main.rs           # GUI entrypoint + --mcp / --mcp-http CLI modes
+│           │   ├── history.rs        # Git-based version history + auto-compaction
+│           │   ├── latex.rs          # Tectonic/TeX Live compilation & SyncTeX
+│           │   ├── claude.rs         # Claude CLI integration & sessions
+│           │   ├── native_agent/     # In-process Ollama / OpenAI-compat agent loop
+│           │   ├── mcp/              # MCP 2.0 server (stdio + HTTP) and tools
+│           │   ├── plugins/          # Capability-pack registry (MCP + native agent)
+│           │   ├── career_db/        # Career SQLite store (career.db)
+│           │   ├── career_match/     # Deterministic JD-matching core
+│           │   └── slash_commands.rs # Slash command discovery & CRUD
 │           └── Cargo.toml
-├── .github/workflows/        # CI/CD (build + release)
-├── biome.json                # Linter config
-└── turbo.json                # Turborepo config
+├── scripts/                   # Build/dev helpers, docs & agent-instruction checks
+├── docs/                      # Architecture and feature documentation
+├── .github/workflows/         # CI/CD (lint + desktop build/release)
+└── biome.json                 # Linter config
 ```
 
 ## Testing
@@ -92,9 +102,21 @@ cd apps/desktop && pnpm test:watch
 cd apps/desktop/src-tauri && cargo test
 ```
 
-Current test counts:
-- **Frontend:** 89 tests (stores, components)
-- **Rust:** 114 tests (65 unit + 49 integration)
+Run `pnpm --filter @devprism/desktop test` and `cargo test` for the current counts — both suites grow with every feature, so this guide does not pin numbers that would immediately go stale.
+
+### Documentation & repo checks
+
+- `pnpm docs:verify` — re-derives stated doc facts from the code (MCP tool counts, tool identifiers, translation section parity, relative links, mermaid syntax). Run it whenever you touch docs or rename a `resume_*` / `career_*` symbol.
+- `pnpm agents:verify:all` — checks the AGENTS.md / CLAUDE.md instruction files stay in sync.
+- `pnpm map:if-stale` — refreshes the repo map (`.devcouncil/repo_map.json`) after large refactors.
+
+### Performance benchmark
+
+```bash
+pnpm --filter @devprism/desktop bench:typing
+```
+
+Simulates a 500-keystroke burst on a ~200 KB manuscript and reports editor → store commit coalescing (`p50`/`p99.9`, commit count vs per-keystroke baseline). Useful after touching the editor, document store, or chat streaming paths.
 
 ### What to test
 

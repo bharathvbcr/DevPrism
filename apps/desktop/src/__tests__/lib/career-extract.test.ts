@@ -93,6 +93,114 @@ describe("parseExtractedBlocks", () => {
   it("returns [] for unparseable output", () => {
     expect(parseExtractedBlocks("not json")).toEqual([]);
   });
+
+  it("canonicalizes plural and synonym kinds instead of coercing to experience", () => {
+    const blocks = parseExtractedBlocks(
+      JSON.stringify({
+        blocks: [
+          {
+            kind: "certifications",
+            title: "AWS SAA",
+            org: "Amazon",
+            bullets: ["Passed"],
+          },
+          {
+            kind: "Certificates",
+            title: "CKA",
+            org: "CNCF",
+            bullets: ["Passed"],
+          },
+          {
+            kind: "awards",
+            title: "Best Paper",
+            org: "NeurIPS",
+            bullets: ["Systems"],
+          },
+          {
+            kind: "projects",
+            title: "Compiler",
+            org: "Personal",
+            bullets: ["Shipped"],
+          },
+          {
+            kind: "publications",
+            title: "Nature paper",
+            org: "Nature",
+            bullets: ["Accepted"],
+          },
+          {
+            kind: "  volunteer experience  ",
+            title: "Mentor",
+            org: "Code.org",
+            bullets: ["Mentored 12"],
+          },
+        ],
+      }),
+    );
+    expect(blocks.map((b) => b.kind)).toEqual([
+      "certification",
+      "certification",
+      "award",
+      "project",
+      "publication",
+      "volunteer",
+    ]);
+  });
+
+  it("fails closed on unknown/hostile kinds without throwing", () => {
+    expect(() =>
+      parseExtractedBlocks(
+        JSON.stringify({
+          blocks: [
+            { kind: 12, title: "X", org: "Y", bullets: ["z"] },
+            { kind: "drop-table", title: "X", org: "Y", bullets: ["z"] },
+            { kind: { $gt: "" }, title: "X", org: "Y", bullets: ["z"] },
+          ],
+        }),
+      ),
+    ).not.toThrow();
+    const blocks = parseExtractedBlocks(
+      JSON.stringify({
+        blocks: [{ kind: "drop-table", title: "X", org: "Y", bullets: ["z"] }],
+      }),
+    );
+    expect(blocks.map((b) => b.kind)).toEqual([]);
+  });
+
+  it("still defaults an omitted kind to experience", () => {
+    const blocks = parseExtractedBlocks(
+      JSON.stringify({
+        blocks: [{ title: "Engineer", org: "Acme", bullets: ["Shipped"] }],
+      }),
+    );
+    expect(blocks.map((b) => b.kind)).toEqual(["experience"]);
+  });
+
+  it("omits unknown kinds instead of stuffing them into experience", () => {
+    const blocks = parseExtractedBlocks(
+      JSON.stringify({
+        blocks: [
+          { kind: "drop-table", title: "X", org: "Y", bullets: ["z"] },
+          { kind: 12, title: "X", org: "Y", bullets: ["z"] },
+          { title: "Engineer", org: "Acme", bullets: ["Shipped"] },
+        ],
+      }),
+    );
+    expect(blocks.map((b) => b.kind)).toEqual(["experience"]);
+    expect(blocks[0]?.title).toBe("Engineer");
+  });
+
+  it("clamps oversized extract payloads instead of materializing thousands of blocks", () => {
+    const blocks = Array.from({ length: 5000 }, (_, i) => ({
+      kind: "experience",
+      title: `Role ${i}`,
+      org: `Org ${i}`,
+      bullets: ["Did a thing"],
+    }));
+    const parsed = parseExtractedBlocks(JSON.stringify({ blocks }));
+    expect(parsed.length).toBeGreaterThan(0);
+    expect(parsed.length).toBeLessThanOrEqual(200);
+  });
 });
 
 describe("block helpers", () => {

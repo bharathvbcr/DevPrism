@@ -1,6 +1,8 @@
 # Career DB (Rust)
 
-Local SQLite career database: experience blocks (incl. Fact Pool JSON), personas, KB chunks, embeddings, synthesis runs.
+Local SQLite career database: experience blocks (incl. Fact Pool JSON), personas, KB chunks, embeddings, synthesis runs, and `known_projects` — the registry of opened folders that gates external agents' document tools.
+
+A background watcher (`watch_external_changes`) polls `PRAGMA data_version` every 3 s and emits the `career-db-changed` Tauri event when a commit lands from outside this process (in-app MCP server or `--mcp-stdio`); it is best-effort and never fatal.
 
 Commands include block/persona CRUD, `career_delete_persona` (guards seeded ids), KB ingest, embeddings, and vector search. `career_list_blocks` accepts `missingEmbeddingsOnly` for block embed backfill.
 

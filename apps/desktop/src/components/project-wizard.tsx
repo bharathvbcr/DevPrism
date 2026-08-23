@@ -6,7 +6,7 @@ import {
   hasBrowserFileDrag,
 } from "@/lib/browser-project/drag-drop";
 import { stageBrowserFile } from "@/lib/browser-project/attachment-staging";
-import { mkdir, writeTextFile } from "@tauri-apps/plugin-fs";
+import { mkdir } from "@tauri-apps/plugin-fs";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { homeDir } from "@tauri-apps/api/path";
 import { toast } from "sonner";
@@ -29,24 +29,17 @@ import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { useProjectStore } from "@/stores/project-store";
 import { useDocumentStore } from "@/stores/document-store";
-import { useClaudeChatStore } from "@/stores/claude-chat-store";
-import { exists, join } from "@/lib/tauri/fs";
+import { join } from "@/lib/tauri/fs";
 import {
   setupNewProjectInSpace,
   formatNewProjectSetupToast,
 } from "@/lib/space-project";
-import {
-  getTemplateById,
-  getTemplateSkeleton,
-  BIB_TEMPLATE,
-} from "@/lib/template-registry";
+import { getTemplateById } from "@/lib/template-registry";
 import { TemplateGallery } from "@/components/template-gallery";
-import { DEFAULT_CLAUDE_MD } from "@/lib/default-claude-md";
-import { DEFAULT_AGENT_MD } from "@/lib/default-agent-md";
 import {
-  buildReferenceFilesSection,
-  importReferenceFiles,
-} from "@/lib/project-attachments";
+  createTemplateProject,
+  ProjectFolderExistsError,
+} from "@/lib/project-create";
 import { getProjectNameError, normalizeProjectName } from "@/lib/project-name";
 import { useSettingsStore } from "@/stores/settings-store";
 import { canUseAiAssist, suggestProjectName } from "@/lib/ai-assist";
@@ -386,70 +379,13 @@ function ScratchForm({
     setCreateError(null);
 
     try {
-      const projectPath = await join(projectFolder, name);
-      if (await exists(projectPath)) {
-        setProjectNameError("A folder with this name already exists here");
-        return;
-      }
-      await mkdir(projectPath, { recursive: true });
-
-      // Create CLAUDE.md for Claude Code context
-      const claudeMdPath = await join(projectPath, "CLAUDE.md");
-      const claudeMdExists = await exists(claudeMdPath);
-      if (!claudeMdExists) {
-        await writeTextFile(claudeMdPath, DEFAULT_CLAUDE_MD);
-      }
-
-      // Create AGENTS.md so agent backends that read the AGENTS.md convention
-      // (and DevPrism's native local agent) get the same project context.
-      const agentMdPath = await join(projectPath, "AGENTS.md");
-      const agentMdExists = await exists(agentMdPath);
-      if (!agentMdExists) {
-        await writeTextFile(agentMdPath, DEFAULT_AGENT_MD);
-      }
-
-      const mainTexPath = await join(projectPath, template.mainFileName);
-      const mainExists = await exists(mainTexPath);
-      if (!mainExists) {
-        await writeTextFile(mainTexPath, getTemplateSkeleton(template));
-      }
-
-      if (template.hasBibliography) {
-        const bibPath = await join(projectPath, "references.bib");
-        const bibExists = await exists(bibPath);
-        if (!bibExists) {
-          await writeTextFile(bibPath, BIB_TEMPLATE);
-        }
-      }
-
-      const referenceFiles =
-        attachments.length > 0
-          ? await importReferenceFiles(projectPath, attachments)
-          : [];
-
-      if (purpose.trim()) {
-        const attachmentSection = buildReferenceFilesSection(referenceFiles);
-
-        const prompt = [
-          `## New ${template.name} Project`,
-          "",
-          `**Template:** \`${template.documentClass}\`  `,
-          `**File:** \`${template.mainFileName}\``,
-          "",
-          `> The file currently contains only the LaTeX preamble (packages, styling, custom commands) with an empty document body.`,
-          "",
-          `### What I want to create`,
-          "",
-          purpose.trim(),
-          attachmentSection,
-          `### Instructions`,
-          "",
-          `Please generate the full document content based on my description. Keep the existing preamble and fill in the document body (between \`\\begin{document}\` and \`\\end{document}\`) with appropriate title, author, sections, and content. Make it a complete, well-structured **${template.name.toLowerCase()}** ready for me to refine.`,
-        ].join("\n");
-
-        useClaudeChatStore.getState().newSession();
-        useClaudeChatStore.getState().setPendingInitialPrompt(prompt);
-      }
+      const { projectPath, mainTexPath } = await createTemplateProject({
+        projectFolder,
+        projectName: name,
+        template,
+        attachments,
+        purpose,
+      });
 
       setLastProjectFolder(projectFolder);
       const setup = await setupNewProjectInSpace(projectPath, {
@@ -461,6 +397,10 @@ function ScratchForm({
       const toastMsg = formatNewProjectSetupToast(setup, "Project created");
       toast.success(toastMsg);
     } catch (err) {
+      if (err instanceof ProjectFolderExistsError) {
+        setProjectNameError(err.message);
+        return;
+      }
       console.error("Failed to create project:", err);
       setCreateError(
         err instanceof Error ? err.message : "Could not create the project.",

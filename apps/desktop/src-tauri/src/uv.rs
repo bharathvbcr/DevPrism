@@ -206,9 +206,14 @@ async fn ensure_venv_pip(venv_dir: &Path) -> Result<(), String> {
         ensure_cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    match ensure_cmd.output().await {
-        Ok(output) if output.status.success() && venv_pip(venv_dir).exists() => Ok(()),
-        _ => write_pip_shim(venv_dir),
+    // Bounded: ensurepip is normally seconds; an unbounded wait would leave
+    // setup UI spinning forever on a wedged Python install.
+    match tokio::time::timeout(std::time::Duration::from_secs(300), ensure_cmd.output()).await {
+        Ok(Ok(output)) if output.status.success() && venv_pip(venv_dir).exists() => Ok(()),
+        Ok(_) => write_pip_shim(venv_dir),
+        Err(_) => Err(
+            "ensurepip did not finish within 300s and was abandoned".to_string(),
+        ),
     }
 }
 
@@ -216,6 +221,15 @@ async fn ensure_venv_pip(venv_dir: &Path) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn check_uv_status() -> Result<UvStatus, String> {
+    // The probe runs `uv --version` as a real subprocess; keep it off the
+    // async workers and bounded so a wedged binary cannot hang a runtime
+    // thread indefinitely.
+    tauri::async_runtime::spawn_blocking(check_uv_status_blocking)
+        .await
+        .map_err(|e| format!("uv status task failed: {e}"))?
+}
+
+fn check_uv_status_blocking() -> Result<UvStatus, String> {
     let binary_path = match find_uv_binary() {
         Ok(path) => path,
         Err(_) => {
@@ -234,13 +248,13 @@ pub async fn check_uv_status() -> Result<UvStatus, String> {
     {
         version_cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    let version_output = version_cmd.output();
+    let version_output =
+        crate::proc::run_with_timeout(version_cmd, std::time::Duration::from_secs(10))
+            .map_err(|e| e.to_message("uv --version"))?;
 
-    let version = match version_output {
-        Ok(output) if output.status.success() => {
-            Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
-        }
-        _ => {
+    let version = match version_output.status.success() {
+        true => Some(String::from_utf8_lossy(&version_output.stdout).trim().to_string()),
+        false => {
             return Ok(UvStatus {
                 installed: false,
                 binary_path: None,
@@ -272,16 +286,22 @@ pub async fn install_uv(window: WebviewWindow) -> Result<(), String> {
                 user,
                 local_dir.display()
             );
-            let output = std::process::Command::new("osascript")
-                .args([
-                    "-e",
-                    &format!(
-                        "do shell script \"{}\" with administrator privileges",
-                        script
-                    ),
-                ])
-                .output()
-                .map_err(|e| format!("Failed to fix permissions for ~/.local: {}", e))?;
+            // The admin-password dialog waits on the user; keep that wait off
+            // the async runtime workers.
+            let output = tauri::async_runtime::spawn_blocking(move || {
+                std::process::Command::new("osascript")
+                    .args([
+                        "-e",
+                        &format!(
+                            "do shell script \"{}\" with administrator privileges",
+                            script
+                        ),
+                    ])
+                    .output()
+                    .map_err(|e| format!("Failed to fix permissions for ~/.local: {}", e))
+            })
+            .await
+            .map_err(|e| format!("Elevation task failed: {e}"))??;
 
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
@@ -397,9 +417,9 @@ pub async fn setup_project_venv(project_path: String) -> Result<VenvInfo, String
     {
         venv_cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    let output = venv_cmd
-        .output()
+    let output = tokio::time::timeout(std::time::Duration::from_secs(600), venv_cmd.output())
         .await
+        .map_err(|_| "uv venv did not finish within 600s and was abandoned".to_string())?
         .map_err(|e| format!("Failed to create venv: {}", e))?;
 
     if !output.status.success() {
@@ -443,10 +463,13 @@ pub async fn uv_add_packages(
     {
         pip_cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    let output = pip_cmd
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run uv pip install: {}", e))?;
+    let output =
+        tokio::time::timeout(std::time::Duration::from_secs(900), pip_cmd.output())
+            .await
+            .map_err(|_| {
+                "uv pip install did not finish within 900s and was abandoned".to_string()
+            })?
+            .map_err(|e| format!("Failed to run uv pip install: {}", e))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

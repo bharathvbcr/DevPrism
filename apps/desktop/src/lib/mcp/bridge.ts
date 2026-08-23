@@ -13,7 +13,7 @@ import { InputRequiredResult } from "./types";
  * (JD analysis and bullet rewriting). Omit for `deterministic`.
  *
  * - `deterministic` — lexicon extraction, canonical bullets, no model.
- * - `agent` — you write the bullets and submit them to `verifyRewrite`.
+ * - `agent` — you write the bullets and submit them to `verifyRewriteDrafts`.
  * - `ollama` — a local model runs in-process at zero external token cost.
  */
 export interface LanguageOption {
@@ -153,23 +153,35 @@ export interface RewriteResult {
   notices: string[];
 }
 
+/**
+ * One submitted draft after verification against its canonical bullet.
+ * Mirrors the per-bullet payload of `resume_rewrite_bullets`.
+ */
+export interface VerifiedBullet {
+  bulletId: string;
+  /** The user's verified text; always the fallback. */
+  canonical: string;
+  /** What will actually be used: the draft when verified, else canonical. */
+  accepted: string;
+  status: "verified" | "rejected_canonical_fallback" | "canonical_only";
+  /** True only when a supplied draft survived every check. */
+  provenanceVerified: boolean;
+  rejectionReasons?: string[];
+  droppedMetrics?: string[];
+  introducedNumbers?: string[];
+}
+
+/** Result of submitting drafts to `resume_rewrite_bullets`. */
 export interface VerifyResult {
-  results: Array<{
-    bulletId: string;
-    blockId?: string;
-    accepted: boolean;
-    /** Accepted text, or the canonical text when rejected. */
-    text?: string;
-    canonical?: string;
-    reason?: FallbackReason | "unknown-bullet";
-    droppedMetrics?: string[];
-    detail?: string;
-  }>;
-  submitted: number;
-  accepted: number;
-  rejected: number;
-  unknownBullets: number;
-  perBulletChars: number;
+  blockId: string;
+  title?: string;
+  org?: string;
+  bullets: VerifiedBullet[];
+  verifiedCount: number;
+  rejectedCount: number;
+  /** Present when no drafts were supplied: what to rewrite and what is protected. */
+  targetKeywords?: string[];
+  guidance?: string;
 }
 
 export interface CompileReport {
@@ -312,20 +324,30 @@ export class CareerResumeBridge {
   }
 
   /**
-   * Submit agent-written bullets for verification against the knowledgebase.
+   * Submit agent-written bullet drafts for verification against the
+   * knowledgebase (`resume_rewrite_bullets`).
    *
-   * This is the gate that makes agent-driven rewriting safe: a bullet is
+   * This is the gate that makes agent-driven rewriting safe: a draft is
    * accepted only if every ground-truth metric survives, no new figure is
-   * introduced, the character budget holds, and the bullet is not locked.
-   * Rejected bullets come back with the canonical text and the reason.
+   * introduced, the bullet is not locked, and it keeps meaningful overlap with
+   * the canonical text. Rejected drafts come back with the canonical text and
+   * the rejection reasons.
+   *
+   * Called without drafts this returns the canonical bullets and target
+   * keywords as a work order — nothing was verified, so `provenanceVerified`
+   * is false on every entry.
    */
-  async verifyRewrite(
-    bullets: Array<{ bullet_id: string; text: string }>,
-    perBulletChars?: number,
+  async verifyRewriteDrafts(
+    blockId: string,
+    jdText: string,
+    drafts: Array<{ bulletId: string; text: string }>,
+    bulletIds?: string[],
   ): Promise<VerifyResult> {
-    return this.client.callTool<VerifyResult>("resume_verify_rewrite", {
-      bullets,
-      per_bullet_chars: perBulletChars,
+    return this.client.callTool<VerifyResult>("resume_rewrite_bullets", {
+      block_id: blockId,
+      jd_text: jdText,
+      ...(drafts.length > 0 ? { drafts } : {}),
+      ...(bulletIds && bulletIds.length > 0 ? { bullet_ids: bulletIds } : {}),
     }) as Promise<VerifyResult>;
   }
 
@@ -379,11 +401,15 @@ export class CareerResumeBridge {
   }
 
   /**
-   * Compile Typst resume source into PDF bytes using the in-process Typst engine.
+   * Compile Typst resume source using the in-process Typst engine.
+   *
+   * PDF bytes are opt-in (`includePdf`, default false): the server reports
+   * `pageCount`, diagnostics, and `pdfOmitted` instead of flooding the
+   * context with base64. Pass true only when the bytes are actually needed.
    */
   async compileTypstResume(
     typstSource: string,
-    includePdf = true,
+    includePdf = false,
   ): Promise<CompileResult> {
     return this.client.callTool<CompileResult>("resume_compile", {
       typst_source: typstSource,
@@ -398,7 +424,7 @@ export class CareerResumeBridge {
    * The previous implementation appended a fabricated
    * "(impact: improved latency/efficiency by 25%)" to any bullet without a
    * number, which is precisely the hallucination the pipeline exists to
-   * prevent. Use `rewriteBullets` or `verifyRewrite` to change text.
+   * prevent. Use `rewriteBullets` or `verifyRewriteDrafts` to change text.
    */
   async fineTuneBullet(
     bulletText: string,

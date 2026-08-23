@@ -14,6 +14,7 @@ import {
   CheckCircle2Icon,
   CircleIcon,
   DownloadIcon,
+  FileTextIcon,
   FlaskConicalIcon,
   GitBranchIcon,
   KeyRoundIcon,
@@ -43,8 +44,13 @@ import {
   type AgentBackend,
 } from "@/lib/agent-backend";
 import { useSettingsStore } from "@/stores/settings-store";
-import { useSetupFlowStore } from "@/stores/setup-flow-store";
+import {
+  isOnboardingRepromptDue,
+  useSetupFlowStore,
+} from "@/stores/setup-flow-store";
 import { dispatchOpenProjectWizard } from "@/lib/home-flow-events";
+import { isTauri } from "@/lib/runtime/is-tauri";
+import type { TectonicBundleStatus } from "@/lib/tectonic-bundle";
 import { cn } from "@/lib/utils";
 
 type SetupItemState = "ready" | "loading" | "blocked" | "error";
@@ -113,6 +119,28 @@ export function EnvironmentOnboarding() {
   const agentBackend = useSettingsStore((s) => s.agentBackend);
   const claudeOptional = !isClaudeCodeBackend(agentBackend);
 
+  // TeX bundle pre-flight: the bundle downloads on first use, so a fully
+  // offline machine would otherwise discover that only at first compile.
+  const [bundleStatus, setBundleStatus] = useState<TectonicBundleStatus | null>(
+    null,
+  );
+  const [bundleChecking, setBundleChecking] = useState(true);
+
+  const checkBundle = useCallback(async () => {
+    if (!isTauri()) return;
+    setBundleChecking(true);
+    try {
+      const status = await invoke<TectonicBundleStatus>(
+        "check_tectonic_bundle",
+      );
+      setBundleStatus(status);
+    } catch {
+      setBundleStatus(null);
+    } finally {
+      setBundleChecking(false);
+    }
+  }, []);
+
   const checkSkillsStatus = useCallback(async () => {
     setSkillsChecking(true);
     setSkillsError(null);
@@ -132,6 +160,10 @@ export function EnvironmentOnboarding() {
   useEffect(() => {
     hydrateSetupFlow();
   }, [hydrateSetupFlow]);
+
+  useEffect(() => {
+    void checkBundle();
+  }, [checkBundle]);
 
   useEffect(() => {
     let cancelled = false;
@@ -166,6 +198,7 @@ export function EnvironmentOnboarding() {
   const isClaudeReady = claudeStatus === "ready";
   const isUvReady = uvStatus === "ready";
   const isSkillsReady = !!skillsStatus?.installed;
+  const isBundleReady = bundleStatus?.ready ?? false;
   const claudeNeedsAttention = claudeOptional
     ? false
     : isClaudeInstalling || (claudeStatus !== "checking" && !isClaudeReady);
@@ -173,9 +206,17 @@ export function EnvironmentOnboarding() {
     isUvInstalling || (uvStatus !== "checking" && !isUvReady);
   const skillsNeedsAttention = !skillsChecking && !!skillsError;
   const needsAttention =
-    claudeNeedsAttention || uvNeedsAttention || skillsNeedsAttention;
+    claudeNeedsAttention ||
+    uvNeedsAttention ||
+    skillsNeedsAttention ||
+    // Not a blocker — LaTeX still edits fine — but surface it while the
+    // dialog is open so it isn't a surprise at first compile.
+    (bundleChecking ? false : !isBundleReady && !!bundleStatus?.message);
   const isCheckingSetup =
-    claudeStatus === "checking" || uvStatus === "checking" || skillsChecking;
+    claudeStatus === "checking" ||
+    uvStatus === "checking" ||
+    skillsChecking ||
+    bundleChecking;
 
   const setupSteps = [
     {
@@ -190,6 +231,13 @@ export function EnvironmentOnboarding() {
       ready: isClaudeReady || claudeOptional,
       optional: claudeOptional,
       label: claudeOptional ? "Cloud provider (optional)" : "AI Provider",
+    },
+    {
+      id: "latex",
+      ready: isBundleReady,
+      // Editing never blocks on the bundle; only the first compile needs it.
+      optional: true,
+      label: "LaTeX engine",
     },
     {
       id: "skills",
@@ -214,7 +262,8 @@ export function EnvironmentOnboarding() {
     !wizardActive &&
     !onboardingComplete &&
     !completedDismissed &&
-    !onboardingDeferred &&
+    // "Set up later" is durable, but after the re-prompt window we ask again.
+    (!onboardingDeferred || isOnboardingRepromptDue()) &&
     (needsAttention ||
       (isCheckingSetup && keepOpenDuringCheckRef.current) ||
       hasOpenedForSetup);
@@ -470,6 +519,33 @@ export function EnvironmentOnboarding() {
                         label: "Requires Claude",
                         icon: KeyRoundIcon,
                         disabled: true,
+                      }
+                }
+              />
+
+              <SetupItem
+                state={
+                  bundleChecking ? "loading" : isBundleReady ? "ready" : "error"
+                }
+                icon={FileTextIcon}
+                title="LaTeX engine"
+                detail={
+                  bundleChecking
+                    ? "Checking..."
+                    : isBundleReady
+                      ? bundleStatus?.cached
+                        ? "Ready (works offline)"
+                        : "Ready — one-time download complete"
+                      : (bundleStatus?.message ??
+                        "Couldn't check the TeX bundle — click Check to retry")
+                }
+                action={
+                  isBundleReady
+                    ? undefined
+                    : {
+                        label: "Check",
+                        icon: RefreshCwIcon,
+                        onClick: checkBundle,
                       }
                 }
               />

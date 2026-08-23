@@ -8,6 +8,7 @@
 //! in stream-json shape, then `claude-complete`), so the existing chat UI renders
 //! its output and detects file changes without modification.
 
+pub mod delta_coalesce;
 pub mod manvi_sidecar;
 pub(crate) mod ollama;
 pub mod openai_compat;
@@ -1246,6 +1247,20 @@ pub async fn run_native_agent(
         // Text fragments stream straight to the UI as `streaming_delta` blocks
         // (the same protocol the direct-provider path uses); the finalized turn
         // is reconciled into a `streaming_final` message below.
+        //
+        // Fragments are coalesced before emission: one IPC event per fragment
+        // cost a webview store commit each, and local models emit hundreds of
+        // tiny fragments per second. The forwarder is flushed on every exit
+        // path so no tail text is lost.
+        let window_for_deltas = window.clone();
+        let tab_for_deltas = tab_id.clone();
+        let mut deltas = delta_coalesce::DeltaForwarder::new(move |kind, text| {
+            emit_msg(
+                &window_for_deltas,
+                &tab_for_deltas,
+                &delta_coalesce::streaming_delta_event(kind, &text),
+            );
+        });
         let mut turn = {
             let mut attempt = 0u32;
             'chat: loop {
@@ -1255,24 +1270,8 @@ pub async fn run_native_agent(
                         tab_id.clone(),
                         "chat",
                         None,
-                        client.chat(&messages, &tools, |kind, frag| {
-                            let block = match kind {
-                                ollama::StreamDeltaKind::Thinking => {
-                                    json!({ "type": "thinking", "thinking": frag })
-                                }
-                                ollama::StreamDeltaKind::Text => {
-                                    json!({ "type": "text", "text": frag })
-                                }
-                            };
-                            emit_msg(
-                                &window,
-                                &tab_id,
-                                &json!({
-                                    "type": "assistant",
-                                    "subtype": "streaming_delta",
-                                    "message": { "content": [block] },
-                                }),
-                            );
+                        client.chat(&messages, &tools, |kind: ollama::StreamDeltaKind, frag: &str| {
+                            deltas.push(kind, frag);
                         }),
                     ) => r,
                     _ = notify.notified() => { success = false; break 'outer; }
@@ -1300,6 +1299,9 @@ pub async fn run_native_agent(
                             }
                             continue 'chat;
                         }
+                        // Flush any buffered stream text BEFORE the terminal
+                        // result event so the webview sees deltas first.
+                        deltas.finish();
                         emit_result(&window, &tab_id, false, &e);
                         success = false;
                         break 'outer;
@@ -1307,6 +1309,10 @@ pub async fn run_native_agent(
                 }
             }
         };
+
+        // Convergent tail flush: normal completion and the Stop path both
+        // land here; finish() is a no-op when the error branch already ran.
+        deltas.finish();
 
         // Read the reply with manvi before deciding what it contained.
         //

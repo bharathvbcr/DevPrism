@@ -431,8 +431,30 @@ DevPrism Engineer
         let val = res.result.expect("compile result");
         assert_eq!(val["engine"], "typst");
         assert_eq!(val["success"], true);
-        assert!(val["pdfBase64"].is_string());
+        // PDF bytes are opt-in now: the default response reports what was
+        // produced without flooding an agent context with base64.
+        assert_eq!(val["pdfOmitted"], true);
+        assert!(val["pdfBase64"].is_null());
         assert!(val["byteLength"].as_u64().unwrap_or(0) > 1000);
+
+        // …and include_pdf=true still carries the payload for callers that
+        // genuinely need the bytes.
+        let req = JsonRpcRequest::new(
+            Some(json!("compile-2")),
+            "tools/call",
+            Some(json!({
+                "name": "resume_compile",
+                "arguments": {
+                    "typst_source": typst_code,
+                    "include_pdf": true
+                }
+            })),
+        );
+        let res = server.handle_request(None, req).await;
+        assert!(res.error.is_none());
+        let val = res.result.expect("compile result with pdf");
+        assert_eq!(val["pdfOmitted"], false);
+        assert!(val["pdfBase64"].is_string());
     }
 
     // =================================================================
@@ -1217,5 +1239,185 @@ Minimum Qualifications
         let skills = out["facts"][0]["skills"].to_string();
         assert!(skills.contains("python"), "no skills extracted: {skills}");
         assert!(skills.contains("postgresql"), "no skills extracted: {skills}");
+    }
+
+    // =================================================================
+    // ATS parse simulation, keyword heatmap, and JD metadata
+    // (native IgniteCV integration; TS canonical owner is
+    // resume-synthesis/ats-simulate.ts, Rust twin career_match::ats_sim).
+    // =================================================================
+
+    const PARSE_RESUME: &str = "Jane Doe\njane@example.com | +1 (415) 555-0100 x1234\nSUMMARY\nPlatform engineer.\nEXPERIENCE\nStaff Engineer, Acme Corp, 2020-2024\nLed migration to Kubernetes.\nSKILLS\nGo, Kubernetes, PostgreSQL\nEDUCATION\nB.S. Computer Science, State University";
+
+    const HEATMAP_JD: &str = "Requirements: deep Kubernetes operations and PostgreSQL tuning. Kafka streaming plus Terraform automation required. Kubernetes and Kafka experience preferred; Terraform and PostgreSQL a plus.";
+
+    /// The new audit tool simulates how an ATS parses free text.
+    #[tokio::test]
+    async fn ats_check_simulates_parsing_sections_contact_and_warnings() {
+        let server = setup_test_server();
+        let out = tool_payload(&ok_result(
+            call_tool(
+                &server,
+                "resume_ats_check",
+                json!({
+                    "text": PARSE_RESUME,
+                    "jd_text": HEATMAP_JD,
+                    "ats_system": "workday"
+                }),
+            )
+            .await,
+        ));
+
+        assert_eq!(out["system"], "workday");
+        let detected: Vec<String> = out["sections"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|s| s["detected"] == true)
+            .filter_map(|s| s["name"].as_str().map(str::to_string))
+            .collect();
+        for section in ["summary", "experience", "education", "skills"] {
+            assert!(detected.contains(&section.to_string()), "missing {section} in {detected:?}");
+        }
+        assert_eq!(
+            out["missingRequiredSections"],
+            json!([]),
+            "required sections missing: {out}"
+        );
+        assert_eq!(out["contact"]["email"], true);
+        assert_eq!(out["contact"]["phone"], true);
+        assert_eq!(out["contact"]["name"], true);
+        assert!(out["warnings"].is_array());
+        // With jd_text supplied, the keyword heatmap rides along.
+        let heat_sections = out["heatmap"]["sections"].as_array().cloned().unwrap_or_default();
+        assert!(!heat_sections.is_empty(), "heatmap absent: {out}");
+        let experience = heat_sections
+            .iter()
+            .find(|s| s["name"] == "Experience")
+            .expect("experience heatmap row");
+        assert!(experience["heatLevel"].as_u64().is_some_and(|l| l <= 5));
+        let missing: Vec<&str> = out["heatmap"]["missingCriticalKeywords"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+        assert!(missing.contains(&"kafka"), "kafka should be a critical miss: {missing:?}");
+        assert!(!missing.contains(&"kubernetes"));
+    }
+
+    #[tokio::test]
+    async fn ats_check_reports_missing_required_sections_and_hazards() {
+        let server = setup_test_server();
+        let out = tool_payload(&ok_result(
+            call_tool(
+                &server,
+                "resume_ats_check",
+                json!({
+                    "text": "SUMMARY\nJust a summary.\nA | B\tC",
+                    "ats_system": "workday"
+                }),
+            )
+            .await,
+        ));
+        let mut missing = out["missingRequiredSections"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        missing.sort_by(|a, b| a.as_str().cmp(&b.as_str()));
+        assert_eq!(missing, vec![json!("education"), json!("experience")]);
+        let warnings = out["warnings"].as_array().cloned().unwrap_or_default();
+        assert!(
+            warnings.iter().any(|w| w.as_str().unwrap_or("").to_lowercase().contains("table")),
+            "pipe/tab hazard not flagged: {warnings:?}"
+        );
+        // No jd_text → no heatmap, honestly absent rather than empty-fake.
+        assert!(out.get("heatmap").is_none() || out["heatmap"].is_null());
+    }
+
+    #[tokio::test]
+    async fn ats_check_validates_arguments() {
+        let server = setup_test_server();
+        // Unknown system id → invalid params, not a silent generic fallback.
+        let res = call_tool(
+            &server,
+            "resume_ats_check",
+            json!({ "text": "x", "ats_system": "oracle-recruiter-9000" }),
+        )
+        .await;
+        assert!(res.error.is_some(), "unknown ats_system must be rejected");
+        // Missing text → invalid params.
+        let res = call_tool(&server, "resume_ats_check", json!({})).await;
+        assert!(res.error.is_some(), "missing text must be rejected");
+    }
+
+    /// resume_analyze_jd now also carries deterministic JD metadata.
+    #[tokio::test]
+    async fn analyze_jd_includes_metadata_block() {
+        let server = setup_test_server();
+        let out = tool_payload(&ok_result(
+            call_tool(
+                &server,
+                "resume_analyze_jd",
+                json!({ "jd_text": "Position: Senior Platform Engineer\nCompany: ExampleCorp is hiring.\nSalary: $120,000 - $150,000\nRequirements:\n- Kubernetes" }),
+            )
+            .await,
+        ));
+        let meta = &out["metadata"];
+        assert_eq!(meta["jobTitle"], "Senior Platform Engineer");
+        assert_eq!(meta["company"], "ExampleCorp");
+        assert_eq!(meta["salaryRange"]["min"].as_f64(), Some(120000.0));
+        assert_eq!(meta["salaryRange"]["max"].as_f64(), Some(150000.0));
+        assert_eq!(meta["experienceLevel"], "senior");
+    }
+
+    /// resume_synthesize reports an ATS parse check over what it renders.
+    #[tokio::test]
+    async fn synthesize_match_report_includes_ats_parse_check() {
+        let server = seeded_server();
+        let out = tool_payload(&ok_result(
+            call_tool(
+                &server,
+                "resume_synthesize",
+                json!({
+                    "jd_text": "Minimum Qualifications\n* Kubernetes and Go required\nApply via Workday.",
+                    "header_name": "Jane Doe",
+                    "contact_lines": ["jane@example.com", "+1 (415) 555-0100"]
+                }),
+            )
+            .await,
+        ));
+        let check = &out["matchReport"]["atsParseCheck"];
+        assert_eq!(check["system"], "workday", "vendor detection failed: {check}");
+        assert!(check["warnings"].is_array());
+        let detected: Vec<String> = check["sections"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|s| s["detected"] == true)
+            .filter_map(|s| s["name"].as_str().map(str::to_string))
+            .collect();
+        assert!(
+            detected.contains(&"experience".to_string()),
+            "experience not detected in rendered corpus: {detected:?}"
+        );
+        assert_eq!(check["contact"]["email"], true);
+        assert_eq!(check["contact"]["phone"], true);
+    }
+
+    #[tokio::test]
+    async fn tools_list_includes_ats_check() {
+        let server = setup_test_server();
+        let req = JsonRpcRequest::new(Some(json!(1)), "tools/list", None);
+        let res = server.handle_request(None, req).await;
+        let val = res.result.expect("tools/list result");
+        let names: Vec<String> = val["tools"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|t| t["name"].as_str().map(str::to_string))
+            .collect();
+        assert!(names.contains(&"resume_ats_check".to_string()), "{names:?}");
     }
 }

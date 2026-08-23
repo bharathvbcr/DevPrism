@@ -6,9 +6,11 @@ import {
   budgetFromTemplate,
   BUDGET_FIXED_OVERHEAD_LINES,
   cosineSimilarity,
+  DEFAULT_MAX_BULLETS_PER_BLOCK,
   estimateBlockLines,
   knapsackSelect,
   mmrSelect,
+  sectionForBlock,
   trimSelectedBullets,
 } from "@/lib/resume-synthesis/selection";
 import type { ScoredBlock } from "@/lib/resume-synthesis/types";
@@ -68,6 +70,20 @@ describe("estimateBlockLines", () => {
     const s = makeBlock("a");
     // Short bullets → 1 wrapped line each → 2 header + 2 bullets
     expect(estimateBlockLines(s.block)).toBe(2 + s.block.bullets.length);
+  });
+
+  it("charges at most DEFAULT_MAX_BULLETS_PER_BLOCK so a long block stays affordable", () => {
+    const bullets = Array.from({ length: 20 }, (_, i) => ({
+      id: `b${i}`,
+      canonical: "Did a thing",
+      variants: {},
+      metrics: [],
+      evidenceRefs: [],
+      locked: false,
+    }));
+    const s = makeBlock("long", { bullets });
+    expect(estimateBlockLines(s.block)).toBe(2 + DEFAULT_MAX_BULLETS_PER_BLOCK);
+    expect(estimateBlockLines(s.block)).toBeLessThan(2 + bullets.length);
   });
 
   it("estimates wrap from long bullet character length", () => {
@@ -391,5 +407,57 @@ describe("mmrSelect / cosineSimilarity", () => {
       2,
     );
     expect(selected).toHaveLength(2);
+  });
+});
+
+describe("IgniteCV extra kinds in knapsack", () => {
+  it("does not dump certification/award/volunteer into the experience cap", () => {
+    const cert = makeBlock("c1", {
+      kind: "certification",
+      org: "Amazon",
+      score: 0.95,
+    });
+    const award = makeBlock("a1", {
+      kind: "award",
+      org: "NeurIPS",
+      score: 0.94,
+    });
+    const volunteer = makeBlock("v1", {
+      kind: "volunteer",
+      org: "Code.org",
+      score: 0.93,
+    });
+    const job = makeBlock("e1", {
+      kind: "experience",
+      org: "Acme",
+      score: 0.92,
+    });
+    expect(sectionForBlock(cert.block)).toBe("certifications");
+    expect(sectionForBlock(award.block)).toBe("awards");
+    expect(sectionForBlock(volunteer.block)).toBe("volunteer");
+
+    const result = knapsackSelect(
+      [cert, award, volunteer, job],
+      TYPST_ATS_SINGLE_TEMPLATE.budget,
+      [],
+    );
+    const kinds = result.selected.map((s) => s.block.kind).sort();
+    expect(kinds).toEqual(
+      expect.arrayContaining([
+        "award",
+        "certification",
+        "experience",
+        "volunteer",
+      ]),
+    );
+  });
+
+  it("maps a stored plural kind onto the certifications section, not experience", () => {
+    const dirty = makeBlock("c2", {
+      kind: "certifications" as ExperienceBlock["kind"],
+      org: "Amazon",
+      score: 0.9,
+    });
+    expect(sectionForBlock(dirty.block)).toBe("certifications");
   });
 });

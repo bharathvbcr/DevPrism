@@ -65,6 +65,7 @@ Defined in `career_db/schema.rs` (`SCHEMA_SQL`):
 | `embeddings` | f32 little-endian BLOB vectors; PK `(owner_id, model)`; `owner_kind`: `block` \| `chunk` \| `bullet` \| `fact` |
 | `vec_embeddings` | sqlite-vec virtual table (ANN index); rebuilt from `embeddings` SoT when needed |
 | `synthesis_runs` | JD hash + persona + template + match report (+ optional `.tex`) |
+| `known_projects` | Registry of folders opened in the app — the gate external agents' `resume_doc_*` tools must pass (see [`PLUGINS.md`](./PLUGINS.md)) |
 
 ```sql
 -- Simplified from SCHEMA_SQL (current)
@@ -108,17 +109,22 @@ CREATE TABLE synthesis_runs (
     report_json TEXT,
     created_at INTEGER
 );
+CREATE TABLE known_projects (
+    path TEXT PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
+    last_opened_at INTEGER NOT NULL DEFAULT 0
+);
 ```
 
-Indexes today: `idx_embeddings_owner_kind`, `idx_kb_chunks_source_id`, `idx_blocks_kind`.  
-Migration: existing DBs upgrade `embeddings` from `PRIMARY KEY (owner_id)` → `(owner_id, model)` idempotently in `schema.rs`.
+Indexes today: `idx_embeddings_owner_kind`, `idx_embeddings_model`, `idx_kb_chunks_source_id`, `idx_blocks_kind`, `idx_blocks_updated_at`, `idx_synthesis_runs_created_at`.  
+Migration: existing DBs upgrade `embeddings` from `PRIMARY KEY (owner_id)` → `(owner_id, model)` idempotently in `schema.rs`; `known_projects` is re-ensured with `CREATE TABLE IF NOT EXISTS` for DBs created before the plugins layer.
 
 ### 1.3 ExperienceBlock
 
 | Field | Type / notes |
 |-------|----------------|
 | `id` | Stable string id |
-| `kind` | `experience` \| `project` \| `publication` \| `education` \| `leadership` |
+| `kind` | `experience` \| `project` \| `publication` \| `education` \| `leadership` \| `certification` \| `award` \| `volunteer` |
 | `title`, `org` | Display / org-dedup in knapsack |
 | `dateRange` | `{ start, end }` — ISO-ish; `end: null` = present |
 | `personas[]` | Persona ids this block targets |
@@ -171,9 +177,9 @@ Seeded once via `INSERT OR IGNORE` in `seed_default_personas` — user edits are
 
 | Id | Focus | Default `sectionOrder` |
 |----|--------|-------------------------|
-| `ai` | ML / systems / measurable model outcomes | experience → projects → skills → education → publications |
-| `life-sciences` | Scientific rigor, assays, pipelines | experience → publications → projects → skills → education |
-| `management` | Scope, teams, stakeholder delivery | experience → leadership → skills → projects → education → publications |
+| `ai` | ML / systems / measurable model outcomes | summary → experience → projects → skills → education → publications → certifications → awards |
+| `life-sciences` | Scientific rigor, assays, pipelines | summary → experience → publications → projects → skills → education → awards |
+| `management` | Scope, teams, stakeholder delivery | summary → experience → leadership → skills → projects → education → publications → volunteer |
 
 Each persona stores:
 
@@ -521,7 +527,7 @@ Covered in §§1.5, 2.2–2.4, 3.1–3.2, 3.5, 3.7 above. Tests include distill 
 | Gap analysis | `apps/desktop/src/lib/resume-synthesis/gap-analysis.ts` |
 | Templates | `apps/desktop/src/lib/resume-templates/` |
 | Career SQLite host | `apps/desktop/src-tauri/src/career_db/` |
-| Compile verify | `apps/desktop/src-tauri/src/career_compile.rs` |
+| Typst compile | `apps/desktop/src-tauri/src/career_typst/mod.rs` (`career_typst_compile`, `career_typst_compile_project`) |
 | Progress UI store | `apps/desktop/src/stores/synthesis-store.ts` |
 | Career tab memory | `apps/desktop/src/stores/career-store.ts` (`openCareer`) |
 | AI assist routing | `apps/desktop/src/lib/ai-assist.ts` |

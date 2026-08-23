@@ -21,6 +21,7 @@
     "agents:verify": "node scripts/verify-agent-instructions.js",
     "docs:verify": "node scripts/verify-docs-contract.js",
     "agents:verify:all": "node scripts/verify-agent-instructions.js --all",
+    "ci:local": "pnpm lint && pnpm docs:verify && pnpm agents:verify:all && pnpm --filter=@devprism/desktop build && pnpm --filter=@devprism/desktop test",
     "release": "echo 'To release: git tag v<version> && git push origin v<version>'",
     "prepare": "husky"
   },

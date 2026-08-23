@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { readDir, stat } from "@tauri-apps/plugin-fs";
+import { invoke } from "@tauri-apps/api/core";
 import {
   getProjectFileType,
   scanProjectFolder,
@@ -63,57 +63,31 @@ describe("tauri fs helpers", () => {
   });
 
   describe("scanProjectFolder", () => {
-    it("does not recurse into generated cache directories", async () => {
-      vi.mocked(readDir).mockImplementation(async (dir: string | URL) => {
-        const dirPath = String(dir);
-        if (dirPath === "/project") {
-          return [
-            { name: "__pycache__", isDirectory: true },
-            { name: "node_modules", isDirectory: true },
-            { name: "main.tex", isDirectory: false },
-            { name: "chapters", isDirectory: true },
-          ] as any;
-        }
+    it("delegates the native walk to the single-command Rust scanner", async () => {
+      // The recursive walk moved to `scan_project_folder` in lib.rs so a
+      // project open is one IPC round trip instead of one readDir per
+      // directory plus one stat per file. Directory-skip and file-type
+      // rules are mirrored there (see project_scan::tests) and remain
+      // exercised here for the browser path via fs-shared helpers above.
+      const canned = {
+        files: [
+          {
+            relativePath: "main.tex",
+            absolutePath: "/project/main.tex",
+            type: "tex",
+            fileSize: 0,
+          },
+        ],
+        folders: ["chapters"],
+      };
+      vi.mocked(invoke).mockResolvedValue(canned as any);
 
-        if (dirPath === "/project/chapters") {
-          return [{ name: "intro.tex", isDirectory: false }] as any;
-        }
+      const result = await scanProjectFolder("/project");
 
-        throw new Error(`Unexpected readDir path: ${dirPath}`);
+      expect(invoke).toHaveBeenCalledWith("scan_project_folder", {
+        rootPath: "/project",
       });
-
-      const result = await scanProjectFolder("/project");
-
-      expect(readDir).toHaveBeenCalledWith("/project");
-      expect(readDir).toHaveBeenCalledWith("/project/chapters");
-      expect(readDir).not.toHaveBeenCalledWith("/project/__pycache__");
-      expect(readDir).not.toHaveBeenCalledWith("/project/node_modules");
-      expect(result.folders).toEqual(["chapters"]);
-      expect(result.files.map((file) => file.relativePath)).toEqual([
-        "main.tex",
-        "chapters/intro.tex",
-      ]);
-    });
-
-    it("keeps document/reference formats visible but drops compiled artifacts", async () => {
-      vi.mocked(readDir).mockResolvedValue([
-        { name: "module.pyc", isDirectory: false },
-        { name: "report.docx", isDirectory: false },
-        { name: "worker.py", isDirectory: false },
-        { name: "notes.txt", isDirectory: false },
-      ] as any);
-      vi.mocked(stat).mockResolvedValue({ size: 128 } as any);
-
-      const result = await scanProjectFolder("/project");
-
-      // module.pyc is a compiled artifact and is filtered out; the rest remain.
-      expect(result.files.map((file) => file.relativePath)).toEqual([
-        "report.docx",
-        "worker.py",
-        "notes.txt",
-      ]);
-      expect(stat).toHaveBeenCalledTimes(3);
-      expect(result.files.every((file) => file.type === "other")).toBe(true);
+      expect(result).toEqual(canned);
     });
   });
 });

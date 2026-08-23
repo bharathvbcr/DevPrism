@@ -124,14 +124,14 @@ Group related projects into named **spaces** (e.g. *PhD Papers*, *Job Applicatio
 </p>
 
 ### History & Proposed Changes
-Every save creates a snapshot in a local Git repository (`.claudeprism/history.git/`). Label important checkpoints, browse diffs between any two snapshots, and restore previous versions. When Claude suggests edits, changes appear in a dedicated panel with visual diffs — accept or reject per chunk, or apply/undo all at once (`⌘Y` / `⌘N`).
+Every save creates a snapshot in a local Git repository (`.claudeprism/history.git/`). Label important checkpoints, browse diffs between any two snapshots, and restore previous versions. When Claude suggests edits, changes appear in a dedicated panel with visual diffs — accept or reject per chunk, or apply/undo all at once (`⌘Y` / `⌘N`). History manages its own size: past 800 snapshots it compacts automatically, keeping labeled checkpoints forever while trimming unlabeled ones to the newest 250, and a restore always auto-saves your uncommitted changes first.
 
 <p align="center">
   <img src="./assets/demo/history.webp" alt="History & Proposed Changes" width="700" />
 </p>
 
 ### Offline LaTeX Compilation
-Tectonic is embedded directly in the app. Packages are downloaded once on first use and cached locally. After that, compilation works fully offline with no TeX Live installation required.
+Tectonic is embedded directly in the app. Packages are downloaded once on first use and cached locally. After that, compilation works fully offline with no TeX Live installation required. Before your first compile the app checks whether the bundle is already cached and warns during onboarding if a one-time download is still needed — offline readiness is never a surprise.
 
 ### Capture & Ask
 Press `⌘X` to enter capture mode, drag to select any region in the PDF — the captured image is pinned to the chat composer so you can immediately ask Claude about it. Great for asking about equations, figures, tables, or reviewer comments.
@@ -153,6 +153,8 @@ CodeMirror 6 with LaTeX/BibTeX syntax highlighting, real-time error linting, fin
   <img src="./assets/demo/zotero.webp" alt="Zotero Integration" width="300" />
 </p>
 
+- **Career database & resume synthesis** — import your résumé by drag-and-drop (`.tex` or Overleaf-style `.zip`), build a knowledge base from PDFs/Markdown/mind maps, and synthesize JD-tailored résumés with provenance-checked, metric-verified bullets. External agents can drive the same engine through the built-in MCP server (see [docs/PLUGINS.md](docs/PLUGINS.md)).
+- **In-app updates** — update status and one-click install from Settings → Environment.
 - **Slash Commands** — Built-in (`/review`, `/init`) + custom commands from `.claude/commands/`.
 - **External Editors** — Open projects in Cursor, VS Code, Zed, or Sublime Text.
 - **Dark / Light Theme** — Automatic switching.

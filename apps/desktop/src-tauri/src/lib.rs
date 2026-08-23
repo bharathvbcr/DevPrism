@@ -1,3 +1,6 @@
+// Test modules assert via unwrap/expect by convention; production code keeps
+// both lints denied (verified: `cargo clippy --lib` is clean without this).
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 #![recursion_limit = "512"]
 
 mod agent_process;
@@ -19,6 +22,7 @@ pub mod latex;
 pub mod latexdiff;
 pub mod mcp;
 mod native_agent;
+pub mod plugins;
 mod personalization;
 mod proc;
 mod project_context;
@@ -389,6 +393,227 @@ fn allow_project_directory(app: tauri::AppHandle, root_path: String) -> Result<(
     Ok(())
 }
 
+/// Mirrors the webview's project-file classification (`fs-shared.ts`) so the
+/// whole tree can be scanned in one IPC round trip instead of one `read_dir`
+/// per directory plus one `stat` per file.
+mod project_scan {
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct ScannedFile {
+        pub relative_path: String,
+        pub absolute_path: String,
+        pub r#type: &'static str,
+        pub file_size: u64,
+    }
+
+    #[derive(serde::Serialize)]
+    pub struct ScanResult {
+        pub files: Vec<ScannedFile>,
+        pub folders: Vec<String>,
+    }
+
+    const IGNORED_DIRECTORY_NAMES: [&str; 4] =
+        ["node_modules", "__pycache__", "venv", "env"];
+
+    /// Keep in sync with `IGNORED_EXTENSIONS` in `src/lib/tauri/fs-shared.ts`.
+    const IGNORED_EXTENSIONS: [&str; 27] = [
+        ".aux", ".log", ".out", ".toc", ".lof", ".lot", ".fls",
+        ".fdb_latexmk", ".synctex.gz", ".synctex", ".blg", ".bbl", ".nav",
+        ".snm", ".vrb", ".run.xml", ".bcf", ".pyc", ".pyo", ".pyd", ".so",
+        ".dylib", ".o", ".obj", ".dll", ".exe", ".bin",
+    ];
+
+    const IMAGE_EXTENSIONS: [&str; 7] = [
+        ".png", ".jpg", ".jpeg", ".gif", ".svg", ".bmp", ".webp",
+    ];
+
+    /// Keep in sync with `STYLE_EXTENSIONS` in `src/lib/tauri/fs-shared.ts`.
+    const STYLE_EXTENSIONS: [&str; 8] = [
+        ".sty", ".cls", ".bst", ".def", ".cfg", ".fd", ".dtx", ".ins",
+    ];
+
+    fn skip_directory(name: &str) -> bool {
+        name.starts_with('.')
+            || IGNORED_DIRECTORY_NAMES.contains(&name.to_ascii_lowercase().as_str())
+    }
+
+    fn classify(name: &str) -> Option<&'static str> {
+        let lower = name.to_ascii_lowercase();
+        for ext in IGNORED_EXTENSIONS {
+            if lower.ends_with(ext) {
+                return None;
+            }
+        }
+        if lower.ends_with(".tex") || lower.ends_with(".ltx") {
+            return Some("tex");
+        }
+        if lower.ends_with(".typ") {
+            return Some("typst");
+        }
+        if lower.ends_with(".bib") {
+            return Some("bib");
+        }
+        if lower.ends_with(".pdf") {
+            return Some("pdf");
+        }
+        for ext in IMAGE_EXTENSIONS {
+            if lower.ends_with(ext) {
+                return Some("image");
+            }
+        }
+        for ext in STYLE_EXTENSIONS {
+            if lower.ends_with(ext) {
+                return Some("style");
+            }
+        }
+        Some("other")
+    }
+
+    pub fn walk(
+        root: &std::path::Path,
+        dir: &std::path::Path,
+        prefix: &str,
+        files: &mut Vec<ScannedFile>,
+        folders: &mut Vec<String>,
+    ) -> std::io::Result<()> {
+        let mut entries: Vec<std::fs::DirEntry> = std::fs::read_dir(dir)?
+            .collect::<Result<Vec<_>, _>>()?;
+        entries.sort_by_key(|e| e.file_name());
+
+        for entry in entries {
+            let entry_path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let relative_path = if prefix.is_empty() {
+                name.clone()
+            } else {
+                format!("{}/{}", prefix, name)
+            };
+
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                if skip_directory(&name) {
+                    continue;
+                }
+                folders.push(relative_path.clone());
+                walk(root, &entry_path, &relative_path, files, folders)?;
+            } else if file_type.is_file() {
+                let Some(r#type) = classify(&name) else {
+                    continue;
+                };
+                // Only pay for metadata where the size matters to the UI.
+                let file_size = if r#type == "image" || r#type == "other" {
+                    entry.metadata().map(|m| m.len()).unwrap_or(0)
+                } else {
+                    0
+                };
+                files.push(ScannedFile {
+                    relative_path,
+                    absolute_path: entry_path.to_string_lossy().into_owned(),
+                    r#type,
+                    file_size,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn classify_matches_fs_shared_ts_rules() {
+            assert_eq!(classify("main.tex"), Some("tex"));
+            assert_eq!(classify("chapter.TEX"), Some("tex"));
+            assert_eq!(classify("paper.ltx"), Some("tex"));
+            assert_eq!(classify("refs.bib"), Some("bib"));
+            assert_eq!(classify("output.pdf"), Some("pdf"));
+            assert_eq!(classify("figure.png"), Some("image"));
+            assert_eq!(classify("figure.PNG"), Some("image"));
+            assert_eq!(classify("custom.sty"), Some("style"));
+            assert_eq!(classify("notes.md"), Some("other"));
+            assert_eq!(classify("script.py"), Some("other"));
+
+            // Compiled artifacts are dropped entirely.
+            for artifact in [
+                "main.aux",
+                "main.synctex.gz",
+                "module.pyc",
+                "module.pyo",
+                "native.pyd",
+                "lib.so",
+                "app.exe",
+                "obj.o",
+                "lib.dylib",
+                "blob.bin",
+                "main.fls",
+                "main.bbl",
+            ] {
+                assert_eq!(classify(artifact), None, "{}", artifact);
+            }
+        }
+
+        #[test]
+        fn skip_directory_matches_fs_shared_ts_rules() {
+            assert!(skip_directory(".git"));
+            assert!(skip_directory(".venv"));
+            assert!(skip_directory("node_modules"));
+            assert!(skip_directory("__pycache__"));
+            assert!(skip_directory("venv"));
+            assert!(skip_directory("ENV"));
+            assert!(!skip_directory("chapters"));
+            assert!(!skip_directory("figures"));
+        }
+
+        #[test]
+        fn walk_skips_generated_directories_and_artifacts() {
+            let tmp = std::env::temp_dir().join(format!(
+                "devprism-scan-test-{}",
+                std::process::id()
+            ));
+            let project = tmp.join("project");
+            std::fs::create_dir_all(project.join("__pycache__")).unwrap();
+            std::fs::create_dir_all(project.join(".git")).unwrap();
+            std::fs::create_dir_all(project.join("chapters")).unwrap();
+
+            std::fs::write(project.join("main.tex"), "").unwrap();
+            std::fs::write(project.join("compiled.pyc"), b"junk").unwrap();
+            std::fs::write(project.join("__pycache__/x.pyc"), b"junk").unwrap();
+            std::fs::write(project.join(".git/config"), b"junk").unwrap();
+            std::fs::write(project.join("chapters/intro.tex"), "").unwrap();
+
+            let mut files = Vec::new();
+            let mut folders = Vec::new();
+            walk(&project, &project, "", &mut files, &mut folders).unwrap();
+
+            let paths: Vec<String> =
+                files.iter().map(|f| f.relative_path.clone()).collect();
+            // Depth-first walk with per-directory name sorting.
+            assert_eq!(paths, ["chapters/intro.tex", "main.tex"]);
+            assert_eq!(folders, ["chapters"]);
+
+            std::fs::remove_dir_all(&tmp).ok();
+        }
+    }
+}
+
+#[tauri::command]
+async fn scan_project_folder(root_path: String) -> Result<project_scan::ScanResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = std::path::PathBuf::from(&root_path);
+        if !root.is_dir() {
+            return Err(format!("Not a directory: {}", root_path));
+        }
+        let mut files = Vec::new();
+        let mut folders = Vec::new();
+        project_scan::walk(&root, &root, "", &mut files, &mut folders)
+            .map_err(|e| format!("Failed to scan project folder: {}", e))?;
+        Ok(project_scan::ScanResult { files, folders })
+    })
+    .await
+    .map_err(|e| format!("Scan task failed: {}", e))?
+}
+
 #[derive(serde::Serialize)]
 struct ProjectCandidate {
     path: String,
@@ -622,6 +847,8 @@ pub fn command_handler(
             set_native_window_theme,
             allow_project_directory,
             list_default_projects,
+            scan_project_folder,
+            latex::check_tectonic_bundle,
             project_import::import_zip_project,
             project_import::import_loose_files,
             variants::list_variants,
@@ -645,6 +872,9 @@ pub fn command_handler(
             career_db::career_vector_search,
             career_db::career_save_run,
             career_db::career_list_runs,
+            career_db::career_upsert_known_project,
+            career_db::career_remove_known_project,
+            career_db::career_list_known_projects,
             mcp::mcp_execute_request,
             mcp::mcp_list_tools,
             mcp::mcp_list_resources,
@@ -700,6 +930,7 @@ pub fn command_handler(
             history::history_restore,
             history::history_add_label,
             history::history_remove_label,
+            history::history_compact,
             slash_commands::slash_commands_list,
             slash_commands::slash_command_get,
             slash_commands::slash_command_save,
@@ -789,6 +1020,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .manage(claude::ClaudeProcessState::default())
         .manage(latex::LatexCompilerState::default())
+        .manage(history::HistoryState::default())
         .manage(zotero::ZoteroOAuthState::default())
         .manage(comments::CommentsWatcherState::default())
         .manage(career_db::CareerDbState::default())
@@ -810,6 +1042,17 @@ pub fn run() {
                     }
                 }
             });
+
+            // Push notifications for career.db commits made outside the UI's
+            // own connection (in-app MCP server, `--mcp-stdio` process), so
+            // Career surfaces can refetch instead of serving stale data.
+            let watch_handle = app.handle().clone();
+            if let Err(e) = std::thread::Builder::new()
+                .name("career-db-watcher".into())
+                .spawn(move || career_db::watch_external_changes(watch_handle))
+            {
+                eprintln!("[career_db] failed to spawn change watcher: {e}");
+            }
             Ok(())
         })
         .invoke_handler(command_handler())

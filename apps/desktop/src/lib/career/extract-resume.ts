@@ -1,18 +1,29 @@
 import { aiComplete, canUseAiAssist } from "@/lib/ai-assist";
 import type { BlockFact, ExperienceBlock } from "./types";
+import { canonicalizeBlockKind } from "../resume-sections";
 import {
   createEmptyBlock,
-  isBlockKind,
   isSeniorityLevel,
   newBlockFact,
   newBullet,
   newCareerId,
 } from "./block-helpers";
 
+/** Hard cap on blocks accepted from a single LLM extract. Fail closed on floods. */
+export const EXTRACT_MAX_BLOCKS = 200;
+const EXTRACT_MAX_BULLETS = 40;
+const EXTRACT_MAX_FACTS = 40;
+const EXTRACT_MAX_TEXT = 2000;
+const EXTRACT_MAX_TITLE = 200;
+
+function clipText(value: string, max: number): string {
+  return value.length <= max ? value : value.slice(0, max);
+}
+
 const EXTRACT_SYSTEM = `You extract structured resume experience blocks from LaTeX or plain-text resume source.
 Return ONLY JSON of the form:
 {"blocks":[{
-  "kind":"experience"|"project"|"publication"|"education"|"leadership",
+  "kind":"experience"|"project"|"publication"|"education"|"leadership"|"certification"|"award"|"volunteer",
   "title":string,
   "org":string,
   "dateStart":string (YYYY-MM or YYYY),
@@ -111,9 +122,14 @@ export function parseExtractedBlocks(raw: string): ExperienceBlock[] {
             ? row.company.trim()
             : "";
     if (!title && !org) continue;
+    if (out.length >= EXTRACT_MAX_BLOCKS) break;
 
-    const bulletTexts = asStringArray(row.bullets);
-    const factTexts = asStringArray(row.facts);
+    const bulletTexts = asStringArray(row.bullets)
+      .slice(0, EXTRACT_MAX_BULLETS)
+      .map((t) => clipText(t, EXTRACT_MAX_TEXT));
+    const factTexts = asStringArray(row.facts)
+      .slice(0, EXTRACT_MAX_FACTS)
+      .map((t) => clipText(t, EXTRACT_MAX_TEXT));
     const facts: BlockFact[] = factTexts.map((text) =>
       newBlockFact(text, { source: "import" }),
     );
@@ -144,12 +160,18 @@ export function parseExtractedBlocks(raw: string): ExperienceBlock[] {
               })()
             : null);
 
+    const rawKind = row.kind;
+    const omittedKind =
+      rawKind === undefined || rawKind === null || rawKind === "";
+    const kind = omittedKind ? "experience" : canonicalizeBlockKind(rawKind);
+    if (!kind) continue;
+
     out.push(
       createEmptyBlock({
         id: newCareerId("exp"),
-        kind: isBlockKind(row.kind) ? row.kind : "experience",
-        title: title || "Untitled",
-        org,
+        kind,
+        title: clipText(title || "Untitled", EXTRACT_MAX_TITLE),
+        org: clipText(org, EXTRACT_MAX_TITLE),
         dateRange: {
           start: dateStart,
           end: dateEndRaw === "" ? null : dateEndRaw,

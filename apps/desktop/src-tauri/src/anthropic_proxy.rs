@@ -343,8 +343,14 @@ async fn handle_messages_to_stream(
         ));
     }
 
+    // No client-wide total deadline: a long agent turn legitimately streams
+    // for many minutes, and a total timeout aborts it mid-stream. Instead,
+    // bound the connect phase and each individual read (idle-gap detection),
+    // mirroring the Ollama client. Non-streaming requests additionally get a
+    // per-request total deadline below.
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(300))
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .read_timeout(std::time::Duration::from_secs(90))
         .build()
         .map_err(|err| format!("Failed to create provider client: {}", err))?;
     let url = openai_chat_completions_url(&credential.base_url);
@@ -355,14 +361,20 @@ async fn handle_messages_to_stream(
             .await?;
     // Retry transient 429/5xx (honoring Retry-After) and connect errors before we
     // begin streaming — safe because the response body isn't consumed until then.
+    let request_timeout = if wants_stream {
+        None
+    } else {
+        Some(std::time::Duration::from_secs(300))
+    };
     let response = crate::retry::send_with_retry(3, || {
-        with_optional_bearer_auth(
-            client
-                .post(&url)
-                .header("Content-Type", "application/json")
-                .body(body.clone()),
-            bearer_token.as_deref(),
-        )
+        let mut request = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .body(body.clone());
+        if let Some(timeout) = request_timeout {
+            request = request.timeout(timeout);
+        }
+        with_optional_bearer_auth(request, bearer_token.as_deref())
     })
     .await
     .map_err(|err| format!("Provider request failed: {}", err))?;

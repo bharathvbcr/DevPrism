@@ -18,6 +18,19 @@ export function formatCompileError(error: unknown): string {
       : "Compilation failed";
 }
 
+/**
+ * True when the backend skipped this build because a newer compile for the
+ * same project was requested (compile cancellation). These are not failures:
+ * the UI must stay quiet instead of flashing an error banner.
+ */
+export function isSupersededCompile(error: unknown): boolean {
+  const message = formatCompileError(error);
+  return (
+    message.startsWith("Compilation superseded") ||
+    message.includes("was cancelled")
+  );
+}
+
 export interface ParsedCompileError {
   message: string;
   file?: string;

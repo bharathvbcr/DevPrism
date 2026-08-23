@@ -19,6 +19,7 @@ use super::server::StatelessMcpServer;
 use super::tasks::TaskManager;
 use crate::career_db::{Bullet, CareerDbState, DateRange, ExperienceBlock, SkillTag};
 use serde_json::{json, Value};
+use std::path::{Path, PathBuf};
 
 /// Deterministic PRNG. Numerical Recipes LCG constants.
 pub(crate) struct Lcg(u64);
@@ -529,4 +530,374 @@ fn a_completed_result_is_never_silently_dropped() {
             "seed {seed}: the recorded result differs from what was stored"
         );
     }
+}
+
+// --- Plugins 1.0: the resume-document surface ---
+//
+// The document tools touch the user's real filesystem, so their properties are
+// asserted with the same seeded-hostility discipline as the knowledgebase.
+
+/// A temp project registered with the server, with a sentinel sibling that
+/// must never be touched.
+struct DocFixture {
+    server: StatelessMcpServer,
+    root: PathBuf,
+    sentinel: PathBuf,
+    seed_resume: String,
+    seed_notes: String,
+}
+
+impl Drop for DocFixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+        let _ = std::fs::remove_dir_all(&self.sentinel);
+    }
+}
+
+impl DocFixture {
+    fn new(tag: &str) -> Self {
+        let base = std::env::temp_dir().join(format!(
+            "devprism-docstress-{tag}-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let root = base.join("project");
+        let sentinel = base.join("sentinel-outside");
+        std::fs::create_dir_all(root.join("chapters")).expect("fixture root");
+        std::fs::create_dir_all(&sentinel).expect("sentinel dir");
+        let db = CareerDbState::open_in_memory().expect("in-memory career db");
+        let server = StatelessMcpServer::new(db.clone());
+        server
+            .context_db()
+            .with_conn(|conn| {
+                crate::career_db::upsert_known_project_blocking(
+                    conn,
+                    &root.to_string_lossy(),
+                    "Doc Stress",
+                )
+            })
+            .expect("register fixture project");
+        let seed_resume =
+            "= Jane Doe\n- Cut p99 by 25%\n".to_string();
+        let seed_notes = "notes ".repeat(80); // non-trivial, guards reduction
+        std::fs::write(root.join("main.typ"), &seed_resume).expect("seed main");
+        std::fs::write(root.join("chapters").join("notes.md"), &seed_notes).expect("seed notes");
+        Self {
+            server,
+            root,
+            sentinel,
+            seed_resume,
+            seed_notes,
+        }
+    }
+
+    fn master_intact(&self) -> bool {
+        std::fs::read_to_string(self.root.join("main.typ")).is_ok_and(|c| c == self.seed_resume)
+    }
+
+    fn notes_intact(&self) -> bool {
+        std::fs::read_to_string(self.root.join("chapters").join("notes.md"))
+            .is_ok_and(|c| c == self.seed_notes)
+    }
+
+    fn sentinel_untouched(&self) -> bool {
+        // Nothing may appear inside, and the dir itself must still exist.
+        std::fs::read_dir(&self.sentinel)
+            .map(|mut d| d.next().is_none())
+            .unwrap_or(false)
+    }
+
+    fn variant_count(&self) -> usize {
+        std::fs::read_dir(self.root.join(".prism").join("variants"))
+            .map(|d| d.filter_map(Result::ok).count())
+            .unwrap_or(0)
+    }
+}
+
+fn doc_tools(server: &StatelessMcpServer) -> Vec<String> {
+    server
+        .list_all_tools()
+        .into_iter()
+        .map(|t| t.name)
+        .filter(|n| {
+            n.starts_with("resume_doc_")
+                || n.starts_with("resume_variant_")
+                || n == "resume_save_synthesis"
+                || n == "resume_compile_file"
+        })
+        .collect()
+}
+
+/// THE filesystem invariant: no sequence of hostile document-tool calls —
+/// forged shas, traversal paths, absolute escapes, hostile variant ids — may
+/// modify a master file or create anything outside a registered root. Variant
+/// folders are additive and allowed; deleting one requires the human gate.
+#[tokio::test]
+async fn document_tools_cannot_touch_masters_or_escape_the_registered_root() {
+    let fx = DocFixture::new("escape");
+
+    let paths_to_try = [
+        "../sentinel-outside/pwned.typ",
+        "../../pwned.typ",
+        "/tmp/devprism-docstress-abs-pwned.typ",
+        "main.typ",
+        "chapters/notes.md",
+        ".prism/variants/ghost/main.typ",
+        "-rf",
+        "",
+    ];
+    let forged_shas = [
+        "deadbeef".repeat(5),
+        String::new(),
+        "da39a3ee5e6b4b0d3255bfef95601890afd80709".to_string(), // sha1("") — plausible!
+    ];
+
+    let tools = doc_tools(&fx.server);
+
+    for seed in 0..300u64 {
+        let mut rng = Lcg::new(seed ^ 0xD0C);
+        let tool = rng.pick(&tools).clone();
+        let mut args = hostile_json(&mut rng, 2);
+        if !args.is_object() {
+            args = json!({});
+        }
+        if let Some(obj) = args.as_object_mut() {
+            obj.insert(
+                "project_root".to_string(),
+                json!(rng.pick(&[
+                    fx.root.to_string_lossy().to_string(),
+                    String::new(),
+                    "../../../etc".to_string(),
+                ])),
+            );
+            if rng.bool() {
+                obj.insert(
+                    "file_path".to_string(),
+                    json!(rng.pick(&paths_to_try).to_string()),
+                );
+            }
+            if rng.bool() {
+                obj.insert(
+                    "expected_sha1".to_string(),
+                    json!(rng.pick(&forged_shas).to_string()),
+                );
+            }
+            if rng.bool() {
+                obj.insert("allow_major_reduction".to_string(), json!(true));
+            }
+            if rng.bool() {
+                obj.insert("variant_id".to_string(), json!(hostile_string(&mut rng)));
+            }
+            if rng.bool() {
+                obj.insert(
+                    "request_state".to_string(),
+                    json!("eyJfX25vbmNlIjoiZm9yZ2VkIn0="),
+                );
+                obj.insert("input_responses".to_string(), json!({ "confirm": true }));
+            }
+            if rng.bool() {
+                obj.insert("content".to_string(), json!(hostile_string(&mut rng)));
+            }
+            if rng.bool() {
+                obj.insert("edits".to_string(), json!([{
+                    "old_string": rng.pick(&HOSTILE_STRINGS).to_string(),
+                    "new_string": "x",
+                }]));
+            }
+        }
+
+        let _ = call(&fx.server, &tool, args).await;
+
+        assert!(
+            fx.master_intact(),
+            "seed {seed}: tool '{tool}' modified the master without a verified round trip"
+        );
+        assert!(
+            fx.sentinel_untouched(),
+            "seed {seed}: tool '{tool}' escaped the registered root"
+        );
+    }
+}
+
+/// Deletion of variants is gated like block deletion: random hostile traffic
+/// can add variants but never remove one.
+#[tokio::test]
+async fn variants_survive_hostile_delete_traffic_without_confirmation() {
+    let fx = DocFixture::new("vargate");
+    let root = fx.root.to_string_lossy().to_string();
+
+    // One legitimate variant to protect.
+    let created = call(
+        &fx.server,
+        "resume_variant_create",
+        json!({ "project_root": root, "name": "Protected" }),
+    )
+    .await;
+    assert!(created.error.is_none(), "setup failed: {:?}", created.error);
+    let baseline = fx.variant_count();
+
+    for seed in 0..200u64 {
+        let mut rng = Lcg::new(seed ^ 0xDE1);
+        let mut args = hostile_json(&mut rng, 2);
+        if !args.is_object() {
+            args = json!({});
+        }
+        if let Some(obj) = args.as_object_mut() {
+            obj.insert("project_root".to_string(), json!(root));
+            obj.insert("variant_id".to_string(), json!(rng.pick(&[
+                "../..", "..", ".", "", "protected", "%2e%2e",
+            ]).to_string()));
+            if rng.bool() {
+                obj.insert("request_state".to_string(), json!("Zm9yZ2Vk"));
+                obj.insert("input_responses".to_string(), json!({ "confirm": true }));
+            }
+        }
+        // The legitimate variant's slug is unknown to the fuzzer; whatever it
+        // guesses must not delete anything.
+        let _ = call(&fx.server, "resume_variant_delete", args).await;
+        assert_eq!(
+            fx.variant_count(),
+            baseline,
+            "seed {seed}: a variant disappeared without a genuine confirmation"
+        );
+    }
+
+    // And the honest round trip still works (gate is not a wall).
+    let list = call(
+        &fx.server,
+        "resume_variant_list",
+        json!({ "project_root": root }),
+    )
+    .await
+    .result
+    .expect("list");
+    let vid = list["variants"][0]["id"].as_str().expect("id").to_string();
+
+    let challenge = call(
+        &fx.server,
+        "resume_variant_delete",
+        json!({ "project_root": root, "variant_id": vid }),
+    )
+    .await
+    .result
+    .expect("challenge");
+    let state = challenge["requestState"].as_str().expect("state").to_string();
+    let done = call(
+        &fx.server,
+        "resume_variant_delete",
+        json!({
+            "project_root": root,
+            "variant_id": vid,
+            "request_state": state,
+            "input_responses": { "confirm": true },
+        }),
+    )
+    .await;
+    assert!(done.error.is_none(), "genuine flow failed: {:?}", done.error);
+    assert_eq!(fx.variant_count(), baseline - 1, "confirmed delete must delete");
+}
+
+/// Optimistic concurrency: two interleaved editors cannot silently clobber
+/// each other. The second writer is refused and told the current sha.
+#[tokio::test]
+async fn concurrent_writers_are_serialised_by_expected_sha() {
+    let fx = DocFixture::new("occ");
+    let root = fx.root.to_string_lossy().to_string();
+
+    let read = call(
+        &fx.server,
+        "resume_doc_read",
+        json!({ "project_root": root, "file_path": "main.typ" }),
+    )
+    .await
+    .result
+    .expect("read");
+    let stale_sha = read["sha1"].as_str().expect("sha").to_string();
+
+    // Writer A lands first with the valid sha.
+    let a = call(
+        &fx.server,
+        "resume_doc_write",
+        json!({
+            "project_root": root,
+            "file_path": "main.typ",
+            "content": "= Jane Doe\n- Rewrote by A\n",
+            "expected_sha1": stale_sha,
+        }),
+    )
+    .await;
+    assert!(a.error.is_none(), "first writer failed: {:?}", a.error);
+
+    // Writer B races with the now-stale sha and must be refused.
+    let b = call(
+        &fx.server,
+        "resume_doc_write",
+        json!({
+            "project_root": root,
+            "file_path": "main.typ",
+            "content": "= Jane Doe\n- Rewrote by B\n",
+            "expected_sha1": stale_sha,
+        }),
+    )
+    .await;
+    let err = b.error.expect("stale writer must be refused");
+    assert!(err.message.contains("mismatch"), "unexpected refusal: {}", err.message);
+    let current = std::fs::read_to_string(fx.root.join("main.typ")).unwrap();
+    assert!(current.contains("Rewrote by A"), "A's write was lost");
+
+    // The refusal names the CURRENT sha, so B can recover honestly.
+    let current_sha = crate::plugins::path_guard::sha1_hex(current.as_bytes());
+    assert!(
+        err.message.contains(&current_sha),
+        "refusal must carry the fresh sha: {}",
+        err.message
+    );
+}
+
+/// Fuzzing every document tool with arbitrary argument shapes must neither
+/// panic the dispatcher nor leave half-written files (temp leftovers) anywhere.
+#[tokio::test]
+async fn document_tools_never_panic_or_leak_temp_files() {
+    let fx = DocFixture::new("nofuzz-leak");
+    let tools = doc_tools(&fx.server);
+
+    for seed in 0..250u64 {
+        let mut rng = Lcg::new(seed ^ 0xF00D);
+        let tool = rng.pick(&tools).clone();
+        let args = hostile_json(&mut rng, 3);
+        let res = call(&fx.server, &tool, args).await;
+        assert!(
+            res.result.is_some() != res.error.is_some(),
+            "seed {seed}: '{tool}' returned both or neither"
+        );
+        if let Some(err) = res.error {
+            assert!(!err.message.is_empty());
+        }
+    }
+
+    fn walk_temps(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if p.file_name().is_some_and(|n| n == ".prism") {
+                    continue; // backups/build live here legitimately
+                }
+                walk_temps(&p, out);
+            } else if p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.contains(".tmp-"))
+            {
+                out.push(p);
+            }
+        }
+    }
+    let mut temps = Vec::new();
+    walk_temps(&fx.root, &mut temps);
+    assert!(
+        temps.is_empty(),
+        "temp files leaked after hostile fuzzing: {:?}",
+        temps.iter().take(5).collect::<Vec<_>>()
+    );
 }

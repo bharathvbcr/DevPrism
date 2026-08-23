@@ -3,11 +3,22 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { isTauri } from "@/lib/runtime/is-tauri";
 import { useCareerStore } from "@/stores/career-store";
+import { useSynthesisStore } from "@/stores/synthesis-store";
 
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
     setTitle: vi.fn(() => Promise.resolve()),
   }),
+}));
+
+const changeHandlers = new Set<() => void>();
+vi.mock("@/lib/career/db-events", () => ({
+  CAREER_DB_CHANGED_EVENT: "career-db-changed",
+  onCareerDbChanged: vi.fn((handler: () => void) => {
+    changeHandlers.add(handler);
+    return () => changeHandlers.delete(handler);
+  }),
+  debounce: (fn: () => void) => fn,
 }));
 
 vi.mock("@/components/career/career-database-tab", () => ({
@@ -92,5 +103,23 @@ describe("CareerView", () => {
     render(<CareerView />);
     await user.click(screen.getByRole("button", { name: /projects/i }));
     expect(closeCareer).toHaveBeenCalledOnce();
+  });
+
+  it("refetches career + readiness state on external DB change events", () => {
+    useCareerStore.setState({
+      loadAll: vi.fn(async () => {}),
+      closeCareer: vi.fn(),
+    });
+    const refreshReadiness = vi.fn(async () => {});
+    useSynthesisStore.setState({ refreshReadiness });
+    changeHandlers.clear();
+
+    render(<CareerView />);
+    expect(changeHandlers.size).toBeGreaterThan(0);
+
+    for (const handler of [...changeHandlers]) handler();
+
+    expect(useCareerStore.getState().loadAll).toHaveBeenCalled();
+    expect(refreshReadiness).toHaveBeenCalled();
   });
 });

@@ -1,23 +1,18 @@
 /** Canonical career DB types (mirrored by Rust serde structs in career_db). */
 
+import type {
+  BlockKind as CanonicalBlockKind,
+  PersonaSectionId,
+} from "../resume-sections";
+
 export type PersonaId = string;
 
-export type BlockKind =
-  | "experience"
-  | "project"
-  | "publication"
-  | "education"
-  | "leadership";
+export type BlockKind = CanonicalBlockKind;
 
 export type SeniorityLevel = "ic" | "senior" | "lead" | "manager" | "director";
 
-export type SectionKind =
-  | "experience"
-  | "projects"
-  | "skills"
-  | "education"
-  | "publications"
-  | "leadership";
+/** Persona-orderable resume slots (canonical owner: `resume-sections.ts`). */
+export type SectionKind = PersonaSectionId;
 
 export type KbSourceType =
   | "wiki"

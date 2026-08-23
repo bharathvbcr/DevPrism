@@ -4,6 +4,7 @@ import {
   deleteBlock as deleteBlockApi,
   deletePersona as deletePersonaApi,
   listBlocks,
+  listKbSources,
   listPersonas,
   persistBlockEmbedding,
   upsertBlock as upsertBlockApi,
@@ -31,6 +32,12 @@ interface CareerState {
   /** Blocks with no embedding row (for Database tab badge). */
   blocksMissingEmbeddings: number;
 
+  /**
+   * KB source count for coverage surfaces (first-run guide). `null` means the
+   * lookup failed — unknown, never conflated with a confirmed zero.
+   */
+  kbSourceCount: number | null;
+
   loading: boolean;
   saving: boolean;
   error: string | null;
@@ -41,6 +48,12 @@ interface CareerState {
    */
   resumeImportRequested: boolean;
 
+  /**
+   * LaTeX source captured before the wizard opens (e.g. a dropped .zip or
+   * .tex file). Consumed by the import wizard, then cleared on acknowledge.
+   */
+  resumeImportSource: string | null;
+
   /** Open Career; omit tab to restore the last active tab (else `"database"`). */
   openCareer: (tab?: CareerTab) => void;
   closeCareer: () => void;
@@ -48,11 +61,15 @@ interface CareerState {
   setSelectedBlockId: (id: string | null) => void;
   setSelectedPersonaId: (id: string | null) => void;
   /** Switch to Database and ask it to open the resume import wizard. */
-  requestResumeImport: () => void;
+  requestResumeImport: (source?: string) => void;
   acknowledgeResumeImportRequest: () => void;
+  /** Clear a pending dropped/picked source after the wizard consumes it. */
+  clearResumeImportSource: () => void;
 
   loadAll: () => Promise<void>;
   refreshMissingBlockEmbeddings: () => Promise<void>;
+  /** Re-probe KB source coverage (mount, external-change events, mutations). */
+  refreshKbCoverage: () => Promise<void>;
   saveBlock: (block: ExperienceBlock) => Promise<void>;
   removeBlock: (id: string) => Promise<void>;
   savePersona: (persona: Persona) => Promise<void>;
@@ -109,12 +126,14 @@ export const useCareerStore = create<CareerState>((set, get) => ({
   selectedPersonaId: null,
 
   blocksMissingEmbeddings: 0,
+  kbSourceCount: null,
 
   loading: false,
   saving: false,
   error: null,
 
   resumeImportRequested: false,
+  resumeImportSource: null,
 
   /**
    * Open Career. With an explicit tab, switch to it; with no arg, restore the
@@ -133,19 +152,22 @@ export const useCareerStore = create<CareerState>((set, get) => ({
       selectedPersonaId: null,
       error: null,
       resumeImportRequested: false,
+      resumeImportSource: null,
       // Keep activeTab so the next openCareer() restores the last tab.
     }),
   setActiveTab: (tab) => set({ activeTab: tab }),
   setSelectedBlockId: (id) => set({ selectedBlockId: id }),
   setSelectedPersonaId: (id) => set({ selectedPersonaId: id }),
-  requestResumeImport: () =>
+  requestResumeImport: (source) =>
     set({
       careerOpen: true,
       activeTab: "database",
       resumeImportRequested: true,
+      resumeImportSource: source && source.trim().length > 0 ? source : null,
       error: null,
     }),
   acknowledgeResumeImportRequest: () => set({ resumeImportRequested: false }),
+  clearResumeImportSource: () => set({ resumeImportSource: null }),
 
   refreshMissingBlockEmbeddings: async () => {
     try {
@@ -154,6 +176,18 @@ export const useCareerStore = create<CareerState>((set, get) => ({
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log.warn("Failed to count blocks missing embeddings", { error: message });
+    }
+  },
+
+  refreshKbCoverage: async () => {
+    try {
+      const sources = await listKbSources();
+      set({ kbSourceCount: sources.length });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log.warn("Failed to refresh KB source coverage", { error: message });
+      // Unknown stays distinct from a confirmed zero.
+      set({ kbSourceCount: null });
     }
   },
 
@@ -175,6 +209,7 @@ export const useCareerStore = create<CareerState>((set, get) => ({
         selectedPersonaId: get().selectedPersonaId ?? personas[0]?.id ?? null,
       });
       void get().refreshMissingBlockEmbeddings();
+      void get().refreshKbCoverage();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log.error("Failed to load career DB", { error: message });

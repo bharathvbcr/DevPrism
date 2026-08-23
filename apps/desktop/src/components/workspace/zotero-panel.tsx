@@ -15,7 +15,6 @@ import {
   CheckIcon,
   XIcon,
 } from "lucide-react";
-import { toast } from "sonner";
 import { useZoteroStore, type CollectionSyncInfo } from "@/stores/zotero-store";
 import { useDocumentStore } from "@/stores/document-store";
 import { useSettingsStore } from "@/stores/settings-store";

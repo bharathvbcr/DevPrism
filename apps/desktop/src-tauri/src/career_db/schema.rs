@@ -48,10 +48,17 @@ CREATE TABLE IF NOT EXISTS career_meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS known_projects (
+    path TEXT PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
+    last_opened_at INTEGER NOT NULL DEFAULT 0
+);
 CREATE INDEX IF NOT EXISTS idx_embeddings_owner_kind ON embeddings(owner_kind);
 CREATE INDEX IF NOT EXISTS idx_embeddings_model ON embeddings(model);
 CREATE INDEX IF NOT EXISTS idx_kb_chunks_source_id ON kb_chunks(source_id);
 CREATE INDEX IF NOT EXISTS idx_blocks_kind ON blocks(kind);
+CREATE INDEX IF NOT EXISTS idx_blocks_updated_at ON blocks(updated_at);
+CREATE INDEX IF NOT EXISTS idx_synthesis_runs_created_at ON synthesis_runs(created_at);
 "#;
 
 pub fn init_schema(conn: &Connection) -> Result<(), String> {
@@ -67,6 +74,16 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
         );",
     )
     .map_err(|e| format!("Failed to ensure career_meta: {e}"))?;
+    // known_projects may be missing on DBs created before the plugins layer
+    // needed a cross-process project registry.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS known_projects (
+            path TEXT PRIMARY KEY,
+            name TEXT NOT NULL DEFAULT '',
+            last_opened_at INTEGER NOT NULL DEFAULT 0
+        );",
+    )
+    .map_err(|e| format!("Failed to ensure known_projects: {e}"))?;
     Ok(())
 }
 
@@ -195,7 +212,7 @@ pub fn seed_default_personas(conn: &Connection) -> Result<(), String> {
                 "llm": 1.5
             },
             "defaultTemplateId": "typst-ats-single-column",
-            "sectionOrder": ["experience", "projects", "skills", "education", "publications"],
+            "sectionOrder": ["summary", "experience", "projects", "skills", "education", "publications", "certifications", "awards"],
             "toneDirective": "Emphasize technical depth, systems impact, and measurable ML outcomes. Prefer precise tooling and method names."
         }),
         json!({
@@ -209,7 +226,7 @@ pub fn seed_default_personas(conn: &Connection) -> Result<(), String> {
                 "biology": 1.2
             },
             "defaultTemplateId": "typst-ats-single-column",
-            "sectionOrder": ["experience", "publications", "projects", "skills", "education"],
+            "sectionOrder": ["summary", "experience", "publications", "projects", "skills", "education", "awards"],
             "toneDirective": "Emphasize scientific rigor, domain collaboration, and translational impact. Prefer assay, cohort, and pipeline specifics."
         }),
         json!({
@@ -223,7 +240,7 @@ pub fn seed_default_personas(conn: &Connection) -> Result<(), String> {
                 "cross-functional": 1.2
             },
             "defaultTemplateId": "typst-ats-single-column",
-            "sectionOrder": ["experience", "leadership", "skills", "projects", "education", "publications"],
+            "sectionOrder": ["summary", "experience", "leadership", "skills", "projects", "education", "publications", "volunteer"],
             "toneDirective": "Emphasize scope, team outcomes, stakeholder alignment, and delivery under ambiguity. Prefer org-level metrics over individual tooling."
         }),
     ];
@@ -248,6 +265,27 @@ pub fn seed_default_personas(conn: &Connection) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn seeded_personas_deserialize_with_section_order() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        seed_default_personas(&conn).unwrap();
+        let json: String = conn
+            .query_row(
+                "SELECT json FROM personas WHERE id = 'ai'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let persona: super::super::Persona =
+            serde_json::from_str(&json).expect("seed json must deserialize as Persona");
+        assert!(
+            !persona.section_order.is_empty(),
+            "seeded sectionOrder must match Persona serde, got {json}"
+        );
+        assert!(persona.section_order.iter().any(|s| s == "experience"));
+    }
 
     #[test]
     fn seeded_personas_use_the_typst_engine() {

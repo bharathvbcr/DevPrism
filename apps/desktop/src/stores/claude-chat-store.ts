@@ -2048,7 +2048,9 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
           sessionId,
         });
 
-        // Filter to displayable message types and map to ClaudeStreamMessage
+        // The Rust side already filtered to displayable entry types
+        // (user/assistant/result + the system/init record used for provider
+        // inference); keep this guard as defense in depth.
         const rawMessages: ClaudeStreamMessage[] = [];
         for (const entry of history) {
           const type = entry.type;

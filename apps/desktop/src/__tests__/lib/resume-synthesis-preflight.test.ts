@@ -283,4 +283,29 @@ describe("checkSynthesisReadiness", () => {
     expect(readiness.data.status).toBe("error");
     expect(readiness.data.blockCount).toBe(0);
   });
+
+  it("reports KB source coverage as unknown when the lookup fails", async () => {
+    const career = await import("@/lib/career");
+    vi.mocked(career.listKbSources).mockRejectedValue(
+      new Error("database is locked"),
+    );
+
+    const readiness = await checkSynthesisReadiness({ forceEmbedProbe: true });
+    expect(readiness.data.kbSourceCount).toBeNull();
+    expect(readiness.data.status).toBe("warn");
+    expect(readiness.data.message).toMatch(/knowledge source lookup failed/i);
+    expect(readiness.data.message).not.toMatch(/no knowledge sources/i);
+  });
+
+  it("errors when experience blocks cannot be loaded at all", async () => {
+    const career = await import("@/lib/career");
+    vi.mocked(career.listBlocks).mockRejectedValue(
+      new Error("career db unavailable"),
+    );
+
+    const readiness = await checkSynthesisReadiness({ forceEmbedProbe: true });
+    expect(readiness.data.blockCount).toBeNull();
+    expect(readiness.data.status).toBe("error");
+    expect(readiness.data.message).toMatch(/coverage unknown/i);
+  });
 });

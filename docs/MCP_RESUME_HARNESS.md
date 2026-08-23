@@ -6,11 +6,13 @@ How an external agent drives DevPrism's résumé generator, and what it costs.
 
 The canonical résumé pipeline is TypeScript (`src/lib/resume-synthesis/`) and
 runs in the webview. The MCP server does not: `main.rs --mcp` builds a Tokio
-runtime and a `CareerDbState` and nothing else — no Tauri app, no webview, no
-JS engine. It therefore cannot call the TypeScript.
+runtime, a `CareerDbState`, and the plugin registry — no Tauri app, no webview,
+no JS engine. It therefore cannot call the TypeScript.
 
-Before this work it didn't try. The seven `resume_*` tools were self-contained
-heuristics that had drifted into fiction:
+Before this work it didn't try. The seven `resume_*` analysis tools were self-contained
+heuristics that had drifted into fiction (`resume_ats_check` — an ATS parse
+simulation, keyword heatmap, and JD metadata audit ported from IgniteCV — later
+joined them as the eighth):
 
 | Tool | What it claimed | What it did |
 | --- | --- | --- |
@@ -98,14 +100,33 @@ caller's word.
 
 ```
 resume_analyze_jd         → JdProfile + extractionMethod (or send your own)
+                            + deterministic metadata (salary, benefits,
+                            culture signals, experience level)
 resume_score_and_select   → which blocks and bullets matter, with components
 resume_rewrite_bullets    → without drafts: a work order listing each bullet's
                             protected metrics
   (you write the bullets)
 resume_rewrite_bullets    → with drafts: accept/reject per bullet, with
                             droppedMetrics
-resume_synthesize         → compiled PDF + measured match report
+resume_synthesize         → compiled PDF + measured match report + ATS parse
+                            check over what it renders
+resume_ats_check          → standalone ATS parse simulation (sections, contact
+                            survival, formatting hazards) with an optional
+                            JD keyword heatmap
+resume_save_synthesis     → persist the result as a tailored version of your
+                            master (see Plugins 1.0, below)
 ```
+
+## Editing documents, not just generating them
+
+Everything above is read-only over your files. The `resume-documents` plugin
+pack (Plugins 1.0 — see `docs/PLUGINS.md`) adds the write side: an agent can
+list registered projects, read a resume's Typst source, apply verified
+surgical edits (`expected_sha1` optimistic concurrency, backups, atomic
+writes), create or delete tailored versions (delete is human-confirmed),
+compile with the in-process engine, and persist synthesis output as a new
+variant. Masters are never modified by synthesis; every destructive step is
+gated and reported.
 
 ## Appendix: local-model evaluation of a path that is NOT in the tree
 

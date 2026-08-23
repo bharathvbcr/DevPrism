@@ -37,6 +37,7 @@ import {
 import { useOllamaStatus } from "@/hooks/use-ollama-status";
 import { OllamaSetupHints } from "@/components/ollama-setup-hints";
 import { useUvSetupStore } from "@/stores/uv-setup-store";
+import { useUpdateStore } from "@/stores/update-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import {
   AGENT_BACKENDS,
@@ -884,6 +885,8 @@ function EnvironmentStatus({ appVersion }: { appVersion: string }) {
           label="DevPrism"
           detail={appVersion ? `v${appVersion}` : "Checking..."}
         />
+
+        <UpdateStatusRow />
       </div>
 
       {showSkillsOnboarding && OnboardingComponent && (
@@ -964,5 +967,79 @@ function StatusRow({
         </Button>
       )}
     </div>
+  );
+}
+
+/**
+ * App-update status + manual check. Shares state with the startup update
+ * notification (`useUpdateStore`), so an update noticed on launch can also be
+ * installed from here, and a failed check is visible instead of silent.
+ */
+function UpdateStatusRow() {
+  const status = useUpdateStore((s) => s.status);
+  const checkForUpdate = useUpdateStore((s) => s.checkForUpdate);
+  const installUpdate = useUpdateStore((s) => s.installUpdate);
+
+  const detail = (() => {
+    switch (status.state) {
+      case "checking":
+        return "Checking for updates...";
+      case "up-to-date":
+        return "Up to date";
+      case "available":
+        return `Version ${status.version} is available`;
+      case "downloading":
+        return `Downloading... ${status.percent}%`;
+      case "installing":
+        return "Installing...";
+      case "ready":
+        return "Restarting to apply the update...";
+      case "error":
+        return `Update check failed: ${status.message.slice(0, 160)}`;
+      default:
+        return "Updates are checked automatically on launch";
+    }
+  })();
+
+  const action = (() => {
+    switch (status.state) {
+      case "available":
+        return {
+          label: `Install ${status.version}`,
+          onClick: () => void installUpdate(),
+        };
+      case "idle":
+      case "error":
+      case "up-to-date":
+        return {
+          label: "Check for updates",
+          onClick: () => void checkForUpdate(),
+        };
+      default:
+        return undefined;
+    }
+  })();
+
+  return (
+    <>
+      <StatusRow
+        ok={status.state !== "error"}
+        label="Updates"
+        detail={detail}
+        action={
+          action && {
+            ...action,
+            loading: status.state === "checking",
+          }
+        }
+      />
+      {status.state === "available" && status.notes && (
+        <div className="border-border/60 border-t px-4 py-3 pl-14">
+          <p className="line-clamp-4 whitespace-pre-wrap text-muted-foreground text-xs leading-relaxed">
+            {status.notes}
+          </p>
+        </div>
+      )}
+    </>
   );
 }

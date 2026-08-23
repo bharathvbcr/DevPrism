@@ -25,6 +25,12 @@ import {
   toTypstString,
   toTypstUrl,
 } from "@/lib/resume-synthesis/typst-escape";
+import {
+  TWO_COLUMN_LEFT_SECTIONS,
+  SECTION_DISPLAY,
+  resolveSectionOrder,
+  type PersonaSectionId,
+} from "../resume-sections";
 import type {
   HeaderFields,
   RenderedBlock,
@@ -99,39 +105,21 @@ export const TYPST_ATS_PREAMBLE = `// DevPrism ATS resume — static scaffolding
 )
 `;
 
-/** Sidebar kinds for the two-column layout. */
-const TWO_COLUMN_LEFT = new Set<SectionKind>([
-  "skills",
-  "education",
-  "leadership",
-]);
-
-const TWO_COLUMN_RIGHT = new Set<SectionKind>([
-  "summary",
-  "experience",
-  "projects",
-  "publications",
-]);
-
-const DEFAULT_SECTION_ORDER: SectionKind[] = [
-  "summary",
-  "skills",
-  "experience",
-  "projects",
-  "education",
-  "publications",
-  "leadership",
-];
+/** Sidebar kinds for the two-column layout. Everything else falls through to the right. */
+const TWO_COLUMN_LEFT = TWO_COLUMN_LEFT_SECTIONS;
 
 const SECTION_TITLES: Record<SectionKind, string> = {
   header: "",
-  summary: "Summary",
-  skills: "Skills",
-  experience: "Experience",
-  projects: "Projects",
-  education: "Education",
-  publications: "Publications",
-  leadership: "Leadership",
+  summary: SECTION_DISPLAY.summary,
+  skills: SECTION_DISPLAY.skills,
+  experience: SECTION_DISPLAY.experience,
+  projects: SECTION_DISPLAY.projects,
+  education: SECTION_DISPLAY.education,
+  publications: SECTION_DISPLAY.publications,
+  leadership: SECTION_DISPLAY.leadership,
+  certifications: SECTION_DISPLAY.certifications,
+  awards: SECTION_DISPLAY.awards,
+  volunteer: SECTION_DISPLAY.volunteer,
 };
 
 /**
@@ -284,9 +272,24 @@ function blocksForKind(
       return content.publications ?? [];
     case "leadership":
       return content.leadership ?? [];
+    case "certifications":
+      return content.certifications ?? [];
+    case "awards":
+      return content.awards ?? [];
+    case "volunteer":
+      return content.volunteer ?? [];
     default:
       return [];
   }
+}
+
+function sectionHasContent(
+  content: ResumeContent,
+  kind: PersonaSectionId,
+): boolean {
+  if (kind === "summary") return Boolean(content.summary?.trim());
+  if (kind === "skills") return (content.skills?.length ?? 0) > 0;
+  return blocksForKind(content, kind).length > 0;
 }
 
 /** Emit one section's lines into `body`. Returns whether anything was written. */
@@ -358,8 +361,9 @@ export function renderTypstTemplate(
   content: ResumeContent,
   sectionOrder?: SectionKind[],
 ): RenderResult {
-  const order =
-    sectionOrder?.filter((k) => k !== "header") ?? DEFAULT_SECTION_ORDER;
+  const order = resolveSectionOrder(sectionOrder, (id) =>
+    sectionHasContent(content, id),
+  );
 
   const body = new Body();
   headerLines(content.header, body);
@@ -373,7 +377,7 @@ export function renderTypstTemplate(
     }
     body.push("}, {");
     for (const kind of order) {
-      if (TWO_COLUMN_RIGHT.has(kind)) sectionLines(content, kind, body);
+      if (!TWO_COLUMN_LEFT.has(kind)) sectionLines(content, kind, body);
     }
     body.push("})");
   } else {
@@ -436,6 +440,11 @@ export const TYPST_ATS_SINGLE_TEMPLATE: ResumeTemplate = {
       education: 2,
       skills: 1,
       summary: 1,
+      publications: 2,
+      leadership: 1,
+      certifications: 2,
+      awards: 2,
+      volunteer: 1,
     },
   },
 };
@@ -463,6 +472,9 @@ export const TYPST_ATS_TWO_COLUMN_TEMPLATE: ResumeTemplate = {
       summary: 1,
       leadership: 1,
       publications: 2,
+      certifications: 2,
+      awards: 2,
+      volunteer: 1,
     },
   },
 };

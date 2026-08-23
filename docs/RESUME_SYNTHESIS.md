@@ -106,15 +106,22 @@ the renderer and the compiler agree.
 | `kb_chunks` | Heading-aware text chunks with meta |
 | `embeddings` | f32 BLOB vectors; PK `(owner_id, model)`; `owner_kind`: `block` \| `chunk` \| `bullet` \| `fact` |
 | `synthesis_runs` | JD hash + persona + template + match report (+ optional `.tex`) history |
+| `known_projects` | Folders the desktop app has opened (`path`, `name`, `last_opened_at`) — the allowlist external agents' document tools are confined to |
 
 Schema: `apps/desktop/src-tauri/src/career_db/schema.rs`.  
 Types: `apps/desktop/src/lib/career/types.ts`.
+
+**External commits stay visible.** A Rust watcher polls the DB's `data_version`
+every 3 s and emits `career-db-changed` when a commit arrives from outside the
+app process (the in-app MCP server or a `--mcp-stdio` process); Career surfaces
+refetch debounced (400 ms) via `lib/career/db-events.ts`, so agent-written data
+appears without a reopen.
 
 ### Experience blocks
 
 | Field | Notes |
 |-------|--------|
-| `kind` | `experience` \| `project` \| `publication` \| `education` \| `leadership` |
+| `kind` | `experience` \| `project` \| `publication` \| `education` \| `leadership` \| `certification` \| `award` \| `volunteer` |
 | `title`, `org`, `dateRange` | Display / recency |
 | `personas[]`, `domains[]` | Targeting filters |
 | `skills[{name, level 1–5, years?}]` | Tag scoring |
@@ -149,9 +156,9 @@ Ingest: block editor (manual + Distill with AI), Synthesize **Quick points** dia
 
 | Id | Focus | Default section emphasis |
 |----|--------|---------------------------|
-| `ai` | ML / systems / measurable model outcomes | experience → projects → skills → education → publications |
-| `life-sciences` | Scientific rigor, assays, pipelines | experience → publications → projects → skills → education |
-| `management` | Scope, teams, stakeholder delivery | experience → leadership → skills → projects → education → publications |
+| `ai` | ML / systems / measurable model outcomes | summary → experience → projects → skills → education → publications → certifications → awards |
+| `life-sciences` | Scientific rigor, assays, pipelines | summary → experience → publications → projects → skills → education → awards |
+| `management` | Scope, teams, stakeholder delivery | summary → experience → leadership → skills → projects → education → publications → volunteer |
 
 Each persona stores `skillWeights`, `toneDirective`, `sectionOrder`, and `defaultTemplateId` (UI: template select from the resume-templates registry). Seeds use `INSERT OR IGNORE` so user edits are never overwritten.
 
@@ -165,6 +172,7 @@ Each persona stores `skillWeights`, `toneDirective`, `sectionOrder`, and `defaul
 | BibTeX / Zotero | `ingest/zotero.ts` | KB publication chunks |
 | BibTeX → blocks | `publication-import-wizard.tsx` | `kind: "publication"` blocks |
 | Pasted / wizard resume | `extract-resume.ts` | LLM → draft blocks (+ facts) |
+| Resume archive (`.zip`) / drag-drop | `resume-source.ts` | Overleaf-style archives; picks the primary `.tex`, strips root prefix, zip-slip-safe |
 | Quick points | `distill-facts.ts` | Paste → structured facts on a block |
 
 Pipeline: `ingest/pipeline.ts` — parse → chunk → hash → upsert → embed (with `ProcessingProgress` callbacks).
@@ -269,7 +277,7 @@ Pure TS. For each `mustHaveSkill`, classify coverage across selected blocks, the
 | Id | Layout |
 |----|--------|
 | `ats-single-column` | Single column (default ATS) |
-| `ats-two-column` | Header full-width; left minipage (skills / education / leadership); right (summary / experience / projects / publications) |
+| `ats-two-column` | Header full-width; left minipage (skills / education / leadership / certifications / awards); right (every other contentful section, never dropped) |
 
 Contract: audited `preamble` (AI never touches) · `sections` · `budget` · optional `layout`. Assembly escapes every AI-facing string via `escapeAndValidateSlot`; compile failures map engine line → slot and bisect/revert.
 
@@ -359,7 +367,7 @@ Completions honor the selected chat provider (Ollama / OpenAI-compat / Claude Co
 | Gap analysis | `apps/desktop/src/lib/resume-synthesis/gap-analysis.ts` |
 | Templates | `apps/desktop/src/lib/resume-templates/` |
 | Career SQLite host | `apps/desktop/src-tauri/src/career_db/` |
-| Compile verify command | `apps/desktop/src-tauri/src/career_compile.rs` |
+| Typst compile commands | `apps/desktop/src-tauri/src/career_typst/mod.rs` (`career_typst_compile`, `career_typst_compile_project`) |
 | Progress UI store | `apps/desktop/src/stores/synthesis-store.ts` |
 
 ## Out of scope (by design)

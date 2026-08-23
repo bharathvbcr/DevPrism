@@ -42,7 +42,7 @@ const EXCLUDE_DIRS: &[&str] = &[
 
 /// OpenAI-style function schemas advertised to the model.
 pub fn tool_schemas() -> Value {
-    json!([
+    let mut out = json!([
         schema("Read", "Read a UTF-8 text file from the project. Optionally pass offset/limit (1-based line numbers) to read just a slice of a large file.",
             json!({
                 "file_path": {"type": "string", "description": "Path relative to the project root"},
@@ -118,32 +118,16 @@ pub fn tool_schemas() -> Value {
                 "options": {"type": "array", "items": {"type": "string"}, "description": "Up to 4 short answer choices to offer (optional); the user can always type a free-form reply instead"}
             }),
             &["question"]),
-        schema("career_search_kb", "Search candidate's career knowledgebase, experience blocks, and verified facts by query, persona, or kind.",
-            json!({
-                "query": {"type": "string", "description": "Search query or skill keyword"},
-                "persona": {"type": "string", "description": "Optional persona filter (e.g. 'ai', 'management')"},
-                "kind": {"type": "string", "description": "Optional block kind filter (e.g. 'work', 'project', 'education')"}
-            }),
-            &["query"]),
-        schema("resume_gap_analysis", "Evaluate candidate's career coverage against a target Job Description, identifying missing required skills and match score.",
-            json!({
-                "jd_text": {"type": "string", "description": "Full target job description text"},
-                "persona_id": {"type": "string", "description": "Optional persona ID"}
-            }),
-            &["jd_text"]),
-        schema("resume_synthesize", "Run end-to-end 7-stage resume synthesis pipeline generating tailored Typst resume code.",
-            json!({
-                "jd_text": {"type": "string", "description": "Target job description text"},
-                "persona_id": {"type": "string", "description": "Persona ID (e.g. 'ai')"},
-                "template_id": {"type": "string", "description": "Template ID (e.g. 'modern-cv')"}
-            }),
-            &["jd_text"]),
-        schema("resume_compile", "Compile Typst resume source code into PDF bytes using the in-process Typst engine.",
-            json!({
-                "typst_source": {"type": "string", "description": "Typst resume source code to compile"}
-            }),
-            &["typst_source"]),
-    ])
+    ]);
+    // Plugins 1.0: career/resume capability packs advertise through the shared
+    // registry (previously four hand-copied schemas drifted from the MCP
+    // definitions they mirrored).
+    if let (Some(base), Value::Array(extra)) =
+        (out.as_array_mut(), crate::plugins::shared_registry().native_agent_schemas())
+    {
+        base.extend(extra);
+    }
+    out
 }
 
 fn schema(name: &str, desc: &str, props: Value, required: &[&str]) -> Value {
@@ -811,47 +795,39 @@ fn slice_lines(
     (out, false)
 }
 
-/// Dispatch one of the MCP career/résumé tools from the agent loop.
+/// Dispatch a Plugins 1.0 tool from the agent loop.
 ///
-/// Each of these arms used to inline its own dispatch and return
-/// `val.to_string()` directly. That skipped three things every other tool in
-/// this file gets right:
+/// Routing goes through the shared plugin registry — the same authority the
+/// MCP transports use — so an agent can never call a tool that is not some
+/// pack's advertised surface, and new packs become available here without
+/// touching this file.
 ///
-/// * **The output cap.** Every other tool funnels through `cap`. These did not,
-///   so an unbounded JSON blob went straight into `messages`. `resume_compile`
-///   is the worst case: `include_pdf` defaults to *true*, so a routine call
-///   pushed a base64-encoded PDF — hundreds of kilobytes — into a context window
-///   whose byte budget at the default `num_ctx` is around 15 KB. The agent has
-///   no use for PDF bytes; `byteLength` and `pageCount` are the useful fields.
+/// Arguments reach here verbatim from the model, so both overrides below are
+/// written rather than defaulted — a model that supplies them cannot opt back in:
 /// * **`async: false`.** `resume_synthesize` honours an `async` argument by
 ///   spawning against the `TaskManager` and returning a `taskId`. The manager
 ///   built here is dropped the moment this function returns, and the agent loop
 ///   exposes no `tasks/get` tool — so a model that passed `async: true` got a
 ///   task id nothing could poll or cancel, while the pipeline ran on detached.
-/// * **A shared knowledgebase handle.** Still a per-call `CareerDbState`, which
-///   is a wart, but forcing the two above keeps it from compounding.
-///
-/// Arguments reach here verbatim from the model, so both keys are overwritten
-/// rather than defaulted — a model that supplies them cannot opt back in.
+/// * **`include_pdf: false`.** Compile tools default PDF bytes off; a
+///   base64-encoded PDF is hundreds of kilobytes into a context window whose
+///   byte budget at the default `num_ctx` is around 15 KB. The agent has no use
+///   for PDF bytes; `pdfBytesLength` and `pageCount` are the useful fields.
 async fn run_mcp_tool(tool: &str, args: &Value) -> (String, bool) {
     let mut args = args.clone();
     if let Some(obj) = args.as_object_mut() {
         obj.insert("async".to_string(), Value::Bool(false));
-        if tool == "resume_compile" {
+        if tool == "resume_compile" || tool == "resume_compile_file" {
             obj.insert("include_pdf".to_string(), Value::Bool(false));
         }
     }
 
+    // None of the tools reachable from this loop elicit across calls, so a
+    // per-call store is correct: it cannot accumulate, and no confirmation
+    // spans calls. (The MCP transports share one store instead.)
     let db = crate::career_db::CareerDbState::default();
-    let result = if tool.starts_with("career_") {
-        // None of the tools reachable from this loop elicit, so a per-call store
-        // is correct: it cannot accumulate, and no confirmation spans calls.
-        let elicitations = crate::mcp::elicitation::ElicitationStore::new();
-        crate::mcp::tools_career::execute_career_tool(&db, &elicitations, tool, &args).await
-    } else {
-        let task_mgr = std::sync::Arc::new(crate::mcp::tasks::TaskManager::new());
-        crate::mcp::tools_resume::execute_resume_tool(&db, &task_mgr, tool, &args).await
-    };
+    let ctx = crate::plugins::PluginContext::new(db);
+    let result = crate::plugins::shared_registry().execute_tool(&ctx, tool, &args).await;
 
     match result {
         Ok(val) => (cap(val.to_string(), MAX_OUTPUT_BYTES), false),
@@ -1176,17 +1152,24 @@ async fn execute_inner(project_dir: &Path, name: &str, args: &Value) -> (String,
                 Err(e) => (e, true),
             }
         }
-        "career_search_kb" | "resume_gap_analysis" | "resume_synthesize" | "resume_compile" => {
-            run_mcp_tool(name, args).await
+        other => {
+            if crate::plugins::shared_registry()
+                .native_agent_tool_names()
+                .contains(&other)
+            {
+                run_mcp_tool(other, args).await
+            } else {
+                (
+                    format!(
+                        "Unknown tool \"{}\". Available tools: Read, Write, Edit, MultiEdit, LS, Grep, Bash, Glob, Compile, AskUser, {}. \
+                         Call one of these instead.",
+                        other,
+                        crate::plugins::shared_registry().native_agent_tool_names().join(", ")
+                    ),
+                    true,
+                )
+            }
         }
-        other => (
-            format!(
-                "Unknown tool \"{}\". Available tools: Read, Write, Edit, MultiEdit, LS, Grep, Bash, Glob, Compile, AskUser, career_search_kb, resume_gap_analysis, resume_synthesize, resume_compile. \
-                 Call one of these instead.",
-                other
-            ),
-            true,
-        ),
     }
 }
 
@@ -1348,11 +1331,12 @@ fn append_file_matches(
         if ri > 0 && context > 0 {
             out.push("--".to_string());
         }
-        for ln in start..=end {
+        for (offset, raw_line) in lines[start..=end].iter().enumerate() {
+            let ln = start + offset;
             // Keep leading indentation (it conveys structure) but bound the width.
-            let text: String = lines[ln].trim_end().chars().take(200).collect();
+            let text: String = raw_line.trim_end().chars().take(200).collect();
             let sep = if is_match.contains(&ln) { ':' } else { '-' };
-            out.push(format!("{}{}{}{} {}", rel, sep, ln + 1, sep, text));
+            out.push(format!("{rel}{sep}{}{sep} {text}", ln + 1));
         }
     }
 }
@@ -1864,10 +1848,25 @@ mod tests {
     fn schemas_are_well_formed() {
         let s = tool_schemas();
         let arr = s.as_array().unwrap();
-        assert_eq!(arr.len(), 14);
+        // 10 built-in tools + every tool a plugin pack advertises to the agent.
+        let advertised = crate::plugins::shared_registry().native_agent_tool_names().len();
+        assert_eq!(arr.len(), 10 + advertised);
+        let mut names: Vec<&str> = arr
+            .iter()
+            .filter_map(|t| t["function"]["name"].as_str())
+            .collect();
+        let total = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), total, "duplicate tool names in the schema list");
         for t in arr {
             assert_eq!(t["type"], "function");
             assert!(t["function"]["name"].is_string());
+            assert!(
+                t["function"]["parameters"].is_object(),
+                "{} must ship a parameters object",
+                t["function"]["name"]
+            );
         }
     }
 

@@ -210,7 +210,7 @@ describe("usePersonalizationStore", () => {
       );
 
       // Change content, should run again
-      store.analyzeLaTeXContent("main.tex", content + "\n% change");
+      store.analyzeLaTeXContent("main.tex", `${content}\n% change`);
       // Since manual override was set, it won't overwrite name (profile.name is already set)
       // but it will increment document class again
       expect(

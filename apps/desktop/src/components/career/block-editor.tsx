@@ -31,6 +31,7 @@ import {
 import { canUseAiAssist } from "@/lib/ai-assist";
 import {
   BLOCK_KINDS,
+  BLOCK_KIND_LABELS,
   SENIORITY_LEVELS,
   clampSkillLevel,
   distillFactsFromNotes,
@@ -49,6 +50,9 @@ import {
   type SeniorityLevel,
   type SkillTag,
 } from "@/lib/career";
+import { createLogger } from "@/lib/debug/logger";
+
+const log = createLogger("block-editor");
 
 const SKILL_LEVELS = [1, 2, 3, 4, 5] as const;
 
@@ -83,18 +87,24 @@ export function BlockEditor({
   }));
   const [kbChunks, setKbChunks] = useState<KbChunkRow[]>([]);
   const [kbLoading, setKbLoading] = useState(false);
+  const [kbLoadFailed, setKbLoadFailed] = useState(false);
   const [distilling, setDistilling] = useState(false);
   const [factPreview, setFactPreview] = useState<BlockFact[] | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setKbLoading(true);
+    setKbLoadFailed(false);
     void listKbChunks()
       .then((rows) => {
         if (!cancelled) setKbChunks(rows);
       })
-      .catch(() => {
-        if (!cancelled) setKbChunks([]);
+      .catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        log.warn("Failed to load KB chunks for evidence picker", {
+          error: message,
+        });
+        if (!cancelled) setKbLoadFailed(true);
       })
       .finally(() => {
         if (!cancelled) setKbLoading(false);
@@ -263,7 +273,7 @@ export function BlockEditor({
             <SelectContent>
               {BLOCK_KINDS.map((k) => (
                 <SelectItem key={k} value={k}>
-                  {k}
+                  {BLOCK_KIND_LABELS[k]}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -555,6 +565,7 @@ export function BlockEditor({
                 chunks={kbChunks}
                 chunkById={chunkById}
                 loading={kbLoading}
+                loadFailed={kbLoadFailed}
                 onChange={(evidenceRefs) =>
                   updateBullet(bullet.id, { evidenceRefs })
                 }
@@ -759,12 +770,15 @@ function EvidenceRefsEditor({
   chunks,
   chunkById,
   loading,
+  loadFailed,
   onChange,
 }: {
   selectedIds: string[];
   chunks: KbChunkRow[];
   chunkById: Map<string, KbChunkRow>;
   loading: boolean;
+  /** The chunk lookup itself failed — must not render as "no chunks yet". */
+  loadFailed?: boolean;
   onChange: (ids: string[]) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -814,7 +828,11 @@ function EvidenceRefsEditor({
               placeholder="Search chunks…"
               className="mb-2 h-8"
             />
-            {chunks.length === 0 ? (
+            {loadFailed ? (
+              <p className="px-1 py-3 text-amber-600 text-xs dark:text-amber-400">
+                Chunk list unavailable — reopen this block to retry.
+              </p>
+            ) : chunks.length === 0 ? (
               <p className="px-1 py-3 text-muted-foreground text-xs">
                 No knowledge-base chunks yet. Ingest sources in the Knowledge
                 tab.
@@ -851,6 +869,12 @@ function EvidenceRefsEditor({
           </PopoverContent>
         </Popover>
       </div>
+      {loadFailed && (
+        <p className="text-[11px] text-amber-600 dark:text-amber-400">
+          Couldn't load the knowledge-base chunk list — reopen this block to
+          retry.
+        </p>
+      )}
       {selectedIds.length === 0 ? (
         <p className="text-[11px] text-muted-foreground">
           Link KB chunks that ground this claim.

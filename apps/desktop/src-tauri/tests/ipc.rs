@@ -14,10 +14,14 @@
 //! `command_handler()`, because that list is `Wry`-typed and cannot be built
 //! on `MockRuntime` — see `every_command_the_frontend_calls_is_registered`.
 
+// Integration-test asserts panic via unwrap by convention; production keeps
+// both lints denied (this file is its own crate root).
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 use serde_json::{json, Value};
 use tauri::test::{mock_builder, mock_context, noop_assets, INVOKE_KEY};
 use tauri::webview::InvokeRequest;
-use tauri::{ipc::CallbackFn, App, Manager, WebviewWindow};
+use tauri::{ipc::CallbackFn, App, WebviewWindow};
 use tauri::test::MockRuntime;
 
 /// Commands exercised over real IPC here.

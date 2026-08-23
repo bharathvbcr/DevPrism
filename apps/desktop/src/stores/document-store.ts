@@ -7,7 +7,6 @@ import {
   scanProjectFolder,
   readTexFileContent,
   writeTexFileContent,
-  readImageAsDataUrl,
   createFileOnDisk,
   copyFileToProject,
   deleteFileFromDisk,
@@ -374,6 +373,23 @@ let autoSaveTimer: ReturnType<typeof setTimeout> | null = null;
 // Store reference set after creation to avoid TDZ issues
 let storeRef: typeof useDocumentStore | null = null;
 
+/**
+ * Hook the editor registers so store actions that mutate file content
+ * (insertAtCursor, replaceSelection, findAndReplace) can first pull any
+ * debounced keystrokes out of the editor before reading `file.content`.
+ * Without this, externally-triggered edits would compute against a stale
+ * base while typing (the editor pushes snapshots on a short debounce).
+ */
+let editorContentFlushHook: (() => void) | null = null;
+
+export function registerEditorContentFlush(flush: (() => void) | null): void {
+  editorContentFlushHook = flush;
+}
+
+function flushPendingEditorEdits(): void {
+  editorContentFlushHook?.();
+}
+
 function scheduleAutoSave() {
   if (autoSaveTimer) clearTimeout(autoSaveTimer);
   autoSaveTimer = setTimeout(async () => {
@@ -421,48 +437,47 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
     }
     const { files: fsFiles, folders: fsFolders } =
       await scanProjectFolder(rootPath);
-    const projectFiles: ProjectFile[] = [];
 
-    for (const f of fsFiles) {
-      const pf: ProjectFile = {
-        id: f.relativePath,
-        name: f.relativePath.split(/[/\\]/).pop() || f.relativePath,
-        relativePath: f.relativePath,
-        absolutePath: f.absolutePath,
-        type: f.type,
-        isDirty: false,
-        fileSize: f.fileSize,
-      };
+    const projectFiles: ProjectFile[] = fsFiles.map((f) => ({
+      id: f.relativePath,
+      name: f.relativePath.split(/[/\\]/).pop() || f.relativePath,
+      relativePath: f.relativePath,
+      absolutePath: f.absolutePath,
+      type: f.type,
+      isDirty: false,
+      fileSize: f.fileSize,
+    }));
 
-      // Load content for text-based files (skip large non-essential files)
-      if (isTextContent(f.type)) {
-        const isLargeNonEssential =
-          f.type === "other" && f.fileSize > LARGE_FILE_THRESHOLD;
-        if (!isLargeNonEssential) {
-          try {
-            pf.content = await readTexFileContent(f.absolutePath);
-          } catch {
-            pf.content = "";
-          }
-        }
-        // Large "other" files: content stays undefined, loaded on-demand via loadFileContent
-      }
-
-      // Load dataUrl for image files (skip very large images)
-      if (f.type === "image") {
-        if (f.fileSize <= LARGE_FILE_THRESHOLD) {
-          try {
-            pf.dataUrl = await readImageAsDataUrl(f.absolutePath);
-          } catch {
-            // Image loading failed, that's ok
-          }
+    // Load text content with a bounded worker pool instead of one IPC per
+    // file in sequence — project open was previously O(files) round trips.
+    const loadableTextFiles = projectFiles.filter((pf) => {
+      if (!isTextContent(pf.type)) return false;
+      const isLargeNonEssential =
+        pf.type === "other" && (pf.fileSize ?? 0) > LARGE_FILE_THRESHOLD;
+      return !isLargeNonEssential;
+    });
+    const TEXT_READ_CONCURRENCY = 8;
+    let readCursor = 0;
+    const readWorker = async () => {
+      while (readCursor < loadableTextFiles.length) {
+        const pf = loadableTextFiles[readCursor++];
+        try {
+          pf.content = await readTexFileContent(pf.absolutePath);
+        } catch {
+          pf.content = "";
         }
       }
+    };
+    await Promise.all(
+      Array.from(
+        { length: Math.min(TEXT_READ_CONCURRENCY, loadableTextFiles.length) },
+        () => readWorker(),
+      ),
+    );
 
-      // PDF files are loaded on-demand via readFile in InlinePdfContent
-
-      projectFiles.push(pf);
-    }
+    // Images render through getAssetUrl (convertFileSrc); their bytes are
+    // not embedded into the store at open time. The crop flow reads the
+    // dataUrl on demand when the user enters crop mode.
 
     // Find the main tex file
     const mainTex =
@@ -876,6 +891,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
   },
 
   updateFileContent: (id, content) => {
+    flushPendingEditorEdits();
     set((state) => ({
       files: state.files.map((f) =>
         f.id === id ? { ...f, content, isDirty: true } : f,
@@ -962,6 +978,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
   setCursorPosition: (position) => set({ cursorPosition: position }),
 
   insertAtCursor: (text) => {
+    flushPendingEditorEdits();
     const state = get();
     const activeFile = getActiveFile(state);
     if (!activeFile || activeFile.type === "image" || activeFile.type === "pdf")
@@ -983,6 +1000,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
   },
 
   replaceSelection: (start, end, text) => {
+    flushPendingEditorEdits();
     const state = get();
     const activeFile = getActiveFile(state);
     if (!activeFile || activeFile.type === "image" || activeFile.type === "pdf")
@@ -1002,6 +1020,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
   },
 
   findAndReplace: (find, replace) => {
+    flushPendingEditorEdits();
     const state = get();
     const activeFile = getActiveFile(state);
     if (!activeFile || activeFile.type === "image" || activeFile.type === "pdf")
@@ -1282,26 +1301,14 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
         };
         const isLargeNonEssential =
           pf.type === "other" && fsFile.fileSize > LARGE_FILE_THRESHOLD;
-        if (
-          isTextContent(pf.type) &&
-          !(pf.type === "other" && isLargeNonEssential)
-        ) {
+        if (isTextContent(pf.type) && !isLargeNonEssential) {
           try {
             pf.content = await readTexFileContent(pf.absolutePath);
           } catch {
             /* skip unreadable */
           }
-        } else if (
-          pf.type === "image" &&
-          fsFile.fileSize <= LARGE_FILE_THRESHOLD
-        ) {
-          try {
-            pf.dataUrl = await readImageAsDataUrl(pf.absolutePath);
-          } catch {
-            /* skip unreadable */
-          }
         }
-        // PDF files and large files are loaded on-demand
+        // Images render via getAssetUrl; dataUrls load on demand (crop flow).
         merged.push(pf);
       }
     }

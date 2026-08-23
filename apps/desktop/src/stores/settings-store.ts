@@ -190,7 +190,10 @@ export const useSettingsStore = create<SettingsState>()(
     (set) => ({
       compilerBackend: "tectonic",
       setCompilerBackend: (backend) => set({ compilerBackend: backend }),
-      autoCompile: false,
+      // On by default for new installs: the PDF preview is the product's
+      // payoff moment and new users otherwise have to discover the compile
+      // button. Existing installs keep whatever they persisted.
+      autoCompile: true,
       setAutoCompile: (enabled) => set({ autoCompile: enabled }),
       pdfDarkMode: false,
       setPdfDarkMode: (enabled) => set({ pdfDarkMode: enabled }),

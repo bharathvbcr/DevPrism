@@ -14,6 +14,7 @@
 
 - Mode selection is now the first wizard step instead of a modal stacked on the picker.
 - Space context hint travels with the wizard chooser (`NewProjectSpaceHint` in `project-wizard.tsx`).
+- Setup deferral is durable and re-prompts: "Set up later" persists across launches (`localStorage`) and the onboarding asks again after 7 days (`ONBOARDING_REPROMPT_AFTER_MS`); the reminder banner's dismiss lasts 3 days. The checklist also gained a non-blocking **LaTeX engine** step backed by `check_tectonic_bundle`, which reports whether first compiles will work offline before they fail confusingly.
 
 ## Remaining blockers (full single-flow wizard)
 
@@ -21,15 +22,14 @@
 |--------|----------------------------------|
 | `project-picker.tsx` size (~3,600 lines) | Hosts settings, spaces, previews, drag-drop import, and 4+ dialogs (space edit/delete, remove project, etc.). Extracting onboarding without splitting the file risks regressions. |
 | `TemplatePreview` modal | Template path still uses a nested modal inside the gallery wizard — a true single-page flow needs wizard step state shared between gallery, preview PDF, and project details. |
-| `EnvironmentOnboarding` + `ClaudeSetup` | Global setup gates live outside the picker; merging them requires coordinated routing in `App.tsx` and deferred/non-blocking setup policy. |
+| `EnvironmentOnboarding` + `ClaudeSetup` | Global setup gates live outside the picker; merging them requires coordinated routing in `App.tsx`. Deferral no longer blocks project open, but the surfaces are still separate. |
 | Scientific skills onboarding | Lazy-loaded from sidebar and picker (`scientific-skills-onboarding.tsx`) — third parallel onboarding surface. |
 
 ## Recommended next steps (low risk)
 
 1. Extract `ProjectCreationWizard` from `project-picker.tsx` (chooser + wizard only).
 2. Promote `TemplatePreview` from modal to wizard step 2 for the template path.
-3. Add a “Skip for now” path on `EnvironmentOnboarding` that does not block project open.
-4. Unify space create/edit into a slide-over panel instead of a centered dialog.
+3. Unify space create/edit into a slide-over panel instead of a centered dialog.
 
 ## Out of scope for this pass
 

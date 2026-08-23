@@ -20,12 +20,46 @@ use std::time::{Duration, Instant};
 /// command is not noticeably delayed, large enough not to spin a core.
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 
+/// Upper bound on stdout/stderr bytes *retained* per stream.
+///
+/// Every consumer of `run_with_timeout` treats output as text (compiler
+/// diagnostics, tool versions, log tails); none of it legitimately approaches
+/// this bound. Without a cap, a document that spews diagnostics until its
+/// deadline allocates gigabytes across concurrent compiles and can OOM the
+/// app. The pipe is still drained past the cap — stopping reads would block
+/// the child on a full pipe and reintroduce the deadlock this module exists
+/// to prevent.
+const MAX_CAPTURED_OUTPUT: usize = 64 * 1024 * 1024;
+
+/// Read `pipe` to EOF, retaining at most `cap` bytes and discarding the rest.
+fn drain_capped(pipe: &mut impl Read, cap: usize) -> Vec<u8> {
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 16 * 1024];
+    loop {
+        match pipe.read(&mut chunk) {
+            Ok(0) => return buf,
+            Ok(n) => {
+                let room = cap.saturating_sub(buf.len());
+                if room > 0 {
+                    let take = n.min(room);
+                    buf.extend_from_slice(&chunk[..take]);
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return buf,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum ProcError {
     /// The process could not be started at all.
     Spawn(String),
     /// The process outlived its deadline and was killed.
     TimedOut { after: Duration, killed: bool },
+    /// The caller asked for the process to be cancelled (e.g. a newer compile
+    /// superseded this one) and it was killed.
+    Cancelled,
     /// An I/O error while waiting or reading output.
     Io(String),
 }
@@ -41,6 +75,7 @@ impl ProcError {
                 after.as_secs(),
                 if *killed { "stopped" } else { "abandoned" }
             ),
+            ProcError::Cancelled => format!("{what} was cancelled"),
             ProcError::Io(e) => format!("Error while running {what}: {e}"),
         }
     }
@@ -56,27 +91,24 @@ fn spawn_readers(child: &mut Child) -> (
     Option<std::thread::JoinHandle<Vec<u8>>>,
 ) {
     let out = child.stdout.take().map(|mut pipe| {
-        std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = pipe.read_to_end(&mut buf);
-            buf
-        })
+        std::thread::spawn(move || drain_capped(&mut pipe, MAX_CAPTURED_OUTPUT))
     });
     let err = child.stderr.take().map(|mut pipe| {
-        std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = pipe.read_to_end(&mut buf);
-            buf
-        })
+        std::thread::spawn(move || drain_capped(&mut pipe, MAX_CAPTURED_OUTPUT))
     });
     (out, err)
 }
 
-/// Run `cmd` to completion or kill it once `timeout` elapses.
+/// Run `cmd` to completion, kill it once `timeout` elapses, or kill it as soon
+/// as `cancelled()` returns true — whichever comes first.
 ///
 /// Captures stdout/stderr like `Command::output()`. `stdin` is set to null, so
 /// a tool that tries to prompt sees EOF instead of blocking.
-pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Output, ProcError> {
+pub fn run_with_timeout_and_cancel(
+    mut cmd: Command,
+    timeout: Duration,
+    cancelled: impl Fn() -> bool,
+) -> Result<Output, ProcError> {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -96,7 +128,8 @@ pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Output, P
             Err(e) => return Err(ProcError::Io(e.to_string())),
         }
 
-        if started.elapsed() >= timeout {
+        if cancelled() || started.elapsed() >= timeout {
+            let was_cancelled = cancelled();
             let killed = child.kill().is_ok();
             // Reap so the child does not linger as a zombie.
             let _ = child.wait();
@@ -113,6 +146,9 @@ pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Output, P
             drop(out_reader);
             drop(err_reader);
 
+            if was_cancelled {
+                return Err(ProcError::Cancelled);
+            }
             return Err(ProcError::TimedOut {
                 after: started.elapsed(),
                 killed,
@@ -121,6 +157,11 @@ pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Output, P
 
         std::thread::sleep(POLL_INTERVAL);
     }
+}
+
+/// Run `cmd` to completion or kill it once `timeout` elapses.
+pub fn run_with_timeout(cmd: Command, timeout: Duration) -> Result<Output, ProcError> {
+    run_with_timeout_and_cancel(cmd, timeout, || false)
 }
 
 /// Whether `cmd` exits successfully within `timeout`. Used for availability
@@ -186,6 +227,25 @@ mod tests {
         .expect("should complete");
         assert!(out.status.success());
         assert!(out.stdout.len() > 100_000, "got {} bytes", out.stdout.len());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_flooding_child_cannot_exhaust_memory_via_unbounded_capture() {
+        // 70 MiB in one blast — more than the capture cap. The reader must
+        // keep draining the pipe (or the child deadlocks on a full buffer)
+        // while the captured buffer stays bounded. A pathological document
+        // that spews diagnostics until its deadline must not take the app
+        // down with it.
+        let out = run_with_timeout(sh("head -c 73400320 /dev/zero"), Duration::from_secs(60))
+            .expect("should complete");
+        assert!(out.status.success());
+        assert_eq!(
+            out.stdout.len(),
+            64 * 1024 * 1024,
+            "capture should be capped at 64 MiB, got {} bytes",
+            out.stdout.len()
+        );
     }
 
     #[cfg(unix)]
@@ -302,6 +362,99 @@ mod tests {
         let err = run_with_timeout(sh("sleep 10"), Duration::from_millis(0))
             .expect_err("must time out");
         assert!(matches!(err, ProcError::TimedOut { .. }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancel_flag_kills_a_running_child_promptly() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let c = cancelled.clone();
+        // Cancel shortly after the child starts, from another thread.
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            c.store(true, Ordering::Relaxed);
+        });
+
+        let started = Instant::now();
+        let err = run_with_timeout_and_cancel(
+            sh("sleep 30"),
+            Duration::from_secs(60),
+            || cancelled.load(Ordering::Relaxed),
+        )
+        .expect_err("must be cancelled");
+        assert!(matches!(err, ProcError::Cancelled));
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "cancel took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pre_cancelled_flag_does_not_even_start_the_run_longer_than_a_poll() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let cancelled = AtomicBool::new(true);
+        let started = Instant::now();
+        let err = run_with_timeout_and_cancel(
+            sh("sleep 30"),
+            Duration::from_secs(60),
+            || cancelled.load(Ordering::Relaxed),
+        )
+        .expect_err("must be cancelled");
+        assert!(matches!(err, ProcError::Cancelled));
+        assert!(started.elapsed() < Duration::from_secs(2));
+
+        let msg = err.to_message("Compilation");
+        assert!(msg.contains("cancelled"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancel_flag_flipping_storm_never_hangs_or_double_kills() {
+        // Multiple threads flip the flag rapidly while a child runs. The
+        // poll loop must observe *a* consistent outcome — completion or a
+        // single Cancelled — and never wedge or panic.
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        for round in 0..8 {
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let flippers: Vec<_> = (0..4)
+                .map(|_| {
+                    let c = cancelled.clone();
+                    std::thread::spawn(move || {
+                        let mut value = false;
+                        for _ in 0..50 {
+                            value = !value;
+                            c.store(value, Ordering::Relaxed);
+                            std::thread::sleep(Duration::from_millis(2));
+                        }
+                        // Leave it set so the run terminates deterministically.
+                        c.store(true, Ordering::Relaxed);
+                    })
+                })
+                .collect();
+
+            let result = run_with_timeout_and_cancel(
+                sh("sleep 5"),
+                Duration::from_secs(30),
+                || cancelled.load(Ordering::Relaxed),
+            );
+
+            match result {
+                Ok(_) => {}
+                Err(ProcError::Cancelled) => {}
+                Err(other) => panic!("round {round}: unexpected error {other:?}"),
+            }
+            for h in flippers {
+                h.join().expect("flipper thread panicked");
+            }
+        }
     }
 
     #[test]

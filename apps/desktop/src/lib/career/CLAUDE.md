@@ -2,6 +2,11 @@
 
 Tauri command wrappers and types for the Master Career Database.
 
+Sub-owners: `ingest/` (parse → chunk → hash → upsert → embed), `resume-source.ts`
+(.tex/.zip resume import, zip-slip-safe), `kb-source-view.ts` (chunk display
+order/filtering for the KB viewer dialog), `db-events.ts` (`career-db-changed`
+subscription for live refresh when external processes write career.db).
+
 ## Repo Map
 
 - Canonical map: `.devcouncil/repo_map.json`

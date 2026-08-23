@@ -153,4 +153,12 @@ describe("PipelineBoard", () => {
     expect(screen.queryByText("Run blocked")).toBeNull();
     expect(screen.getByText("Synthesis pipeline")).toBeInTheDocument();
   });
+
+  it("does not claim embeddings are available while readiness is unprobed", () => {
+    render(<PipelineBoard {...idleProps} readiness={null} />);
+
+    expect(screen.getByText(/Still checking availability/)).toBeInTheDocument();
+    expect(screen.queryByText(/Available for hybrid scoring/)).toBeNull();
+    expect(screen.queryByRole("button", { name: /add knowledge/i })).toBeNull();
+  });
 });

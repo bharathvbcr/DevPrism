@@ -1,4 +1,3 @@
-import { useMemo } from "react";
 import { useVariantsStore } from "@/stores/variants-store";
 import { useSpaceFeatures } from "@/hooks/use-space-features";
 import { VersionSwitcher } from "@/components/workspace/version-switcher";

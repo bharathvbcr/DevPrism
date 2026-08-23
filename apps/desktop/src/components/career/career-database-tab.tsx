@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  CheckIcon,
   FileUpIcon,
   Loader2Icon,
   PlusIcon,
@@ -442,6 +443,15 @@ function FirstRunGuide({
   onKnowledge: () => void;
   onSynthesize: () => void;
 }) {
+  const kbSourceCount = useCareerStore((s) => s.kbSourceCount);
+  const refreshKbCoverage = useCareerStore((s) => s.refreshKbCoverage);
+
+  useEffect(() => {
+    void refreshKbCoverage();
+  }, [refreshKbCoverage]);
+
+  const kbReady = kbSourceCount != null && kbSourceCount > 0;
+
   const steps = [
     {
       n: 1,
@@ -451,15 +461,18 @@ function FirstRunGuide({
       icon: FileUpIcon,
       actionLabel: "Import resume",
       onAction: onImport,
+      done: false,
     },
     {
       n: 2,
       title: "Add knowledge",
-      detail:
-        "Ingest papers, notes, or evidence so synthesis can ground bullets.",
+      detail: kbReady
+        ? `Knowledge base ready — ${kbSourceCount} source${kbSourceCount === 1 ? "" : "s"} ingested.`
+        : "Ingest papers, notes, or evidence so synthesis can ground bullets.",
       icon: BookOpenIcon,
       actionLabel: "Open Knowledge",
       onAction: onKnowledge,
+      done: kbReady,
     },
     {
       n: 3,
@@ -468,8 +481,9 @@ function FirstRunGuide({
       icon: SparklesIcon,
       actionLabel: "Open Synthesize",
       onAction: onSynthesize,
+      done: false,
     },
-  ] as const;
+  ];
 
   return (
     <div className="mx-auto flex h-full max-w-lg flex-col justify-center gap-6 py-6">
@@ -487,8 +501,15 @@ function FirstRunGuide({
               key={step.n}
               className="flex gap-3 rounded-lg border border-border/60 bg-background/60 p-3"
             >
-              <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-muted font-medium text-xs">
-                {step.n}
+              <span
+                className={cn(
+                  "flex size-7 shrink-0 items-center justify-center rounded-full font-medium text-xs",
+                  step.done
+                    ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+                    : "bg-muted text-foreground",
+                )}
+              >
+                {step.done ? <CheckIcon className="size-3.5" /> : step.n}
               </span>
               <div className="min-w-0 flex-1 space-y-2">
                 <div className="flex items-start gap-2">

@@ -1,11 +1,18 @@
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, Semaphore};
 
 const MAX_CONCURRENT: usize = 3;
+
+/// Error message for a compile that was abandoned because a newer request for
+/// the same project arrived. The frontend recognizes this marker and stays
+/// quiet instead of surfacing it as a build failure.
+pub const SUPERSEDED_COMPILE_MESSAGE: &str =
+    "Compilation superseded by a newer edit — this build was skipped.";
 
 /// Deadline for one TeX engine pass (or the whole Tectonic run).
 ///
@@ -60,6 +67,10 @@ pub struct LatexCompilerState {
     /// Per-project locks to prevent concurrent compilations on the same build directory.
     project_locks: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
     semaphore: Arc<Semaphore>,
+    /// Per-project cancel flags. A new compile request flips the previous
+    /// flag so a stale in-flight engine run is killed instead of burning its
+    /// full 180s deadline (and the permit + project lock with it).
+    cancel_flags: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
 }
 
 impl Default for LatexCompilerState {
@@ -68,6 +79,7 @@ impl Default for LatexCompilerState {
             last_builds: Arc::new(Mutex::new(HashMap::new())),
             project_locks: Arc::new(Mutex::new(HashMap::new())),
             semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT)),
+            cancel_flags: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -567,15 +579,22 @@ pub fn agent_compile_project(
     let compile_result = if let Some(err) = resolved.hard_error {
         Err(err)
     } else if resolved.use_texlive {
-        compile_with_texlive(&work_dir, &main_rel, resolved.engine, &main_tex_content)
+        // The agent path has no newer-compile cancellation semantics.
+        compile_with_texlive(
+            &work_dir,
+            &main_rel,
+            resolved.engine,
+            &main_tex_content,
+            &AtomicBool::new(false),
+        )
     } else {
-        compile_with_tectonic_subprocess(&work_dir, &main_rel)
+        compile_with_tectonic_subprocess(&work_dir, &main_rel, &AtomicBool::new(false))
     };
     // Same safety net as the UI path: never let honouring the magic comment turn
     // a building document into a failing one.
     let compile_result = if resolved.use_texlive && !use_texlive && !pdf_path.exists() {
         let _ = std::fs::remove_file(&log_path);
-        compile_with_tectonic_subprocess(&work_dir, &main_rel)
+        compile_with_tectonic_subprocess(&work_dir, &main_rel, &AtomicBool::new(false))
     } else {
         compile_result
     };
@@ -839,7 +858,42 @@ fn detect_bib_tool(content: &str) -> BibTool {
 /// Resolve a TeXLive binary (engine or tool, e.g. latexdiff) to its full path.
 /// GUI apps on macOS lack the user's shell PATH, so we check standard
 /// TeXLive installation locations and fall back to a login-shell query.
+/// Memoized TeX Live binary lookups.
+///
+/// On macOS GUI launches the PATH probe usually fails and step 3 spawns a
+/// login shell — per compile that cost was paid once for the engine plus once
+/// each for biber/bibtex/xdvipdfmx. Resolution is deterministic for a given
+/// install, so cache successes; a cached path is revalidated cheaply with
+/// `exists()` so an uninstalled TeX stops hitting the cache immediately.
+fn find_texlive_binary_cached(name: &str) -> Result<PathBuf, String> {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    static CACHE: std::sync::OnceLock<Mutex<HashMap<String, Option<PathBuf>>>> =
+        std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+
+    if let Ok(guard) = cache.lock() {
+        if let Some(Some(path)) = guard.get(name) {
+            if path.exists() {
+                return Ok(path.clone());
+            }
+        }
+        // Negative entries are not cached: a fresh install should be found
+        // on the next compile without an app restart.
+    }
+
+    let resolved = find_texlive_binary_uncached(name)?;
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(name.to_string(), Some(resolved.clone()));
+    }
+    Ok(resolved)
+}
+
 pub(crate) fn find_texlive_binary(name: &str) -> Result<PathBuf, String> {
+    find_texlive_binary_cached(name)
+}
+
+fn find_texlive_binary_uncached(name: &str) -> Result<PathBuf, String> {
     // 1. Try PATH (works when launched from terminal)
     if let Ok(path) = which::which(name) {
         return Ok(path);
@@ -1282,7 +1336,11 @@ pub(crate) fn compile_with_tectonic(work_dir: &Path, main_file: &str) -> Result<
 ///
 /// By spawning a subprocess, each compilation gets a fresh process with
 /// clean global state, and cleanup happens automatically on process exit.
-fn compile_with_tectonic_subprocess(work_dir: &Path, main_file: &str) -> Result<(), String> {
+fn compile_with_tectonic_subprocess(
+    work_dir: &Path,
+    main_file: &str,
+    cancelled: &AtomicBool,
+) -> Result<(), String> {
     let exe = std::env::current_exe()
         .map_err(|e| format!("Failed to get current executable path: {}", e))?;
 
@@ -1290,8 +1348,10 @@ fn compile_with_tectonic_subprocess(work_dir: &Path, main_file: &str) -> Result<
     cmd.args(["--tectonic-compile", &work_dir.to_string_lossy(), main_file]);
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW);
-    let output = crate::proc::run_with_timeout(cmd, ENGINE_TIMEOUT)
-        .map_err(|e| e.to_message("Compilation"))?;
+    let output = crate::proc::run_with_timeout_and_cancel(cmd, ENGINE_TIMEOUT, || {
+        cancelled.load(Ordering::Relaxed)
+    })
+    .map_err(|e| e.to_message("Compilation"))?;
 
     if output.status.success() {
         return Ok(());
@@ -1354,6 +1414,244 @@ fn texlive_env_path(engine: &Path) -> String {
     }
 }
 
+/// Decide whether the final stabilization pass is needed.
+///
+/// After pass 2, a *byte-identical* .aux means every label and citation the
+/// document resolves is already written — pass 3 would typeset the same
+/// document again for nothing. Anything else (missing aux, changed content,
+/// changed length) means references may still be settling: run the pass.
+///
+/// Conservative by design: a spurious extra pass costs seconds, an elided
+/// needed pass leaves "??" citations in the PDF.
+fn should_run_final_pass(before_pass2: Option<&[u8]>, after_pass2: Option<&[u8]>) -> bool {
+    match (before_pass2, after_pass2) {
+        (Some(b), Some(a)) => b != a,
+        _ => true,
+    }
+}
+
+/// Abort when this compile has been superseded by a newer request.
+fn check_cancelled(cancelled: &AtomicBool) -> Result<(), String> {
+    if cancelled.load(Ordering::Relaxed) {
+        return Err(SUPERSEDED_COMPILE_MESSAGE.to_string());
+    }
+    Ok(())
+}
+
+/// Run the resolve/stabilize tail of a TeX Live build.
+///
+/// One mandatory pass resolves references and the TOC; a second
+/// stabilization pass runs only when a bibliography was used AND that pass
+/// changed the `.aux` — an unchanged `.aux` means labels and citations are
+/// already stable, and the extra pass would be a no-op re-typeset.
+///
+/// `run_pass` abstracts the engine invocation so tests can count passes with
+/// a fake runner; production closes over [`run_texlive_pass`] with the real
+/// engine path. Returns the number of engine passes executed.
+fn run_resolve_and_stabilize(
+    bib_used: bool,
+    cancelled: &AtomicBool,
+    aux_path: &Path,
+    run_pass: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<u32, String> {
+    check_cancelled(cancelled)?;
+    // Snapshot BEFORE the resolve pass: what we compare is whether pass 2
+    // itself had anything left to settle.
+    let aux_before = std::fs::read(aux_path).ok();
+    run_pass()?;
+
+    if !bib_used {
+        return Ok(1);
+    }
+
+    check_cancelled(cancelled)?;
+    let aux_after = std::fs::read(aux_path).ok();
+    if should_run_final_pass(aux_before.as_deref(), aux_after.as_deref()) {
+        run_pass()?;
+        Ok(2)
+    } else {
+        eprintln!("[texlive] .aux stable after pass 2 — skipping stabilization pass");
+        Ok(1)
+    }
+}
+
+#[cfg(test)]
+mod texlive_pass_tests {
+    use super::{
+        check_cancelled, run_resolve_and_stabilize, should_run_final_pass,
+        SUPERSEDED_COMPILE_MESSAGE,
+    };
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    /// Fake engine: counts invocations and can rewrite the .aux to simulate
+    /// what a real pass leaves behind.
+    struct FakeRunner {
+        calls: u32,
+        aux_path: std::path::PathBuf,
+        aux_after_pass2: Option<&'static str>,
+        cancel_on_call: Option<u32>,
+        cancelled_flag: Arc<AtomicBool>,
+    }
+
+    impl FakeRunner {
+        fn run(&mut self) -> Result<(), String> {
+            self.calls += 1;
+            if Some(self.calls) == self.cancel_on_call {
+                self.cancelled_flag.store(true, Ordering::Relaxed);
+            }
+            if self.calls == 1 {
+                if let Some(content) = self.aux_after_pass2 {
+                    std::fs::write(&self.aux_path, content).unwrap();
+                }
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn identical_aux_elides_the_final_pass() {
+        let aux = b"\\relax\n\\citation{knuth}\n";
+        assert!(!should_run_final_pass(Some(aux), Some(aux)));
+    }
+
+    #[test]
+    fn changed_aux_requires_the_final_pass() {
+        assert!(should_run_final_pass(
+            Some(b"\\citation{a}"),
+            Some(b"\\citation{a}\n\\citation{b}")
+        ));
+        // Same prefix, different length still counts as changed.
+        assert!(should_run_final_pass(Some(b""), Some(b"\\relax")));
+    }
+
+    #[test]
+    fn missing_aux_is_always_conservative() {
+        // A missing .aux before pass 2 (fresh build) is normal — after bib,
+        // pass 2 writes it; if it is STILL missing something is off. Run it.
+        assert!(should_run_final_pass(None, None));
+        assert!(should_run_final_pass(None, Some(b"x")));
+        assert!(should_run_final_pass(Some(b"x"), None));
+    }
+
+    // ─── orchestration: multi-pass behavior with a counting fake ───
+
+    fn setup(aux_before: Option<&str>) -> (TempDir, std::path::PathBuf, Arc<AtomicBool>) {
+        let dir = TempDir::new().unwrap();
+        let aux_path = dir.path().join("doc.aux");
+        if let Some(content) = aux_before {
+            std::fs::write(&aux_path, content).unwrap();
+        }
+        let flag = Arc::new(AtomicBool::new(false));
+        (dir, aux_path, flag)
+    }
+
+    #[test]
+    fn no_bib_runs_a_single_pass_even_when_aux_churns() {
+        let (_dir, aux_path, flag) = setup(Some("old"));
+        let runner = std::cell::RefCell::new(FakeRunner {
+            calls: 0,
+            aux_path: aux_path.clone(),
+            aux_after_pass2: Some("changed"),
+            cancel_on_call: None,
+            cancelled_flag: flag.clone(),
+        });
+        let ran = run_resolve_and_stabilize(false, &flag, &aux_path, &mut || {
+            runner.borrow_mut().run()
+        })
+        .unwrap();
+        assert_eq!(ran, 1);
+        assert_eq!(runner.borrow().calls, 1);
+    }
+
+    #[test]
+    fn changed_aux_runs_stabilization_pass() {
+        let (_dir, aux_path, flag) = setup(Some("v1"));
+        let runner = std::cell::RefCell::new(FakeRunner {
+            calls: 0,
+            aux_path: aux_path.clone(),
+            aux_after_pass2: Some("v2"),
+            cancel_on_call: None,
+            cancelled_flag: flag.clone(),
+        });
+        let ran = run_resolve_and_stabilize(true, &flag, &aux_path, &mut || {
+            runner.borrow_mut().run()
+        })
+        .unwrap();
+        assert_eq!(ran, 2);
+        assert_eq!(runner.borrow().calls, 2);
+    }
+
+    #[test]
+    fn stable_aux_via_refcell_skips_stabilization_pass() {
+        let (_dir, aux_path, flag) = setup(Some("settled"));
+        let runner = std::cell::RefCell::new(FakeRunner {
+            calls: 0,
+            aux_path: aux_path.clone(),
+            aux_after_pass2: Some("settled"),
+            cancel_on_call: None,
+            cancelled_flag: flag.clone(),
+        });
+        let ran = run_resolve_and_stabilize(true, &flag, &aux_path, &mut || {
+            runner.borrow_mut().run()
+        })
+        .unwrap();
+        assert_eq!(ran, 1);
+        assert_eq!(runner.borrow().calls, 1);
+    }
+
+    #[test]
+    fn missing_aux_on_both_sides_is_conservative_two_passes() {
+        let (_dir, aux_path, flag) = setup(None);
+        let runner = std::cell::RefCell::new(FakeRunner {
+            calls: 0,
+            aux_path: aux_path.clone(),
+            aux_after_pass2: None,
+            cancel_on_call: None,
+            cancelled_flag: flag.clone(),
+        });
+        let ran = run_resolve_and_stabilize(true, &flag, &aux_path, &mut || {
+            runner.borrow_mut().run()
+        })
+        .unwrap();
+        assert_eq!(ran, 2);
+    }
+
+    #[test]
+    fn cancelled_upfront_runs_zero_passes() {
+        let (_dir, aux_path, flag) = setup(None);
+        flag.store(true, Ordering::Relaxed);
+        let calls = std::cell::Cell::new(0);
+        let err = run_resolve_and_stabilize(true, &flag, &aux_path, &mut || {
+            calls.set(calls.get() + 1);
+            Ok(())
+        })
+        .unwrap_err();
+        assert_eq!(err, SUPERSEDED_COMPILE_MESSAGE);
+        assert_eq!(calls.get(), 0);
+        let _ = check_cancelled(&flag);
+    }
+
+    #[test]
+    fn cancellation_between_passes_stops_after_resolve() {
+        let (_dir, aux_path, flag) = setup(Some("v1"));
+        let runner = std::cell::RefCell::new(FakeRunner {
+            calls: 0,
+            aux_path: aux_path.clone(),
+            aux_after_pass2: Some("v2"),
+            cancel_on_call: Some(1),
+            cancelled_flag: flag.clone(),
+        });
+        let err = run_resolve_and_stabilize(true, &flag, &aux_path, &mut || {
+            runner.borrow_mut().run()
+        })
+        .unwrap_err();
+        assert_eq!(err, SUPERSEDED_COMPILE_MESSAGE);
+        assert_eq!(runner.borrow().calls, 1, "stabilization must not run");
+    }
+}
+
 /// Run a single TeX engine pass.  Never returns `Err` for a non-zero exit
 /// code — TeXLive returns non-zero for warnings, font substitutions, etc.
 /// The only `Err` is when the process cannot be *spawned* at all.
@@ -1363,6 +1661,7 @@ fn run_texlive_pass(
     args: &[&str],
     main_file: &Path,
     work_dir: &Path,
+    cancelled: &AtomicBool,
 ) -> Result<(), String> {
     let mut cmd = std::process::Command::new(engine);
     cmd.args(args)
@@ -1371,7 +1670,10 @@ fn run_texlive_pass(
         .env("PATH", texlive_env_path(engine));
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW);
-    let output = crate::proc::run_with_timeout(cmd, ENGINE_TIMEOUT)
+    let output =
+        crate::proc::run_with_timeout_and_cancel(cmd, ENGINE_TIMEOUT, || {
+            cancelled.load(Ordering::Relaxed)
+        })
         .map_err(|e| e.to_message(&format!("{}", engine.display())))?;
 
     // TeXLive returns non-zero on warnings too — don't fail here.
@@ -1390,7 +1692,12 @@ fn compile_with_texlive(
     main_file: &str,
     engine: Option<TexEngine>,
     tex_content: &str,
+    cancelled: &AtomicBool,
 ) -> Result<(), String> {
+    // A superseded compile must stop between passes instead of running the
+    // remaining bibliography + stabilizing passes for a stale document.
+    check_cancelled(cancelled)?;
+
     let engine_name = match engine {
         Some(TexEngine::XeLaTeX) | None => "xelatex",
         Some(TexEngine::Latex) => "pdflatex",
@@ -1419,13 +1726,15 @@ fn compile_with_texlive(
     let main_file_path = Path::new(main_file);
 
     // Pass 1
-    run_texlive_pass(&engine_path, &common_args, main_file_path, work_dir)?;
+    run_texlive_pass(&engine_path, &common_args, main_file_path, work_dir, cancelled)?;
 
     // Bib pass (if needed)
     let main_stem = Path::new(main_file)
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("document");
+
+    check_cancelled(cancelled)?;
 
     match bib_tool {
         BibTool::Biber => {
@@ -1437,7 +1746,10 @@ fn compile_with_texlive(
                 ;
             #[cfg(target_os = "windows")]
             cmd.creation_flags(CREATE_NO_WINDOW);
-            let output = crate::proc::run_with_timeout(cmd, BIB_TIMEOUT)
+            let output =
+                crate::proc::run_with_timeout_and_cancel(cmd, BIB_TIMEOUT, || {
+                    cancelled.load(Ordering::Relaxed)
+                })
                 .map_err(|e| e.to_message("biber"))?;
             if !output.status.success() {
                 eprintln!(
@@ -1456,7 +1768,10 @@ fn compile_with_texlive(
                 ;
             #[cfg(target_os = "windows")]
             cmd.creation_flags(CREATE_NO_WINDOW);
-            let output = crate::proc::run_with_timeout(cmd, BIB_TIMEOUT)
+            let output =
+                crate::proc::run_with_timeout_and_cancel(cmd, BIB_TIMEOUT, || {
+                    cancelled.load(Ordering::Relaxed)
+                })
                 .map_err(|e| e.to_message("bibtex"))?;
             if !output.status.success() {
                 eprintln!(
@@ -1468,13 +1783,14 @@ fn compile_with_texlive(
         BibTool::None => {}
     }
 
-    // Pass 2: resolve references / TOC
-    run_texlive_pass(&engine_path, &common_args, &main_file_path, work_dir)?;
-
-    // Pass 3: stabilize citations (only if bib was used)
-    if !matches!(bib_tool, BibTool::None) {
-        run_texlive_pass(&engine_path, &common_args, &main_file_path, work_dir)?;
-    }
+    // Pass 2 + conditional stabilization (pass 3), extracted so the
+    // multi-pass decisions are observable with a counting fake in tests.
+    let aux_path = work_dir.join(format!("{}.aux", main_stem));
+    let bib_used = !matches!(bib_tool, BibTool::None);
+    let mut resolve_pass = || {
+        run_texlive_pass(&engine_path, &common_args, &main_file_path, work_dir, cancelled)
+    };
+    run_resolve_and_stabilize(bib_used, cancelled, &aux_path, &mut resolve_pass)?;
 
     let pdf_path = work_dir.join(format!("{}.pdf", main_stem));
     let xdv_path = work_dir.join(format!("{}.xdv", main_stem));
@@ -1483,6 +1799,7 @@ fn compile_with_texlive(
     // warnings), manually run xdvipdfmx to convert .xdv → .pdf.
     if !pdf_path.exists() && xdv_path.exists() {
         eprintln!("[texlive] .xdv exists but no .pdf — running xdvipdfmx manually");
+        check_cancelled(cancelled)?;
         if let Ok(xdvipdfmx) = find_texlive_binary("xdvipdfmx") {
             let mut cmd = std::process::Command::new(&xdvipdfmx);
             cmd.args(["-o", &pdf_path.to_string_lossy()])
@@ -1491,7 +1808,10 @@ fn compile_with_texlive(
                 .env("PATH", &env_path);
             #[cfg(target_os = "windows")]
             cmd.creation_flags(CREATE_NO_WINDOW);
-            let output = crate::proc::run_with_timeout(cmd, ENGINE_TIMEOUT)
+            let output =
+                crate::proc::run_with_timeout_and_cancel(cmd, ENGINE_TIMEOUT, || {
+                    cancelled.load(Ordering::Relaxed)
+                })
                 .map_err(|e| e.to_message("xdvipdfmx"))?;
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1850,6 +2170,100 @@ pub async fn compile_latex(
     }
 }
 
+/// Result of a Tectonic bundle pre-flight check.
+#[derive(serde::Serialize)]
+pub struct TectonicBundleStatus {
+    /// The bundle answered a real file request — compiles will work.
+    pub ready: bool,
+    /// True when the check succeeded without network (bundle fully cached).
+    pub cached: bool,
+    /// Human-readable explanation when not ready.
+    pub message: Option<String>,
+}
+
+/// Pre-flight the embedded TeX bundle.
+///
+/// The bundle downloads on first use; on an offline machine that first
+/// compile fails with a confusing "check network connection" error. Onboarding
+/// calls this so the user learns about the one-time download *before* their
+/// first compile. Opening `latex.ltx` through the provider forces the lazy
+/// HTTP backend to actually touch the network/cache instead of merely
+/// constructing an object.
+#[tauri::command]
+pub async fn check_tectonic_bundle() -> Result<TectonicBundleStatus, String> {
+    // The network probe inside tectonic has no deadline we control; bound the
+    // whole check so onboarding can never hang on it. A lapsed probe leaves
+    // the detached blocking thread to finish on its own.
+    let probe = tauri::async_runtime::spawn_blocking(|| {
+        use tectonic::config::PersistentConfig;
+        use tectonic::io::OpenResult;
+        use tectonic::status::NoopStatusBackend;
+
+        let mut status = NoopStatusBackend {};
+
+        // 1. Cached-only probe: success proves compiles work fully offline.
+        let cached_probe = PersistentConfig::open(false).and_then(|config| {
+            let mut bundle = config.default_bundle(true, &mut status)?;
+            let opened = bundle.input_open_name("latex.ltx", &mut status);
+            drop(bundle);
+            Ok::<_, tectonic::Error>(opened)
+        });
+        if let Ok(OpenResult::Ok(handle)) = cached_probe {
+            drop(handle);
+            return Ok(TectonicBundleStatus {
+                ready: true,
+                cached: true,
+                message: None,
+            });
+        }
+
+        // 2. Full probe — may hit the network and warms the cache.
+        let full_probe = PersistentConfig::open(false).and_then(|config| {
+            let mut bundle = config.default_bundle(false, &mut status)?;
+            let opened = bundle.input_open_name("latex.ltx", &mut status);
+            drop(bundle);
+            Ok::<_, tectonic::Error>(opened)
+        });
+        match full_probe {
+            Ok(OpenResult::Ok(handle)) => {
+                drop(handle);
+                Ok(TectonicBundleStatus {
+                    ready: true,
+                    cached: false,
+                    message: None,
+                })
+            }
+            Ok(_) => Ok(TectonicBundleStatus {
+                ready: false,
+                cached: false,
+                message: Some(
+                    "The TeX bundle is reachable but its core files are unavailable.".into(),
+                ),
+            }),
+            Err(e) => Ok(TectonicBundleStatus {
+                ready: false,
+                cached: false,
+                message: Some(format!(
+                    "First compile needs a one-time bundle download; no network: {e}"
+                )),
+            }),
+        }
+    });
+
+    const BUNDLE_CHECK_DEADLINE: Duration = Duration::from_secs(45);
+    match tokio::time::timeout(BUNDLE_CHECK_DEADLINE, probe).await {
+        Ok(result) => result.map_err(|e| format!("Bundle check task failed: {e}"))?,
+        Err(_) => Ok(TectonicBundleStatus {
+            ready: false,
+            cached: false,
+            message: Some(format!(
+                "Bundle check timed out after {}s — first compile may need a one-time download.",
+                BUNDLE_CHECK_DEADLINE.as_secs()
+            )),
+        }),
+    }
+}
+
 /// What the last successful compile of `project_dir` did, including every reason
 /// its pagination can differ from the same source built elsewhere.
 ///
@@ -1890,6 +2304,17 @@ async fn compile_latex_inner(
     main_file: String,
     use_texlive: Option<bool>,
 ) -> Result<Vec<u8>, CompileFail> {
+    // Register this request's cancel flag and cancel any in-flight run for
+    // the same project. Without this, edits made during a slow compile queue
+    // behind the obsolete build and can pin every MAX_CONCURRENT permit.
+    let my_flag = Arc::new(AtomicBool::new(false));
+    {
+        let mut flags = state.cancel_flags.lock().await;
+        if let Some(previous) = flags.insert(project_dir.clone(), my_flag.clone()) {
+            previous.store(true, Ordering::Relaxed);
+        }
+    }
+
     // Acquire semaphore permit (non-blocking)
     let _permit = state
         .semaphore
@@ -1915,6 +2340,12 @@ async fn compile_latex_inner(
             .clone()
     };
     let _project_guard = project_lock.lock().await;
+
+    // A newer request may have arrived while this one waited on the project
+    // lock — building the stale source would just be thrown away.
+    if my_flag.load(Ordering::Relaxed) {
+        return Err(CompileFail::new("n/a", SUPERSEDED_COMPILE_MESSAGE));
+    }
 
     // Suppress macOS App Nap while Tectonic runs so a backgrounded window does
     // not throttle the compile. Released on every return path (drop at fn end).
@@ -1997,9 +2428,18 @@ async fn compile_latex_inner(
         });
     let requested_engine = detect_tex_engine(&main_tex_content);
 
-    let resolved = resolve_backend(use_texlive, requested_engine, &main_tex_content, &|name| {
-        find_texlive_binary(name).is_ok()
-    });
+    // resolve_backend probes TeX Live binaries, and on macOS GUI launches the
+    // PATH probe falls back to a login shell — blocking work that must not run
+    // on an async worker thread.
+    let use_texlive_requested = use_texlive;
+    let probe_content = main_tex_content.clone();
+    let resolved = tokio::task::spawn_blocking(move || {
+        resolve_backend(use_texlive_requested, requested_engine, &probe_content, &|name| {
+            find_texlive_binary(name).is_ok()
+        })
+    })
+    .await
+    .map_err(|e| CompileFail::new("n/a", format!("Backend resolution task panicked: {e}")))?;
     if let Some(err) = resolved.hard_error {
         return Err(CompileFail::new(
             if use_texlive { "TeXLive" } else { "Tectonic" },
@@ -2017,9 +2457,10 @@ async fn compile_latex_inner(
         let work_dir_clone = work_dir.clone();
         let main_file_clone = main_file.clone();
         let source = main_tex_content.clone();
+        let flag = my_flag.clone();
         let result = tokio::task::spawn_blocking(move || {
             lower_thread_priority();
-            compile_with_texlive(&work_dir_clone, &main_file_clone, engine, &source)
+            compile_with_texlive(&work_dir_clone, &main_file_clone, engine, &source, &flag)
         })
         .await
         .map_err(|e| CompileFail::new(&backend_label, format!("Compilation task panicked: {e}")))?;
@@ -2034,9 +2475,10 @@ async fn compile_latex_inner(
         let work_dir_clone = work_dir.clone();
         let main_file_clone = main_file.clone();
         let backend = backend_label.clone();
+        let flag = my_flag.clone();
         let result = tokio::task::spawn_blocking(move || {
             lower_thread_priority();
-            compile_with_tectonic_subprocess(&work_dir_clone, &main_file_clone)
+            compile_with_tectonic_subprocess(&work_dir_clone, &main_file_clone, &flag)
         })
         .await
         .map_err(|e| CompileFail::new(&backend, format!("Compilation task panicked: {e}")))?;
@@ -2047,6 +2489,12 @@ async fn compile_latex_inner(
         );
         result
     };
+
+    // A cancelled engine run must not be retried, judged or reported as a
+    // real failure — the newer build owns this project now.
+    if my_flag.load(Ordering::Relaxed) {
+        return Err(CompileFail::new("n/a", SUPERSEDED_COMPILE_MESSAGE));
+    }
 
     // Honouring `% !TEX program` must never make a document that used to build
     // stop building: a TeX Live install can be incomplete where the Tectonic
@@ -2059,9 +2507,10 @@ async fn compile_latex_inner(
         let work_dir_clone = work_dir.clone();
         let main_file_clone = main_file.clone();
         let backend = backend_label.clone();
+        let flag = my_flag.clone();
         compile_result = tokio::task::spawn_blocking(move || {
             lower_thread_priority();
-            compile_with_tectonic_subprocess(&work_dir_clone, &main_file_clone)
+            compile_with_tectonic_subprocess(&work_dir_clone, &main_file_clone, &flag)
         })
         .await
         .map_err(|e| CompileFail::new(&backend, format!("Compilation task panicked: {e}")))?;
@@ -2079,8 +2528,13 @@ async fn compile_latex_inner(
         let pdf_path_clone = pdf_path.clone();
         let main_file_clone = main_file.clone();
         let work_dir_clone = work_dir.clone();
+        let cancelled = my_flag.clone();
+        let cancelled_for_retry = cancelled.clone();
 
         let needs_retry = tokio::task::spawn_blocking(move || {
+            if cancelled.load(Ordering::Relaxed) {
+                return Ok(false);
+            }
             let log_content = std::fs::read_to_string(&log_path_clone).unwrap_or_default();
             if !log_content.contains("No pages of output") || has_real_errors(&log_content) {
                 return Ok(false);
@@ -2105,7 +2559,11 @@ async fn compile_latex_inner(
 
         if needs_retry {
             let retry_result = tokio::task::spawn_blocking(move || {
-                compile_with_tectonic_subprocess(&work_dir_clone, &main_file_clone)
+                compile_with_tectonic_subprocess(
+                    &work_dir_clone,
+                    &main_file_clone,
+                    &cancelled_for_retry,
+                )
             })
             .await
             .map_err(|e| CompileFail::new(&backend_label, format!("Retry task panicked: {e}")))?;
@@ -2115,6 +2573,10 @@ async fn compile_latex_inner(
                 pdf_path_clone.exists()
             );
         }
+    }
+
+    if my_flag.load(Ordering::Relaxed) {
+        return Err(CompileFail::new("n/a", SUPERSEDED_COMPILE_MESSAGE));
     }
 
     // Explain, from this run's own log, every way the result can differ from the

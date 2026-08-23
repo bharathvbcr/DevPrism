@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { mkdir, writeTextFile } from "@tauri-apps/plugin-fs";
+import { mkdir } from "@tauri-apps/plugin-fs";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { homeDir } from "@tauri-apps/api/path";
 import { toast } from "sonner";
@@ -33,15 +33,10 @@ import { Input } from "@/components/ui/input";
 import { useTemplateStore } from "@/stores/template-store";
 import { useProjectStore } from "@/stores/project-store";
 import { useDocumentStore } from "@/stores/document-store";
-import { useClaudeChatStore } from "@/stores/claude-chat-store";
-import {
-  getTemplateById,
-  getTemplateSkeleton,
-  BIB_TEMPLATE,
-} from "@/lib/template-registry";
+import { getTemplateById } from "@/lib/template-registry";
 import { getTemplatePdfUrl } from "@/lib/template-preview-cache";
 import { getMupdfClient } from "@/lib/mupdf/mupdf-client";
-import { exists, join } from "@/lib/tauri/fs";
+import { join } from "@/lib/tauri/fs";
 import {
   setupNewProjectInSpace,
   formatNewProjectSetupToast,
@@ -49,9 +44,9 @@ import {
 import type { PageSize } from "@/lib/mupdf/types";
 import { createLogger } from "@/lib/debug/logger";
 import {
-  buildReferenceFilesSection,
-  importReferenceFiles,
-} from "@/lib/project-attachments";
+  createTemplateProject,
+  ProjectFolderExistsError,
+} from "@/lib/project-create";
 import { getProjectNameError, normalizeProjectName } from "@/lib/project-name";
 import { useSettingsStore } from "@/stores/settings-store";
 import { canUseAiAssist, suggestProjectName } from "@/lib/ai-assist";
@@ -447,55 +442,13 @@ export function TemplatePreview({
     setCreateError(null);
 
     try {
-      const projectPath = await join(projectFolder, name);
-      if (await exists(projectPath)) {
-        setProjectNameError("A folder with this name already exists here");
-        return;
-      }
-      await mkdir(projectPath, { recursive: true });
-
-      const mainTexPath = await join(projectPath, template.mainFileName);
-      const mainExists = await exists(mainTexPath);
-      if (!mainExists) {
-        await writeTextFile(mainTexPath, getTemplateSkeleton(template));
-      }
-
-      if (template.hasBibliography) {
-        const bibPath = await join(projectPath, "references.bib");
-        const bibExists = await exists(bibPath);
-        if (!bibExists) {
-          await writeTextFile(bibPath, BIB_TEMPLATE);
-        }
-      }
-
-      const referenceFiles =
-        attachments.length > 0
-          ? await importReferenceFiles(projectPath, attachments)
-          : [];
-
-      if (purpose.trim()) {
-        const attachmentSection = buildReferenceFilesSection(referenceFiles);
-
-        const prompt = [
-          `## New ${template.name} Project`,
-          "",
-          `**Template:** \`${template.documentClass}\`  `,
-          `**File:** \`${template.mainFileName}\``,
-          "",
-          `> The file currently contains only the LaTeX preamble (packages, styling, custom commands) with an empty document body.`,
-          "",
-          `### What I want to create`,
-          "",
-          purpose.trim(),
-          attachmentSection,
-          `### Instructions`,
-          "",
-          `Please generate the full document content based on my description. Keep the existing preamble and fill in the document body (between \`\\begin{document}\` and \`\\end{document}\`) with appropriate title, author, sections, and content. Make it a complete, well-structured **${template.name.toLowerCase()}** ready for me to refine.`,
-        ].join("\n");
-
-        useClaudeChatStore.getState().newSession();
-        useClaudeChatStore.getState().setPendingInitialPrompt(prompt);
-      }
+      const { projectPath } = await createTemplateProject({
+        projectFolder,
+        projectName: name,
+        template,
+        attachments,
+        purpose,
+      });
 
       setLastProjectFolder(projectFolder);
       const setup = await setupNewProjectInSpace(projectPath);
@@ -508,6 +461,10 @@ export function TemplatePreview({
       // Close modal on success
       closePreview();
     } catch (err) {
+      if (err instanceof ProjectFolderExistsError) {
+        setProjectNameError(err.message);
+        return;
+      }
       console.error("Failed to create project:", err);
       setCreateError(
         err instanceof Error ? err.message : "Could not create the project.",

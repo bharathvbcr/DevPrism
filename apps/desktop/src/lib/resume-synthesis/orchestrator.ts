@@ -20,6 +20,14 @@ import {
   type SkillGroup,
 } from "@/lib/resume-templates";
 import { compileResumeDocument } from "./compile-verify";
+import {
+  detectAtsSystems,
+  generateKeywordHeatmap,
+  renderedContentPlainText,
+  simulateAtsParsing,
+  summarizeAtsParse,
+  summarizeKeywordHeatmap,
+} from "./ats-simulate";
 import { analyzeJobDescription, facetsOf } from "./jd-analysis";
 import { defaultStreamComplete, llmJson } from "./llm-json";
 import { runCritic, repairFlagged } from "./critic";
@@ -710,6 +718,9 @@ export function draftsToContent(
     education: bySection.education,
     publications: bySection.publications,
     leadership: bySection.leadership,
+    certifications: bySection.certifications,
+    awards: bySection.awards,
+    volunteer: bySection.volunteer,
   };
 }
 
@@ -798,6 +809,8 @@ function buildMatchReport(
     blockFacts?: BlockFactEvidenceSummary[];
     bulletProvenance?: BulletProvenance[];
     gapAnalysis?: GapAnalysis;
+    atsParse?: MatchReport["atsParse"];
+    keywordHeatmap?: MatchReport["keywordHeatmap"];
   },
 ): MatchReport {
   const notices = [...extraNotices];
@@ -825,6 +838,8 @@ function buildMatchReport(
     blockFacts: extras?.blockFacts,
     bulletProvenance: extras?.bulletProvenance,
     gapAnalysis: extras?.gapAnalysis,
+    atsParse: extras?.atsParse,
+    keywordHeatmap: extras?.keywordHeatmap,
   };
 }
 
@@ -1725,6 +1740,24 @@ export async function synthesizeResume(
   }
 
   recordTiming(stageTimingsMs, "assembling", tAssemble);
+
+  // Stage 8 — ATS parse simulation + keyword heatmap over the final printed
+  // document (IgniteCV port; pure functions, no LLM). Computed after the
+  // condensation loop so the summaries reflect what would actually ship.
+  const plainText = renderedContentPlainText(finalContent);
+  const atsSystem = detectAtsSystems(jdText)[0] ?? "generic";
+  const atsParseReport = simulateAtsParsing(plainText, atsSystem);
+  const keywordHeatmap = generateKeywordHeatmap(plainText, jdText);
+  if (atsParseReport.warnings.length > 0) {
+    pushEvent({
+      type: "stage-finish",
+      stage: "assembling",
+      at: Date.now(),
+      durationMs: stageTimingsMs.assembling ?? 0,
+      detail: `Compile verified · ${atsParseReport.warnings.length} ATS parse warning(s)`,
+    });
+  }
+
   pushEvent({
     type: "stage-finish",
     stage: "assembling",
@@ -1763,6 +1796,8 @@ export async function synthesizeResume(
       mustHaveCoverage,
       gapAnalysis,
       ...honesty,
+      atsParse: summarizeAtsParse(atsParseReport),
+      keywordHeatmap: summarizeKeywordHeatmap(keywordHeatmap),
     },
   );
 

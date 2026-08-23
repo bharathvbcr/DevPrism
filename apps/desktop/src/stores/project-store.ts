@@ -1,5 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { invoke } from "@tauri-apps/api/core";
+import { isTauri } from "@/lib/runtime/is-tauri";
 import { FSA_SCHEME } from "@/lib/browser-project/constants";
 import {
   displayProjectPathLabel,
@@ -22,6 +24,26 @@ interface ProjectState {
 }
 
 const MAX_RECENT = 10;
+
+/**
+ * Register the project with the cross-process `known_projects` registry in
+ * career.db. The MCP plugin surface (resume document editing) refuses any
+ * path that is not registered, so this call is what makes a project visible
+ * to external agents after the user opens it once.
+ *
+ * Best-effort by design: registration failure must never block opening a
+ * project, and browser-FSA paths are not filesystem paths at all.
+ */
+function registerKnownProject(path: string, name: string): void {
+  if (!isTauri()) return;
+  if (path.startsWith(FSA_SCHEME)) return;
+  void invoke("career_upsert_known_project", {
+    path,
+    name,
+  }).catch((err) => {
+    console.warn("[project-store] known-project registration failed:", err);
+  });
+}
 
 function normalizeRecentPath(path: string): string {
   return path.replace(/[\\/]+$/, "");
@@ -66,6 +88,7 @@ export const useProjectStore = create<ProjectState>()(
       addRecentProject: (path, displayName) => {
         const normalizedPath = normalizeRecentPath(path);
         const commit = (name: string) => {
+          registerKnownProject(normalizedPath, name);
           set((state) => {
             const filtered = state.recentProjects.filter(
               (p) => !isSameProjectPath(p.path, normalizedPath),
@@ -92,6 +115,11 @@ export const useProjectStore = create<ProjectState>()(
       },
 
       removeRecentProject: (path) => {
+        if (isTauri() && !path.startsWith(FSA_SCHEME)) {
+          void invoke("career_remove_known_project", { path }).catch(() => {
+            // Registry drift is harmless: the folder itself is untouched.
+          });
+        }
         set((state) => ({
           recentProjects: state.recentProjects.filter(
             (p) => !isSameProjectPath(p.path, path),
@@ -102,6 +130,14 @@ export const useProjectStore = create<ProjectState>()(
       renameRecentProject: (oldPath, newPath) => {
         const normalizedNewPath = normalizeRecentPath(newPath);
         const name = recentProjectName(normalizedNewPath);
+        if (isTauri()) {
+          if (!oldPath.startsWith(FSA_SCHEME)) {
+            void invoke("career_remove_known_project", { path: oldPath }).catch(
+              () => {},
+            );
+          }
+          registerKnownProject(normalizedNewPath, name);
+        }
         set((state) => ({
           recentProjects: [
             { path: normalizedNewPath, name, lastOpened: Date.now() },

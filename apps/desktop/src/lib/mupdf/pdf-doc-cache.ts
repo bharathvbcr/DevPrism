@@ -1,4 +1,5 @@
 import { getMupdfClient } from "./mupdf-client";
+import { clearPageBitmaps } from "./page-bitmap-cache";
 import { createLogger } from "@/lib/debug/logger";
 import type { PageSize } from "./types";
 
@@ -41,6 +42,8 @@ async function evictOldest(): Promise<void> {
     const entry = cache.get(oldestKey)!;
     cache.delete(oldestKey);
     log.debug(`Evicted doc ${entry.docId} (cache size was ${cache.size + 1})`);
+    // Free the rendered-page bitmaps belonging to the closed document.
+    clearPageBitmaps(entry.docId);
     await getMupdfClient()
       .closeDocument(entry.docId)
       .catch(() => {});
@@ -113,6 +116,7 @@ export async function clearDocCache(): Promise<void> {
   const entries = [...cache.values()];
   const count = entries.length;
   cache.clear();
+  clearPageBitmaps();
   if (count === 0) {
     log.info("Cleared doc cache (0 documents closed)");
     return;

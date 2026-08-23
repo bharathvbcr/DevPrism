@@ -1,17 +1,15 @@
 import {
   readTextFile,
   writeTextFile,
-  readDir,
   exists as tauriExists,
   mkdir,
   readFile,
   copyFile,
   remove,
   rename,
-  stat,
 } from "@tauri-apps/plugin-fs";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { join as tauriJoin } from "@tauri-apps/api/path";
-import { convertFileSrc } from "@tauri-apps/api/core";
 import { createLogger } from "@/lib/debug/logger";
 import {
   browserJoin,
@@ -62,47 +60,16 @@ export async function scanProjectFolder(rootPath: string): Promise<ScanResult> {
     return scanBrowserProjectFolder(rootPath);
   }
 
-  const files: FsProjectFile[] = [];
-  const folders: string[] = [];
-
-  async function walk(dir: string, prefix: string) {
-    const entries = await readDir(dir);
-    for (const entry of entries) {
-      const entryPath = await join(dir, entry.name);
-      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
-
-      if (entry.isDirectory) {
-        if (shouldSkipProjectDirectory(entry.name)) {
-          continue;
-        }
-        folders.push(relativePath);
-        await walk(entryPath, relativePath);
-      } else {
-        const type = getProjectFileType(entry.name);
-        if (type) {
-          let fileSize = 0;
-          if (type === "image" || type === "other") {
-            try {
-              const info = await stat(entryPath);
-              fileSize = info.size;
-            } catch {
-              /* stat failed — treat as 0 */
-            }
-          }
-          files.push({
-            relativePath,
-            absolutePath: entryPath,
-            type,
-            fileSize,
-          });
-        }
-      }
-    }
-  }
-
-  await walk(rootPath, "");
-  log.info(`Scanned project: ${files.length} files, ${folders.length} folders`);
-  return { files, folders };
+  // Single IPC round trip: the Rust side walks the tree and classifies files
+  // with the same rules as fs-shared.ts. This avoids one readDir per
+  // directory plus one stat per image, which dominated project-open time.
+  const result = await invoke<ScanResult>("scan_project_folder", {
+    rootPath,
+  });
+  log.info(
+    `Scanned project: ${result.files.length} files, ${result.folders.length} folders`,
+  );
+  return result;
 }
 
 export async function readTexFileContent(

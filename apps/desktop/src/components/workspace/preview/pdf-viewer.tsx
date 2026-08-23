@@ -7,7 +7,6 @@ import {
   useState,
 } from "react";
 import {
-  LoaderIcon,
   SearchIcon,
   SparklesIcon,
   ChevronUpIcon,

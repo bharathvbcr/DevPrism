@@ -8,6 +8,12 @@ import type {
   ResumeContent,
   ResumeTemplateBudget,
 } from "@/lib/resume-templates/types";
+import type {
+  MatchReportAtsParse,
+  MatchReportKeywordHeatmap,
+} from "./ats-simulate";
+
+export type { MatchReportAtsParse, MatchReportKeywordHeatmap };
 
 /** Pipeline stages reported via `onProgress` / synthesis-store. */
 export type SynthesisStageId =
@@ -384,6 +390,17 @@ export interface MatchReport {
    * e.g. stored runs without materialized content).
    */
   blockDiffs?: BlockBulletDiff[];
+  /**
+   * ATS parse simulation of the final printed document (IgniteCV port):
+   * detected sections, required-section gaps, contact survival, formatting
+   * hazards. Absent on older runs — UI hides gracefully.
+   */
+  atsParse?: MatchReportAtsParse;
+  /**
+   * JD keyword density heatmap across resume sections (IgniteCV port).
+   * Absent on older runs.
+   */
+  keywordHeatmap?: MatchReportKeywordHeatmap;
 }
 
 export interface SynthesisResult {

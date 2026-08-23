@@ -58,7 +58,7 @@ function cleanLatexText(text: string): string {
 function extractFirstMatch(content: string, regexes: RegExp[]): string | null {
   for (const regex of regexes) {
     const match = content.match(regex);
-    if (match && match[1]) {
+    if (match?.[1]) {
       const clean = cleanLatexText(match[1]);
       if (clean && clean.length > 1 && clean.length < 120) {
         return clean;
@@ -356,7 +356,7 @@ export const usePersonalizationStore = create<PersonalizationState>()(
         );
 
         const profileUpdates: Partial<UserProfile> = {};
-        if (nameMatches && nameMatches[1] && !state.profile.name) {
+        if (nameMatches?.[1] && !state.profile.name) {
           const rawName = nameMatches[1].trim();
           const stopWords = /\b(and|i|am|a|an|the|is|at|from|who|im|i'm)\b/i;
           const parts = rawName.split(stopWords);
@@ -365,10 +365,10 @@ export const usePersonalizationStore = create<PersonalizationState>()(
             profileUpdates.name = cleanedName;
           }
         }
-        if (univMatches && univMatches[1] && !state.profile.affiliation) {
+        if (univMatches?.[1] && !state.profile.affiliation) {
           profileUpdates.affiliation = univMatches[1].trim();
         }
-        if (roleMatches && roleMatches[1] && !state.profile.role) {
+        if (roleMatches?.[1] && !state.profile.role) {
           profileUpdates.role = roleMatches[1].trim();
         }
 

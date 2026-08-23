@@ -6,55 +6,61 @@
 //! - SEP-2549 caching metadata injection (`ttlMs` and `cacheScope`).
 //! - SEP-2322 MRTR stateless elicitation handling.
 //! - SEP-2663 Tasks Extension (`tasks/get`, `tasks/cancel`, `tasks/list`).
+//! - Plugins 1.0: tools/resources/prompts are served by capability packs from
+//!   [`crate::plugins`]; dispatch is exact-name through the plugin registry
+//!   rather than string-prefix matching against a hardcoded module list.
 
 use crate::career_db::CareerDbState;
 use crate::mcp::protocol::{
-    HttpHeaders, JsonRpcError, JsonRpcRequest, JsonRpcResponse, PromptDefinition,
-    ResourceDefinition, ToolDefinition, MCP_PROTOCOL_VERSION,
+    HttpHeaders, JsonRpcError, JsonRpcRequest, JsonRpcResponse, MCP_PROTOCOL_VERSION,
 };
-use crate::mcp::elicitation::ElicitationStore;
-use crate::mcp::tasks::TaskManager;
-use crate::mcp::tools_career::{
-    execute_career_tool, list_career_resources, list_career_tools, read_career_resource,
-};
-use crate::mcp::tools_resume::{
-    execute_resume_tool, get_resume_prompt, list_resume_prompts, list_resume_tools,
-};
+use crate::plugins::{PluginContext, PluginRegistry};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct StatelessMcpServer {
-    pub career_db: CareerDbState,
-    pub task_manager: Arc<TaskManager>,
-    /// Outstanding MRTR confirmations. Shared across clones so a confirmation
-    /// issued on one connection can be redeemed on the next — the round trip is
-    /// stateless on the wire, not in this process.
-    pub elicitations: Arc<ElicitationStore>,
+    career_db: CareerDbState,
+    pub task_manager: Arc<crate::mcp::tasks::TaskManager>,
+    pub elicitations: Arc<crate::mcp::elicitation::ElicitationStore>,
+    registry: Arc<PluginRegistry>,
 }
 
 impl StatelessMcpServer {
     pub fn new(career_db: CareerDbState) -> Self {
+        let registry = crate::plugins::default_registry()
+            .unwrap_or_else(|e| panic!("plugin registry failed to build: {e}"));
         Self {
             career_db,
-            task_manager: Arc::new(TaskManager::new()),
-            elicitations: Arc::new(ElicitationStore::new()),
+            task_manager: Arc::new(crate::mcp::tasks::TaskManager::new()),
+            elicitations: Arc::new(crate::mcp::elicitation::ElicitationStore::new()),
+            registry: Arc::new(registry),
         }
     }
 
-    pub fn list_all_tools(&self) -> Vec<ToolDefinition> {
-        let mut tools = list_career_tools();
-        tools.extend(list_resume_tools());
-        tools
+    fn context(&self) -> PluginContext {
+        PluginContext {
+            career_db: self.career_db.clone(),
+            task_manager: Arc::clone(&self.task_manager),
+            elicitations: Arc::clone(&self.elicitations),
+        }
     }
 
-    pub fn list_all_resources(&self) -> Vec<ResourceDefinition> {
-        list_career_resources()
+    /// All tools across every registered pack.
+    pub fn list_all_tools(&self) -> Vec<crate::mcp::protocol::ToolDefinition> {
+        self.registry.list_all_tools()
     }
 
-    pub fn list_all_prompts(&self) -> Vec<PromptDefinition> {
-        list_resume_prompts()
+    /// All resources across every registered pack.
+    pub fn list_all_resources(&self) -> Vec<crate::mcp::protocol::ResourceDefinition> {
+        self.registry.list_all_resources()
+    }
+
+    /// Test/introspection access to the shared DB handle.
+    #[cfg(test)]
+    pub fn context_db(&self) -> &CareerDbState {
+        &self.career_db
     }
 
     /// Process a Stateless MCP 2.0 JSON-RPC request with optional HTTP headers.
@@ -95,13 +101,14 @@ impl StatelessMcpServer {
         match method {
             // Tools
             "tools/list" => {
-                let tools = self.list_all_tools();
+                let tools = self.registry.list_all_tools();
                 Ok(json!({
                     "tools": tools,
                     "_meta": {
                         "ttlMs": 300000,
                         "cacheScope": "public",
-                        "protocolVersion": MCP_PROTOCOL_VERSION
+                        "protocolVersion": MCP_PROTOCOL_VERSION,
+                        "plugins": self.registry.summary(),
                     }
                 }))
             }
@@ -112,20 +119,14 @@ impl StatelessMcpServer {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| JsonRpcError::invalid_params("Missing required 'name' parameter"))?;
                 let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
-
-                if tool_name.starts_with("career_") {
-                    execute_career_tool(&self.career_db, &self.elicitations, tool_name, &arguments)
-                        .await
-                } else if tool_name.starts_with("resume_") {
-                    execute_resume_tool(&self.career_db, &self.task_manager, tool_name, &arguments).await
-                } else {
-                    Err(JsonRpcError::method_not_found(tool_name))
-                }
+                self.registry
+                    .execute_tool(&self.context(), tool_name, &arguments)
+                    .await
             }
 
             // Resources
             "resources/list" => {
-                let resources = self.list_all_resources();
+                let resources = self.registry.list_all_resources();
                 Ok(json!({
                     "resources": resources,
                     "_meta": {
@@ -140,12 +141,12 @@ impl StatelessMcpServer {
                     .get("uri")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| JsonRpcError::invalid_params("Missing required 'uri' parameter"))?;
-                read_career_resource(&self.career_db, uri).await
+                self.registry.read_resource(&self.context(), uri).await
             }
 
             // Prompts
             "prompts/list" => {
-                let prompts = self.list_all_prompts();
+                let prompts = self.registry.list_all_prompts();
                 Ok(json!({
                     "prompts": prompts,
                     "_meta": {
@@ -169,7 +170,7 @@ impl StatelessMcpServer {
                             .collect::<HashMap<_, _>>()
                     })
                     .unwrap_or_default();
-                get_resume_prompt(prompt_name, &args_map)
+                self.registry.get_prompt(&self.context(), prompt_name, &args_map).await
             }
 
             // Tasks Extension (SEP-2663)

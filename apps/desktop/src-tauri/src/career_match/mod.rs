@@ -38,6 +38,7 @@
 //! drops or inflates a figure. When a stage cannot run because nothing supplied
 //! the language, the tools report that rather than emitting a placeholder.
 
+pub mod ats_sim;
 pub mod gap;
 pub mod jd;
 pub mod metrics;

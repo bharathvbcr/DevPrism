@@ -65,7 +65,7 @@ fn now_ms() -> i64 {
 /// Resolve the owning project root for any project path. If `project_root` is
 /// itself a variant (`<owner>/.prism/variants/<slug>`), return `<owner>`;
 /// otherwise the path is already an owner and is returned unchanged.
-fn derive_owner_root(project_root: &str) -> PathBuf {
+pub(crate) fn derive_owner_root(project_root: &str) -> PathBuf {
     let path = Path::new(project_root);
     // A variant path looks like `<owner>/.prism/variants/<slug>`. Walk up from
     // the slug and confirm the two intermediate segments before returning owner.
@@ -265,7 +265,7 @@ fn info_from_dir(slug: &str, variant_dir: &Path) -> VariantInfo {
     }
 }
 
-fn list_variants_blocking(project_root: &str) -> Result<Vec<VariantInfo>, String> {
+pub(crate) fn list_variants_blocking(project_root: &str) -> Result<Vec<VariantInfo>, String> {
     let owner = derive_owner_root(project_root);
     let dir = variants_dir(&owner);
     if !dir.is_dir() {
@@ -292,7 +292,7 @@ fn list_variants_blocking(project_root: &str) -> Result<Vec<VariantInfo>, String
     Ok(out)
 }
 
-fn create_variant_blocking(
+pub(crate) fn create_variant_blocking(
     project_root: &str,
     name: &str,
     jd: &str,
@@ -335,7 +335,7 @@ fn create_variant_blocking(
     Ok(info_from_dir(&slug, &variant_dir))
 }
 
-fn update_variant_blocking(
+pub(crate) fn update_variant_blocking(
     project_root: &str,
     variant_id: &str,
     name: Option<String>,
@@ -373,7 +373,7 @@ fn update_variant_blocking(
     Ok(info_from_dir(variant_id, &variant_dir))
 }
 
-fn delete_variant_blocking(project_root: &str, variant_id: &str) -> Result<(), String> {
+pub(crate) fn delete_variant_blocking(project_root: &str, variant_id: &str) -> Result<(), String> {
     if !is_safe_id(variant_id) {
         return Err("Invalid version id.".to_string());
     }
@@ -434,7 +434,7 @@ fn collect_text_files_inner(root: &Path, dir: &Path, out: &mut BTreeMap<String, 
     }
 }
 
-fn diff_variant_blocking(
+pub(crate) fn diff_variant_blocking(
     project_root: &str,
     variant_id: &str,
 ) -> Result<Vec<VariantFileDiff>, String> {

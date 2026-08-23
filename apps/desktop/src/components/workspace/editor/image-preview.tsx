@@ -5,7 +5,8 @@ import { toast } from "sonner";
 import { showWorkspaceError } from "@/stores/workspace-banner-store";
 import { useDocumentStore, type ProjectFile } from "@/stores/document-store";
 import { LOCAL_ZOOM_SHORTCUTS_ATTR } from "@/lib/app-zoom";
-import { getAssetUrl } from "@/lib/tauri/fs";
+import { getAssetUrl, readImageAsDataUrl } from "@/lib/tauri/fs";
+import { isTauri } from "@/lib/runtime/is-tauri";
 import { Button } from "@/components/ui/button";
 
 const MIN_SCALE = 0.25;
@@ -74,6 +75,31 @@ export function ImagePreview({
       setHandleDragStart(null);
     }
   }, [cropMode]);
+
+  // Crop needs the decoded pixels as a dataUrl. Image bytes are no longer
+  // embedded in the store at project open (they render via asset URLs), so
+  // load the dataUrl on demand when crop mode activates.
+  const [isLoadingCropSource, setIsLoadingCropSource] = useState(false);
+  useEffect(() => {
+    if (!cropMode || file.dataUrl || !isTauri()) return;
+    let cancelled = false;
+    setIsLoadingCropSource(true);
+    readImageAsDataUrl(file.absolutePath)
+      .then((dataUrl) => {
+        if (!cancelled) {
+          useDocumentStore.getState().updateImageDataUrl(file.id, dataUrl);
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to load image for cropping:", err);
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingCropSource(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [cropMode, file.dataUrl, file.id, file.absolutePath]);
 
   // ESC to cancel crop mode
   useEffect(() => {
@@ -145,6 +171,8 @@ export function ImagePreview({
   const handleCropMouseDown = useCallback(
     (e: React.MouseEvent) => {
       if (!cropMode || activeHandle) return;
+      // Crop source (dataUrl) may still be loading on demand.
+      if (isLoadingCropSource || !file.dataUrl) return;
       // Only start a new selection if clicking outside the existing crop rect
       const coords = getImageRelativeCoords(e);
       if (!coords) return;
@@ -173,7 +201,14 @@ export function ImagePreview({
       setDragStart(coords);
       e.preventDefault();
     },
-    [cropMode, activeHandle, cropRect, getImageRelativeCoords],
+    [
+      cropMode,
+      activeHandle,
+      cropRect,
+      getImageRelativeCoords,
+      isLoadingCropSource,
+      file.dataUrl,
+    ],
   );
 
   const handleCropMouseMove = useCallback(
@@ -374,7 +409,9 @@ export function ImagePreview({
       {/* Crop mode banner */}
       {cropMode && !cropRect && (
         <div className="absolute top-2 left-1/2 z-20 -translate-x-1/2 rounded-md bg-primary px-3 py-1.5 text-primary-foreground text-xs shadow-lg">
-          Drag to select crop area. Press ESC to cancel.
+          {isLoadingCropSource
+            ? "Preparing image for cropping..."
+            : "Drag to select crop area. Press ESC to cancel."}
         </div>
       )}
 

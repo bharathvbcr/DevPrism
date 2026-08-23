@@ -1,13 +1,14 @@
 //! Resume Synthesis & Fine-Tuning MCP Tools and Prompts.
 //!
 //! Exposes:
-//! - `resume_analyze_jd`: extract requirements, hard/soft skills, seniority, and domains from a Job Description.
+//! - `resume_analyze_jd`: extract requirements, hard/soft skills, seniority, and domains from a Job Description (plus deterministic metadata: salary range, benefits, culture signals, experience level, requirement buckets).
 //! - `resume_gap_analysis`: calculate candidate coverage, missing skills, and warnings for missing non-negotiables.
 //! - `resume_score_and_select`: score blocks and pack them into a page budget with a wrap-aware knapsack.
 //! - `resume_rewrite_bullets`: verify caller-supplied bullet drafts against canonical metrics.
-//! - `resume_synthesize`: deterministic analysis stages (JD -> score -> select -> gap -> ATS coverage).
+//! - `resume_synthesize`: deterministic analysis stages (JD -> score -> select -> gap -> ATS coverage -> parse check).
 //! - `resume_compile`: compile Typst source to PDF. LaTeX is explicitly rejected, not faked.
 //! - `resume_finetune_bullet`: analyse a bullet. Never writes or invents metrics.
+//! - `resume_ats_check`: simulate how an ATS parses text (sections, contact info, formatting hazards) with an optional JD keyword heatmap. Ported from IgniteCV via `career_match::ats_sim`.
 //!
 //! Prompts:
 //! - `tailor-resume-for-jd`: Prompt template for JD-tailored resume generation.
@@ -17,6 +18,7 @@
 
 use crate::career_db::{self, ExperienceBlock};
 use crate::career_match::{gap, jd, metrics, render, scoring, selection};
+use crate::career_match::ats_sim;
 use crate::career_typst::engine;
 use crate::mcp::protocol::{
     JsonRpcError, PromptArgument, PromptDefinition, ResponseMeta, ToolDefinition,
@@ -183,13 +185,17 @@ pub fn list_resume_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "resume_compile".to_string(),
-            description: "Compile Typst resume source to PDF with the in-process, filesystem-denied Typst engine, returning base64 bytes and diagnostics. LaTeX is NOT supported through MCP and is rejected with an explanatory error rather than reported as compiled.".to_string(),
+            description: "Compile Typst resume source to PDF with the in-process, filesystem-denied Typst engine, returning diagnostics; pdfBase64 only when include_pdf=true (default false — PDF bytes flood agent context; pdfOmitted reports a suppressed PDF honestly). LaTeX is NOT supported through MCP and is rejected with an explanatory error rather than reported as compiled.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "typst_source": {
                         "type": "string",
                         "description": "Typst resume source code"
+                    },
+                    "include_pdf": {
+                        "type": "boolean",
+                        "description": "Include pdfBase64 in the response (default false)"
                     },
                     "latex_source": {
                         "type": "string",
@@ -224,6 +230,30 @@ pub fn list_resume_tools() -> Vec<ToolDefinition> {
                     }
                 },
                 "required": ["bullet_text", "jd_text"]
+            }),
+            _meta: None,
+        },
+        ToolDefinition {
+            name: "resume_ats_check".to_string(),
+            description: "Simulate how an applicant tracking system parses resume text: which sections it detects (summary/experience/education/skills/projects/publications/leadership/certifications/awards/languages/volunteer/links/contact), whether the system's required sections are present, what contact info survives (name/email/phone/links), and formatting hazards (tables or tabs, exotic symbols, over-long lines). Supply jd_text to also get a per-section keyword-density heatmap with heat levels 0-5, missing critical keywords, and keyword-stuffing detection. Deterministic heuristic audit — no model involved.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "Resume text (or any document text) to simulate parsing on"
+                    },
+                    "jd_text": {
+                        "type": "string",
+                        "description": "Optional job description; enables the keyword-density heatmap"
+                    },
+                    "ats_system": {
+                        "type": "string",
+                        "enum": ["taleo", "workday", "greenhouse", "lever", "jobvite", "icims", "generic"],
+                        "description": "Which ATS rule set to apply (default generic)"
+                    }
+                },
+                "required": ["text"]
             }),
             _meta: None,
         },
@@ -508,7 +538,13 @@ pub async fn execute_resume_tool(
                     json!({ "ttlMs": 300_000, "cacheScope": "public" }),
                 );
             }
-            Ok(json!({ "profile": out }))
+            // Deterministic heuristic metadata (salary range, benefits,
+            // culture signals, experience level, requirement buckets). Every
+            // field is evidence, not truth — nullable on purpose.
+            let metadata = ats_sim::analyze_jd_metadata(jd_text);
+            let metadata_value = serde_json::to_value(&metadata)
+                .map_err(|e| JsonRpcError::internal_error(format!("metadata encode: {e}")))?;
+            Ok(json!({ "profile": out, "metadata": metadata_value }))
         }
 
         // ---------------------------------------------------------------
@@ -973,6 +1009,61 @@ pub async fn execute_resume_tool(
                         &profile.ats_keywords,
                     );
 
+                    // ATS parse check over the corpus this run would print:
+                    // header, contact lines, section titles, entries, and the
+                    // trimmed bullets — mirroring what render_resume emits.
+                    let ats_system = ats_sim::detect_ats_systems(&jd_text)[0];
+                    let mut corpus_lines: Vec<String> = Vec::new();
+                    if !header_name.trim().is_empty() {
+                        corpus_lines.push(header_name.trim().to_string());
+                    }
+                    for line in &contact_lines {
+                        if !line.trim().is_empty() {
+                            corpus_lines.push(line.trim().to_string());
+                        }
+                    }
+                    let mut last_section: Option<String> = None;
+                    for b in &selected_blocks {
+                        let section = selection::section_for_block(b);
+                        if last_section.as_deref() != Some(section.as_str()) {
+                            corpus_lines.push(section.to_uppercase());
+                            last_section = Some(section.clone());
+                        }
+                        let head = [b.title.trim(), b.org.trim()]
+                            .iter()
+                            .filter(|part| !part.is_empty())
+                            .map(|part| part.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        if !head.is_empty() {
+                            corpus_lines.push(head);
+                        }
+                        if let Some(loc) = b.location.as_deref() {
+                            if !loc.trim().is_empty() {
+                                corpus_lines.push(loc.trim().to_string());
+                            }
+                        }
+                        let dates = match (&b.date_range.start, &b.date_range.end) {
+                            (start, Some(end)) => format!("{start} - {end}"),
+                            (start, None) => format!("{start} - Present"),
+                        };
+                        corpus_lines.push(dates);
+                        let kept =
+                            selection::trim_selected_bullets(b, &profile.must_have_skills, budget.bullets_per_block());
+                        for bullet in &b.bullets {
+                            if kept.contains(&bullet.id) && !bullet.canonical.trim().is_empty() {
+                                corpus_lines.push(bullet.canonical.trim().to_string());
+                            }
+                        }
+                    }
+                    let ats_parse_json = serde_json::to_value(ats_sim::summarize_ats_parse(
+                        &ats_sim::simulate_ats_parsing(
+                            &corpus_lines.join("\n"),
+                            ats_system,
+                        ),
+                    ))
+                    .map_err(|e| format!("ats parse encode: {e}"))?;
+
                     // Materialize through the injection-safe code-mode renderer.
                     // The design layer (templates, two-column, typography) stays
                     // owned by the desktop app; this is the plain layout that
@@ -1044,6 +1135,7 @@ pub async fn execute_resume_tool(
                             "bulletsConsidered": bullet_texts.len(),
                             "aiRewrittenCount": 0,
                             "canonicalFallbackCount": bullet_texts.len(),
+                            "atsParseCheck": ats_parse_json,
                         },
                         "materialization": materialization,
                         "llmStagesSkipped": ["jd-extraction-model", "bullet-rewrite", "critic"],
@@ -1100,6 +1192,15 @@ pub async fn execute_resume_tool(
         "resume_compile" => {
             let typst_source = arguments.get("typst_source").and_then(|v| v.as_str());
             let latex_source = arguments.get("latex_source").and_then(|v| v.as_str());
+            // PDF bytes are opt-in. A base64-encoded PDF is hundreds of
+            // kilobytes straight into an agent context window; the useful
+            // fields are `pageCount` and the diagnostics. Previously this arg
+            // was accepted and silently ignored — a caller passing false got
+            // the full payload anyway.
+            let include_pdf = arguments
+                .get("include_pdf")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
 
             if typst_source.is_some() && latex_source.is_some() {
                 return Err(JsonRpcError::invalid_params(
@@ -1119,15 +1220,21 @@ pub async fn execute_resume_tool(
                             JsonRpcError::internal_error(format!("compile task error: {e}"))
                         })?;
 
-                let pdf_base64 = compile_res.pdf_bytes.as_ref().map(|b| BASE64_STANDARD.encode(b));
+                let pdf_base64 = if include_pdf {
+                    compile_res.pdf_bytes.as_ref().map(|b| BASE64_STANDARD.encode(b))
+                } else {
+                    None
+                };
                 return Ok(json!({
                     "engine": "typst",
                     "success": compile_res.pdf_bytes.is_some(),
                     "errors": compile_res.errors,
                     "warnings": compile_res.warnings,
                     "pageCount": compile_res.page_count,
+                    // Honest accounting: suppressed is not absent.
+                    "pdfOmitted": !include_pdf && compile_res.pdf_bytes.is_some(),
                     "pdfBase64": pdf_base64,
-                    "byteLength": compile_res.pdf_bytes.map(|b| b.len()).unwrap_or(0),
+                    "byteLength": compile_res.pdf_bytes.as_ref().map(|b| b.len()).unwrap_or(0),
                 }));
             }
 
@@ -1151,6 +1258,41 @@ pub async fn execute_resume_tool(
             Err(JsonRpcError::invalid_params(
                 "Provide 'typst_source'. ('latex_source' is rejected: see resume_compile docs.)",
             ))
+        }
+
+        // ---------------------------------------------------------------
+        // ATS parse simulation (IgniteCV port). Deterministic audit of how
+        // an applicant tracking system would read the supplied text.
+        // ---------------------------------------------------------------
+        "resume_ats_check" => {
+            let text = require_str(arguments, "text")?;
+            let system = match arguments.get("ats_system").and_then(|v| v.as_str()) {
+                Some(raw) => {
+                    let parsed = ats_sim::AtsSystemId::parse(raw);
+                    if parsed.is_none() {
+                        return Err(JsonRpcError::invalid_params(format!(
+                            "Unknown ats_system '{raw}'. Known systems: taleo, workday, \
+                             greenhouse, lever, jobvite, icims, generic."
+                        )));
+                    }
+                    parsed.unwrap()
+                }
+                None => ats_sim::AtsSystemId::Generic,
+            };
+            let jd_text = arguments.get("jd_text").and_then(|v| v.as_str());
+
+            let report = ats_sim::simulate_ats_parsing(text, system);
+            let mut out = serde_json::to_value(ats_sim::summarize_ats_parse(&report))
+                .map_err(|e| JsonRpcError::internal_error(format!("ats encode: {e}")))?;
+            if let Some(jd) = jd_text {
+                let heat = ats_sim::generate_keyword_heatmap(text, jd);
+                let heat_value = serde_json::to_value(ats_sim::summarize_keyword_heatmap(&heat))
+                    .map_err(|e| JsonRpcError::internal_error(format!("heatmap encode: {e}")))?;
+                if let Some(obj) = out.as_object_mut() {
+                    obj.insert("heatmap".to_string(), heat_value);
+                }
+            }
+            Ok(out)
         }
 
         // ---------------------------------------------------------------

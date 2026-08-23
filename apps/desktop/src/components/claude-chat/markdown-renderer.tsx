@@ -1,5 +1,5 @@
-import { type FC, useCallback, useState } from "react";
-import ReactMarkdown from "react-markdown";
+import { memo, type FC, useCallback, useState } from "react";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
@@ -77,94 +77,96 @@ interface MarkdownRendererProps {
   className?: string;
 }
 
-export const MarkdownRenderer: FC<MarkdownRendererProps> = ({
-  content,
-  className,
-}) => {
-  return (
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm, remarkMath]}
-      rehypePlugins={[rehypeKatex]}
-      className={cn(
-        "min-w-0 max-w-full break-words [overflow-wrap:anywhere] [&_*]:max-w-full",
-        className ?? "prose prose-sm dark:prose-invert max-w-none",
-      )}
-      components={{
-        pre({ children }) {
-          return <>{children}</>;
-        },
-        table({ children, node, ...props }) {
-          return (
-            <div className="my-3 w-full overflow-x-auto rounded-lg border border-border">
-              <table
-                className="m-0 w-full border-collapse text-left text-sm"
-                {...props}
-              >
-                {children}
-              </table>
-            </div>
-          );
-        },
-        thead({ children, node, ...props }) {
-          return (
-            <thead className="bg-muted/70" {...props}>
-              {children}
-            </thead>
-          );
-        },
-        th({ children, node, ...props }) {
-          return (
-            <th
-              className="border-border border-r border-b px-3 py-2 font-medium text-foreground last:border-r-0"
-              {...props}
-            >
-              {children}
-            </th>
-          );
-        },
-        td({ children, node, ...props }) {
-          return (
-            <td
-              className="border-border border-t border-r px-3 py-2 align-top text-foreground last:border-r-0"
-              {...props}
-            >
-              {children}
-            </td>
-          );
-        },
-        hr({ node, ...props }) {
-          return <hr className="my-5 border-border border-t" {...props} />;
-        },
-        code({ className: codeClassName, children, node, ...props }) {
-          const match = /language-(\w+)/.exec(codeClassName || "");
-          const language = match?.[1];
-          const code = String(children).replace(/\n$/, "");
-          const isBlock =
-            node?.position &&
-            node.position.start.line !== node.position.end.line;
+// Hoisted so the remark→rehype pipeline options are stable across renders;
+// recreating them per render forces react-markdown to rebuild its processor.
+const REMARK_PLUGINS = [remarkGfm, remarkMath];
+const REHYPE_PLUGINS = [rehypeKatex];
 
-          if (!match && !isBlock) {
-            return (
-              <code
-                className={cn(
-                  "break-words [overflow-wrap:anywhere]",
-                  codeClassName,
-                )}
-                {...props}
-              >
-                {children}
-              </code>
-            );
-          }
+const markdownComponents: Components = {
+  pre({ children }) {
+    return <>{children}</>;
+  },
+  table({ children, node, ...props }) {
+    return (
+      <div className="my-3 w-full overflow-x-auto rounded-lg border border-border">
+        <table
+          className="m-0 w-full border-collapse text-left text-sm"
+          {...props}
+        >
+          {children}
+        </table>
+      </div>
+    );
+  },
+  thead({ children, node, ...props }) {
+    return (
+      <thead className="bg-muted/70" {...props}>
+        {children}
+      </thead>
+    );
+  },
+  th({ children, node, ...props }) {
+    return (
+      <th
+        className="border-border border-r border-b px-3 py-2 font-medium text-foreground last:border-r-0"
+        {...props}
+      >
+        {children}
+      </th>
+    );
+  },
+  td({ children, node, ...props }) {
+    return (
+      <td
+        className="border-border border-t border-r px-3 py-2 align-top text-foreground last:border-r-0"
+        {...props}
+      >
+        {children}
+      </td>
+    );
+  },
+  hr({ node, ...props }) {
+    return <hr className="my-5 border-border border-t" {...props} />;
+  },
+  code({ className: codeClassName, children, node, ...props }) {
+    const match = /language-(\w+)/.exec(codeClassName || "");
+    const language = match?.[1];
+    const code = String(children).replace(/\n$/, "");
+    const isBlock =
+      node?.position && node.position.start.line !== node.position.end.line;
 
-          return <CodeBlock language={language || ""} code={code} />;
-        },
-      }}
-    >
-      {content}
-    </ReactMarkdown>
-  );
+    if (!match && !isBlock) {
+      return (
+        <code
+          className={cn("break-words [overflow-wrap:anywhere]", codeClassName)}
+          {...props}
+        >
+          {children}
+        </code>
+      );
+    }
+
+    return <CodeBlock language={language || ""} code={code} />;
+  },
 };
+
+export const MarkdownRenderer: FC<MarkdownRendererProps> = memo(
+  ({ content, className }) => {
+    return (
+      <ReactMarkdown
+        remarkPlugins={REMARK_PLUGINS}
+        rehypePlugins={REHYPE_PLUGINS}
+        className={cn(
+          "min-w-0 max-w-full break-words [overflow-wrap:anywhere] [&_*]:max-w-full",
+          className ?? "prose prose-sm dark:prose-invert max-w-none",
+        )}
+        components={markdownComponents}
+      >
+        {content}
+      </ReactMarkdown>
+    );
+  },
+);
 
 // ─── Code Block ───
 

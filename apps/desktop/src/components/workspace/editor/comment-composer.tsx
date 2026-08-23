@@ -16,7 +16,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { canUseAiAssist, draftCommentSuggestion } from "@/lib/ai-assist";
 import { useChatLabels } from "@/lib/chat-labels";
 import { useSettingsStore } from "@/stores/settings-store";
-import { toast } from "sonner";
 import { showWorkspaceError } from "@/stores/workspace-banner-store";
 
 export interface CommentComposerProps {

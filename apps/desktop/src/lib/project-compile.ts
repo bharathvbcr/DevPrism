@@ -1,6 +1,10 @@
 import { resolveActiveCompileTarget } from "@/lib/compile-root-preference";
 import type { CompileEngineKind } from "@/lib/compile-targets";
-import { compileLatex, formatCompileError } from "@/lib/latex-compiler";
+import {
+  compileLatex,
+  formatCompileError,
+  isSupersededCompile,
+} from "@/lib/latex-compiler";
 import {
   summarizeTypstResult,
   typstPdfBytes,
@@ -110,18 +114,22 @@ export async function compileActiveProject(force = true): Promise<void> {
     );
     state.setPdfData(data, rootId);
   } catch (error) {
-    const message = formatCompileError(error);
-    state.setCompileError(message, rootId);
-    const firstLine =
-      message
-        .split(/\s*[!\n]\s*/)
-        .map((s) => s.trim())
-        .find((s) => s.length > 0 && s !== "Compilation failed") ?? message;
-    showWorkspaceError(
-      "Compilation failed",
-      firstLine.length > 140 ? `${firstLine.slice(0, 137)}…` : firstLine,
-      { dedupeKey: "compile-error" },
-    );
+    // A build cancelled by a newer edit is not a failure — the newer
+    // compile (already scheduled) owns the preview now.
+    if (!isSupersededCompile(error)) {
+      const message = formatCompileError(error);
+      state.setCompileError(message, rootId);
+      const firstLine =
+        message
+          .split(/\s*[!\n]\s*/)
+          .map((s) => s.trim())
+          .find((s) => s.length > 0 && s !== "Compilation failed") ?? message;
+      showWorkspaceError(
+        "Compilation failed",
+        firstLine.length > 140 ? `${firstLine.slice(0, 137)}…` : firstLine,
+        { dedupeKey: "compile-error" },
+      );
+    }
   } finally {
     const elapsed = Date.now() - compileStart;
     // Typst compiles in ~1ms; without a floor the spinner would strobe.

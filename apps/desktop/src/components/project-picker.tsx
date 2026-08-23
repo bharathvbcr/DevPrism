@@ -344,7 +344,7 @@ export function ProjectPicker() {
   const removeRecentProject = useProjectStore((s) => s.removeRecentProject);
   const openProject = useDocumentStore((s) => s.openProject);
 
-  const claudeStatus = useClaudeSetupStore((s) => s.status);
+  const _claudeStatus = useClaudeSetupStore((s) => s.status);
   const checkClaudeStatus = useClaudeSetupStore((s) => s.checkStatus);
 
   useEffect(() => {

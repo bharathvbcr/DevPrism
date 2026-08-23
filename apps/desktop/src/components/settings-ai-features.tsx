@@ -78,7 +78,7 @@ export function SettingsAiFeatures({
   const aiProjectBlurb = useSettingsStore((s) => s.aiProjectBlurb);
   const setAiProjectBlurb = useSettingsStore((s) => s.setAiProjectBlurb);
   const aiSemanticSearch = useSettingsStore((s) => s.aiSemanticSearch);
-  const nativeAgentEnabled = useSettingsStore((s) => s.nativeAgentEnabled);
+  const _nativeAgentEnabled = useSettingsStore((s) => s.nativeAgentEnabled);
   const embedding = useEmbeddingReady();
   const setAiSemanticSearch = useSettingsStore((s) => s.setAiSemanticSearch);
   const aiCommandAssist = useSettingsStore((s) => s.aiCommandAssist);

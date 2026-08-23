@@ -2280,7 +2280,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
                             ? ` · v${ollamaStatus.version}`
                             : ""}
                         </div>
-                        {ollamaStatus && ollamaStatus.connected && (
+                        {ollamaStatus?.connected && (
                           <div className="mt-0.5 text-[10px] text-muted-foreground">
                             {ollamaStatus.chatModels} chat
                             {ollamaStatus.embeddingModels > 0

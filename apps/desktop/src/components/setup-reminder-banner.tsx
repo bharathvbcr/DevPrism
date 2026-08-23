@@ -15,6 +15,31 @@ import { useSettingsStore } from "@/stores/settings-store";
 import { useEffect, useMemo, useState } from "react";
 
 const DISMISS_KEY = "devprism.setup-banner-dismissed";
+const DISMISS_AT_KEY = "devprism.setup-banner-dismissed-at";
+
+/** Banner dismissal lasts 3 days, then it may remind once more. */
+const BANNER_DISMISS_TTL_MS = 3 * 24 * 60 * 60 * 1000;
+
+function bannerDismissed(): boolean {
+  try {
+    if (localStorage.getItem(DISMISS_KEY) !== "1") return false;
+    const raw = localStorage.getItem(DISMISS_AT_KEY);
+    const at = raw ? Number(raw) : Number.NaN;
+    if (!Number.isFinite(at)) return true;
+    return Date.now() - at < BANNER_DISMISS_TTL_MS;
+  } catch {
+    return false;
+  }
+}
+
+function dismissBanner(): void {
+  try {
+    localStorage.setItem(DISMISS_KEY, "1");
+    localStorage.setItem(DISMISS_AT_KEY, String(Date.now()));
+  } catch {
+    /* storage unavailable */
+  }
+}
 
 export function SetupReminderBanner({
   onOpenSettings,
@@ -39,9 +64,7 @@ export function SetupReminderBanner({
 
   const checkUv = useUvSetupStore((s) => s.checkStatus);
 
-  const [dismissed, setDismissed] = useState(
-    () => sessionStorage.getItem(DISMISS_KEY) === "1",
-  );
+  const [dismissed, setDismissed] = useState(() => bannerDismissed());
 
   useEffect(() => {
     void checkClaude();
@@ -99,7 +122,7 @@ export function SetupReminderBanner({
         secondaryActionLabel="Open Settings"
         onSecondaryAction={onOpenSettings}
         onDismiss={() => {
-          sessionStorage.setItem(DISMISS_KEY, "1");
+          dismissBanner();
 
           setDismissed(true);
         }}
@@ -120,7 +143,7 @@ export function SetupReminderBanner({
       actionLabel="Open Settings"
       onAction={onOpenSettings}
       onDismiss={() => {
-        sessionStorage.setItem(DISMISS_KEY, "1");
+        dismissBanner();
 
         setDismissed(true);
       }}

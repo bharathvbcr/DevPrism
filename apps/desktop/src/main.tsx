@@ -69,11 +69,13 @@ function hideLoadingScreen() {
 }
 
 async function bootstrap() {
-  try {
-    await initializeAppZoom();
-  } catch (error) {
+  // Reset-on-launch is deliberate (never start stuck-zoomed); it only ever
+  // applies the DEFAULT value, so running it concurrently with bundle
+  // evaluation is visually identical while taking the IPC round trip off the
+  // critical path.
+  const zoomInit = initializeAppZoom().catch((error: unknown) => {
     log.error("Failed to initialize app zoom", { error: String(error) });
-  }
+  });
 
   if (isDebugWindow) {
     // Debug window — render standalone debug page
@@ -83,12 +85,13 @@ async function bootstrap() {
         <DebugPage />
       </React.StrictMode>,
     );
+    void zoomInit;
     hideLoadingScreen();
     return;
   }
 
   // Main app window
-  const { App } = await import("./App");
+  const [{ App }] = await Promise.all([import("./App"), zoomInit]);
   ReactDOM.createRoot(rootContainer).render(
     <React.StrictMode>
       <App onReady={hideLoadingScreen} />

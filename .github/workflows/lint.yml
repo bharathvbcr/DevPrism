@@ -22,3 +22,10 @@ jobs:
 
       - name: Biome CI
         run: pnpm exec biome ci
+
+      # The documentation is a declaration layer, and nothing was checking it.
+      # Needs no build: the contract reports which evidence tier it used, and
+      # falls back to reading the tool definitions from source when the desktop
+      # binary is not present.
+      - name: Documentation contract
+        run: pnpm docs:verify --verbose

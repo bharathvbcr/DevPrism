@@ -1,11 +1,21 @@
 #!/usr/bin/env bash
-# Collect signed updater artifacts for the publish job. Never fails when unsigned
-# builds omit .sig files or bundle directories.
+# Collect signed updater artifacts for the publish job. Unsigned local builds may
+# omit .sig files or bundle directories; pass --expect-signed to fail instead of
+# silently succeeding without updater artifacts (used in CI when the signing key
+# secret is configured).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PLATFORM="${1:?usage: ci-collect-updater.sh <windows|macos|macos-intel|linux>}"
-TARGET="${2:?usage: ci-collect-updater.sh <platform> <rust-target>}"
+EXPECT_SIGNED=0
+ARGS=()
+for arg in "$@"; do
+  case "$arg" in
+    --expect-signed) EXPECT_SIGNED=1 ;;
+    *) ARGS+=("$arg") ;;
+  esac
+done
+PLATFORM="${ARGS[0]:?usage: ci-collect-updater.sh <windows|macos|macos-intel|linux> <rust-target> [--expect-signed]}"
+TARGET="${ARGS[1]:?usage: ci-collect-updater.sh <platform> <rust-target> [--expect-signed]}"
 
 BUNDLE="$ROOT/apps/desktop/src-tauri/target/$TARGET/release/bundle"
 SIG=""
@@ -44,6 +54,10 @@ if [ -n "$SIG" ] && [ -n "$ARTIFACT" ]; then
     echo "url=$(basename "$ARTIFACT")"
   } >> "${GITHUB_OUTPUT:?GITHUB_OUTPUT must be set}"
   echo "Collected updater artifact: $(basename "$ARTIFACT")"
+elif [ "$EXPECT_SIGNED" = "1" ]; then
+  echo "ERROR: signing key is configured but no signed updater artifacts were found for $PLATFORM." >&2
+  echo "Refusing to publish a release with a silently missing updater platform. Checked: $BUNDLE" >&2
+  exit 1
 else
   echo "No signed updater artifacts (unsigned build or signing key not configured)."
 fi

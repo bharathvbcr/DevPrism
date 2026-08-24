@@ -96,7 +96,12 @@ jobs:
       - name: Collect updater artifacts
         id: collect
         shell: bash
-        run: bash scripts/ci-collect-updater.sh windows x86_64-pc-windows-msvc
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          EXPECT=""
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then EXPECT="--expect-signed"; fi
+          bash scripts/ci-collect-updater.sh windows x86_64-pc-windows-msvc $EXPECT
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -257,7 +262,12 @@ jobs:
       - name: Collect updater artifacts
         id: collect
         shell: bash
-        run: bash scripts/ci-collect-updater.sh macos aarch64-apple-darwin
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          EXPECT=""
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then EXPECT="--expect-signed"; fi
+          bash scripts/ci-collect-updater.sh macos aarch64-apple-darwin $EXPECT
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -420,7 +430,12 @@ jobs:
       - name: Collect updater artifacts
         id: collect
         shell: bash
-        run: bash scripts/ci-collect-updater.sh macos-intel x86_64-apple-darwin
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          EXPECT=""
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then EXPECT="--expect-signed"; fi
+          bash scripts/ci-collect-updater.sh macos-intel x86_64-apple-darwin $EXPECT
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -486,7 +501,12 @@ jobs:
       - name: Collect updater artifacts
         id: collect
         shell: bash
-        run: bash scripts/ci-collect-updater.sh linux x86_64-unknown-linux-gnu
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          EXPECT=""
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then EXPECT="--expect-signed"; fi
+          bash scripts/ci-collect-updater.sh linux x86_64-unknown-linux-gnu $EXPECT
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -522,6 +542,20 @@ jobs:
           else
             echo "tag=${{ inputs.release_tag }}" >> $GITHUB_OUTPUT
           fi
+
+      - name: Verify tag matches app version
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          APP_VERSION=$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")
+          TAG_VERSION="${TAG#v}"
+          if [ "$TAG_VERSION" != "$APP_VERSION" ]; then
+            echo "ERROR: tag $TAG does not match app version $APP_VERSION (tauri.conf.json)." >&2
+            echo "The updater manifest would advertise $TAG_VERSION while the built app reports $APP_VERSION," >&2
+            echo "breaking update comparisons. Bump the version or fix the tag and retry." >&2
+            exit 1
+          fi
+          echo "Tag $TAG matches app version $APP_VERSION."
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -564,7 +598,12 @@ jobs:
             };
             require('fs').writeFileSync('latest.json', JSON.stringify(data, null, 2));
             console.log(JSON.stringify(data, null, 2));
+            if (Object.keys(platforms).length === 0) {
+              console.error('ERROR: latest.json has no updater platforms; refusing to publish a release with dead auto-update.');
+              process.exit(1);
+            }
           "
+        shell: bash
 
       - name: Create draft release
         env:

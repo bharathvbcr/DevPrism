@@ -12,7 +12,7 @@ if [ -f "$ENV_FILE" ]; then
 fi
 
 TARGET="aarch64-apple-darwin"
-VERSION=$(node -p "require('./package.json').version")
+VERSION=$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")
 TAG="v${VERSION}"
 
 echo "==> Building DevPrism $TAG for macOS ($TARGET)"

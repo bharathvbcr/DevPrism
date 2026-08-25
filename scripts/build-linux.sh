@@ -12,7 +12,7 @@ if [ -f "$ENV_FILE" ]; then
 fi
 
 TARGET="x86_64-unknown-linux-gnu"
-VERSION=$(node -p "require('./package.json').version")
+VERSION=$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")
 TAG="v${VERSION}"
 
 echo "==> Building DevPrism $TAG for Linux ($TARGET)"

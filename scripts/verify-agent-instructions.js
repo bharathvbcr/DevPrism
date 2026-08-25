@@ -25,7 +25,7 @@ function getAllInstructionFiles() {
 
 function getStagedPaths() {
   const output = execSync(
-    "git diff --cached --name-status -z --diff-filter=ACMRT",
+    "git diff --cached --name-status -z --diff-filter=ACMRTD",
     { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
   ).trimEnd();
 
@@ -165,6 +165,16 @@ function main() {
   const seenDirs = new Set();
 
   for (const item of touchedInstructionFiles) {
+    if (item.status.startsWith("D")) {
+      reportError(
+        errors,
+        item.path,
+        "deleted; instruction files cannot be removed",
+        [],
+      );
+      continue;
+    }
+
     const content = stagedContent(item.path);
     if (content === null) {
       continue;

@@ -29,3 +29,6 @@ jobs:
       # binary is not present.
       - name: Documentation contract
         run: pnpm docs:verify --verbose
+
+      - name: Agent instructions contract
+        run: pnpm agents:verify:all

@@ -14,6 +14,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: build-desktop-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
   TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -23,6 +27,7 @@ jobs:
   # Windows
   # ──────────────────────────────────────────────
   build-windows:
+    timeout-minutes: 150
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -38,7 +43,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ env.VCPKG_INSTALLED }}
-          key: vcpkg-win-v2
+          key: vcpkg-win-v2-${{ hashFiles('.github/workflows/build-desktop.yml') }}
+          restore-keys: |
+            vcpkg-win-v2-
 
       - name: Install Windows dependencies (vcpkg)
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
@@ -56,7 +63,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ${{ env.VCPKG_INSTALLED }}
-          key: vcpkg-win-v2
+          key: vcpkg-win-v2-${{ hashFiles('.github/workflows/build-desktop.yml') }}
 
       - name: Set Windows build environment
         shell: bash
@@ -83,7 +90,7 @@ jobs:
           node-version: 22
           cache: pnpm
 
-      - run: pnpm install
+      - run: pnpm install --frozen-lockfile
 
       - name: Build Tauri app
         shell: bash
@@ -121,6 +128,7 @@ jobs:
   # macOS (Apple Silicon)
   # ──────────────────────────────────────────────
   build-macos:
+    timeout-minutes: 150
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -146,7 +154,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/vcpkg/installed
-          key: vcpkg-macos-arm64-v1
+          key: vcpkg-macos-arm64-v1-${{ hashFiles('.github/workflows/build-desktop.yml') }}
+          restore-keys: |
+            vcpkg-macos-arm64-v1-
 
       - name: Install macOS dependencies (vcpkg)
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
@@ -164,7 +174,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ~/vcpkg/installed
-          key: vcpkg-macos-arm64-v1
+          key: vcpkg-macos-arm64-v1-${{ hashFiles('.github/workflows/build-desktop.yml') }}
 
       - name: Set macOS build environment
         run: |
@@ -214,7 +224,7 @@ jobs:
           node-version: 22
           cache: pnpm
 
-      - run: pnpm install
+      - run: pnpm install --frozen-lockfile
 
       - name: Build Tauri app
         shell: bash
@@ -259,6 +269,27 @@ jobs:
           xcrun stapler staple "$DMG_PATH"
           xcrun stapler staple "$APP_PATH"
 
+      - name: Repack and re-sign updater artifact with stapled app
+        if: env.TAURI_SIGNING_PRIVATE_KEY != ''
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          TARGET="aarch64-apple-darwin"
+          BUNDLE="apps/desktop/src-tauri/target/$TARGET/release/bundle"
+          TAR_PATH=$(find "$BUNDLE/macos" -maxdepth 1 -name '*.app.tar.gz' | head -1)
+          if [ -z "$TAR_PATH" ]; then
+            echo "ERROR: updater tarball not found in $BUNDLE/macos"
+            exit 1
+          fi
+          echo "==> Rebuilding $TAR_PATH from the stapled app bundle..."
+          rm -f "$TAR_PATH" "$TAR_PATH.sig"
+          tar -czf "$TAR_PATH" -C "$BUNDLE/macos" DevPrism.app
+          pnpm --filter @devprism/desktop exec tauri signer sign \
+            -k "$TAURI_SIGNING_PRIVATE_KEY" \
+            -p "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" \
+            "$TAR_PATH"
+
       - name: Collect updater artifacts
         id: collect
         shell: bash
@@ -292,6 +323,7 @@ jobs:
   # Ref: https://v2.tauri.app/plugin/updater/ (platform key: darwin-x86_64)
   # ──────────────────────────────────────────────
   build-macos-intel:
+    timeout-minutes: 180
     runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
@@ -314,7 +346,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/vcpkg/installed
-          key: vcpkg-macos-x64-v1
+          key: vcpkg-macos-x64-v1-${{ hashFiles('.github/workflows/build-desktop.yml') }}
+          restore-keys: |
+            vcpkg-macos-x64-v1-
 
       - name: Install macOS dependencies (vcpkg)
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
@@ -332,7 +366,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ~/vcpkg/installed
-          key: vcpkg-macos-x64-v1
+          key: vcpkg-macos-x64-v1-${{ hashFiles('.github/workflows/build-desktop.yml') }}
 
       - name: Set macOS build environment
         run: |
@@ -382,7 +416,7 @@ jobs:
           node-version: 22
           cache: pnpm
 
-      - run: pnpm install
+      - run: pnpm install --frozen-lockfile
 
       - name: Build Tauri app
         shell: bash
@@ -427,6 +461,27 @@ jobs:
           xcrun stapler staple "$DMG_PATH"
           xcrun stapler staple "$APP_PATH"
 
+      - name: Repack and re-sign updater artifact with stapled app
+        if: env.TAURI_SIGNING_PRIVATE_KEY != ''
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          TARGET="x86_64-apple-darwin"
+          BUNDLE="apps/desktop/src-tauri/target/$TARGET/release/bundle"
+          TAR_PATH=$(find "$BUNDLE/macos" -maxdepth 1 -name '*.app.tar.gz' | head -1)
+          if [ -z "$TAR_PATH" ]; then
+            echo "ERROR: updater tarball not found in $BUNDLE/macos"
+            exit 1
+          fi
+          echo "==> Rebuilding $TAR_PATH from the stapled app bundle..."
+          rm -f "$TAR_PATH" "$TAR_PATH.sig"
+          tar -czf "$TAR_PATH" -C "$BUNDLE/macos" DevPrism.app
+          pnpm --filter @devprism/desktop exec tauri signer sign \
+            -k "$TAURI_SIGNING_PRIVATE_KEY" \
+            -p "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" \
+            "$TAR_PATH"
+
       - name: Collect updater artifacts
         id: collect
         shell: bash
@@ -455,6 +510,7 @@ jobs:
   # Linux
   # ──────────────────────────────────────────────
   build-linux:
+    timeout-minutes: 120
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -484,7 +540,7 @@ jobs:
           node-version: 22
           cache: pnpm
 
-      - run: pnpm install
+      - run: pnpm install --frozen-lockfile
 
       - name: Build Tauri app
         shell: bash
@@ -542,6 +598,23 @@ jobs:
           else
             echo "tag=${{ inputs.release_tag }}" >> $GITHUB_OUTPUT
           fi
+
+      - name: Verify release tag points at this commit
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          if ! git fetch origin "refs/tags/$TAG:refs/tags/$TAG" --no-tags 2>/dev/null; then
+            echo "ERROR: tag $TAG does not exist on origin." >&2
+            echo "Refusing to publish: a dispatch build must target an existing tag so binaries stay pinned to their tagged commit." >&2
+            exit 1
+          fi
+          TAG_SHA=$(git rev-parse "$TAG^{commit}")
+          if [ "$TAG_SHA" != "$(git rev-parse HEAD)" ]; then
+            echo "ERROR: tag $TAG points at $TAG_SHA but this run builds $GITHUB_SHA." >&2
+            exit 1
+          fi
+          echo "Tag $TAG verified at $(git rev-parse --short HEAD)."
 
       - name: Verify tag matches app version
         env:

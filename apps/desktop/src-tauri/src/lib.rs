@@ -117,6 +117,17 @@ fn is_editor_installed(editor: &EditorDef) -> bool {
     which::which(editor.cli).is_ok()
 }
 
+/// Resolve a frontend-supplied file path onto the project root before handing
+/// it to an editor CLI. Rejects absolute paths, `..`, and symlinks that leave
+/// the project, so "open in editor" cannot be pointed at arbitrary files.
+fn resolve_editor_file_target(
+    project_path: &str,
+    file_path: &str,
+) -> Result<std::path::PathBuf, String> {
+    export::resolve_project_relative(Path::new(project_path), file_path)
+        .map_err(|e| format!("Cannot open file in editor: {e}"))
+}
+
 #[tauri::command]
 fn open_in_editor(
     editor_id: String,
@@ -138,9 +149,10 @@ fn open_in_editor(
     // Open the project folder
     cmd.arg(&project_path);
 
-    // If a specific file is given, open it (with optional line number via -g)
+    // If a specific file is given, confine it to the project, then open it
+    // (with optional line number via -g)
     if let Some(ref fp) = file_path {
-        let full_path = Path::new(&project_path).join(fp);
+        let full_path = resolve_editor_file_target(&project_path, fp)?;
         if let Some(ln) = line {
             cmd.arg("-g");
             cmd.arg(format!("{}:{}", full_path.display(), ln));
@@ -1139,4 +1151,30 @@ pub fn run() {
             _ => {}
         }
     });
+}
+
+#[cfg(test)]
+mod editor_target_tests {
+    use super::*;
+
+    #[test]
+    fn resolves_a_file_inside_the_project() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("main.tex"), "x").unwrap();
+        let got =
+            resolve_editor_file_target(&dir.path().to_string_lossy(), "./main.tex").unwrap();
+        assert!(got.ends_with("main.tex"));
+    }
+
+    #[test]
+    fn rejects_paths_that_leave_the_project() {
+        let dir = tempfile::tempdir().unwrap();
+        for bad in ["../escape.tex", "/etc/passwd", "-flag.tex"] {
+            let err = resolve_editor_file_target(&dir.path().to_string_lossy(), bad).unwrap_err();
+            assert!(
+                err.contains("Cannot open file in editor"),
+                "'{bad}' must be refused at the seam, got: {err}"
+            );
+        }
+    }
 }

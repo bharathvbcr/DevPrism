@@ -469,6 +469,23 @@ fn backup_corrupt_auth_config(path: &Path, reason: &str) -> Result<PathBuf, Stri
     Ok(backup)
 }
 
+/// Serializes every auth-config read-modify-write sequence below. Without it,
+/// two concurrent commands each read the same base config and whichever write
+/// lands second silently discards the other's field updates.
+///
+/// `std::sync::Mutex`, not tokio's: every critical section is purely
+/// synchronous (read → mutate → write, no `.await` inside) and one writer,
+/// `persist_cursor_api_key`, is a sync fn whose async caller lives outside
+/// this file — a tokio Mutex would need `.await` there or panic via
+/// `blocking_lock`. Guards are never held across an await point.
+static AUTH_CONFIG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn lock_auth_config() -> std::sync::MutexGuard<'static, ()> {
+    AUTH_CONFIG_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn read_claude_prism_auth_config_for_update() -> Result<DevPrismAuthConfig, String> {
     match read_claude_prism_auth_config() {
         Ok(config) => Ok(config),
@@ -775,6 +792,7 @@ pub(crate) fn stored_cursor_api_key() -> Option<String> {
 /// Persist a Cursor API key to secure auth storage.
 pub(crate) fn persist_cursor_api_key(api_key: &str) -> Result<(), String> {
     let api_key = normalize_optional_api_key(api_key)?;
+    let _auth_guard = lock_auth_config();
     let mut config = read_claude_prism_auth_config_for_update()?;
     config.cursor_api_key = Some(api_key);
     write_claude_prism_auth_config(&config)
@@ -979,6 +997,7 @@ pub async fn save_anthropic_api_key(
 
     // Saving a new key should repair an empty/corrupt legacy auth file after
     // backing it up, never silently discard parseable credentials.
+    let _auth_guard = lock_auth_config();
     let mut config = read_claude_prism_auth_config_for_update()?;
     config.provider = Some(provider.clone());
 
@@ -1230,6 +1249,7 @@ async fn fetch_openai_compatible_models(
 pub async fn clear_anthropic_api_key() -> Result<(), String> {
     // Clearing should also recover from an empty/corrupt legacy auth file after
     // preserving the bad file for manual recovery.
+    let _auth_guard = lock_auth_config();
     let mut config = read_claude_prism_auth_config_for_update()?;
     config.provider = Some(PROVIDER_CLAUDE_CODE.to_string());
     config.anthropic_api_key = None;
@@ -1264,6 +1284,7 @@ pub async fn delete_openai_compatible_credential(credential_id: String) -> Resul
         return Err("Provider credential id is empty".to_string());
     }
 
+    let _auth_guard = lock_auth_config();
     let mut config = read_claude_prism_auth_config_for_update()?;
     if credential_id == "legacy-openai-compatible" && config.openai_credentials.is_empty() {
         if config.openai_api_key.is_none()
@@ -1324,6 +1345,7 @@ pub async fn delete_openai_compatible_credential(credential_id: String) -> Resul
 
 #[tauri::command]
 pub async fn set_active_openai_compatible_credential(credential_id: String) -> Result<(), String> {
+    let _auth_guard = lock_auth_config();
     let mut config = read_claude_prism_auth_config_for_update()?;
     let credential = normalized_openai_compatible_credentials(&config)
         .into_iter()
@@ -2409,20 +2431,64 @@ fn verify_dirs_writable(dirs: &[PathBuf]) -> Result<(), String> {
     Ok(())
 }
 
-/// Build the shell script for elevated directory creation + chown.
+/// Single-quote a string for POSIX shell: wraps in `'…'`, spelling each `'`
+/// as `'\''` so no embedded character can break out of the quoting.
 #[cfg(not(target_os = "windows"))]
-fn build_elevation_script(dirs: &[PathBuf], user: &str, local_dir: &std::path::Path) -> String {
+fn shell_quote_single(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Usernames acceptable to interpolate unquoted into a root-run script.
+#[cfg(not(target_os = "windows"))]
+fn is_valid_elevation_user(user: &str) -> bool {
+    let mut chars = user.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// Escape arbitrary text for inclusion inside an AppleScript double-quoted
+/// literal (`do shell script "…"`), so osascript's own parser passes the
+/// payload through to the shell unchanged.
+#[cfg(not(target_os = "windows"))]
+fn apple_script_quoted(s: &str) -> String {
+    format!(
+        "\"{}\"",
+        s.replace('\\', "\\\\").replace('"', "\\\"")
+    )
+}
+
+/// Build the shell script for elevated directory creation + chown.
+///
+/// The script runs under `sudo`, so every interpolation must be inert: paths
+/// are passed through `shell_quote_single` and `$USER` is validated against a
+/// strict allowlist before it may appear bare. An apostrophe in a path or a
+/// crafted USER used to be able to run arbitrary commands as root.
+#[cfg(not(target_os = "windows"))]
+fn build_elevation_script(
+    dirs: &[PathBuf],
+    user: &str,
+    local_dir: &std::path::Path,
+) -> Result<String, String> {
+    if !is_valid_elevation_user(user) {
+        return Err(format!(
+            "Refusing elevated setup: invalid user name '{}'.",
+            user
+        ));
+    }
     let dirs_list = dirs
         .iter()
-        .map(|d| format!("'{}'", d.display()))
+        .map(|d| shell_quote_single(&d.to_string_lossy()))
         .collect::<Vec<_>>()
         .join(" ");
-    format!(
-        "mkdir -p {} && chown -R {} '{}'",
+    Ok(format!(
+        "mkdir -p {} && chown -R {} {}",
         dirs_list,
         user,
-        local_dir.display()
-    )
+        shell_quote_single(&local_dir.to_string_lossy())
+    ))
 }
 
 /// Ensure ~/.local/{bin,share/claude,state/claude} and ~/.claude exist and are writable.
@@ -2437,10 +2503,10 @@ async fn ensure_local_dirs(window: &WebviewWindow) -> Result<(), String> {
         return Ok(());
     }
 
-    // Need elevation 鈥?use osascript directly for reliability
+    // Need elevation — use osascript directly for reliability
     let user = std::env::var("USER").unwrap_or_default();
     let local_dir = home.join(".local");
-    let script = build_elevation_script(&required_dirs, &user, &local_dir);
+    let script = build_elevation_script(&required_dirs, &user, &local_dir)?;
 
     let _ = window.emit(
         "install-output",
@@ -2454,8 +2520,8 @@ async fn ensure_local_dirs(window: &WebviewWindow) -> Result<(), String> {
             .args([
                 "-e",
                 &format!(
-                    "do shell script \"{}\" with administrator privileges",
-                    script
+                    "do shell script {} with administrator privileges",
+                    apple_script_quoted(&script)
                 ),
             ])
             .output()
@@ -2569,28 +2635,40 @@ pub async fn install_claude_cli(window: WebviewWindow) -> Result<bool, String> {
         }
     });
 
-    let success =
-        match tokio::time::timeout(std::time::Duration::from_secs(600), child.wait()).await {
-            Ok(Ok(status)) => status.success(),
-            Ok(Err(err)) => {
-                let _ = window.emit(
-                    "install-error",
-                    format!("Claude Code installer failed to exit cleanly: {}", err),
-                );
-                false
-            }
-            Err(_) => {
-                let _ = window.emit(
-                    "install-error",
-                    "Claude Code installer timed out after 10 minutes.",
-                );
-                let _ = child.kill().await;
-                false
-            }
-        };
+    // Wait for exit with a deadline, draining both readers INSIDE the timed
+    // future: a killed installer leaves grandchildren holding the pipes, so
+    // awaiting the readers after the timeout would block "install-complete"
+    // forever. Same structure as login_claude below.
+    let child = Arc::new(Mutex::new(child));
+    let child_for_timeout = child.clone();
+    let success = match tokio::time::timeout(
+        std::time::Duration::from_secs(600),
+        async move {
+            let _ = stdout_task.await;
+            let _ = stderr_task.await;
+            child_for_timeout.lock().await.wait().await
+        },
+    )
+    .await
+    {
+        Ok(Ok(status)) => status.success(),
+        Ok(Err(err)) => {
+            let _ = window.emit(
+                "install-error",
+                format!("Claude Code installer failed to exit cleanly: {}", err),
+            );
+            false
+        }
+        Err(_) => {
+            let _ = window.emit(
+                "install-error",
+                "Claude Code installer timed out after 10 minutes.",
+            );
+            let _ = child.lock().await.kill().await;
+            false
+        }
+    };
 
-    let _ = stdout_task.await;
-    let _ = stderr_task.await;
     let _ = window.emit("install-complete", success);
 
     Ok(success)
@@ -3242,6 +3320,29 @@ pub fn extract_claude_print_result(stdout: &str) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
+/// Read a stream to end, refusing output that reaches `limit` bytes.
+///
+/// An exactly-at-limit read is treated as truncated (conservative): a real
+/// response can never be proven complete at the cap.
+async fn read_bounded_output<R>(reader: R, limit: u64, buf: &mut Vec<u8>) -> Result<(), String>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::AsyncReadExt;
+    let mut capped = reader.take(limit);
+    capped
+        .read_to_end(buf)
+        .await
+        .map_err(|e| format!("Failed to read Claude Code output: {e}"))?;
+    if buf.len() as u64 >= limit {
+        return Err(format!(
+            "Claude Code output exceeded the {} MiB capture limit.",
+            limit / (1024 * 1024)
+        ));
+    }
+    Ok(())
+}
+
 /// One-shot Claude Code CLI print-mode completion (`claude -p --output-format json`).
 ///
 /// Used by `ai_complete` when the selected chat provider is Claude Code.
@@ -3255,6 +3356,9 @@ pub async fn complete_claude_print(
 ) -> Result<String, String> {
     /// Hard ceiling for Claude Code `-p` (print) completions used by synthesis/assist.
     const PRINT_TIMEOUT_SECS: u64 = 300;
+    /// Per-stream stdout capture cap, matching `proc::MAX_CAPTURED_OUTPUT`
+    /// (that constant is private to `proc`, so the value is mirrored here).
+    const MAX_PRINT_OUTPUT_BYTES: u64 = 64 * 1024 * 1024;
 
     let user = prompt.trim();
     if user.is_empty() {
@@ -3304,16 +3408,10 @@ pub async fn complete_claude_print(
         .stdout
         .take()
         .ok_or_else(|| "Claude Code stdout missing".to_string())?;
-    let mut reader = BufReader::new(stdout);
+    let reader = BufReader::new(stdout);
     let mut buf = Vec::new();
 
-    let read_stdout = async {
-        use tokio::io::AsyncReadExt;
-        reader
-            .read_to_end(&mut buf)
-            .await
-            .map_err(|e| format!("Failed to read Claude Code output: {e}"))
-    };
+    let read_stdout = async { read_bounded_output(reader, MAX_PRINT_OUTPUT_BYTES, &mut buf).await };
 
     let deadline = tokio::time::sleep(std::time::Duration::from_secs(PRINT_TIMEOUT_SECS));
     tokio::pin!(deadline);
@@ -4808,6 +4906,105 @@ mod tests {
         assert!(!is_blocked_metadata_host("api.openai.com"));
     }
 
+    /// The auth config is read-modify-written by several commands; the shared
+    /// lock must actually exclude a second writer while one holds it.
+    #[test]
+    fn auth_config_update_lock_is_exclusive() {
+        let guard = lock_auth_config();
+        assert!(
+            AUTH_CONFIG_LOCK.try_lock().is_err(),
+            "a second writer must not acquire the auth config lock"
+        );
+        drop(guard);
+        let reacquired = AUTH_CONFIG_LOCK.try_lock();
+        assert!(reacquired.is_ok(), "lock must be reusable after release");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn shell_quote_single_survives_embedded_quotes_and_metacharacters() {
+        for payload in [
+            "John's Thesis",
+            "$(whoami)",
+            "`id`",
+            "a;b|c&d",
+            "back\\slash",
+        ] {
+            let quoted = shell_quote_single(payload);
+            if payload.contains('\'') {
+                assert!(
+                    quoted.contains("'\\''"),
+                    "embedded quote must use the '\\'' escape: {quoted}"
+                );
+            }
+            let output = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!("printf %s {}", quoted))
+                .output()
+                .expect("sh");
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                payload,
+                "quoting must round-trip {payload:?}"
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn elevation_script_quotes_paths_and_rejects_bad_user_names() {
+        let dirs = vec![PathBuf::from("/Users/bh/Library/John's Dir")];
+        let local = PathBuf::from("/Users/bh/.local");
+
+        let script = build_elevation_script(&dirs, "bharath_1-x", &local).expect("valid user");
+        assert_eq!(
+            script,
+            format!(
+                "mkdir -p {} && chown -R bharath_1-x {}",
+                shell_quote_single("/Users/bh/Library/John's Dir"),
+                shell_quote_single("/Users/bh/.local")
+            ),
+            "both the dir list and the home path must be shell-quoted"
+        );
+
+        for bad in ["", "root; rm -rf /", "-evil", "u ser", "üser", "user$(id)"] {
+            let err = build_elevation_script(&dirs, bad, &local)
+                .expect_err("invalid user names must be refused");
+            assert!(err.contains("invalid user name"), "{bad}: {err}");
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn elevation_script_survives_applescript_embedding() {
+        // The script text is embedded in an AppleScript double-quoted literal;
+        // backslashes from the '\'' idiom must be doubled or osascript eats
+        // them. Round-trip through osascript itself (no admin needed).
+        let script = format!("printf %s {}", shell_quote_single("O'Brien"));
+        let embedded = apple_script_quoted(&script);
+        let output = std::process::Command::new("osascript")
+            .arg("-e")
+            .arg(format!("do shell script {}", embedded))
+            .output()
+            .expect("osascript");
+        assert!(output.status.success(), "osascript rejected: {embedded}");
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "O'Brien");
+    }
+
+    #[tokio::test]
+    async fn print_output_reader_rejects_streams_that_hit_the_cap() {
+        let mut buf = Vec::new();
+        read_bounded_output(std::io::Cursor::new(vec![b'a'; 128]), 64, &mut buf)
+            .await
+            .expect_err("output at the cap must be reported as truncated");
+
+        buf.clear();
+        read_bounded_output(std::io::Cursor::new(vec![b'b'; 10]), 64, &mut buf)
+            .await
+            .expect("under the cap must succeed");
+        assert_eq!(buf.len(), 10);
+    }
+
     #[test]
     fn normalize_base_url_rejects_metadata_endpoint() {
         assert!(normalize_base_url(Some("http://169.254.169.254/latest/meta-data")).is_err());
@@ -5976,7 +6173,8 @@ mod tests {
             &dirs,
             "testuser",
             std::path::Path::new("/Users/test/.local"),
-        );
+        )
+        .unwrap();
         assert!(script.contains("mkdir -p"));
         assert!(script.contains("'/Users/test/.local/bin'"));
         assert!(script.contains("'/Users/test/.claude'"));
@@ -5992,7 +6190,8 @@ mod tests {
             &dirs,
             "myuser",
             std::path::Path::new("/Users/my user/.local"),
-        );
+        )
+        .unwrap();
         // Paths are single-quoted to handle spaces
         assert!(script.contains("'/Users/my user/.local/bin'"));
         assert!(script.contains("'/Users/my user/.local'"));

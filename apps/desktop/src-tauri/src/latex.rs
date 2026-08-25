@@ -955,7 +955,35 @@ fn find_texlive_binary_uncached(name: &str) -> Result<PathBuf, String> {
     ))
 }
 
+/// Maximum nesting depth the recursive project copy/prune will follow. Real
+/// LaTeX projects never get close; the cap turns a pathological tree (or a
+/// symlinked cycle) into a clean error instead of stack exhaustion.
+const MAX_COPY_DEPTH: usize = 32;
+
 fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    copy_dir_recursive_at(src, dst, 0)
+}
+
+/// Recursively copy `src` into `dst`.
+///
+/// Symlinks are skipped entirely — never descended into and never recreated:
+///
+/// * a directory symlink can point at an ancestor of `src` (a cycle that
+///   re-resolves itself every level) or at an arbitrary outside directory,
+///   whose entire contents would be copied into the build dir;
+/// * recreating a file symlink as a link would hand the TeX engine an
+///   arbitrary-read primitive; copying through it would pull outside-project
+///   bytes into the build dir.
+fn copy_dir_recursive_at(src: &Path, dst: &Path, depth: usize) -> std::io::Result<()> {
+    if depth > MAX_COPY_DEPTH {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "directory nesting exceeds {MAX_COPY_DEPTH} levels at {}",
+                src.display()
+            ),
+        ));
+    }
     if !dst.exists() {
         std::fs::create_dir_all(dst)?;
     }
@@ -963,13 +991,18 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
         let entry = entry?;
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
-        if src_path.is_dir() {
+        // DirEntry::file_type does not follow symlinks, unlike Path::is_dir.
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
             // Skip hidden directories (.git, .claudeprism, etc.)
             let name = entry.file_name();
             if name.to_string_lossy().starts_with('.') {
                 continue;
             }
-            copy_dir_recursive(&src_path, &dst_path)?;
+            copy_dir_recursive_at(&src_path, &dst_path, depth + 1)?;
         } else {
             std::fs::copy(&src_path, &dst_path)?;
         }
@@ -1008,16 +1041,38 @@ fn is_generated_artifact(path: &Path) -> bool {
 /// user deleted keeps compiling from its stale copy, so the preview shows a
 /// document that no longer exists on disk. Best-effort: failing to remove one
 /// entry must not fail the compile.
+///
+/// Symlinks in the build dir are unlinked, never followed: `remove_dir_all` or
+/// descent through a planted link would delete (or compare against) trees
+/// outside the build dir. Depth-capped for the same reason as the copy.
 fn prune_orphans(src: &Path, dst: &Path) {
+    prune_orphans_at(src, dst, 0)
+}
+
+fn prune_orphans_at(src: &Path, dst: &Path, depth: usize) {
+    if depth > MAX_COPY_DEPTH {
+        return;
+    }
     let Ok(entries) = std::fs::read_dir(dst) else {
         return;
     };
     for entry in entries.flatten() {
         let dst_path = entry.path();
         let src_path = src.join(entry.file_name());
-        if dst_path.is_dir() {
-            if src_path.is_dir() {
-                prune_orphans(&src_path, &dst_path);
+        // DirEntry::file_type does not follow symlinks, unlike Path::is_dir.
+        let Ok(dst_type) = entry.file_type() else {
+            continue;
+        };
+        if dst_type.is_symlink() {
+            let _ = std::fs::remove_file(&dst_path);
+            continue;
+        }
+        if dst_type.is_dir() {
+            if std::fs::symlink_metadata(&src_path)
+                .map(|m| m.is_dir())
+                .unwrap_or(false)
+            {
+                prune_orphans_at(&src_path, &dst_path, depth + 1);
             } else {
                 let _ = std::fs::remove_dir_all(&dst_path);
             }
@@ -1028,22 +1083,41 @@ fn prune_orphans(src: &Path, dst: &Path) {
 }
 
 fn sync_source_files(src: &Path, dst: &Path) -> std::io::Result<()> {
+    sync_source_files_at(src, dst, 0)
+}
+
+fn sync_source_files_at(src: &Path, dst: &Path, depth: usize) -> std::io::Result<()> {
+    if depth > MAX_COPY_DEPTH {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "directory nesting exceeds {MAX_COPY_DEPTH} levels at {}",
+                src.display()
+            ),
+        ));
+    }
     if !dst.exists() {
         std::fs::create_dir_all(dst)?;
     }
-    prune_orphans(src, dst);
+    prune_orphans_at(src, dst, depth);
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
         let src_path = entry.path();
         let file_name = entry.file_name();
         let dst_path = dst.join(&file_name);
-        if src_path.is_dir() {
+        // DirEntry::file_type does not follow symlinks; symlinked sources are
+        // skipped (same policy as copy_dir_recursive).
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
             let name = file_name.to_string_lossy();
             if name.starts_with('.') || matches!(name.as_ref(), "node_modules" | "target" | "dist")
             {
                 continue;
             }
-            sync_source_files(&src_path, &dst_path)?;
+            sync_source_files_at(&src_path, &dst_path, depth + 1)?;
         } else {
             let ext = src_path.extension().and_then(|e| e.to_str()).unwrap_or("");
             let is_artifact = matches!(
@@ -1933,7 +2007,12 @@ fn parse_synctex_forward(
                     .get(1..)
                     .and_then(|s| parse_synctex_node(s, factor, x_offset, y_offset))
                 {
-                    let file = inputs.get(&node.tag)?;
+                    // An unknown tag (truncated preamble, exotic engine) must
+                    // only drop THIS node, not abort the search — same
+                    // tolerance as parse_synctex_data.
+                    let Some(file) = inputs.get(&node.tag) else {
+                        continue;
+                    };
                     if !synctex_paths_match(file, target_file) {
                         continue;
                     }
@@ -2304,6 +2383,15 @@ async fn compile_latex_inner(
     main_file: String,
     use_texlive: Option<bool>,
 ) -> Result<Vec<u8>, CompileFail> {
+    // `main_file` arrives over IPC from the frontend. Confine it to the project
+    // before anything else and keep only the validated project-relative string:
+    // every later `join` (stale-output removal, engine-detection read, XeTeX
+    // shim rewrite, retry rewrite, engine argv) uses this value. This is the
+    // same seam the agent path clears in `agent_compile_project`.
+    let main_file = validated_main_rel(Path::new(&project_dir), &main_file).map_err(|e| {
+        CompileFail::new("n/a", format!("Invalid main file: {e}"))
+    })?;
+
     // Register this request's cancel flag and cancel any in-flight run for
     // the same project. Without this, edits made during a slow compile queue
     // behind the obsolete build and can pin every MAX_CONCURRENT permit.
@@ -2535,7 +2623,7 @@ async fn compile_latex_inner(
             if cancelled.load(Ordering::Relaxed) {
                 return Ok(false);
             }
-            let log_content = std::fs::read_to_string(&log_path_clone).unwrap_or_default();
+            let log_content = read_log_bounded(&log_path_clone);
             if !log_content.contains("No pages of output") || has_real_errors(&log_content) {
                 return Ok(false);
             }
@@ -2833,6 +2921,39 @@ mod tests {
         let root = tempfile::tempdir().expect("tempdir");
         std::fs::write(root.path().join("-shell-escape"), "x").expect("write");
         assert!(validated_main_rel(root.path(), "-shell-escape").is_err());
+    }
+
+    /// The UI compile path takes `main_file` straight from IPC. It must clear
+    /// the same `validated_main_rel` seam the agent path clears, instead of
+    /// joining the raw string onto the build dir (an absolute path or `..`
+    /// previously escaped the project and reached the engine's argv).
+    #[tokio::test]
+    async fn ui_compile_rejects_main_files_that_leave_the_project() {
+        let root = tempfile::tempdir().expect("tempdir");
+        std::fs::write(root.path().join("main.tex"), "\\documentclass{article}")
+            .expect("write main");
+
+        let state = LatexCompilerState::default();
+        for bad in [
+            "/etc/passwd",
+            "../outside.tex",
+            "chapters/../../outside.tex",
+            "-shell-escape",
+        ] {
+            let result = compile_latex_inner(
+                &state,
+                root.path().to_string_lossy().into_owned(),
+                bad.to_string(),
+                Some(false),
+            )
+            .await;
+            let err = result.expect_err("escaping main file must be refused");
+            let message = err.into_user_message();
+            assert!(
+                message.contains("Invalid main file:"),
+                "'{bad}' must be refused at the validation seam, got: {message}"
+            );
+        }
     }
 
     /// The log tail was byte-sliced at `len - 500` with no boundary check.
@@ -3632,6 +3753,29 @@ Postamble:
         assert_eq!(line, 25);
     }
 
+    #[test]
+    fn forward_search_skips_nodes_with_undeclared_tags() {
+        // A node whose tag has no `Input:` entry (e.g. a truncated preamble)
+        // used to abort the whole forward search via `?`, hiding every later,
+        // perfectly valid match.
+        let data = "\
+Input:1:./main.tex
+Magnification:1000
+Unit:1
+X Offset:0
+Y Offset:0
+Content:
+{1
+h9,3,0:1000,2000
+h1,5,0:3000,4000
+}1
+Postamble:
+";
+        let hit = parse_synctex_forward(data, "main.tex", 5)
+            .expect("a later valid match must still be found");
+        assert_eq!(hit.page, 1);
+    }
+
     // --- extract_error_lines: real errors take priority over "No pages of output" ---
 
     #[test]
@@ -3980,6 +4124,123 @@ Postamble:
         assert_eq!(
             std::fs::read_to_string(dst.path().join("main.tex")).unwrap(),
             ""
+        );
+    }
+
+    // --- symlink safety and depth cap in copy/prune ---
+
+    #[cfg(unix)]
+    #[test]
+    fn a_self_referencing_directory_symlink_does_not_recurse_forever() {
+        // `src/self -> src`: following directory symlinks re-enters the same
+        // directory every level. Pre-fix this only stopped when the kernel's
+        // ELOOP limit killed a syscall mid-copy, leaving junk in the build dir
+        // and a dirty error; it must instead terminate cleanly with the
+        // symlink skipped.
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(src.path(), src.path().join("self")).unwrap();
+        std::fs::write(src.path().join("main.tex"), "doc").unwrap();
+
+        let result = copy_dir_recursive(src.path(), dst.path());
+        assert!(
+            result.is_ok(),
+            "a self-referencing directory must be skipped, not followed: {:?}",
+            result
+        );
+        assert!(!dst.path().join("self").exists());
+        assert!(dst.path().join("main.tex").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_source_file_is_not_pulled_into_the_build_dir() {
+        // Copying through a file symlink would read bytes from outside the
+        // project into the build dir, where the TeX engine then reads them.
+        let src = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.tex"), "secret").unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.tex"),
+            src.path().join("linked.tex"),
+        )
+        .unwrap();
+
+        copy_dir_recursive(src.path(), dst.path()).unwrap();
+        assert!(
+            !dst.path().join("linked.tex").exists(),
+            "symlinked sources must be skipped, not dereferenced"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prune_never_descends_through_mismatched_directory_symlinks() {
+        // build/sub/link -> B while project/sub/link -> A: pruning used to
+        // follow both links and delete files that live OUTSIDE the build dir.
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+        let side_a = tempfile::tempdir().unwrap();
+        let side_b = tempfile::tempdir().unwrap();
+
+        std::fs::create_dir_all(src.path().join("sub")).unwrap();
+        std::fs::create_dir_all(dst.path().join("sub")).unwrap();
+        std::fs::write(src.path().join("main.tex"), "m").unwrap();
+        std::fs::write(side_a.path().join("keep.tex"), "a").unwrap();
+        std::fs::write(side_b.path().join("gone.tex"), "b").unwrap();
+        std::os::unix::fs::symlink(side_a.path(), src.path().join("sub").join("link")).unwrap();
+        std::os::unix::fs::symlink(side_b.path(), dst.path().join("sub").join("link")).unwrap();
+
+        prune_orphans(src.path(), dst.path());
+
+        assert!(
+            side_b.path().join("gone.tex").exists(),
+            "pruning must never delete through a planted directory symlink"
+        );
+        assert!(
+            !dst.path().join("sub").join("link").exists(),
+            "the stale link itself should have been unlinked"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unmatched_build_dir_symlink_is_unlinked_not_descended() {
+        let victim = tempfile::tempdir().unwrap();
+        let src = tempfile::TempDir::new().unwrap();
+        let dst = tempfile::TempDir::new().unwrap();
+        std::fs::write(src.path().join("main.tex"), "m").unwrap();
+        std::fs::create_dir_all(victim.path().join("data")).unwrap();
+        std::fs::write(victim.path().join("data").join("f.txt"), "x").unwrap();
+        sync_source_files(src.path(), dst.path()).unwrap();
+
+        // Plant a directory symlink into the build dir after the first sync.
+        std::os::unix::fs::symlink(victim.path(), dst.path().join("planted")).unwrap();
+        sync_source_files(src.path(), dst.path()).unwrap();
+
+        assert!(
+            victim.path().join("data").join("f.txt").exists(),
+            "the linked-to tree outside the build dir must survive"
+        );
+        assert!(!dst.path().join("planted").exists());
+    }
+
+    #[test]
+    fn deep_directory_nesting_is_refused_instead_of_overflowing() {
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+        let mut deep = src.path().to_path_buf();
+        for i in 0..40 {
+            deep = deep.join(format!("level{i}"));
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+
+        let err = copy_dir_recursive(src.path(), dst.path())
+            .expect_err("nesting beyond the cap must error, not recurse unbounded");
+        assert!(
+            err.to_string().contains("nesting exceeds"),
+            "unexpected error: {err}"
         );
     }
 

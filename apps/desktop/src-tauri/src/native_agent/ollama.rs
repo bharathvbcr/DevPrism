@@ -36,6 +36,16 @@ const MAX_PENDING_LINE_BYTES: usize = 1024 * 1024;
 /// Largest accumulated assistant text (content + thinking) per turn.
 const MAX_STREAM_ACCUMULATION_BYTES: usize = 8 * 1024 * 1024;
 
+/// Upper bound on distinct tool calls assembled from one streamed turn.
+///
+/// `index` arrives verbatim from the provider on the OpenAI-compatible path and
+/// is used as a `Vec` grow target; the Ollama path appends one entry per stream
+/// line. Unbounded, a hostile or looping server grows the Vec until the
+/// allocator gives up — and Rust *aborts* on allocation failure, so the whole
+/// app dies rather than raising a catchable error. Well above any real tool
+/// count; shared by both adapters.
+pub(crate) const MAX_TOOL_CALLS_PER_TURN: usize = 64;
+
 /// Output-token ceiling per turn, mirroring the OpenAI-compat path's
 /// `max_tokens`. Without it a looping model generates until the request budget
 /// expires.
@@ -49,21 +59,41 @@ const MAX_PREDICT_TOKENS: u32 = 4096;
 /// the truncation ever runs.
 const MAX_ERROR_BODY_BYTES: usize = 8 * 1024;
 
-/// Read at most `MAX_ERROR_BODY_BYTES` of a response body.
+/// Cap on a SUCCESS response body read into memory.
 ///
-/// Returns whatever arrived; an error body is diagnostic text, so a truncated
-/// read is strictly better than an unbounded one.
-pub(crate) async fn read_error_body(resp: reqwest::Response) -> String {
-    let mut resp = resp;
+/// Model listings, `/api/show` payloads and embed results are consumed as JSON,
+/// so they cannot be snippet-truncated like error bodies — but they still need
+/// a bound: `.text()` buffers without limit before any parsing runs. Generous;
+/// a real payload is orders of magnitude smaller.
+const MAX_SUCCESS_BODY_BYTES: usize = 16 * 1024 * 1024;
+
+/// Read at most `max` bytes of a response body.
+///
+/// Returns whatever arrived; a truncated read is strictly better than an
+/// unbounded buffer against a misbehaving server.
+pub(crate) async fn read_body_capped(mut resp: reqwest::Response, max: usize) -> String {
     let mut out: Vec<u8> = Vec::new();
-    while out.len() < MAX_ERROR_BODY_BYTES {
+    while out.len() < max {
         match resp.chunk().await {
             Ok(Some(chunk)) => out.extend_from_slice(&chunk),
             Ok(None) | Err(_) => break,
         }
     }
-    out.truncate(MAX_ERROR_BODY_BYTES);
+    out.truncate(max);
     String::from_utf8_lossy(&out).to_string()
+}
+
+/// Read at most [`MAX_ERROR_BODY_BYTES`] of a response body.
+///
+/// An error body is diagnostic text, so capping it loses nothing that matters.
+pub(crate) async fn read_error_body(resp: reqwest::Response) -> String {
+    read_body_capped(resp, MAX_ERROR_BODY_BYTES).await
+}
+
+/// Read a success body (a JSON payload we will parse) capped at
+/// [`MAX_SUCCESS_BODY_BYTES`].
+pub(crate) async fn read_success_body(resp: reqwest::Response) -> String {
+    read_body_capped(resp, MAX_SUCCESS_BODY_BYTES).await
 }
 
 fn build_client() -> reqwest::Client {
@@ -148,6 +178,13 @@ fn accumulate_stream_line<F: FnMut(StreamDeltaKind, &str)>(
         }
         if let Some(arr) = msg.get("tool_calls").and_then(|t| t.as_array()) {
             for call in arr {
+                // Bound before growing: see MAX_TOOL_CALLS_PER_TURN. Dropping
+                // further entries mirrors the OpenAI-compat adapter's handling
+                // of a wild index — the turn stays usable with the calls
+                // collected so far rather than aborting the process.
+                if tool_calls.len() >= MAX_TOOL_CALLS_PER_TURN {
+                    continue;
+                }
                 if let Some(func) = call.get("function") {
                     let name = canonicalize_tool_name(
                         func.get("name").and_then(|n| n.as_str()).unwrap_or(""),
@@ -296,9 +333,7 @@ async fn installed_models(base_url: &str) -> Result<Vec<(String, Option<u64>)>, 
             res.status()
         ));
     }
-    let text = res.text().await.map_err(|e| {
-        format!("[E_OLLAMA_UNREACHABLE] Could not reach Ollama at {root}: {e}")
-    })?;
+    let text = read_success_body(res).await;
     let v: Value = serde_json::from_str(&text).map_err(|e| {
         format!("[E_OLLAMA_UNREACHABLE] Invalid response from Ollama at {root}: {e}")
     })?;
@@ -416,12 +451,11 @@ pub async fn server_status(base_url: Option<String>) -> OllamaStatus {
     let version_resp = client.get(&version_url).send().await;
     let (connected, version) = match version_resp {
         Ok(res) if res.status().is_success() => {
-            let version = res.text().await.ok().and_then(|text| {
-                serde_json::from_str::<Value>(&text).ok().and_then(|v| {
-                    v.get("version")
-                        .and_then(|s| s.as_str())
-                        .map(str::to_string)
-                })
+            let text = read_success_body(res).await;
+            let version = serde_json::from_str::<Value>(&text).ok().and_then(|v| {
+                v.get("version")
+                    .and_then(|s| s.as_str())
+                    .map(str::to_string)
             });
             (true, version)
         }
@@ -496,7 +530,7 @@ pub async fn running_models(base_url: Option<String>) -> Result<Vec<OllamaRunnin
             res.status()
         ));
     }
-    let text = res.text().await.map_err(|e| e.to_string())?;
+    let text = read_success_body(res).await;
     let v: Value = serde_json::from_str(&text).map_err(|e| format!("Bad /api/ps response: {e}"))?;
     Ok(v.get("models")
         .and_then(|m| m.as_array())
@@ -545,18 +579,14 @@ pub async fn delete_model(base_url: Option<String>, model: String) -> Result<(),
         return Ok(());
     }
     let status = res.status();
-    let snippet: String = res
-        .text()
-        .await
-        .unwrap_or_default()
-        .chars()
-        .take(300)
-        .collect();
     if status.as_u16() == 404 {
         return Err(format!(
             "Model '{name}' is not installed (nothing to delete)."
         ));
     }
+    // The error body is diagnostic only: read it capped instead of buffering
+    // the whole response before truncating to a snippet.
+    let snippet: String = read_error_body(res).await.chars().take(300).collect();
     Err(format!(
         "Ollama returned HTTP {status} for /api/delete: {snippet}"
     ))
@@ -589,16 +619,10 @@ pub async fn copy_model(
         return Ok(());
     }
     let status = res.status();
-    let snippet: String = res
-        .text()
-        .await
-        .unwrap_or_default()
-        .chars()
-        .take(300)
-        .collect();
     if status.as_u16() == 404 {
         return Err(format!("Source model '{source}' is not installed."));
     }
+    let snippet: String = read_error_body(res).await.chars().take(300).collect();
     Err(format!(
         "Ollama returned HTTP {status} for /api/copy: {snippet}"
     ))
@@ -716,6 +740,17 @@ pub async fn pull_model<F: FnMut(OllamaPullProgress)>(
             }
         };
         buf.extend_from_slice(&chunk);
+        // Same guard as chat(): the loop drains `buf` only on newlines, so a
+        // server streaming without them grows it without bound while data
+        // keeps arriving (the idle timeout never fires).
+        if buf.len() > MAX_PENDING_LINE_BYTES {
+            let msg = format!(
+                "Ollama pull stream error: {} bytes arrived without a line terminator, exceeding the {MAX_PENDING_LINE_BYTES}-byte limit",
+                buf.len()
+            );
+            emit(&last_status, None, None, true, Some(msg.clone()));
+            return Err(msg);
+        }
         while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
             let line: Vec<u8> = buf.drain(..=pos).collect();
             let trimmed = String::from_utf8_lossy(&line).trim().to_string();
@@ -850,7 +885,7 @@ impl OllamaClient {
         if !resp.status().is_success() {
             return None;
         }
-        let text = resp.text().await.ok()?;
+        let text = read_success_body(resp).await;
         serde_json::from_str(&text).ok()
     }
 
@@ -1091,7 +1126,9 @@ impl OllamaClient {
             })?;
 
         let status = resp.status();
-        let text = resp.text().await.map_err(|e| e.to_string())?;
+        // One capped read serves both branches: error bodies only need a
+        // snippet, and the embed payload is bounded before it is parsed.
+        let text = read_success_body(resp).await;
         if !status.is_success() {
             let snippet: String = text.chars().take(300).collect();
             return Err(format!(
@@ -1288,6 +1325,35 @@ mod tests {
         assert_eq!(native_base("http://host:1/v1"), "http://host:1");
     }
 
+    /// A body larger than the cap is truncated at the cap, not buffered whole —
+    /// served by a raw TCP listener so no HTTP mocking dependency is needed.
+    #[tokio::test]
+    async fn read_body_capped_truncates_oversized_bodies() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            use std::io::{Read, Write};
+            // Drain the request head before responding, or the client can see
+            // its own half-written request collide with the early response.
+            let _ = stream.read(&mut [0u8; 4096]);
+            let body = vec![b'a'; 10_000];
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(&body);
+            let _ = stream.flush();
+        });
+        let resp = reqwest::get(format!("http://{addr}/")).await.unwrap();
+        let text = read_body_capped(resp, 1_000).await;
+
+        assert_eq!(text.len(), 1_000);
+        assert!(text.chars().all(|c| c == 'a'));
+        server.join().unwrap();
+    }
+
     #[test]
     fn think_param_uses_levels_for_gpt_oss() {
         assert_eq!(think_param_for_model("gpt-oss:20b", "low"), json!("low"));
@@ -1302,5 +1368,51 @@ mod tests {
     fn think_param_uses_boolean_for_other_models() {
         assert_eq!(think_param_for_model("qwen3:8b", "low"), json!(true));
         assert_eq!(think_param_for_model("llama3.1", "high"), json!(true));
+    }
+
+    /// The number of tool calls accumulated per turn is capped (mirroring
+    /// MAX_TOOL_CALLS_PER_TURN on the OpenAI-compat path): a stream that emits
+    /// more entries than the cap has the extras dropped, not buffered forever.
+    #[test]
+    fn tool_call_count_is_capped_per_turn() {
+        let mut content = String::new();
+        let mut thinking = String::new();
+        let mut tool_calls: Vec<ToolCall> = Vec::new();
+        let (mut pt, mut et) = (0u64, 0u64);
+        let mut done_reason = String::new();
+        let mut on_delta = |_: StreamDeltaKind, _: &str| {};
+
+        // Mirrors MAX_TOOL_CALLS_PER_TURN = 64 on the OpenAI-compat path.
+        for i in 0..84 {
+            accumulate_stream_line(
+                &json!({
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [{
+                            "function": { "name": format!("tool_{}", i), "arguments": {} }
+                        }]
+                    },
+                    "done": false
+                }),
+                &mut content,
+                &mut thinking,
+                &mut tool_calls,
+                &mut pt,
+                &mut et,
+                &mut done_reason,
+                &mut on_delta,
+            )
+            .unwrap();
+        }
+
+        assert_eq!(
+            tool_calls.len(),
+            64,
+            "tool calls past the cap must be dropped, not accumulated"
+        );
+        // The retained entries are the first ones, in order.
+        assert_eq!(tool_calls[0].name, "tool_0");
+        assert_eq!(tool_calls[63].name, "tool_63");
     }
 }

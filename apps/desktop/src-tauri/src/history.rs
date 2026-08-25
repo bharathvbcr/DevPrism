@@ -83,11 +83,27 @@ fn tag_map(repo: &Repository) -> HashMap<Oid, Vec<String>> {
     map
 }
 
-fn ensure_excludes(project_root: &str, repo: &Repository) {
-    let excludes_path = Path::new(project_root)
-        .join(".claudeprism")
-        .join("history-exclude");
-    let content = r#"# LaTeX build artifacts
+/// The full history-excludes file content. Dependency / build trees mirror the
+/// agent-side walk skip-list (`native_agent::EXCLUDE_DIRS`, re-exported from
+/// `native_agent::tools`) so tool walks and snapshot staging agree on what is
+/// ignorable: committing a node_modules-sized tree into history.git makes every
+/// snapshot and restore crawl.
+fn excludes_content() -> String {
+    let mut trees = String::new();
+    for dir in crate::native_agent::EXCLUDE_DIRS {
+        // Already covered by their own sections below/above; skip duplicates.
+        if matches!(*dir, ".git" | ".prism" | ".claudeprism") {
+            continue;
+        }
+        trees.push_str(dir);
+        trees.push_str("/\n");
+    }
+    // Heavy trees the agent-side list does not cover but history must also
+    // never snapshot.
+    trees.push_str("vendor/\n__pycache__/\n");
+
+    format!(
+        r#"# LaTeX build artifacts
 *.aux
 *.log
 *.out
@@ -119,17 +135,30 @@ Thumbs.db
 .claudeprism/
 .prism/
 .devprism-*
-"#;
-    if !excludes_path.exists() {
-        let _ = fs::write(&excludes_path, content);
-    } else {
-        // Migrate: rewrite if missing a marker we expect (.prism/ from an older
-        // version, or .devprism-* for the track-changes temp files).
-        if let Ok(existing) = fs::read_to_string(&excludes_path) {
-            if !existing.contains(".prism/") || !existing.contains(".devprism-*") {
-                let _ = fs::write(&excludes_path, content);
-            }
+
+# Dependency / build trees (kept in sync with native_agent::EXCLUDE_DIRS)
+{trees}"#
+    )
+}
+
+fn ensure_excludes(project_root: &str, repo: &Repository) {
+    let excludes_path = Path::new(project_root)
+        .join(".claudeprism")
+        .join("history-exclude");
+    let content = excludes_content();
+    let needs_write = match fs::read_to_string(&excludes_path) {
+        Ok(existing) => {
+            // Migrate: rewrite when missing a marker we expect (.prism/ from an
+            // older version, .devprism-* for the track-changes temp files, or
+            // the dependency/build-tree section).
+            !existing.contains(".prism/")
+                || !existing.contains(".devprism-*")
+                || !existing.contains("node_modules/")
         }
+        Err(_) => true,
+    };
+    if needs_write {
+        let _ = fs::write(&excludes_path, &content);
     }
     // Configure the repo to use this excludes file
     if let Ok(mut config) = repo.config() {
@@ -1025,6 +1054,77 @@ mod tests {
         assert!(content.contains("*.aux"));
         assert!(content.contains(".claudeprism/"));
         assert!(content.contains(".prism/"));
+    }
+
+    #[test]
+    fn test_excludes_list_dependency_and_build_trees() {
+        let dir = setup_project(&[("main.tex", "doc")]);
+        history_init_blocking(root(&dir)).unwrap();
+
+        let content =
+            fs::read_to_string(dir.path().join(".claudeprism").join("history-exclude")).unwrap();
+        for pattern in ["node_modules/", "target/", "dist/", "build/", ".venv/", "vendor/"] {
+            assert!(content.contains(pattern), "history excludes missing {pattern}");
+        }
+    }
+
+    /// Dependency/build trees present at init time must never be committed into
+    /// history.git: a node_modules-sized tree makes every snapshot and restore
+    /// crawl. Walks the committed tree of the snapshot commit.
+    #[test]
+    fn test_dependency_trees_are_not_tracked_in_snapshots() {
+        let dir = setup_project(&[
+            ("main.tex", "\\documentclass{article}"),
+            ("node_modules/leftpad/index.js", "module.exports = 1;"),
+            ("target/debug/junk.bin", "\x00\x01"),
+        ]);
+        let r = root(&dir);
+        history_init_blocking(r.clone()).unwrap();
+
+        // A snapshot after init must not pick them up either.
+        fs::write(dir.path().join("chapter.tex"), "new").unwrap();
+        let snap = history_snapshot_blocking(r.clone(), "add chapter".into())
+            .unwrap()
+            .expect("snapshot with a real change");
+
+        let repo = Repository::open(dir.path().join(".claudeprism").join("history.git")).unwrap();
+        let commit = repo
+            .revparse_single(&snap.id)
+            .unwrap()
+            .peel_to_commit()
+            .unwrap();
+        let tree = commit.tree().unwrap();
+        let mut tracked: Vec<String> = Vec::new();
+        tree.walk(git2::TreeWalkMode::PreOrder, |root, entry| {
+            if let Some(name) = entry.name() {
+                let path = if root.is_empty() {
+                    name.to_string()
+                } else {
+                    format!("{root}/{name}")
+                };
+                if entry.kind() == Some(git2::ObjectType::Blob) {
+                    tracked.push(path);
+                }
+            }
+            git2::TreeWalkResult::Ok
+        })
+        .unwrap();
+        assert!(
+            !tracked.iter().any(|p| p.starts_with("node_modules/")),
+            "node_modules file tracked in history: {tracked:?}"
+        );
+        assert!(
+            !tracked.iter().any(|p| p.starts_with("target/")),
+            "target file tracked in history: {tracked:?}"
+        );
+        assert!(
+            tracked.iter().any(|p| p == "main.tex"),
+            "project source must still be tracked"
+        );
+        assert!(
+            tracked.iter().any(|p| p == "chapter.tex"),
+            "ordinary new sources must still be tracked"
+        );
     }
 
     // ─── history_snapshot ───

@@ -34,8 +34,36 @@ const MAX_WALK_DEPTH: usize = 32;
 const LS_MAX_DEPTH: usize = 5;
 const LS_MAX_ENTRIES: usize = 400;
 const BASH_TIMEOUT_SECS: u64 = 90;
+/// Upper bound on the file size Edit/MultiEdit will load. Replacement needs the
+/// WHOLE file (unlike Read's windowed MAX_READ_BYTES), but an unbounded
+/// read_to_string on a runaway target is a multi-gigabyte allocation; 10 MiB
+/// covers any real document many times over.
+const MAX_EDIT_READ_BYTES: usize = 10 * 1024 * 1024;
 
-const EXCLUDE_DIRS: &[&str] = &[
+/// Load a project file for Edit/MultiEdit: whole contents, but bounded by
+/// MAX_EDIT_READ_BYTES and moved off the async runtime so a large synchronous
+/// read cannot stall other turns sharing the thread.
+async fn read_file_for_edit(path: PathBuf) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        if let Ok(meta) = std::fs::metadata(&path) {
+            if meta.len() > MAX_EDIT_READ_BYTES as u64 {
+                return Err(format!(
+                    "file is {} bytes, over the {MAX_EDIT_READ_BYTES}-byte limit for \
+                     Edit/MultiEdit — Read just the range you need instead",
+                    meta.len()
+                ));
+            }
+        }
+        std::fs::read_to_string(&path).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("edit read task failed: {e}"))?
+}
+
+/// Directories excluded from LS/Grep/Glob walks. Also drives the dependency /
+/// build-tree section of the history snapshot excludes (see history.rs), so
+/// agent walks and snapshot staging agree on what is ignorable.
+pub(crate) const EXCLUDE_DIRS: &[&str] = &[
     ".git", ".prism", ".claudeprism", ".venv", ".gitnexus", "node_modules",
     "target", "dist", "build",
 ];
@@ -918,7 +946,21 @@ fn gated_action<'a>(name: &str, args: &'a Value) -> Option<GatedAction<'a>> {
         // has nothing for a path gate to evaluate.
         "Write" | "Edit" | "MultiEdit" => arg(args, "file_path").map(GatedAction::Write),
         "Bash" => arg(args, "command").map(GatedAction::Command),
-        _ => None,
+        other => {
+            // Plugin-pack registry tools that carry a caller-chosen file_path
+            // (resume_doc_write / resume_doc_edit, …) put bytes on disk just
+            // like Write does — gate them on that path BEFORE the plugin
+            // executes, so escaping paths and credential targets cannot ride a
+            // plugin surface around manvi.
+            if crate::plugins::shared_registry()
+                .native_agent_tool_names()
+                .contains(&other)
+            {
+                arg(args, "file_path").map(GatedAction::Write)
+            } else {
+                None
+            }
+        }
     }
 }
 
@@ -1043,7 +1085,7 @@ async fn execute_inner(project_dir: &Path, name: &str, args: &Value) -> (String,
             let new = args.get("new_string").and_then(|c| c.as_str());
             match (fp, old, new) {
                 (Some(fp), Some(old), Some(new)) => match resolve(project_dir, fp) {
-                    Ok(path) => match std::fs::read_to_string(&path) {
+                    Ok(path) => match read_file_for_edit(path.clone()).await {
                         Ok(content) => {
                             let replace_all =
                                 args.get("replace_all").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -1061,7 +1103,7 @@ async fn execute_inner(project_dir: &Path, name: &str, args: &Value) -> (String,
             let edits = args.get("edits").and_then(|v| v.as_array());
             match (fp, edits) {
                 (Some(fp), Some(edits)) => match resolve(project_dir, fp) {
-                    Ok(path) => match std::fs::read_to_string(&path) {
+                    Ok(path) => match read_file_for_edit(path.clone()).await {
                         Ok(content) => apply_multi_edit(&path, fp, &content, edits),
                         Err(e) => (format!("Could not read {}: {}", fp, e), true),
                     },
@@ -1081,7 +1123,13 @@ async fn execute_inner(project_dir: &Path, name: &str, args: &Value) -> (String,
                 // Probe readability first so a missing dir / a file path returns a
                 // clear error instead of an empty listing.
                 Ok(dir) => match std::fs::read_dir(&dir) {
-                    Ok(_) => (ls_tree(&dir, depth), false),
+                    Ok(_) => {
+                        let walk = tokio::task::spawn_blocking(move || ls_tree(&dir, depth)).await;
+                        match walk {
+                            Ok(listing) => (listing, false),
+                            Err(e) => (format!("LS task failed: {}", e), true),
+                        }
+                    }
                     Err(e) => (format!("Could not list {}: {}", sub, e), true),
                 },
                 Err(e) => (e, true),
@@ -1103,10 +1151,19 @@ async fn execute_inner(project_dir: &Path, name: &str, args: &Value) -> (String,
                     .unwrap_or(0)
                     .min(GREP_MAX_CONTEXT as u64) as usize;
                 match resolve(project_dir, sub) {
-                    Ok(root) => (
-                        grep(&root, project_dir, pattern, glob, case_sensitive, context),
-                        false,
-                    ),
+                    Ok(root) => {
+                        let project = project_dir.to_path_buf();
+                        let pattern = pattern.to_string();
+                        let glob = glob.map(str::to_string);
+                        let search = tokio::task::spawn_blocking(move || {
+                            grep(&root, &project, &pattern, glob.as_deref(), case_sensitive, context)
+                        })
+                        .await;
+                        match search {
+                            Ok(out) => (out, false),
+                            Err(e) => (format!("Grep task failed: {}", e), true),
+                        }
+                    }
                     Err(e) => (e, true),
                 }
             }
@@ -1120,7 +1177,18 @@ async fn execute_inner(project_dir: &Path, name: &str, args: &Value) -> (String,
             Some(pattern) => {
                 let sub = arg(args, "path").unwrap_or("");
                 match resolve(project_dir, sub) {
-                    Ok(root) => (glob_find(&root, project_dir, pattern), false),
+                    Ok(root) => {
+                        let project = project_dir.to_path_buf();
+                        let pattern = pattern.to_string();
+                        let find = tokio::task::spawn_blocking(move || {
+                            glob_find(&root, &project, &pattern)
+                        })
+                        .await;
+                        match find {
+                            Ok(out) => (out, false),
+                            Err(e) => (format!("Glob task failed: {}", e), true),
+                        }
+                    }
                     Err(e) => (e, true),
                 }
             }
@@ -1842,6 +1910,85 @@ mod tests {
         assert!(resolve(root, "../etc/passwd").is_err());
         assert!(resolve(root, "/etc/passwd").is_err());
         assert!(resolve(root, "sub/file.tex").is_ok());
+    }
+
+    /// Plugin-pack registry tools that carry a `file_path` (e.g.
+    /// resume_doc_write / resume_doc_edit) must map onto the same write gate as
+    /// the built-in Write/Edit/MultiEdit, so a path that escapes the project or
+    /// targets credentials is evaluated by manvi BEFORE the plugin executes.
+    #[test]
+    fn registry_tools_carrying_file_path_are_gated_as_writes() {
+        let args = json!({
+            "project_root": "/tmp/proj",
+            "file_path": "resume/master.typ",
+            "edits": []
+        });
+        match gated_action("resume_doc_edit", &args) {
+            Some(GatedAction::Write(path)) => assert_eq!(path, "resume/master.typ"),
+            Some(GatedAction::Command(_)) => panic!("resume_doc_edit must gate as a write"),
+            None => panic!("registry tool with file_path bypassed the manvi gate"),
+        }
+        // The built-in mapping must stay identical.
+        assert!(matches!(
+            gated_action("Write", &json!({ "file_path": "a.tex" })),
+            Some(GatedAction::Write(_))
+        ));
+        assert!(matches!(
+            gated_action("Edit", &json!({ "file_path": "a.tex" })),
+            Some(GatedAction::Write(_))
+        ));
+        assert!(matches!(
+            gated_action("MultiEdit", &json!({ "file_path": "a.tex" })),
+            Some(GatedAction::Write(_))
+        ));
+        assert!(matches!(
+            gated_action("Bash", &json!({ "command": "ls" })),
+            Some(GatedAction::Command("ls"))
+        ));
+        // Read-only built-ins stay ungated.
+        assert!(gated_action("Read", &json!({ "file_path": "a.tex" })).is_none());
+        assert!(gated_action("Grep", &json!({ "pattern": "x" })).is_none());
+        // A registry tool with no usable file_path stays ungated.
+        assert!(
+            gated_action("resume_doc_list_projects", &json!({})).is_none()
+        );
+    }
+
+    /// Edit/MultiEdit read the whole file to replace text in it; an absurdly
+    /// large target must be refused up front rather than buffered whole.
+    #[tokio::test]
+    async fn edit_refuses_files_beyond_the_read_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = "a".repeat(11 * 1024 * 1024);
+        std::fs::write(dir.path().join("big.tex"), &big).unwrap();
+
+        let (out, is_error) = execute(
+            dir.path(),
+            "Edit",
+            &json!({
+                "file_path": "big.tex",
+                "old_string": "needle-that-is-not-present",
+                "new_string": "x"
+            }),
+        )
+        .await;
+        assert!(is_error, "expected refusal for an oversized Edit target");
+        assert!(out.contains("too large") || out.contains("limit"), "got: {out}");
+
+        // Within the cap, editing still works normally.
+        std::fs::write(dir.path().join("small.tex"), "hello world").unwrap();
+        let (out, is_error) = execute(
+            dir.path(),
+            "Edit",
+            &json!({
+                "file_path": "small.tex",
+                "old_string": "world",
+                "new_string": "there"
+            }),
+        )
+        .await;
+        assert!(!is_error, "normal-sized Edit failed: {out}");
+        assert_eq!(std::fs::read_to_string(dir.path().join("small.tex")).unwrap(), "hello there");
     }
 
     #[test]

@@ -18,6 +18,11 @@ const RAW_SKILL_URLS: &[&str] = &[
     "https://raw.githubusercontent.com/K-Dense-AI/claude-scientific-skills/main/scientific-skills",
 ];
 const SKILLS_SUBFOLDERS: &[&str] = &["skills", "scientific-skills"];
+/// How long to wait on the macOS administrator prompt when repairing
+/// skills-directory permissions. Well under SKILLS_INSTALL_TIMEOUT_SECS so a
+/// dismissed dialog surfaces as its own clear error instead of the generic
+/// outer install timeout.
+const ELEVATION_TIMEOUT_SECS: u64 = 120;
 
 // ─── Data Types ───
 
@@ -382,6 +387,56 @@ fn sanitize_skill_folder_name(name: &str) -> String {
         .collect::<String>()
         .trim_matches('-')
         .to_string()
+}
+
+/// Validate a frontend-supplied skill folder name before it touches the
+/// filesystem or a URL: reject empty names, separators, and traversal so
+/// `base.join(&skill_folder)` cannot escape the skills directory and the raw
+/// value cannot smuggle path syntax into the GitHub raw URL. Unlike
+/// `sanitize_skill_folder_name` this REJECTS rather than rewrites — rewriting
+/// would silently change which folder is looked up.
+fn validated_skill_folder(name: &str) -> Result<String, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("Skill folder name is required.".into());
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') || trimmed.contains("..") {
+        return Err(format!("Invalid skill folder name: '{}'.", name));
+    }
+    Ok(trimmed.to_string())
+}
+
+/// Percent-encode one URL path segment without pulling in a URL crate:
+/// RFC 3986 unreserved characters pass through, every other byte becomes %XX.
+fn percent_encode_segment(segment: &str) -> String {
+    let mut out = String::with_capacity(segment.len());
+    for b in segment.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// Quote a string as ONE literal POSIX shell word (single quotes with the
+/// `'\''` escape for embedded quotes), so an interpolated path cannot inject
+/// shell metacharacters into the privileged script.
+fn shell_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Whether `user` is safe to interpolate unquoted as the chown target of a
+/// privileged script: POSIX username shape, no whitespace or metacharacters.
+fn is_valid_admin_username(user: &str) -> bool {
+    let mut chars = user.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 fn find_skill_md(skill_dir: &Path) -> Option<PathBuf> {
@@ -1536,7 +1591,7 @@ pub async fn create_skill_from_markdown(
 
 /// Ensure the target directory is creatable and writable.
 /// If creation fails (e.g. ~/.claude is owned by root), prompt for admin password via osascript.
-fn ensure_target_writable(target: &Path) -> Result<(), String> {
+async fn ensure_target_writable(target: &Path) -> Result<(), String> {
     // Try without elevation first
     if std::fs::create_dir_all(target).is_ok() {
         return Ok(());
@@ -1546,25 +1601,59 @@ fn ensure_target_writable(target: &Path) -> Result<(), String> {
     {
         let home = dirs::home_dir().ok_or("Could not determine home directory")?;
         let user = std::env::var("USER").unwrap_or_default();
+        if !is_valid_admin_username(&user) {
+            return Err(format!(
+                "Could not determine the current user ('{}'), so permissions for {} \
+                 cannot be repaired automatically. You can fix this manually by running: \
+                 sudo chown -R $(whoami) ~/.claude",
+                user,
+                target.display()
+            ));
+        }
         let claude_dir = home.join(".claude");
 
+        // EVERY interpolation into the privileged script is single-quote
+        // escaped: the target path comes from the frontend, and a project named
+        // `O'Brien's Site` must not be able to append commands inside it. The
+        // username passes the strict shape check above.
         let script = format!(
-            "mkdir -p '{}' && chown -R {} '{}'",
-            target.display(),
+            "mkdir -p {} && chown -R {} {}",
+            shell_single_quote(&target.to_string_lossy()),
             user,
-            claude_dir.display()
+            shell_single_quote(&claude_dir.to_string_lossy())
         );
 
-        let output = std::process::Command::new("osascript")
-            .args([
-                "-e",
-                &format!(
-                    "do shell script \"{}\" with administrator privileges",
-                    script
-                ),
-            ])
-            .output()
-            .map_err(|e| format!("Failed to run osascript: {}", e))?;
+        // kill_on_drop + a hard timeout: the previous synchronous output()
+        // waited forever on an unanswered admin dialog, holding the whole
+        // install. The bound stays well inside SKILLS_INSTALL_TIMEOUT_SECS so
+        // cancellation reports its own cause.
+        let elevated = tokio::time::timeout(
+            Duration::from_secs(ELEVATION_TIMEOUT_SECS),
+            tokio::process::Command::new("osascript")
+                .args([
+                    "-e",
+                    &format!(
+                        "do shell script \"{}\" with administrator privileges",
+                        script
+                    ),
+                ])
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await;
+
+        let output = match elevated {
+            Ok(Ok(output)) => output,
+            Ok(Err(e)) => return Err(format!("Failed to run osascript: {}", e)),
+            Err(_) => {
+                return Err(format!(
+                    "Administrator prompt was cancelled or timed out after {}s; \
+                     directory permissions were not changed. You can fix this manually \
+                     by running: sudo chown -R $(whoami) ~/.claude",
+                    ELEVATION_TIMEOUT_SECS
+                ));
+            }
+        };
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1638,7 +1727,7 @@ async fn install_skills_to(
 
     // Ensure target directory is writable before proceeding
     emit_log(window, "Checking directory permissions...");
-    ensure_target_writable(target).map_err(|e| {
+    ensure_target_writable(target).await.map_err(|e| {
         emit_log(window, &format!("Permission error: {}", e));
         e
     })?;
@@ -1805,6 +1894,10 @@ pub async fn get_skill_content(
     skill_folder: String,
     project_path: Option<String>,
 ) -> Result<String, String> {
+    // Reject traversal/separators before the name is joined onto a skills dir
+    // or interpolated into a GitHub raw URL.
+    let skill_folder = validated_skill_folder(&skill_folder)?;
+
     // Try local (project-level first, then global)
     let locations: Vec<PathBuf> = match project_path.as_deref() {
         Some(pp) => vec![skills_dir(Some(pp)), skills_dir(None)],
@@ -1840,9 +1933,10 @@ pub async fn get_skill_content(
         .map_err(|e| format!("Failed to create GitHub client: {}", e))?;
 
     let mut last_error = None;
+    let encoded_folder = percent_encode_segment(&skill_folder);
     for base_url in RAW_SKILL_URLS {
         for skill_file in ["SKILL.md", "skill.md"] {
-            let url = format!("{}/{}/{}", base_url, skill_folder, skill_file);
+            let url = format!("{}/{}/{}", base_url, encoded_folder, skill_file);
             let response = match client
                 .get(&url)
                 .header(reqwest::header::USER_AGENT, "DevPrism skills viewer")
@@ -1906,6 +2000,54 @@ mod tests {
             sanitize_skill_folder_name("__Data_Skill-01__"),
             "__data_skill-01__"
         );
+    }
+
+    #[test]
+    fn test_validated_skill_folder_rejects_traversal_and_separators() {
+        assert!(validated_skill_folder("../../etc/passwd").is_err());
+        assert!(validated_skill_folder("a/b").is_err());
+        assert!(validated_skill_folder("a\\b").is_err());
+        assert!(validated_skill_folder("..").is_err());
+        assert!(validated_skill_folder("").is_err());
+        assert!(validated_skill_folder("   ").is_err());
+        // Ordinary names pass through unchanged.
+        assert_eq!(
+            validated_skill_folder("exploratory-data-analysis").unwrap(),
+            "exploratory-data-analysis"
+        );
+        assert_eq!(validated_skill_folder("  pdf  ").unwrap(), "pdf");
+    }
+
+    #[test]
+    fn test_percent_encode_segment_encodes_only_unsafe_bytes() {
+        assert_eq!(percent_encode_segment("pdf"), "pdf");
+        assert_eq!(percent_encode_segment("data_viz-1.0"), "data_viz-1.0");
+        assert_eq!(percent_encode_segment("my skill"), "my%20skill");
+        assert_eq!(percent_encode_segment("a&b?c#d"), "a%26b%3Fc%23d");
+        assert_eq!(percent_encode_segment("../.."), "..%2F..");
+        assert_eq!(percent_encode_segment("café"), "caf%C3%A9");
+    }
+
+    #[test]
+    fn test_shell_single_quote_produces_inert_literals() {
+        assert_eq!(shell_single_quote("/tmp/a b"), "'/tmp/a b'");
+        assert_eq!(shell_single_quote(""), "''");
+        assert_eq!(shell_single_quote("it's"), "'it'\\''s'");
+        // Shell metacharacters stay inert inside single quotes.
+        assert_eq!(shell_single_quote("$(rm -rf ~)"), "'$(rm -rf ~)'");
+        assert_eq!(shell_single_quote("a'; b #"), "'a'\\''; b #'");
+    }
+
+    #[test]
+    fn test_is_valid_admin_username_shape() {
+        assert!(is_valid_admin_username("bharath"));
+        assert!(is_valid_admin_username("_svc-agent"));
+        assert!(!is_valid_admin_username(""));
+        assert!(!is_valid_admin_username("-lead"));
+        assert!(!is_valid_admin_username("9user"));
+        assert!(!is_valid_admin_username("bad name"));
+        assert!(!is_valid_admin_username("u;rm"));
+        assert!(!is_valid_admin_username("u'x"));
     }
 
     #[test]

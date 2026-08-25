@@ -14,6 +14,10 @@ pub(crate) mod ollama;
 pub mod openai_compat;
 mod tools;
 
+// The walk skip-list doubles as the history snapshot's dependency/build-tree
+// excludes (history.rs), so both surfaces agree on what is ignorable.
+pub(crate) use tools::EXCLUDE_DIRS;
+
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -814,6 +818,38 @@ pub async fn deliver_cached_native_reply(
     Ok(())
 }
 
+/// RAII wrapper over [`delta_coalesce::DeltaForwarder`] that flushes buffered
+/// tail text on drop. The chat loop has several exits — normal turn end, a
+/// terminal chat error, Stop mid-stream, Stop mid-retry-wait, Stop mid-tool,
+/// the step limit — and the explicit `finish()` call sites only covered two of
+/// them: both Stop arms jumped straight out of the loop and dropped up to
+/// FLUSH_BYTES of coalesced text. Dropping this guard now flushes wherever the
+/// scope ends; the early `finish()` calls stay as idempotent flushes before
+/// terminal events.
+struct DeltaTailGuard<S: FnMut(ollama::StreamDeltaKind, &str)> {
+    inner: delta_coalesce::DeltaForwarder<S>,
+}
+
+impl<S: FnMut(ollama::StreamDeltaKind, &str)> DeltaTailGuard<S> {
+    fn new(inner: delta_coalesce::DeltaForwarder<S>) -> Self {
+        Self { inner }
+    }
+
+    fn push(&mut self, kind: ollama::StreamDeltaKind, frag: &str) {
+        self.inner.push(kind, frag);
+    }
+
+    fn finish(&mut self) -> bool {
+        self.inner.finish()
+    }
+}
+
+impl<S: FnMut(ollama::StreamDeltaKind, &str)> Drop for DeltaTailGuard<S> {
+    fn drop(&mut self) {
+        self.inner.finish();
+    }
+}
+
 /// Run one agentic task to completion using a local Ollama model.
 #[tauri::command]
 pub async fn run_native_agent(
@@ -1254,13 +1290,15 @@ pub async fn run_native_agent(
         // path so no tail text is lost.
         let window_for_deltas = window.clone();
         let tab_for_deltas = tab_id.clone();
-        let mut deltas = delta_coalesce::DeltaForwarder::new(move |kind, text| {
-            emit_msg(
-                &window_for_deltas,
-                &tab_for_deltas,
-                &delta_coalesce::streaming_delta_event(kind, &text),
-            );
-        });
+        let mut deltas = DeltaTailGuard::new(delta_coalesce::DeltaForwarder::new(
+            move |kind, text| {
+                emit_msg(
+                    &window_for_deltas,
+                    &tab_for_deltas,
+                    &delta_coalesce::streaming_delta_event(kind, &text),
+                );
+            },
+        ));
         let mut turn = {
             let mut attempt = 0u32;
             'chat: loop {
@@ -2896,6 +2934,56 @@ mod tests {
     }
     fn content(m: &Value) -> Option<&str> {
         m.get("content").and_then(|c| c.as_str())
+    }
+
+    /// The Stop arms of the chat loop break out of the scope without running
+    /// the explicit finish() calls; the guard's Drop must flush the tail so
+    /// coalesced text is never lost on that path.
+    #[test]
+    fn delta_tail_guard_flushes_buffered_text_on_drop() {
+        type Recording = Vec<(ollama::StreamDeltaKind, String)>;
+        let captured: std::rc::Rc<std::cell::RefCell<Recording>> = Default::default();
+
+        {
+            let sink = captured.clone();
+            let mut guard = DeltaTailGuard::new(delta_coalesce::DeltaForwarder::new(
+                move |kind, text| {
+                    sink.borrow_mut().push((kind, text.to_string()));
+                },
+            ));
+            guard.push(ollama::StreamDeltaKind::Text, "tail ");
+            guard.push(ollama::StreamDeltaKind::Text, "text");
+            // No explicit finish(): the drop below must flush.
+        }
+
+        let out = captured.borrow();
+        assert_eq!(out.len(), 1, "drop must emit exactly one tail block");
+        assert_eq!(out[0].0, ollama::StreamDeltaKind::Text);
+        assert_eq!(out[0].1, "tail text");
+    }
+
+    /// An explicit finish() before the drop stays idempotent — no duplicate
+    /// emission when both paths run (error branch + convergent post-loop flush).
+    #[test]
+    fn delta_tail_guard_finish_then_drop_does_not_duplicate() {
+        type Recording = Vec<(ollama::StreamDeltaKind, String)>;
+        let captured: std::rc::Rc<std::cell::RefCell<Recording>> = Default::default();
+
+        {
+            let sink = captured.clone();
+            let mut guard = DeltaTailGuard::new(delta_coalesce::DeltaForwarder::new(
+                move |kind, text| {
+                    sink.borrow_mut().push((kind, text.to_string()));
+                },
+            ));
+            guard.push(ollama::StreamDeltaKind::Thinking, "hmm");
+            assert!(guard.finish());
+            assert!(!guard.finish(), "second finish must be a no-op");
+        }
+
+        let out = captured.borrow();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0], (ollama::StreamDeltaKind::Thinking, "hmm".into()));
     }
 
     /// Context compaction sheds bulky tool OUTPUT. It must never touch the

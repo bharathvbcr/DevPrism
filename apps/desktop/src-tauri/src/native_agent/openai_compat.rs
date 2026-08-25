@@ -4,22 +4,14 @@
 use serde_json::{json, Value};
 
 use super::ollama::{
-    canonicalize_tool_name, ChatTurn, DEFAULT_CONTEXT_WINDOW, StreamDeltaKind, ToolCall,
+    canonicalize_tool_name, read_success_body, ChatTurn, DEFAULT_CONTEXT_WINDOW,
+    MAX_TOOL_CALLS_PER_TURN, StreamDeltaKind, ToolCall,
 };
 
 const DEFAULT_MAX_COMPLETION_TOKENS: u32 = 4096;
 const REQUEST_TIMEOUT_SECS: u64 = 600;
 const STREAM_IDLE_TIMEOUT_SECS: u64 = 90;
 const CONNECT_TIMEOUT_SECS: u64 = 15;
-
-/// Upper bound on distinct tool calls assembled from one streamed turn.
-///
-/// `index` arrives verbatim from the provider and is used as a `Vec` grow
-/// target. Unbounded, a single chunk claiming `"index": 18446744073709551615`
-/// pushes elements until the allocator gives up — and Rust *aborts* on
-/// allocation failure, so the whole app dies rather than raising a catchable
-/// error. Well above any real tool count.
-const MAX_TOOL_CALLS_PER_TURN: usize = 64;
 
 /// Largest partial line held while waiting for a newline.
 ///
@@ -29,7 +21,9 @@ const MAX_TOOL_CALLS_PER_TURN: usize = 64;
 /// one, which on loopback is a very large number of bytes.
 const MAX_PENDING_LINE_BYTES: usize = 1024 * 1024;
 
-/// Largest accumulated assistant text (content + reasoning) per turn.
+/// Largest accumulated assistant state per turn (see
+/// [`super::ollama::MAX_TOOL_CALLS_PER_TURN`] and the accumulation check inside
+/// `accumulate_openai_stream_line`).
 const MAX_STREAM_ACCUMULATION_BYTES: usize = 8 * 1024 * 1024;
 
 fn build_client() -> reqwest::Client {
@@ -198,6 +192,16 @@ fn provider_auth_error(base_url: &str, api_key: &str, snippet: &str) -> String {
     format!("[E_AUTH] Invalid API key for {base_url}. Check Settings → Provider. [{snippet}]")
 }
 
+/// Total bytes held for this turn: streamed content, reasoning, and every tool
+/// call's partial argument buffer. Tool arguments previously grew without any
+/// cap — only content+thinking were checked — so a provider streaming endless
+/// argument fragments aborted the process at allocation failure.
+fn accumulated_turn_bytes(content: &str, thinking: &str, tool_arg_buffers: &[String]) -> usize {
+    content.len()
+        + thinking.len()
+        + tool_arg_buffers.iter().map(|b| b.len()).sum::<usize>()
+}
+
 fn accumulate_openai_stream_line<F: FnMut(StreamDeltaKind, &str)>(
     v: &Value,
     content: &mut String,
@@ -307,6 +311,11 @@ fn accumulate_openai_stream_line<F: FnMut(StreamDeltaKind, &str)>(
     // tool call cut off mid-arguments must never be dispatched as if complete.
     if let Some(reason) = finish {
         *finish_reason = reason.to_string();
+    }
+    if accumulated_turn_bytes(content, thinking, tool_arg_buffers) > MAX_STREAM_ACCUMULATION_BYTES {
+        return Err(format!(
+            "OpenAI stream error: response exceeded the {MAX_STREAM_ACCUMULATION_BYTES}-byte accumulation limit"
+        ));
     }
     Ok(finish == Some("stop") || finish == Some("tool_calls"))
 }
@@ -504,11 +513,9 @@ impl OpenAiCompatClient {
                     buf.len()
                 ));
             }
-            if content.len() + thinking.len() > MAX_STREAM_ACCUMULATION_BYTES {
-                return Err(format!(
-                    "OpenAI stream error: response exceeded the {MAX_STREAM_ACCUMULATION_BYTES}-byte accumulation limit"
-                ));
-            }
+            // Accumulation (content + thinking + tool argument buffers) is
+            // bounded inside `accumulate_openai_stream_line`, which sees every
+            // parsed line including the trailing flush below.
             while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
                 let line_bytes: Vec<u8> = buf.drain(..=pos).collect();
                 let line = String::from_utf8_lossy(&line_bytes).trim().to_string();
@@ -664,7 +671,9 @@ impl OpenAiCompatClient {
             })?;
 
         let status = resp.status();
-        let text = resp.text().await.map_err(|e| e.to_string())?;
+        // One capped read serves both branches: error bodies only need a
+        // snippet, and the embeddings payload is bounded before parsing.
+        let text = read_success_body(resp).await;
         if !status.is_success() {
             let snippet: String = text.chars().take(300).collect();
             return Err(format!("Embeddings returned HTTP {status}: {snippet}"));
@@ -705,7 +714,7 @@ pub async fn list_models(base_url: &str, api_key: &str) -> Result<Vec<String>, S
     if !res.status().is_success() {
         return Err(format!("HTTP {} listing models", res.status()));
     }
-    let text = res.text().await.map_err(|e| e.to_string())?;
+    let text = read_success_body(res).await;
     let v: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
     Ok(v.get("data")
         .and_then(|d| d.as_array())
@@ -1286,5 +1295,56 @@ mod tests {
         assert!(error.contains("Vertex needs an OAuth access token"));
         assert!(error.contains("Gemini (AI Studio)"));
         assert!(error.contains("gcloud"));
+    }
+
+    /// Tool argument buffers must count toward the per-turn accumulation cap:
+    /// they previously grew unbounded (only content+thinking were checked), so a
+    /// provider streaming endless argument fragments aborted the process at
+    /// allocation failure instead of returning this error.
+    #[test]
+    fn tool_argument_fragments_hit_the_accumulation_cap() {
+        let mut content = String::new();
+        let mut thinking = String::new();
+        let mut tool_calls: Vec<ToolCall> = Vec::new();
+        let mut arg_buffers: Vec<String> = Vec::new();
+        let (mut pt, mut et) = (0u64, 0u64);
+        let mut finish_reason = String::new();
+        let mut on_delta = |_: StreamDeltaKind, _: &str| {};
+
+        let frag = "x".repeat(64 * 1024);
+        let lines = MAX_STREAM_ACCUMULATION_BYTES / frag.len() + 2;
+        let mut result = Ok(false);
+        for _ in 0..lines {
+            result = accumulate_openai_stream_line(
+                &tool_call_chunk(json!({
+                    "index": 0,
+                    "function": { "arguments": frag.clone() }
+                })),
+                &mut content,
+                &mut thinking,
+                &mut tool_calls,
+                &mut arg_buffers,
+                &mut pt,
+                &mut et,
+                &mut finish_reason,
+                &mut on_delta,
+            );
+        }
+        let err = result.expect_err(">8MiB of tool-argument fragments must hit the cap");
+        assert!(err.contains("accumulation limit"), "got: {err}");
+    }
+
+    #[test]
+    fn accumulated_turn_bytes_sums_all_three_buffers() {
+        assert_eq!(accumulated_turn_bytes("", "", &[]), 0);
+        assert_eq!(accumulated_turn_bytes("ab", "cde", &[]), 5);
+        assert_eq!(
+            accumulated_turn_bytes("", "", &[String::from("ab"), String::from("cdef")]),
+            6
+        );
+        assert_eq!(
+            accumulated_turn_bytes("x", "yy", &[String::from("zzz")]),
+            6
+        );
     }
 }

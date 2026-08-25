@@ -403,21 +403,114 @@ pub(crate) fn vector_search_blocking(
     vectors::vector_search(conn, query_vec, k, filter)
 }
 
+/// Child bullet/fact ids present in the stored block JSON but absent from the
+/// incoming payload. An overwrite is a whole-document replace, so those
+/// children vanish from the document — their embeddings must go with them or
+/// they surface as permanent hits with empty text.
+fn removed_child_owner_ids(prior_json: &str, next: &ExperienceBlock) -> Vec<String> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(prior_json) else {
+        return Vec::new();
+    };
+    let kept: std::collections::HashSet<&str> = next
+        .bullets
+        .iter()
+        .map(|b| b.id.as_str())
+        .chain(next.facts.iter().map(|f| f.id.as_str()))
+        .collect();
+    let mut removed = Vec::new();
+    for key in ["bullets", "facts"] {
+        if let Some(children) = value.get(key).and_then(|v| v.as_array()) {
+            for child in children {
+                if let Some(id) = child.get("id").and_then(|v| v.as_str()) {
+                    if !id.is_empty() && !kept.contains(id) {
+                        removed.push(id.to_string());
+                    }
+                }
+            }
+        }
+    }
+    removed
+}
+
 pub(crate) fn upsert_block_blocking(conn: &Connection, block: &ExperienceBlock) -> Result<(), String> {
     let json =
         serde_json::to_string(block).map_err(|e| format!("Failed to serialize block: {e}"))?;
     let updated_at = parse_updated_at_ms(&block.updated_at);
-    conn.execute(
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("Failed to begin block upsert: {e}"))?;
+
+    // Drop embeddings of bullets/facts the payload removed, inside the same
+    // transaction as the write: the prior document is read and reconciled
+    // atomically with the replace.
+    let prior_json: Option<String> = tx
+        .query_row(
+            "SELECT json FROM blocks WHERE id = ?1",
+            params![block.id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to load block {}: {e}", block.id))?;
+    if let Some(prior) = prior_json.as_deref() {
+        for owner_id in removed_child_owner_ids(prior, block) {
+            vectors::delete_owner_embeddings(&tx, &owner_id)?;
+        }
+    }
+
+    tx.execute(
         "INSERT INTO blocks (id, kind, json, updated_at) VALUES (?1, ?2, ?3, ?4)
          ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, json = excluded.json, updated_at = excluded.updated_at",
         params![block.id, block.kind, json, updated_at],
     )
     .map_err(|e| format!("Failed to upsert block: {e}"))?;
+    tx.commit()
+        .map_err(|e| format!("Failed to commit block upsert: {e}"))?;
     Ok(())
 }
 
+/// Append facts to one block inside a single read-modify-write transaction on
+/// just that block's row. The previous MCP flow loaded *every* block, extended
+/// its match in memory, and rewrote it across two separate lock windows, so a
+/// concurrent write to the same block between them was silently lost.
+pub(crate) fn append_facts_to_block_blocking(
+    conn: &Connection,
+    block_id: &str,
+    facts: Vec<BlockFact>,
+) -> Result<(), String> {
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("Failed to begin fact append: {e}"))?;
+    let json: Option<String> = tx
+        .query_row(
+            "SELECT json FROM blocks WHERE id = ?1",
+            params![block_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to load block {block_id}: {e}"))?;
+    let Some(json) = json else {
+        return Err(format!("Block '{block_id}' not found"));
+    };
+    let mut block: ExperienceBlock =
+        serde_json::from_str(&json).map_err(|e| format!("Invalid block JSON in db: {e}"))?;
+    block.facts.extend(facts);
+    block.updated_at = chrono::Utc::now().to_rfc3339();
+    let updated = serde_json::to_string(&block)
+        .map_err(|e| format!("Failed to serialize block: {e}"))?;
+    tx.execute(
+        "INSERT INTO blocks (id, kind, json, updated_at) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, json = excluded.json, updated_at = excluded.updated_at",
+        params![block.id, block.kind, updated, parse_updated_at_ms(&block.updated_at)],
+    )
+    .map_err(|e| format!("Failed to upsert block: {e}"))?;
+    tx.commit()
+        .map_err(|e| format!("Failed to commit fact append: {e}"))
+}
+
 pub(crate) fn delete_block_blocking(conn: &Connection, id: &str) -> Result<(), String> {
-    // Collect child bullet + fact ids from block JSON before deleting the row.
+    // Existence check BEFORE any mutation. The previous order deleted the
+    // owner embeddings first and only reported 'Block not found' after a
+    // zero-row DELETE — mutating the DB on a miss.
     let block_json: Option<String> = conn
         .query_row(
             "SELECT json FROM blocks WHERE id = ?1",
@@ -426,41 +519,49 @@ pub(crate) fn delete_block_blocking(conn: &Connection, id: &str) -> Result<(), S
         )
         .optional()
         .map_err(|e| format!("Failed to load block {id} before delete: {e}"))?;
+    let Some(block_json) = block_json else {
+        return Err(format!("Block not found: {id}"));
+    };
 
+    // Collect child bullet + fact ids from block JSON before deleting the row.
     let mut owner_ids = vec![id.to_string()];
-    if let Some(json) = block_json.as_deref() {
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(json) {
-            if let Some(bullets) = value.get("bullets").and_then(|v| v.as_array()) {
-                for bullet in bullets {
-                    if let Some(bid) = bullet.get("id").and_then(|v| v.as_str()) {
-                        if !bid.is_empty() {
-                            owner_ids.push(bid.to_string());
-                        }
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&block_json) {
+        if let Some(bullets) = value.get("bullets").and_then(|v| v.as_array()) {
+            for bullet in bullets {
+                if let Some(bid) = bullet.get("id").and_then(|v| v.as_str()) {
+                    if !bid.is_empty() {
+                        owner_ids.push(bid.to_string());
                     }
                 }
             }
-            if let Some(facts) = value.get("facts").and_then(|v| v.as_array()) {
-                for fact in facts {
-                    if let Some(fid) = fact.get("id").and_then(|v| v.as_str()) {
-                        if !fid.is_empty() {
-                            owner_ids.push(fid.to_string());
-                        }
+        }
+        if let Some(facts) = value.get("facts").and_then(|v| v.as_array()) {
+            for fact in facts {
+                if let Some(fid) = fact.get("id").and_then(|v| v.as_str()) {
+                    if !fid.is_empty() {
+                        owner_ids.push(fid.to_string());
                     }
                 }
             }
         }
     }
 
+    // Embedding deletes and the row delete land or fail together; another
+    // process deleting the block mid-flight still yields the not-found error.
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("Failed to begin block delete: {e}"))?;
     for owner_id in &owner_ids {
-        vectors::delete_owner_embeddings(conn, owner_id)?;
+        vectors::delete_owner_embeddings(&tx, owner_id)?;
     }
-
-    let n = conn
+    let n = tx
         .execute("DELETE FROM blocks WHERE id = ?1", params![id])
         .map_err(|e| format!("Failed to delete block: {e}"))?;
     if n == 0 {
         return Err(format!("Block not found: {id}"));
     }
+    tx.commit()
+        .map_err(|e| format!("Failed to commit block delete: {e}"))?;
     Ok(())
 }
 
@@ -556,6 +657,9 @@ pub(crate) fn store_embeddings_blocking(conn: &Connection, items: &[EmbeddingIte
             model,
             &item.vec,
         )?;
+        // Record the model for reuse checks, so a later switch of embed models
+        // re-embeds instead of counting old-model rows as current.
+        vectors::set_active_embed_model(conn, model)?;
     }
     Ok(())
 }
@@ -1288,5 +1392,274 @@ mod tests {
             })
             .unwrap();
         assert_eq!(remaining, 0);
+    }
+
+    fn mk_test_block(id: &str, bullet_ids: &[&str], fact_ids: &[&str]) -> ExperienceBlock {
+        ExperienceBlock {
+            id: id.into(),
+            kind: "experience".into(),
+            title: "Eng".into(),
+            org: "Acme".into(),
+            date_range: DateRange {
+                start: "2021-03".into(),
+                end: None,
+            },
+            personas: vec!["ai".into()],
+            domains: vec![],
+            skills: vec![],
+            seniority_level: "senior".into(),
+            location: None,
+            url: None,
+            url_label: None,
+            extra: None,
+            bullets: bullet_ids
+                .iter()
+                .map(|bid| Bullet {
+                    id: (*bid).into(),
+                    canonical: format!("Bullet {bid}"),
+                    variants: serde_json::Map::new(),
+                    metrics: vec![],
+                    evidence_refs: vec![],
+                    locked: false,
+                })
+                .collect(),
+            facts: fact_ids
+                .iter()
+                .map(|fid| BlockFact {
+                    id: (*fid).into(),
+                    text: format!("Fact {fid}"),
+                    skills: vec![],
+                    metrics: vec![],
+                    source: "manual".into(),
+                    created_at: "1700000000000".into(),
+                })
+                .collect(),
+            notes: None,
+            embedding_text: Some("Eng Acme".into()),
+            updated_at: "1700000000000".into(),
+        }
+    }
+
+    /// An overwrite is a whole-document replace: children dropped from the
+    /// payload must lose their embeddings too, or they surface forever as
+    /// hits whose text can no longer be resolved.
+    #[test]
+    fn overwriting_a_block_deletes_embeddings_of_dropped_children() {
+        let _ = vectors::ensure_sqlite_vec_registered();
+        let state = test_state();
+        state
+            .with_conn(|c| upsert_block_blocking(c, &mk_test_block("exp_g", &["b1", "b2"], &["f1"])))
+            .unwrap();
+        let items = |pairs: &[(&str, &str)]| {
+            pairs
+                .iter()
+                .map(|(owner, kind)| EmbeddingItem {
+                    owner_id: (*owner).into(),
+                    owner_kind: (*kind).into(),
+                    model: "test".into(),
+                    vec: vec![1.0, 0.0],
+                })
+                .collect::<Vec<_>>()
+        };
+        state
+            .with_conn(|c| {
+                store_embeddings_blocking(
+                    c,
+                    &items(&[
+                        ("exp_g", "block"),
+                        ("b1", "bullet"),
+                        ("b2", "bullet"),
+                        ("f1", "fact"),
+                    ]),
+                )
+            })
+            .unwrap();
+
+        // Overwrite keeping only b1; b2 and f1 vanish from the document.
+        state
+            .with_conn(|c| upsert_block_blocking(c, &mk_test_block("exp_g", &["b1"], &[])))
+            .unwrap();
+
+        let remaining = |ids: &[&str]| -> i64 {
+            let ids: Vec<String> = ids.iter().map(|s| s.to_string()).collect();
+            state
+                .with_conn(|c| {
+                    c.query_row(
+                        "SELECT COUNT(*) FROM embeddings WHERE owner_id IN (SELECT value FROM json_each(?1))",
+                        params![serde_json::to_string(&ids).unwrap()],
+                        |r| r.get(0),
+                    )
+                    .map_err(|e| e.to_string())
+                })
+                .unwrap()
+        };
+        assert_eq!(remaining(&["b2"]), 0, "dropped bullet kept its embedding");
+        assert_eq!(remaining(&["f1"]), 0, "dropped fact kept its embedding");
+        assert_eq!(remaining(&["b1"]), 1, "kept bullet must retain its embedding");
+        assert_eq!(remaining(&["exp_g"]), 1, "block embedding must survive");
+    }
+
+    /// The previous order mutated first and validated second: deleting a
+    /// non-existent block removed whatever embeddings carried that owner id,
+    /// then returned 'Block not found'.
+    #[test]
+    fn deleting_a_missing_block_leaves_dangling_embeddings_alone() {
+        let _ = vectors::ensure_sqlite_vec_registered();
+        let state = test_state();
+        state
+            .with_conn(|c| {
+                store_embeddings_blocking(
+                    c,
+                    &[EmbeddingItem {
+                        owner_id: "ghost_block".into(),
+                        owner_kind: "block".into(),
+                        model: "test".into(),
+                        vec: vec![1.0, 0.0],
+                    }],
+                )
+            })
+            .unwrap();
+
+        let err = state
+            .with_conn(|c| delete_block_blocking(c, "ghost_block"))
+            .unwrap_err();
+        assert!(err.contains("Block not found"), "got: {err}");
+
+        let n: i64 = state
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM embeddings WHERE owner_id = 'ghost_block'",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(|e| e.to_string())
+            })
+            .unwrap();
+        assert_eq!(n, 1, "failed delete destroyed unrelated embeddings");
+    }
+
+    /// Appending facts must read only the target block. A sibling block with
+    /// JSON that fails to deserialize used to abort the whole load-everything
+    /// pass, making every fact append fail because of an unrelated row.
+    #[test]
+    fn appending_facts_reads_only_the_target_block() {
+        let state = test_state();
+        state
+            .with_conn(|c| upsert_block_blocking(c, &mk_test_block("exp_ok", &[], &["keep_me"])))
+            .unwrap();
+        state
+            .with_conn(|c| {
+                c.execute(
+                    "INSERT INTO blocks (id, kind, json, updated_at) VALUES ('exp_bad', 'experience', '{\"id\":\"exp_bad\"}', 0)",
+                    [],
+                )
+                .map_err(|e| e.to_string())
+            })
+            .unwrap();
+
+        let fact = BlockFact {
+            id: "fact-new".into(),
+            text: "Freshly appended fact".into(),
+            skills: vec![],
+            metrics: vec![],
+            source: "manual".into(),
+            created_at: "1700000001000".into(),
+        };
+        state
+            .with_conn(|c| append_facts_to_block_blocking(c, "exp_ok", vec![fact]))
+            .unwrap();
+
+        // Read back only exp_ok; list_blocks_blocking would rightly refuse the
+        // corrupt sibling we planted.
+        let json: String = state
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT json FROM blocks WHERE id = 'exp_ok'",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(|e| e.to_string())
+            })
+            .unwrap();
+        let ok: ExperienceBlock = serde_json::from_str(&json).unwrap();
+        assert_eq!(ok.facts.len(), 2);
+
+        let err = state
+            .with_conn(|c| append_facts_to_block_blocking(c, "missing_id", Vec::new()))
+            .unwrap_err();
+        assert!(
+            err.contains("Block 'missing_id' not found"),
+            "error text changed: {err}"
+        );
+    }
+
+    /// Each append is one transaction on one row; concurrent writers through
+    /// two connections (mirroring UI state vs MCP server state) must not lose
+    /// each other's facts.
+    #[test]
+    fn concurrent_fact_appends_do_not_lose_updates() {
+        let _ = vectors::ensure_sqlite_vec_registered();
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("career-append.db");
+
+        let make_state = || {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "PRAGMA foreign_keys = ON;\
+                 PRAGMA journal_mode = WAL;\
+                 PRAGMA busy_timeout = 5000;",
+            )
+            .unwrap();
+            schema::init_schema(&conn).unwrap();
+            CareerDbState {
+                inner: Arc::new(Mutex::new(DbSlot::Ready(conn))),
+            }
+        };
+
+        let ui = make_state();
+        ui.with_conn(|c| upsert_block_blocking(c, &mk_test_block("exp_race", &[], &[])))
+            .unwrap();
+        let mcp = make_state();
+
+        const WRITERS: usize = 4;
+        const APPENDS: usize = 10;
+
+        let mut handles = Vec::new();
+        for w in 0..WRITERS {
+            let mcp = mcp.clone();
+            handles.push(std::thread::spawn(move || {
+                for i in 0..APPENDS {
+                    let fact = BlockFact {
+                        id: format!("fact-{w}-{i}"),
+                        text: format!("Writer {w} fact {i}"),
+                        skills: vec![],
+                        metrics: vec![],
+                        source: "manual".into(),
+                        created_at: "1700000002000".into(),
+                    };
+                    mcp.with_conn(|conn| {
+                        append_facts_to_block_blocking(conn, "exp_race", vec![fact])
+                    })?;
+                }
+                Ok::<(), String>(())
+            }));
+        }
+        for handle in handles {
+            handle.join().unwrap().unwrap();
+        }
+
+        let listed = ui
+            .with_conn(|c| list_blocks_blocking(c, false))
+            .unwrap();
+        let block = listed.iter().find(|b| b.id == "exp_race").unwrap();
+        let seen: std::collections::HashSet<String> =
+            block.facts.iter().map(|f| f.id.clone()).collect();
+        assert_eq!(
+            seen.len(),
+            WRITERS * APPENDS,
+            "lost updates: {} of {} facts survived",
+            seen.len(),
+            WRITERS * APPENDS
+        );
     }
 }

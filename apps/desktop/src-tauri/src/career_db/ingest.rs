@@ -4,7 +4,7 @@
 //! frontend prepared-chunk path (`upsert_prepared_source`) for heading-aware
 //! markdown/PDF/OPML chunking with per-chunk content-hash re-embedding.
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::collections::{HashMap, VecDeque};
@@ -15,6 +15,10 @@ use uuid::Uuid;
 
 const TARGET_CHUNK_CHARS: usize = 1200;
 const OVERLAP_CHARS: usize = 180;
+/// Most chunks one prepared source may carry. The byte cap below bounds text
+/// volume; this bounds row count so a pathological chunker cannot stall the
+/// DB mutex with tens of thousands of inserts.
+const MAX_PREPARED_CHUNKS: usize = 2048;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -89,6 +93,24 @@ fn meta_content_hash(meta: &serde_json::Value) -> Option<String> {
 }
 
 fn read_source_text(path: &Path) -> Result<(String, String), String> {
+    // Stat before reading: refuse non-regular files outright and never pull an
+    // unbounded file into memory (same cap the MCP ingest path enforces).
+    let meta =
+        fs::metadata(path).map_err(|e| format!("Failed to stat {}: {e}", path.display()))?;
+    if !meta.is_file() {
+        return Err(format!(
+            "Source is not a regular file: {}",
+            path.display()
+        ));
+    }
+    let max_bytes = crate::mcp::tools_career::MAX_TEXT_BYTES;
+    if meta.len() > max_bytes as u64 {
+        return Err(format!(
+            "Source {} is {} bytes, exceeding the {max_bytes}-byte limit",
+            path.display(),
+            meta.len()
+        ));
+    }
     let bytes = fs::read(path).map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
     let title = path
         .file_name()
@@ -96,7 +118,7 @@ fn read_source_text(path: &Path) -> Result<(String, String), String> {
         .unwrap_or("untitled")
         .to_string();
     // Minimal fallback: UTF-8 text. Binary PDFs should use the TS MuPDF path.
-    match String::from_utf8(bytes.clone()) {
+    match String::from_utf8(bytes) {
         Ok(text) => Ok((title, text)),
         Err(_) => Ok((
             title,
@@ -203,10 +225,12 @@ fn list_chunk_ids(conn: &Connection, source_id: &str) -> Result<Vec<String>, Str
     Ok(chunk_ids)
 }
 
-fn delete_chunks_and_embeddings(conn: &Connection, chunk_ids: &[String]) -> Result<(), String> {
+/// Delete chunks together with their embeddings inside the caller's
+/// transaction — the enclosing write must land or fail as a whole.
+fn delete_chunks_and_embeddings(tx: &Transaction<'_>, chunk_ids: &[String]) -> Result<(), String> {
     for cid in chunk_ids {
-        super::vectors::delete_owner_embeddings(conn, cid)?;
-        conn.execute("DELETE FROM kb_chunks WHERE id = ?1", params![cid])
+        super::vectors::delete_owner_embeddings(tx, cid)?;
+        tx.execute("DELETE FROM kb_chunks WHERE id = ?1", params![cid])
             .map_err(|e| format!("Failed to delete chunk {cid}: {e}"))?;
     }
     Ok(())
@@ -265,14 +289,24 @@ pub fn ingest_source(
         return Ok(report);
     }
 
+    // New sources are all-or-nothing too: the source row and every chunk land
+    // in one transaction, so a mid-loop failure cannot leave a hash recorded
+    // as ingested with chunks missing (that short-circuits future re-ingests
+    // of identical content as 'skipped' forever).
     let source_id = format!("src_{}", Uuid::new_v4().simple());
-    conn.execute(
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("Failed to begin ingest transaction: {e}"))?;
+    tx.execute(
         "INSERT INTO kb_sources (id, source_type, uri, title, content_hash, ingested_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![source_id, source_type, path, title, hash, now_ms()],
     )
     .map_err(|e| format!("Failed to insert kb_sources: {e}"))?;
 
-    insert_chunks_minimal(conn, &source_id, &title, &text, &hash)
+    let report = insert_chunks_minimal(&tx, &source_id, &title, &text, &hash)?;
+    tx.commit()
+        .map_err(|e| format!("Failed to commit ingest: {e}"))?;
+    Ok(report)
 }
 
 fn insert_chunks_minimal(
@@ -324,8 +358,27 @@ pub fn upsert_prepared_source(
         return Err("Prepared source has no chunks".to_string());
     }
 
-    // Ensure every chunk carries a contentHash in meta.
+    // Enforce the MCP-side input caps here in the storage layer, so the direct
+    // webview command inherits them instead of bypassing them.
+    let max_bytes = crate::mcp::tools_career::MAX_TEXT_BYTES;
+    let total_bytes: usize = prepared.chunks.iter().map(|c| c.text.len()).sum();
+    if total_bytes > max_bytes {
+        return Err(format!(
+            "Prepared source is {total_bytes} bytes, exceeding the {max_bytes}-byte limit"
+        ));
+    }
+    if prepared.chunks.len() > MAX_PREPARED_CHUNKS {
+        return Err(format!(
+            "Prepared source has {} chunks, exceeding the {MAX_PREPARED_CHUNKS}-chunk limit",
+            prepared.chunks.len()
+        ));
+    }
+
+    // Every chunk must be non-empty and carry a contentHash in meta.
     for (i, chunk) in prepared.chunks.iter().enumerate() {
+        if chunk.text.trim().is_empty() {
+            return Err(format!("Prepared chunk {i} is empty"));
+        }
         if meta_content_hash(&chunk.meta).is_none() {
             return Err(format!("Prepared chunk {i} missing meta.contentHash"));
         }
@@ -352,6 +405,7 @@ pub fn upsert_prepared_source(
 
         // Diff by per-chunk contentHash.
         let existing = load_source_chunks(conn, &source_id)?;
+        let active_model = super::vectors::active_embed_model(conn)?;
         // One hash can legitimately match several rows: a document may repeat a
         // paragraph verbatim. Keep a queue per hash so each occurrence claims a
         // distinct row. A single-id map hands the same row to every duplicate,
@@ -368,15 +422,37 @@ pub fn upsert_prepared_source(
         let mut all_ids = Vec::new();
         let mut used_existing: HashMap<String, bool> = HashMap::new();
 
+        // Every mutation below — index refreshes, inserts, stale deletions and
+        // the source-row update — commits or fails as one unit.
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| format!("Failed to begin KB re-ingest transaction: {e}"))?;
+
         for (i, chunk) in prepared.chunks.iter().enumerate() {
             let hash = meta_content_hash(&chunk.meta).unwrap_or_default();
-            let reuse = by_hash.get_mut(&hash).and_then(|q| q.pop_front());
-            if let Some(existing_id) = reuse.as_ref() {
+            // A matching hash is necessary but not sufficient: verify the
+            // stored text actually agrees before reusing the row, otherwise a
+            // corrupted meta_json (or a genuine collision) pins stale content
+            // in place forever.
+            let mut reused_id: Option<String> = None;
+            while let Some(candidate) = by_hash.get_mut(&hash).and_then(|q| q.pop_front()) {
+                let agrees = existing
+                    .iter()
+                    .find(|r| r.id == candidate)
+                    .is_some_and(|r| r.text == chunk.text);
+                if agrees {
+                    reused_id = Some(candidate);
+                    break;
+                }
+                // Mismatching candidates stay unconsumed by the reuse map and
+                // are therefore dropped as stale below.
+            }
+            if let Some(existing_id) = reused_id.as_ref() {
                 // The text is unchanged but its position may not be. `index` is
                 // what the KB viewer sorts by (sortKbChunksForDisplay), so a
                 // reused row carrying its old index corrupts document order and
                 // can duplicate an index. Rewrite it when it has drifted.
-                if let Some(row) = existing.iter().find(|r| &r.id == existing_id) {
+                if let Some(row) = existing.iter().find(|r| r.id == *existing_id) {
                     if row.meta.get("index").and_then(|v| v.as_i64()) != Some(i as i64) {
                         let mut meta = row.meta.clone();
                         if let Some(obj) = meta.as_object_mut() {
@@ -384,7 +460,7 @@ pub fn upsert_prepared_source(
                         }
                         let meta_json = serde_json::to_string(&meta)
                             .map_err(|e| format!("Failed to serialize chunk meta: {e}"))?;
-                        conn.execute(
+                        tx.execute(
                             "UPDATE kb_chunks SET meta_json = ?1 WHERE id = ?2",
                             params![meta_json, existing_id],
                         )
@@ -393,16 +469,11 @@ pub fn upsert_prepared_source(
                 }
                 all_ids.push(existing_id.clone());
                 used_existing.insert(existing_id.clone(), true);
-                // Reuse id; only re-embed if embedding is missing.
-                let has_emb: bool = conn
-                    .query_row(
-                        "SELECT 1 FROM embeddings WHERE owner_id = ?1",
-                        params![existing_id],
-                        |_| Ok(true),
-                    )
-                    .optional()
-                    .map_err(|e| format!("Failed to check embedding: {e}"))?
-                    .unwrap_or(false);
+                // Reuse id; only re-embed if no embedding exists under the
+                // active model (PK is (owner_id, model), so an unqualified
+                // check would mask a switched embed model).
+                let has_emb =
+                    chunk_has_embedding(&tx, existing_id, active_model.as_deref())?;
                 if !has_emb {
                     needs_embedding.push(existing_id.clone());
                 }
@@ -416,7 +487,7 @@ pub fn upsert_prepared_source(
                 }
                 let meta_json = serde_json::to_string(&meta)
                     .map_err(|e| format!("Failed to serialize chunk meta: {e}"))?;
-                conn.execute(
+                tx.execute(
                     "INSERT INTO kb_chunks (id, source_id, text, meta_json) VALUES (?1, ?2, ?3, ?4)",
                     params![chunk_id, source_id, chunk.text, meta_json],
                 )
@@ -432,9 +503,9 @@ pub fn upsert_prepared_source(
             .filter(|r| !used_existing.contains_key(&r.id))
             .map(|r| r.id.clone())
             .collect();
-        delete_chunks_and_embeddings(conn, &stale)?;
+        delete_chunks_and_embeddings(&tx, &stale)?;
 
-        conn.execute(
+        tx.execute(
             "UPDATE kb_sources SET source_type = ?1, title = ?2, content_hash = ?3, ingested_at = ?4 WHERE id = ?5",
             params![
                 prepared.source_type,
@@ -445,6 +516,9 @@ pub fn upsert_prepared_source(
             ],
         )
         .map_err(|e| format!("Failed to update kb_sources: {e}"))?;
+
+        tx.commit()
+            .map_err(|e| format!("Failed to commit KB re-ingest: {e}"))?;
 
         return Ok(IngestReport {
             source_id,
@@ -457,9 +531,13 @@ pub fn upsert_prepared_source(
         });
     }
 
-    // Brand-new source.
+    // Brand-new source. Source row and chunks commit together: a partial
+    // ingest must never record a content hash for content that is not there.
     let source_id = format!("src_{}", Uuid::new_v4().simple());
-    conn.execute(
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("Failed to begin KB ingest transaction: {e}"))?;
+    tx.execute(
         "INSERT INTO kb_sources (id, source_type, uri, title, content_hash, ingested_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![
             source_id,
@@ -483,13 +561,16 @@ pub fn upsert_prepared_source(
         }
         let meta_json = serde_json::to_string(&meta)
             .map_err(|e| format!("Failed to serialize chunk meta: {e}"))?;
-        conn.execute(
+        tx.execute(
             "INSERT INTO kb_chunks (id, source_id, text, meta_json) VALUES (?1, ?2, ?3, ?4)",
             params![chunk_id, source_id, chunk.text, meta_json],
         )
         .map_err(|e| format!("Failed to insert chunk: {e}"))?;
         chunk_ids.push(chunk_id);
     }
+
+    tx.commit()
+        .map_err(|e| format!("Failed to commit KB ingest: {e}"))?;
 
     Ok(IngestReport {
         source_id,
@@ -500,6 +581,33 @@ pub fn upsert_prepared_source(
         chunk_ids,
         title: prepared.title.clone(),
     })
+}
+
+/// Does this chunk have an embedding under the active embed model?
+///
+/// The `embeddings` PK is `(owner_id, model)`; an unqualified existence check
+/// counts a row stored under a retired model as current and silently skips
+/// re-embedding after a model switch. With no recorded active model (nothing
+/// has been stored yet), any model counts, preserving pre-qualification
+/// behaviour.
+fn chunk_has_embedding(
+    conn: &Connection,
+    chunk_id: &str,
+    active_model: Option<&str>,
+) -> Result<bool, String> {
+    let sql = match active_model {
+        Some(_) => "SELECT 1 FROM embeddings WHERE owner_id = ?1 AND model = ?2",
+        None => "SELECT 1 FROM embeddings WHERE owner_id = ?1",
+    };
+    let mut stmt = conn
+        .prepare(sql)
+        .map_err(|e| format!("Failed to check embedding: {e}"))?;
+    let found = match active_model {
+        Some(m) => stmt.query_row(params![chunk_id, m], |_| Ok(true)).optional(),
+        None => stmt.query_row(params![chunk_id], |_| Ok(true)).optional(),
+    }
+    .map_err(|e| format!("Failed to check embedding: {e}"))?;
+    Ok(found.unwrap_or(false))
 }
 
 fn load_source_chunks(conn: &Connection, source_id: &str) -> Result<Vec<KbChunkRow>, String> {
@@ -632,28 +740,37 @@ pub fn chunks_missing_embeddings(
     conn: &Connection,
     source_id: Option<&str>,
 ) -> Result<Vec<KbChunkRow>, String> {
+    // Qualify by the active embed model: a chunk holding only a retired
+    // model's embedding still needs re-embedding.
+    let active = super::vectors::active_embed_model(conn)?;
     let mut sql = String::from(
         "SELECT c.id, c.source_id, c.text, c.meta_json, 0
          FROM kb_chunks c
-         WHERE NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.owner_id = c.id)",
+         WHERE NOT EXISTS (
+           SELECT 1 FROM embeddings e WHERE e.owner_id = c.id",
     );
+    let mut bind: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    if let Some(m) = active.as_deref() {
+        sql.push_str(" AND e.model = ?");
+        bind.push(Box::new(m.to_string()));
+    }
+    sql.push(')');
     if source_id.is_some() {
-        sql.push_str(" AND c.source_id = ?1");
+        sql.push_str(" AND c.source_id = ?");
     }
     sql.push_str(" ORDER BY c.id ASC");
+
+    if let Some(sid) = source_id {
+        bind.push(Box::new(sid.to_string()));
+    }
 
     let mut stmt = conn
         .prepare(&sql)
         .map_err(|e| format!("Failed to prepare missing-embedding chunks: {e}"))?;
-
-    let mut rows = match source_id {
-        Some(sid) => stmt
-            .query(params![sid])
-            .map_err(|e| format!("Failed to query missing embeddings: {e}"))?,
-        None => stmt
-            .query([])
-            .map_err(|e| format!("Failed to query missing embeddings: {e}"))?,
-    };
+    let params_refs: Vec<&dyn rusqlite::types::ToSql> = bind.iter().map(|b| b.as_ref()).collect();
+    let mut rows = stmt
+        .query(params_refs.as_slice())
+        .map_err(|e| format!("Failed to query missing embeddings: {e}"))?;
 
     let mut out = Vec::new();
     while let Some(r) = rows
@@ -687,44 +804,64 @@ pub fn chunks_missing_embeddings(
     Ok(out)
 }
 
-/// Count KB chunks that have no embedding row (for readiness / badges).
+/// Count KB chunks that have no embedding under the active model (readiness /
+/// badges). See `chunks_missing_embeddings` for the model qualification.
 pub fn count_kb_chunks_missing_embeddings(
     conn: &Connection,
     source_id: Option<&str>,
 ) -> Result<u32, String> {
-    let (sql, params_owned): (&str, Option<String>) = match source_id {
-        Some(sid) => (
-            "SELECT COUNT(*) FROM kb_chunks c
-             WHERE c.source_id = ?1
-               AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.owner_id = c.id)",
-            Some(sid.to_string()),
-        ),
-        None => (
-            "SELECT COUNT(*) FROM kb_chunks c
-             WHERE NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.owner_id = c.id)",
-            None,
-        ),
-    };
-    let count: i64 = match params_owned.as_deref() {
-        Some(sid) => conn
-            .query_row(sql, params![sid], |r| r.get(0))
-            .map_err(|e| format!("Failed to count missing KB embeddings: {e}"))?,
-        None => conn
-            .query_row(sql, [], |r| r.get(0))
-            .map_err(|e| format!("Failed to count missing KB embeddings: {e}"))?,
-    };
+    let active = super::vectors::active_embed_model(conn)?;
+    let mut sql = String::from(
+        "SELECT COUNT(*) FROM kb_chunks c
+         WHERE NOT EXISTS (
+           SELECT 1 FROM embeddings e WHERE e.owner_id = c.id",
+    );
+    let mut bind: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    if let Some(m) = active.as_deref() {
+        sql.push_str(" AND e.model = ?");
+        bind.push(Box::new(m.to_string()));
+    }
+    sql.push(')');
+    if let Some(sid) = source_id {
+        sql.push_str(" AND c.source_id = ?");
+        bind.push(Box::new(sid.to_string()));
+    }
+
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| format!("Failed to count missing KB embeddings: {e}"))?;
+    let params_refs: Vec<&dyn rusqlite::types::ToSql> = bind.iter().map(|b| b.as_ref()).collect();
+    let count: i64 = stmt
+        .query_row(params_refs.as_slice(), |r| r.get(0))
+        .map_err(|e| format!("Failed to count missing KB embeddings: {e}"))?;
     Ok(count.max(0) as u32)
 }
 
 pub fn delete_kb_source(conn: &Connection, source_id: &str) -> Result<(), String> {
-    let ids = list_chunk_ids(conn, source_id)?;
-    delete_chunks_and_embeddings(conn, &ids)?;
-    let n = conn
-        .execute("DELETE FROM kb_sources WHERE id = ?1", params![source_id])
-        .map_err(|e| format!("Failed to delete kb_sources: {e}"))?;
-    if n == 0 {
+    // Existence BEFORE mutation: the previous order deleted every chunk (and
+    // its embeddings) for the id and only afterwards failed with 'KB source
+    // not found' — mutating the DB on a miss.
+    let exists: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM kb_sources WHERE id = ?1",
+            params![source_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to look up kb_sources: {e}"))?;
+    if exists.is_none() {
         return Err(format!("KB source not found: {source_id}"));
     }
+
+    let ids = list_chunk_ids(conn, source_id)?;
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("Failed to begin KB source delete: {e}"))?;
+    delete_chunks_and_embeddings(&tx, &ids)?;
+    tx.execute("DELETE FROM kb_sources WHERE id = ?1", params![source_id])
+        .map_err(|e| format!("Failed to delete kb_sources: {e}"))?;
+    tx.commit()
+        .map_err(|e| format!("Failed to commit KB source delete: {e}"))?;
     Ok(())
 }
 
@@ -992,5 +1129,327 @@ mod tests {
         assert!(r2.chunk_ids.contains(&first_id));
         assert_eq!(r2.needs_embedding.len(), 1);
         assert!(!r2.needs_embedding.contains(&first_id));
+    }
+
+    fn create_boom_trigger(conn: &Connection, exact: bool) {
+        let predicate = if exact {
+            "NEW.text = 'BOOM'"
+        } else {
+            "NEW.text LIKE '%BOOM%'"
+        };
+        conn.execute_batch(&format!(
+            "CREATE TRIGGER fail_boom AFTER INSERT ON kb_chunks
+             WHEN {predicate}
+             BEGIN SELECT RAISE(ABORT, 'boom'); END;"
+        ))
+        .unwrap();
+    }
+
+    fn count_rows(conn: &Connection, sql: &str) -> i64 {
+        conn.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    /// A mid-loop chunk-insert failure must roll back the source row too. The
+    /// previous autocommit path committed the hash-bearing source row first,
+    /// so a partial ingest short-circuited every future re-ingest of identical
+    /// content as `skipped` forever — self-heal was impossible.
+    #[test]
+    fn failed_new_source_ingest_leaves_no_source_row() {
+        let conn = mem_conn();
+        create_boom_trigger(&conn, true);
+
+        let prepared = PreparedSource {
+            uri: "/tmp/doom.md".into(),
+            source_type: "markdown".into(),
+            title: "doom".into(),
+            content_hash: "doom_v1".into(),
+            chunks: vec![
+                chunk_of("alpha", "doom"),
+                chunk_of("BOOM", "doom"),
+            ],
+        };
+        let err = upsert_prepared_source(&conn, &prepared).unwrap_err();
+        assert!(err.contains("boom"), "unexpected error: {err}");
+        assert_eq!(
+            count_rows(&conn, "SELECT COUNT(*) FROM kb_sources"),
+            0,
+            "source row survived a failed ingest"
+        );
+        assert_eq!(
+            count_rows(&conn, "SELECT COUNT(*) FROM kb_chunks"),
+            0,
+            "chunks from a failed ingest survived"
+        );
+    }
+
+    /// Same atomicity guarantee for the diff/re-upsert path: a failure between
+    /// inserting a new chunk and deleting stale ones must restore the previous
+    /// document exactly, including the old source content hash.
+    #[test]
+    fn failed_diff_ingest_keeps_previous_source_intact() {
+        let conn = mem_conn();
+        let build = |hash: &str, texts: &[&str]| PreparedSource {
+            uri: "/tmp/diff-doom.md".into(),
+            source_type: "markdown".into(),
+            title: "diff".into(),
+            content_hash: hash.into(),
+            chunks: texts.iter().map(|s| chunk_of(s, "diff")).collect(),
+        };
+
+        upsert_prepared_source(&conn, &build("v1", &["old one", "old two"])).unwrap();
+        create_boom_trigger(&conn, true);
+
+        let err =
+            upsert_prepared_source(&conn, &build("v2", &["fresh", "BOOM"])).unwrap_err();
+        assert!(err.contains("boom"), "unexpected error: {err}");
+
+        assert_eq!(
+            count_rows(&conn, "SELECT COUNT(*) FROM kb_chunks"),
+            2,
+            "partial diff state leaked past the failed upsert"
+        );
+        let texts: Vec<String> = {
+            let mut stmt = conn.prepare("SELECT text FROM kb_chunks").unwrap();
+            let mut out: Vec<String> = stmt
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect();
+            out.sort();
+            out
+        };
+        assert_eq!(texts, vec!["old one".to_string(), "old two".to_string()]);
+        let hash: String = conn
+            .query_row("SELECT content_hash FROM kb_sources LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(hash, "v1", "failed upsert still advanced the source hash");
+    }
+
+    /// Path-based `ingest_source` gets the same all-or-nothing treatment on
+    /// brand-new sources.
+    #[test]
+    fn failed_path_ingest_leaves_no_partial_state() {
+        use std::fs;
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = dir.path().join("path-doom.md");
+        // Two chunks: a >TARGET_CHUNK_CHARS paragraph, then one containing the
+        // trigger marker so the second insert fails.
+        fs::write(&file, format!("{}\n\nBOOM", "a".repeat(TARGET_CHUNK_CHARS + 100)))
+            .unwrap();
+
+        let conn = mem_conn();
+        create_boom_trigger(&conn, false);
+
+        let err = ingest_source(&conn, file.to_str().unwrap(), "markdown").unwrap_err();
+        assert!(err.contains("boom"), "unexpected error: {err}");
+        assert_eq!(
+            count_rows(&conn, "SELECT COUNT(*) FROM kb_sources"),
+            0,
+            "path ingest left a source row behind"
+        );
+        assert_eq!(
+            count_rows(&conn, "SELECT COUNT(*) FROM kb_chunks"),
+            0,
+            "path ingest left chunks behind"
+        );
+    }
+
+    /// A stored row whose text disagrees with its claimed contentHash must not
+    /// be reused: the payload wins, the stale body is replaced.
+    #[test]
+    fn hash_match_with_changed_stored_text_reingests() {
+        let conn = mem_conn();
+        let build = |hash: &str| PreparedSource {
+            uri: "/tmp/stale.md".into(),
+            source_type: "markdown".into(),
+            title: "stale".into(),
+            content_hash: hash.into(),
+            chunks: vec![chunk_of("alpha body", "stale")],
+        };
+        let r1 = upsert_prepared_source(&conn, &build("v1")).unwrap();
+        let old_id = r1.chunk_ids[0].clone();
+
+        // Corrupt the stored text while keeping the claimed hash intact.
+        conn.execute(
+            "UPDATE kb_chunks SET text = 'corrupted body' WHERE id = ?1",
+            params![old_id],
+        )
+        .unwrap();
+
+        let r2 = upsert_prepared_source(&conn, &build("v2")).unwrap();
+        assert!(!r2.skipped);
+        assert!(
+            !r2.chunk_ids.contains(&old_id),
+            "reused a row whose text contradicted its hash"
+        );
+        assert_eq!(count_rows(&conn, "SELECT COUNT(*) FROM kb_chunks"), 1);
+        let text: String = conn
+            .query_row("SELECT text FROM kb_chunks LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(text, "alpha body");
+    }
+
+    /// Embedding existence must be qualified by the active embed model (the
+    /// schema PK is `(owner_id, model)`), so switching models flags reused
+    /// chunks for re-embedding instead of counting retired-model rows as fresh.
+    #[test]
+    fn switching_embed_models_flags_reused_chunks_for_reembedding() {
+        let _ = super::super::vectors::ensure_sqlite_vec_registered();
+        let conn = mem_conn();
+        let build = |hash: &str| PreparedSource {
+            uri: "/tmp/model-switch.md".into(),
+            source_type: "markdown".into(),
+            title: "switch".into(),
+            content_hash: hash.into(),
+            chunks: vec![chunk_of("persistent body", "switch")],
+        };
+        let r1 = upsert_prepared_source(&conn, &build("v1")).unwrap();
+        let chunk_id = r1.chunk_ids[0].clone();
+        let emb = |model: &str| super::super::EmbeddingItem {
+            owner_id: chunk_id.clone(),
+            owner_kind: "chunk".into(),
+            model: model.into(),
+            vec: vec![1.0, 0.0],
+        };
+
+        // Stored under model-a; a re-ingest that reuses the row needs nothing.
+        super::super::store_embeddings_blocking(&conn, &[emb("model-a")]).unwrap();
+        let r2 = upsert_prepared_source(&conn, &build("v2")).unwrap();
+        assert!(
+            !r2.needs_embedding.contains(&chunk_id),
+            "current-model embedding flagged for re-embed"
+        );
+
+        // Switch to model-b *without* re-embedding anything: only the recorded
+        // active model moves, and the row's sole embedding is still model-a's.
+        super::super::vectors::set_active_embed_model(&conn, "model-b").unwrap();
+        let r3 = upsert_prepared_source(&conn, &build("v3")).unwrap();
+        assert!(
+            r3.needs_embedding.contains(&chunk_id),
+            "model switch did not flag the reused chunk for re-embedding"
+        );
+
+        // Once model-b coverage lands, the same chunk is current again.
+        super::super::store_embeddings_blocking(&conn, &[emb("model-b")]).unwrap();
+        let r4 = upsert_prepared_source(&conn, &build("v4")).unwrap();
+        assert!(
+            !r4.needs_embedding.contains(&chunk_id),
+            "current-model embedding flagged after re-embed"
+        );
+    }
+
+    /// The storage layer enforces the MCP-side caps itself, so the direct
+    /// webview command cannot bypass them.
+    #[test]
+    fn prepared_upsert_enforces_storage_caps() {
+        let conn = mem_conn();
+        let max_bytes = crate::mcp::tools_career::MAX_TEXT_BYTES;
+
+        let empty = PreparedSource {
+            uri: "/tmp/caps-empty.md".into(),
+            source_type: "markdown".into(),
+            title: "caps".into(),
+            content_hash: "h".into(),
+            chunks: vec![PreparedChunk {
+                text: "   ".into(),
+                meta: serde_json::json!({ "contentHash": "x" }),
+            }],
+        };
+        let err = upsert_prepared_source(&conn, &empty).unwrap_err();
+        assert!(err.contains("empty"), "got: {err}");
+
+        let oversized = PreparedSource {
+            uri: "/tmp/caps-bytes.md".into(),
+            source_type: "markdown".into(),
+            title: "caps".into(),
+            content_hash: "h".into(),
+            chunks: vec![PreparedChunk {
+                text: "x".repeat(max_bytes + 1),
+                meta: serde_json::json!({ "contentHash": "x" }),
+            }],
+        };
+        let err = upsert_prepared_source(&conn, &oversized).unwrap_err();
+        assert!(err.contains("byte limit"), "got: {err}");
+
+        let too_many: Vec<PreparedChunk> = (0..=MAX_PREPARED_CHUNKS)
+            .map(|i| PreparedChunk {
+                text: format!("chunk {i}"),
+                meta: serde_json::json!({ "contentHash": format!("h{i}") }),
+            })
+            .collect();
+        let many = PreparedSource {
+            uri: "/tmp/caps-count.md".into(),
+            source_type: "markdown".into(),
+            title: "caps".into(),
+            content_hash: "h".into(),
+            chunks: too_many,
+        };
+        let err = upsert_prepared_source(&conn, &many).unwrap_err();
+        assert!(err.contains("chunk limit"), "got: {err}");
+    }
+
+    /// Deleting an existing KB source removes chunks, embeddings and the
+    /// source row together; deleting a missing id mutates nothing.
+    #[test]
+    fn delete_kb_source_is_atomic_and_strict() {
+        let _ = super::super::vectors::ensure_sqlite_vec_registered();
+        let conn = mem_conn();
+        let prepared = PreparedSource {
+            uri: "/tmp/deleteme.md".into(),
+            source_type: "markdown".into(),
+            title: "deleteme".into(),
+            content_hash: "dv1".into(),
+            chunks: vec![chunk_of("one", "deleteme"), chunk_of("two", "deleteme")],
+        };
+        let r = upsert_prepared_source(&conn, &prepared).unwrap();
+        let embedded = r.chunk_ids[0].clone();
+        conn.execute(
+            "INSERT INTO embeddings (owner_id, owner_kind, model, dim, vec) VALUES (?1, 'chunk', 'm', 2, ?2)",
+            params![embedded, vec![0u8, 0, 0, 0, 0, 0, 128, 63]],
+        )
+        .unwrap();
+
+        delete_kb_source(&conn, &r.source_id).unwrap();
+        assert_eq!(count_rows(&conn, "SELECT COUNT(*) FROM kb_sources"), 0);
+        assert_eq!(count_rows(&conn, "SELECT COUNT(*) FROM kb_chunks"), 0);
+        assert_eq!(
+            count_rows(
+                &conn,
+                &format!("SELECT COUNT(*) FROM embeddings WHERE owner_id = '{embedded}'")
+            ),
+            0,
+            "chunk embedding outlived its source"
+        );
+
+        // Orphaned chunk + embedding under a source id that does not exist.
+        // The bundled libsqlite3 compiles with SQLITE_DEFAULT_FOREIGN_KEYS=1,
+        // so orphans need FK enforcement off — exactly the legacy / corrupted
+        // DB state this guard protects against.
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        conn.execute(
+            "INSERT INTO kb_chunks (id, source_id, text, meta_json) VALUES ('chk_orph', 'src_none', 'orphan', NULL)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO embeddings (owner_id, owner_kind, model, dim, vec) VALUES ('chk_orph', 'chunk', 'm', 2, ?1)",
+            params![vec![0u8, 0, 0, 0, 0, 0, 128, 63]],
+        )
+        .unwrap();
+        let err = delete_kb_source(&conn, "src_none").unwrap_err();
+        assert!(err.contains("KB source not found"), "got: {err}");
+        assert_eq!(
+            count_rows(&conn, "SELECT COUNT(*) FROM kb_chunks WHERE id = 'chk_orph'"),
+            1,
+            "failed delete removed orphaned chunks"
+        );
+        assert_eq!(
+            count_rows(
+                &conn,
+                "SELECT COUNT(*) FROM embeddings WHERE owner_id = 'chk_orph'"
+            ),
+            1,
+            "failed delete removed orphaned embeddings"
+        );
     }
 }

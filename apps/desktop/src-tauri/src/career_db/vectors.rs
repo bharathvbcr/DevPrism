@@ -14,6 +14,18 @@ use std::sync::Once;
 const OVERFETCH_FACTOR: usize = 4;
 const OVERFETCH_MIN: usize = 32;
 
+/// career_meta key recording the embed model the most recent successful
+/// `store_embeddings` wrote under. Chunk-reuse checks qualify embedding
+/// existence on it, so switching embed models flags affected chunks for
+/// re-embedding instead of silently counting old-model rows as fresh.
+pub(crate) const ACTIVE_EMBED_MODEL_KEY: &str = "active_embed_model";
+
+/// Identity of the `stable_rowid` derivation currently reflected in
+/// `vec_embeddings`. `DefaultHasher`'s algorithm is unspecified and may change
+/// across Rust releases; a marker mismatch forces an ANN rebuild so stored
+/// rowids always match what the running binary computes.
+const ROWID_HASHER_VERSION: &str = "std-default-hasher-v1";
+
 static VEC_REGISTER_ONCE: Once = Once::new();
 static VEC_AVAILABLE: AtomicBool = AtomicBool::new(false);
 
@@ -112,6 +124,15 @@ fn stable_rowid(owner_id: &str, model: &str) -> i64 {
     (hasher.finish() as i64) & i64::MAX
 }
 
+/// The model recorded by the most recent embedding write, if any.
+pub(crate) fn active_embed_model(conn: &Connection) -> Result<Option<String>, String> {
+    meta_get(conn, ACTIVE_EMBED_MODEL_KEY)
+}
+
+pub(crate) fn set_active_embed_model(conn: &Connection, model: &str) -> Result<(), String> {
+    meta_set(conn, ACTIVE_EMBED_MODEL_KEY, model)
+}
+
 fn table_exists(conn: &Connection, name: &str) -> Result<bool, String> {
     let n: i64 = conn
         .query_row(
@@ -135,8 +156,12 @@ pub fn ensure_vec_embeddings(conn: &Connection, dim: usize) -> Result<(), String
 
     let current_dim = meta_get(conn, "vec_dim")?
         .and_then(|s| s.parse::<usize>().ok());
+    // A rowid-derivation change (e.g. a Rust release altering DefaultHasher)
+    // silently invalidates every stored rowid, so the index must rebuild.
+    let hasher_matches = meta_get(conn, "vec_rowid_hasher_version")?.as_deref()
+        == Some(ROWID_HASHER_VERSION);
     let exists = table_exists(conn, "vec_embeddings")?;
-    if exists && current_dim == Some(dim) {
+    if exists && current_dim == Some(dim) && hasher_matches {
         return Ok(());
     }
 
@@ -195,6 +220,7 @@ fn rebuild_vec_embeddings(conn: &Connection, dim: usize) -> Result<(), String> {
     }
 
     meta_set(conn, "vec_dim", &dim.to_string())?;
+    meta_set(conn, "vec_rowid_hasher_version", ROWID_HASHER_VERSION)?;
     Ok(())
 }
 
@@ -369,7 +395,12 @@ fn vector_search_ann(
         }
         // Cosine distance → similarity in [0, 2] typically; clamp for display.
         let score = (1.0 - distance as f32).clamp(-1.0, 1.0);
-        let (text, meta) = resolve_hit_text(conn, &owner_id, &owner_kind)?;
+        // One orphaned hit (source row already deleted) must not abort the
+        // whole query; skip it and keep scanning the remaining neighbours.
+        let Ok((text, meta)) = resolve_hit_text(conn, &owner_id, &owner_kind) else {
+            eprintln!("[career_db] skipping orphaned ANN hit {owner_kind}:{owner_id}");
+            continue;
+        };
         hits.push(ScoredHit {
             owner_id,
             owner_kind,
@@ -460,7 +491,12 @@ fn vector_search_brute(
 
     let mut hits = Vec::with_capacity(scored.len());
     for (score, row) in scored {
-        let (text, meta) = resolve_hit_text(conn, &row.owner_id, &row.owner_kind)?;
+        // Same orphan tolerance as the ANN path: a stale hit is skipped, not
+        // allowed to fail the whole search.
+        let Ok((text, meta)) = resolve_hit_text(conn, &row.owner_id, &row.owner_kind) else {
+            eprintln!("[career_db] skipping orphaned search hit {}:{}", row.owner_kind, row.owner_id);
+            continue;
+        };
         hits.push(ScoredHit {
             owner_id: row.owner_id,
             owner_kind: row.owner_kind,
@@ -790,8 +826,7 @@ mod tests {
     }
 
     #[test]
-    fn search_scopes_to_one_model() {
-        let _ = ensure_sqlite_vec_registered();
+    fn search_scopes_to_one_model() {        let _ = ensure_sqlite_vec_registered();
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
         conn.execute(
@@ -841,5 +876,85 @@ mod tests {
         )
         .unwrap();
         assert_eq!(hits_b.len(), 1);
+    }
+
+    /// An embedding whose source row is gone must degrade to a skipped hit,
+    /// not abort the search (previously the ANN path errored out and even the
+    /// brute-force fallback propagated the failure for the whole query).
+    #[test]
+    fn orphaned_embeddings_are_skipped_not_fatal() {
+        let _ = ensure_sqlite_vec_registered();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO embeddings (owner_id, owner_kind, model, dim, vec) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params!["chk_ghost", "chunk", "test", 2, pack_f32_le(&[1.0, 0.0])],
+        )
+        .unwrap();
+
+        let hits = vector_search(
+            &conn,
+            &[1.0, 0.0],
+            5,
+            &SearchFilter {
+                owner_kind: Some("chunk".into()),
+                model: Some("test".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("orphaned hit aborted vector_search: {e}"));
+        assert!(hits.is_empty());
+    }
+
+    /// If `stable_rowid`'s derivation ever changes meaning (Rust release
+    /// altering DefaultHasher), the stored marker must mismatch and force an
+    /// ANN rebuild that rewrites the marker — otherwise stale rowids silently
+    /// diverge from freshly computed ones.
+    #[test]
+    fn rowid_hasher_version_mismatch_forces_rebuild() {
+        let _ = ensure_sqlite_vec_registered();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO blocks (id, kind, json, updated_at) VALUES (?1, ?2, ?3, 0)",
+            params![
+                "exp_v",
+                "experience",
+                r#"{"id":"exp_v","kind":"experience","title":"V","org":"O","dateRange":{"start":"2020-01","end":null},"personas":[],"domains":[],"skills":[],"seniorityLevel":"senior","bullets":[],"updatedAt":"2020-01-01T00:00:00Z"}"#
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO embeddings (owner_id, owner_kind, model, dim, vec) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params!["exp_v", "block", "test", 2, pack_f32_le(&[1.0, 0.0])],
+        )
+        .unwrap();
+
+        // Simulate an index built by an older binary with a different hasher.
+        meta_set(&conn, "vec_dim", "2").unwrap();
+        meta_set(&conn, "vec_rowid_hasher_version", "legacy-hasher-v0").unwrap();
+
+        let hits = vector_search(
+            &conn,
+            &[1.0, 0.0],
+            5,
+            &SearchFilter {
+                owner_kind: Some("block".into()),
+                model: Some("test".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("search after marker mismatch failed: {e}"));
+        assert_eq!(hits.len(), 1);
+
+        let marker = meta_get(&conn, "vec_rowid_hasher_version")
+            .unwrap()
+            .unwrap_or_default();
+        assert_eq!(
+            marker, ROWID_HASHER_VERSION,
+            "mismatching marker was not rebuilt"
+        );
     }
 }

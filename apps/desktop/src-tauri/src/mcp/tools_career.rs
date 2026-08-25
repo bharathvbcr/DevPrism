@@ -44,8 +44,10 @@ use uuid::Uuid;
 
 /// Longest search query accepted. Every hit does a substring scan against it.
 const MAX_QUERY_CHARS: usize = 1_000;
-/// Largest single body of text accepted for ingest or distillation.
-const MAX_TEXT_BYTES: usize = 1024 * 1024;
+/// Largest single body of text accepted for ingest or distillation. Shared
+/// with the career DB storage layer (`ingest`), which re-enforces it so the
+/// direct webview path cannot bypass the MCP cap.
+pub(crate) const MAX_TEXT_BYTES: usize = 1024 * 1024;
 /// Longest short identifier-ish field (titles, ids, source kinds).
 const MAX_LABEL_CHARS: usize = 512;
 /// Longest source URI.
@@ -201,7 +203,12 @@ fn bounded_chars<'a>(value: &'a str, key: &str, max: usize) -> Result<&'a str, J
 }
 
 /// Reject an over-long body of text, counting bytes (what actually hits storage).
-fn bounded_bytes<'a>(value: &'a str, key: &str, max: usize) -> Result<&'a str, JsonRpcError> {
+/// Shared with `tools_resume`, which has the same unbounded-argument exposure.
+pub(crate) fn bounded_bytes<'a>(
+    value: &'a str,
+    key: &str,
+    max: usize,
+) -> Result<&'a str, JsonRpcError> {
     if value.len() > max {
         return Err(JsonRpcError::invalid_params(format!(
             "Argument '{key}' is {} bytes, exceeding the {max}-byte limit",
@@ -1205,15 +1212,10 @@ pub async fn execute_career_tool(
             let db_clone = db.clone();
             tokio::task::spawn_blocking(move || {
                 db_clone.with_conn(|conn| {
-                    let mut blocks = career_db::list_blocks_blocking(conn, false)?;
-                    let block = blocks
-                        .iter_mut()
-                        .find(|b| b.id == bid)
-                        .ok_or_else(|| format!("Block '{bid}' not found"))?;
-
-                    block.facts.extend(new_facts);
-                    block.updated_at = chrono::Utc::now().to_rfc3339();
-                    career_db::upsert_block_blocking(conn, block)
+                    // Read-modify-write of just the target row inside one
+                    // transaction; the previous load-all-blocks flow lost any
+                    // concurrent write landing between its two lock windows.
+                    career_db::append_facts_to_block_blocking(conn, &bid, new_facts)
                 })
             })
             .await

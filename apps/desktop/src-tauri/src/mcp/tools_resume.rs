@@ -24,6 +24,9 @@ use crate::mcp::protocol::{
     JsonRpcError, PromptArgument, PromptDefinition, ResponseMeta, ToolDefinition,
 };
 use crate::mcp::tasks::TaskManager;
+// Shared input bounds: resume tools take the same arbitrary-JSON text bodies
+// career tools do, and were the one family still accepting unbounded strings.
+use crate::mcp::tools_career::{bounded_bytes, MAX_TEXT_BYTES};
 use base64::prelude::*;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -528,7 +531,7 @@ pub async fn execute_resume_tool(
         // Defect #7: emit the canonical JDProfile shape from a real scan.
         // ---------------------------------------------------------------
         "resume_analyze_jd" => {
-            let jd_text = require_str(arguments, "jd_text")?;
+            let jd_text = bounded_bytes(require_str(arguments, "jd_text")?, "jd_text", MAX_TEXT_BYTES)?;
             let extraction = jd::extract_profile(jd_text);
             let mut out = serde_json::to_value(&extraction)
                 .map_err(|e| JsonRpcError::internal_error(format!("profile encode: {e}")))?;
@@ -552,7 +555,7 @@ pub async fn execute_resume_tool(
         // word-boundary matching and a covered/weak/missing ladder.
         // ---------------------------------------------------------------
         "resume_gap_analysis" => {
-            let jd_text = require_str(arguments, "jd_text")?.to_string();
+            let jd_text = bounded_bytes(require_str(arguments, "jd_text")?, "jd_text", MAX_TEXT_BYTES)?.to_string();
             let persona_id = arguments
                 .get("persona_id")
                 .and_then(|v| v.as_str())
@@ -640,7 +643,7 @@ pub async fn execute_resume_tool(
         // caps, per-org de-duplication and must-have coverage repair.
         // ---------------------------------------------------------------
         "resume_score_and_select" => {
-            let jd_text = require_str(arguments, "jd_text")?.to_string();
+            let jd_text = bounded_bytes(require_str(arguments, "jd_text")?, "jd_text", MAX_TEXT_BYTES)?.to_string();
             let persona_id = arguments
                 .get("persona_id")
                 .and_then(|v| v.as_str())
@@ -718,7 +721,7 @@ pub async fn execute_resume_tool(
         // ---------------------------------------------------------------
         "resume_rewrite_bullets" => {
             let block_id = require_str(arguments, "block_id")?.to_string();
-            let jd_text = require_str(arguments, "jd_text")?.to_string();
+            let jd_text = bounded_bytes(require_str(arguments, "jd_text")?, "jd_text", MAX_TEXT_BYTES)?.to_string();
             let bullet_ids: Option<HashSet<String>> = arguments
                 .get("bullet_ids")
                 .and_then(|v| v.as_array())
@@ -925,7 +928,7 @@ pub async fn execute_resume_tool(
         // Defect #4: real analysis, real ATS coverage, no mock renderer.
         // ---------------------------------------------------------------
         "resume_synthesize" => {
-            let jd_text = require_str(arguments, "jd_text")?.to_string();
+            let jd_text = bounded_bytes(require_str(arguments, "jd_text")?, "jd_text", MAX_TEXT_BYTES)?.to_string();
             let persona_id = arguments
                 .get("persona_id")
                 .and_then(|v| v.as_str())
@@ -1265,21 +1268,24 @@ pub async fn execute_resume_tool(
         // an applicant tracking system would read the supplied text.
         // ---------------------------------------------------------------
         "resume_ats_check" => {
-            let text = require_str(arguments, "text")?;
+            let text = bounded_bytes(require_str(arguments, "text")?, "text", MAX_TEXT_BYTES)?;
             let system = match arguments.get("ats_system").and_then(|v| v.as_str()) {
                 Some(raw) => {
-                    let parsed = ats_sim::AtsSystemId::parse(raw);
-                    if parsed.is_none() {
+                    let Some(parsed) = ats_sim::AtsSystemId::parse(raw) else {
                         return Err(JsonRpcError::invalid_params(format!(
                             "Unknown ats_system '{raw}'. Known systems: taleo, workday, \
                              greenhouse, lever, jobvite, icims, generic."
                         )));
-                    }
-                    parsed.unwrap()
+                    };
+                    parsed
                 }
                 None => ats_sim::AtsSystemId::Generic,
             };
-            let jd_text = arguments.get("jd_text").and_then(|v| v.as_str());
+            let jd_text = arguments
+                .get("jd_text")
+                .and_then(|v| v.as_str())
+                .map(|jd| bounded_bytes(jd, "jd_text", MAX_TEXT_BYTES))
+                .transpose()?;
 
             let report = ats_sim::simulate_ats_parsing(text, system);
             let mut out = serde_json::to_value(ats_sim::summarize_ats_parse(&report))
@@ -1299,8 +1305,8 @@ pub async fn execute_resume_tool(
         // Defect #2: never fabricate a metric. Report only what is there.
         // ---------------------------------------------------------------
         "resume_finetune_bullet" => {
-            let bullet_text = require_str(arguments, "bullet_text")?;
-            let jd_text = require_str(arguments, "jd_text")?;
+            let bullet_text = bounded_bytes(require_str(arguments, "bullet_text")?, "bullet_text", MAX_TEXT_BYTES)?;
+            let jd_text = bounded_bytes(require_str(arguments, "jd_text")?, "jd_text", MAX_TEXT_BYTES)?;
             let context = arguments.get("context").and_then(|v| v.as_str()).unwrap_or("");
 
             let extraction = jd::extract_profile(jd_text);
@@ -1420,5 +1426,92 @@ pub async fn execute_resume_tool(
         }
 
         _ => Err(JsonRpcError::method_not_found(name)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::career_db::CareerDbState;
+
+    fn db() -> CareerDbState {
+        CareerDbState::open_in_memory().unwrap()
+    }
+
+    /// The resume tools accept arbitrary text straight from any MCP client;
+    /// every text body is now byte-capped with the same error style as the
+    /// career tools (`Argument '<key>' is N bytes, exceeding the M-byte limit`).
+    #[tokio::test]
+    async fn oversized_text_arguments_are_rejected_with_byte_limit_errors() {
+        let db = db();
+        let tasks = Arc::new(TaskManager::new());
+        let big = "x".repeat(MAX_TEXT_BYTES + 1);
+        let cases: Vec<(&str, Value)> = vec![
+            ("resume_analyze_jd", json!({ "jd_text": big })),
+            ("resume_gap_analysis", json!({ "jd_text": big })),
+            ("resume_score_and_select", json!({ "jd_text": big })),
+            (
+                "resume_rewrite_bullets",
+                json!({ "block_id": "b", "jd_text": big }),
+            ),
+            ("resume_synthesize", json!({ "jd_text": big })),
+            ("resume_ats_check", json!({ "text": big })),
+            (
+                "resume_ats_check",
+                json!({ "text": "ok", "jd_text": big }),
+            ),
+            (
+                "resume_finetune_bullet",
+                json!({ "bullet_text": "ok", "jd_text": big }),
+            ),
+            (
+                "resume_finetune_bullet",
+                json!({ "bullet_text": big, "jd_text": "ok" }),
+            ),
+        ];
+        for (tool, args) in cases {
+            let err = match execute_resume_tool(&db, &tasks, tool, &args).await {
+                Ok(_) => panic!("{tool} accepted an oversized argument"),
+                Err(e) => e,
+            };
+            assert_eq!(err.code, crate::mcp::protocol::ERR_INVALID_PARAMS, "{tool}");
+            assert!(
+                err.message.contains("byte limit"),
+                "{tool} error text drifted: {}",
+                err.message
+            );
+        }
+    }
+
+    /// Normal-sized inputs must still pass untouched.
+    #[tokio::test]
+    async fn normal_sized_inputs_still_pass_the_cap() {
+        let db = db();
+        let tasks = Arc::new(TaskManager::new());
+        let out = execute_resume_tool(
+            &db,
+            &tasks,
+            "resume_analyze_jd",
+            &json!({ "jd_text": "We need a Rust engineer with Kubernetes and gRPC experience." }),
+        )
+        .await
+        .unwrap();
+        assert!(out.get("profile").is_some(), "analyze_jd lost its profile");
+
+        let out = execute_resume_tool(
+            &db,
+            &tasks,
+            "resume_ats_check",
+            &json!({
+                "text": "EXPERIENCE\nAcme — Engineer\nBuilt pipelines",
+                "jd_text": "rust kubernetes"
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(
+            out.get("sections").is_some() || out.get("heatmap").is_some(),
+            "ats_check lost its report fields"
+        );
     }
 }

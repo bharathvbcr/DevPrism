@@ -136,6 +136,7 @@ export const useVariantsStore = create<VariantsState>()((set, get) => ({
   switchTo: async (variantId) => {
     const { ownerRoot, variants, activeVariantId } = get();
     if (!ownerRoot) return;
+    if (get().switching) return;
     if (variantId === activeVariantId) return;
 
     const target =

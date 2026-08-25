@@ -181,6 +181,8 @@ export interface TabState {
   forceQueuedGuidanceOnComplete?: boolean;
   forcedQueuedGuidanceId?: string | null;
   pendingTemporaryFilePaths?: string[];
+  /** True while resumeSession is loading this tab's history from disk. */
+  historyLoading?: boolean;
 }
 
 /** Fields that are projected from the active tab to top-level state */
@@ -424,6 +426,19 @@ function buildProviderSwitchContext(
 let tabCounter = 0;
 function nextTabId(): string {
   return `tab-${++tabCounter}`;
+}
+
+/** Fresh tab messages for provider-switch/native seeding: re-read so messages
+ * appended during sendPrompt's prep awaits are included, while the just-added
+ * user prompt itself stays out of the "[prior context]" block. */
+function priorTurnMessages(
+  state: { tabs: TabState[] },
+  tabId: string,
+  currentUserMessage: ClaudeStreamMessage,
+): ClaudeStreamMessage[] {
+  const messages = state.tabs.find((t) => t.id === tabId)?.messages ?? [];
+  const last = messages[messages.length - 1];
+  return last === currentUserMessage ? messages.slice(0, -1) : messages;
 }
 
 // Tabs whose native (Ollama) runtime already holds conversation memory. Used to
@@ -1053,6 +1068,12 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     let activeTabId = options?.tabId ?? state.activeTabId;
     let activeTab = state.tabs.find((t) => t.id === activeTabId);
     if (!activeTab || activeTab.isStreaming) return;
+    if (activeTab.historyLoading) {
+      log.warn("sendPrompt skipped: session history is still loading", {
+        tab: activeTabId,
+      });
+      return;
+    }
 
     const docState = useDocumentStore.getState();
     const projectPath = docState.projectRoot;
@@ -1228,10 +1249,13 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
           .getState()
           .analyzeLaTeXContent(activeDoc.relativePath, activeDoc.content);
       }
-      const updatedMessages = [...(activeTab?.messages ?? []), userMessage];
+      // Re-read the tab so messages appended during the awaits above
+      // (e.g. a concurrently finishing stream) are included.
+      const latestMessages =
+        get().tabs.find((t) => t.id === activeTabId)?.messages ?? [];
       void usePersonalizationStore
         .getState()
-        .analyzeChatConversation(updatedMessages);
+        .analyzeChatConversation(latestMessages);
 
       // Snapshot before agent edit
       if (projectPath) {
@@ -1273,7 +1297,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
 
       if (switchingDirectProviderToClaudeCode) {
         const priorContext = buildProviderSwitchContext(
-          activeTab?.messages ?? [],
+          priorTurnMessages(get(), activeTabId, userMessage),
         );
         if (priorContext) {
           prompt = `${priorContext}\n\n${prompt}`;
@@ -1347,7 +1371,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         let nativePrompt = userPrompt;
         if (!nativeSeededTabs.has(activeTabId)) {
           const priorContext = buildProviderSwitchContext(
-            activeTab?.messages ?? [],
+            priorTurnMessages(get(), activeTabId, userMessage),
           );
           if (priorContext) nativePrompt = `${priorContext}\n\n${userPrompt}`;
         }
@@ -2036,13 +2060,14 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         queuedGuidance: [],
         forceQueuedGuidanceOnComplete: false,
         forcedQueuedGuidanceId: null,
+        historyLoading: true,
       }),
       activeProjectPath: projectPath ?? null,
     }));
 
-    // Load session history from JSONL file
-    if (projectPath) {
-      try {
+    try {
+      // Load session history from JSONL file
+      if (projectPath) {
         const history = await invoke<any[]>("load_session_history", {
           projectPath,
           sessionId,
@@ -2088,9 +2113,13 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
           }),
           selectedProviderCredentialId: nextSelectedProviderCredentialId,
         }));
-      } catch (err) {
-        log.error("Failed to load session history", { error: String(err) });
       }
+    } catch (err) {
+      log.error("Failed to load session history", { error: String(err) });
+    } finally {
+      set((s) => ({
+        ...applyTabUpdate(s, activeTabId, { historyLoading: false }),
+      }));
     }
 
     // The resumed conversation lives only in the UI; the native runtime has no

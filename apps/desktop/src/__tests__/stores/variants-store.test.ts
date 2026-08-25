@@ -1,5 +1,6 @@
-import { describe, it, expect } from "vitest";
-import { deriveOwner } from "@/stores/variants-store";
+import { describe, it, expect, vi } from "vitest";
+import { deriveOwner, useVariantsStore } from "@/stores/variants-store";
+import { useDocumentStore } from "@/stores/document-store";
 
 describe("deriveOwner", () => {
   it("treats a plain unix project path as the master", () => {
@@ -53,5 +54,59 @@ describe("deriveOwner", () => {
       owner: "/home/u/Resume/variants/foo",
       activeVariantId: null,
     });
+  });
+});
+
+describe("useVariantsStore.switchTo", () => {
+  it("ignores a second switch while one is already in flight", async () => {
+    let releaseOpen!: () => void;
+    const openGate = new Promise<void>((resolve) => {
+      releaseOpen = resolve;
+    });
+    const openProjectMock = vi.fn(() => openGate);
+    useDocumentStore.setState({ openProject: openProjectMock });
+
+    useVariantsStore.setState({
+      ownerRoot: "/owner",
+      activeVariantId: null,
+      variants: [
+        {
+          id: "v1",
+          name: "V1",
+          status: "draft",
+          jd: "",
+          createdAt: 1,
+          path: "/owner/.prism/variants/v1",
+        },
+        {
+          id: "v2",
+          name: "V2",
+          status: "draft",
+          jd: "",
+          createdAt: 2,
+          path: "/owner/.prism/variants/v2",
+        },
+      ],
+      loading: false,
+      switching: false,
+    });
+
+    const first = useVariantsStore.getState().switchTo("v1");
+    for (let i = 0; i < 10; i++) {
+      await Promise.resolve();
+    }
+    expect(useVariantsStore.getState().switching).toBe(true);
+    expect(openProjectMock).toHaveBeenCalledTimes(1);
+
+    const second = useVariantsStore.getState().switchTo("v2");
+    await second;
+    // The overlapping switch was a no-op.
+    expect(openProjectMock).toHaveBeenCalledTimes(1);
+    expect(useVariantsStore.getState().switching).toBe(true);
+
+    releaseOpen();
+    await first;
+    expect(useVariantsStore.getState().activeVariantId).toBe("v1");
+    expect(useVariantsStore.getState().switching).toBe(false);
   });
 });

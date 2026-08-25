@@ -42,6 +42,8 @@ import { createLogger } from "@/lib/debug/logger";
 
 const log = createLogger("document");
 const PROJECT_RENAME_LOCK_RETRY_DELAYS_MS = [150, 300, 600, 1000];
+/** Monotonic token so a stale openProject run can never clobber a newer one. */
+let openSeq = 0;
 
 export interface ProjectFile {
   id: string; // relativePath is the id
@@ -135,7 +137,7 @@ interface DocumentState {
   /** Switch the PDF preview to a compile root without changing the active editor file. */
   setPreviewRoot: (rootId: string) => void;
   addFile: (file: Omit<ProjectFile, "id" | "isDirty">) => string;
-  deleteFile: (id: string) => void;
+  deleteFile: (id: string) => Promise<void>;
   deleteFolder: (folderPath: string) => Promise<void>;
   renameFile: (id: string, name: string) => void;
   updateFileContent: (id: string, content: string) => void;
@@ -429,6 +431,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
   forwardSyncPulse: null,
 
   openProject: async (rootPath: string) => {
+    const myRun = ++openSeq;
     log.info(`Opening project: ${rootPath}`);
     if (isBrowserProjectPath(rootPath) || !isTauri()) {
       await ensureBrowserProjectAccessible(rootPath);
@@ -474,6 +477,9 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
         () => readWorker(),
       ),
     );
+
+    // A newer openProject superseded this run — bail before touching any state.
+    if (myRun !== openSeq) return;
 
     // Images render through getAssetUrl (convertFileSrc); their bytes are
     // not embedded into the store at open time. The crop flow reads the
@@ -731,6 +737,9 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
         await deleteFileFromDisk(file.absolutePath);
       } catch (e) {
         log.error("Failed to delete file from disk", { error: String(e) });
+        throw new Error(
+          `Could not delete "${file.name}". ${e instanceof Error ? e.message : String(e)}`,
+        );
       }
     }
     const newFiles = state.files.filter((f) => f.id !== id);
@@ -789,6 +798,9 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
       await deleteFolderFromDisk(absPath);
     } catch (e) {
       log.error("Failed to delete folder from disk", { error: String(e) });
+      throw new Error(
+        `Could not delete folder "${folderPath}". ${e instanceof Error ? e.message : String(e)}`,
+      );
     }
 
     // Clean caches
@@ -1047,9 +1059,12 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
     const file = state.files.find((f) => f.id === id);
     if (!file || !file.isDirty || file.content == null) return;
 
-    await writeTexFileContent(file.absolutePath, file.content);
+    const snapshot = file.content;
+    await writeTexFileContent(file.absolutePath, snapshot);
     set((s) => ({
-      files: s.files.map((f) => (f.id === id ? { ...f, isDirty: false } : f)),
+      files: s.files.map((f) =>
+        f.id === id && f.content === snapshot ? { ...f, isDirty: false } : f,
+      ),
     }));
   },
 
@@ -1058,10 +1073,14 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
     const dirtyFiles = state.files.filter(
       (f) => f.isDirty && f.content != null,
     );
+    const snapshots = new Map(dirtyFiles.map((f) => [f.id, f.content!]));
     const results = await Promise.allSettled(
-      dirtyFiles.map((f) => writeTexFileContent(f.absolutePath, f.content!)),
+      dirtyFiles.map((f) =>
+        writeTexFileContent(f.absolutePath, snapshots.get(f.id)!),
+      ),
     );
-    // Only mark successfully saved files as clean
+    // Only mark successfully saved files as clean — and only if their content
+    // hasn't changed since the write was initiated (keeps mid-save edits dirty).
     const savedIds = new Set<string>();
     results.forEach((r, i) => {
       if (r.status === "fulfilled") savedIds.add(dirtyFiles[i].id);
@@ -1069,7 +1088,9 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
     if (savedIds.size > 0) {
       set((s) => ({
         files: s.files.map((f) =>
-          savedIds.has(f.id) ? { ...f, isDirty: false } : f,
+          savedIds.has(f.id) && snapshots.get(f.id) === f.content
+            ? { ...f, isDirty: false }
+            : f,
         ),
       }));
     }

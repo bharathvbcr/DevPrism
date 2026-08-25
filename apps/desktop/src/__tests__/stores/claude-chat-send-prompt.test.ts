@@ -205,6 +205,77 @@ describe("useClaudeChatStore.sendPrompt context assembly", () => {
     );
   });
 
+  it("keeps provider-switch context fresh when messages arrive during prep", async () => {
+    useClaudeChatStore.setState((state) => ({
+      sessionId: "qwen-session",
+      selectedProviderCredentialId: CLAUDE_CODE_PROVIDER_ID,
+      tabs: state.tabs.map((tab) =>
+        tab.id === "tab-default"
+          ? {
+              ...tab,
+              sessionId: "qwen-session",
+              providerKey: CLAUDE_CODE_PROVIDER_ID,
+              sessionProviderKey: "openai-compatible:qwen-cred",
+              messages: [
+                {
+                  type: "user",
+                  message: {
+                    content: [{ type: "text", text: "Old DS question" }],
+                  },
+                },
+                {
+                  type: "assistant",
+                  message: {
+                    content: [{ type: "text", text: "Old DS answer" }],
+                  },
+                },
+              ],
+            }
+          : tab,
+      ),
+    }));
+    setMockDocumentState({
+      files: [
+        {
+          id: "main.tex",
+          name: "main.tex",
+          relativePath: "main.tex",
+          absolutePath: "/project/main.tex",
+          type: "tex",
+          content: "Line 1",
+          isDirty: true,
+        },
+      ],
+      saveAllFiles: vi.fn(async () => {
+        // A finishing stream appends a message while sendPrompt is awaiting prep.
+        useClaudeChatStore.setState((s) => ({
+          tabs: s.tabs.map((t) =>
+            t.id === "tab-default"
+              ? {
+                  ...t,
+                  messages: [
+                    ...t.messages,
+                    {
+                      type: "assistant",
+                      message: {
+                        content: [{ type: "text", text: "Late DS answer" }],
+                      },
+                    },
+                  ],
+                }
+              : t,
+          ),
+        }));
+      }),
+    });
+
+    await useClaudeChatStore.getState().sendPrompt("Use Claude now");
+
+    const prompt = invokeArgs("execute_claude_code").prompt;
+    expect(prompt).toContain("Late DS answer");
+    expect(prompt).toContain("Use Claude now");
+  });
+
   it("sends Claude Code when the Claude provider option is selected", async () => {
     useClaudeChatStore.setState({
       selectedProviderCredentialId: CLAUDE_CODE_PROVIDER_ID,
@@ -469,6 +540,94 @@ describe("useClaudeChatStore.resumeSession", () => {
   });
 });
 
+describe("useClaudeChatStore resumeSession history loading", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(invoke).mockImplementation(() => Promise.resolve(null));
+    resetClaudeChatStore();
+    setMockDocumentState();
+    useSettingsStore.getState().setNativeAgentEnabled(false);
+  });
+
+  it("flags historyLoading during load and rejects sendPrompt until it completes", async () => {
+    let resolveHistory!: (value: any[]) => void;
+    vi.mocked(invoke).mockImplementation((cmd) => {
+      if (cmd === "load_session_history") {
+        return new Promise<any[]>((resolve) => {
+          resolveHistory = () =>
+            resolve([
+              {
+                type: "user",
+                message: { content: [{ type: "text", text: "loaded msg" }] },
+              },
+            ]);
+        });
+      }
+      return Promise.resolve(null);
+    });
+
+    const resumePromise = useClaudeChatStore
+      .getState()
+      .resumeSession("session-load-guard");
+
+    const activeTab = () => {
+      const s = useClaudeChatStore.getState();
+      return s.tabs.find((t) => t.id === s.activeTabId)!;
+    };
+
+    expect(activeTab().historyLoading).toBe(true);
+
+    await useClaudeChatStore.getState().sendPrompt("too early");
+
+    // The prompt must have been a no-op: no message appended, no CLI invoked.
+    expect(activeTab().messages).toHaveLength(0);
+    expect(
+      vi
+        .mocked(invoke)
+        .mock.calls.some(([command]) => command === "execute_claude_code"),
+    ).toBe(false);
+
+    resolveHistory([]);
+    await resumePromise;
+
+    expect(activeTab().historyLoading).toBe(false);
+    expect(activeTab().messages[0]?.message?.content?.[0]?.text).toBe(
+      "loaded msg",
+    );
+
+    vi.mocked(invoke).mockClear();
+    await useClaudeChatStore.getState().sendPrompt("now fine");
+    // Session id is set post-resume, so the prompt goes out as a resume.
+    const sentCommands = vi
+      .mocked(invoke)
+      .mock.calls.map(([command]) => command);
+    expect(sentCommands).toContain("resume_claude_code");
+  });
+
+  it("clears historyLoading even when loading fails", async () => {
+    vi.mocked(invoke).mockImplementation((cmd) => {
+      if (cmd === "load_session_history") {
+        return Promise.reject(new Error("session file vanished"));
+      }
+      return Promise.resolve(null);
+    });
+
+    await useClaudeChatStore.getState().resumeSession("session-fail-load");
+
+    const s = useClaudeChatStore.getState();
+    const tab = s.tabs.find((t) => t.id === s.activeTabId)!;
+    expect(tab.historyLoading).toBe(false);
+
+    vi.mocked(invoke).mockClear();
+    await useClaudeChatStore.getState().sendPrompt("after failure");
+    // Session id was already assigned before the failed load, so this resumes.
+    const sentCommands = vi
+      .mocked(invoke)
+      .mock.calls.map(([command]) => command);
+    expect(sentCommands).toContain("resume_claude_code");
+  });
+});
+
 describe("useClaudeChatStore native agent", () => {
   beforeEach(() => {
     resetClaudeChatStore();
@@ -679,6 +838,58 @@ describe("useClaudeChatStore native agent", () => {
     expect(lastUserText("tab-native-chiprange")).toBe(
       "@main.tex:1-2\ntighten this",
     );
+  });
+
+  it("seeds native turn with messages appended during prep (fresh read)", async () => {
+    useTabWithMessages("tab-native-freshseed", [
+      {
+        type: "user",
+        message: { content: [{ type: "text", text: "earlier question" }] },
+      },
+      {
+        type: "assistant",
+        message: { content: [{ type: "text", text: "earlier answer" }] },
+      },
+    ]);
+    setMockDocumentState({
+      files: [
+        {
+          id: "main.tex",
+          name: "main.tex",
+          relativePath: "main.tex",
+          absolutePath: "/project/main.tex",
+          type: "tex",
+          content: "Line 1",
+          isDirty: true,
+        },
+      ],
+      saveAllFiles: vi.fn(async () => {
+        useClaudeChatStore.setState((s) => ({
+          tabs: s.tabs.map((t) =>
+            t.id === "tab-native-freshseed"
+              ? {
+                  ...t,
+                  messages: [
+                    ...t.messages,
+                    {
+                      type: "assistant",
+                      message: {
+                        content: [{ type: "text", text: "late answer" }],
+                      },
+                    },
+                  ],
+                }
+              : t,
+          ),
+        }));
+      }),
+    });
+
+    await useClaudeChatStore.getState().sendPrompt("follow up question");
+
+    const args = lastNativeArgs();
+    expect(args.prompt).toContain("earlier question");
+    expect(args.prompt).toContain("late answer");
   });
 
   it("still seeds provider switch context when the first native invoke fails", async () => {

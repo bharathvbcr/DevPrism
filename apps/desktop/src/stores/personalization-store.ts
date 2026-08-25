@@ -76,6 +76,26 @@ function simpleHash(str: string): string {
   return (hash >>> 0).toString(16);
 }
 
+const MAX_RESEARCH_INTERESTS = 25;
+
+/** Merge interests into the profile list: case-insensitive dedupe, a re-added
+ * interest moves to the end, and the oldest entries are dropped past the cap. */
+function mergeResearchInterests(
+  existing: string[],
+  incoming: string[],
+): string[] {
+  const merged = [...existing];
+  for (const raw of incoming) {
+    const clean = typeof raw === "string" ? raw.trim() : "";
+    if (!clean) continue;
+    const lower = clean.toLowerCase();
+    const idx = merged.findIndex((x) => x.toLowerCase() === lower);
+    if (idx >= 0) merged.splice(idx, 1);
+    merged.push(clean);
+  }
+  return merged.slice(Math.max(0, merged.length - MAX_RESEARCH_INTERESTS));
+}
+
 // Vocab of common research disciplines to match against title words/abstract
 const RESEARCH_DISCIPLINES = [
   "Quantum Computing",
@@ -184,12 +204,13 @@ export const usePersonalizationStore = create<PersonalizationState>()(
 
       addResearchInterest: (interest) =>
         set((state) => {
-          const clean = interest.trim();
-          if (!clean || state.profile.researchInterests.includes(clean))
-            return {};
+          if (!interest.trim()) return {};
           const profile = {
             ...state.profile,
-            researchInterests: [...state.profile.researchInterests, clean],
+            researchInterests: mergeResearchInterests(
+              state.profile.researchInterests,
+              [interest],
+            ),
           };
           scheduleIdentityProfileSync(profile);
           return { profile };
@@ -296,17 +317,15 @@ export const usePersonalizationStore = create<PersonalizationState>()(
           matchedTopics.length > 0
         ) {
           set((s) => {
-            const newInterests = [...s.profile.researchInterests];
-            for (const topic of matchedTopics) {
-              if (!newInterests.includes(topic)) {
-                newInterests.push(topic);
-              }
-            }
+            const researchInterests = mergeResearchInterests(
+              s.profile.researchInterests,
+              matchedTopics,
+            );
             return {
               profile: {
                 ...s.profile,
                 ...profileUpdates,
-                researchInterests: newInterests,
+                researchInterests,
               },
               lastAnalyzedFile: filePath,
               lastAnalyzedContentHash: hash,
@@ -463,17 +482,12 @@ export const usePersonalizationStore = create<PersonalizationState>()(
                 updates.writingStyle = parsed.writingStyle.trim();
               }
 
-              const researchInterests = [...state.profile.researchInterests];
-              if (Array.isArray(parsed.researchInterests)) {
-                for (const item of parsed.researchInterests) {
-                  if (typeof item === "string" && item.trim()) {
-                    const cleanItem = item.trim();
-                    if (!researchInterests.includes(cleanItem)) {
-                      researchInterests.push(cleanItem);
-                    }
-                  }
-                }
-              }
+              const researchInterests = mergeResearchInterests(
+                state.profile.researchInterests,
+                Array.isArray(parsed.researchInterests)
+                  ? parsed.researchInterests
+                  : [],
+              );
 
               return {
                 profile: {

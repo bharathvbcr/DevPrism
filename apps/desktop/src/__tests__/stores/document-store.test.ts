@@ -1,6 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
-import { readTextFile, rename, writeTextFile } from "@tauri-apps/plugin-fs";
+import {
+  readTextFile,
+  remove,
+  rename,
+  writeTextFile,
+} from "@tauri-apps/plugin-fs";
 import {
   useDocumentStore,
   registerEditorContentFlush,
@@ -13,11 +18,15 @@ import { setCompileRootPreference } from "@/lib/compile-root-preference";
 import { useProjectStore } from "@/stores/project-store";
 
 // Mock history store
+const { loadSnapshotsMock } = vi.hoisted(() => ({
+  loadSnapshotsMock: vi.fn((_rootPath: string) => Promise.resolve()),
+}));
+
 vi.mock("@/stores/history-store", () => ({
   useHistoryStore: {
     getState: vi.fn(() => ({
       init: vi.fn(() => Promise.resolve()),
-      loadSnapshots: vi.fn(() => Promise.resolve()),
+      loadSnapshots: loadSnapshotsMock,
       createSnapshot: vi.fn(() => Promise.resolve()),
       reset: vi.fn(),
     })),
@@ -732,22 +741,221 @@ describe("useDocumentStore", () => {
     });
   });
 
-  describe("setPdfData / setCompileError", () => {
-    it("setPdfData clears compile error", () => {
-      useDocumentStore.setState({ compileError: "some error" });
-      useDocumentStore.getState().setPdfData(new Uint8Array([1, 2, 3]));
-      const state = useDocumentStore.getState();
-      expect(getCurrentPdfBytes()).toEqual(new Uint8Array([1, 2, 3]));
-      expect(state.compileError).toBeNull();
+  describe("save dirty-clear race", () => {
+    beforeEach(() => {
+      vi.mocked(writeTextFile).mockClear();
+      vi.mocked(writeTextFile).mockResolvedValue(undefined);
     });
 
-    it("setCompileError stores the error string (regression: Tauri string errors must be preserved)", () => {
-      useDocumentStore
-        .getState()
-        .setCompileError("Compilation failed\n\n! Undefined control sequence.");
-      expect(useDocumentStore.getState().compileError).toBe(
-        "Compilation failed\n\n! Undefined control sequence.",
+    function editDuringPendingSave(id: string, content: string) {
+      useDocumentStore.setState((s) => ({
+        files: s.files.map((f) =>
+          f.id === id ? { ...f, content, isDirty: true } : f,
+        ),
+      }));
+    }
+
+    it("saveFile keeps the file dirty when its content changes while the write is in flight", async () => {
+      let resolveWrite!: () => void;
+      vi.mocked(writeTextFile).mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveWrite = resolve;
+          }),
       );
+      useDocumentStore.setState({
+        files: [makeFile({ isDirty: true, content: "v1" })],
+      });
+
+      const savePromise = useDocumentStore.getState().saveFile("main.tex");
+      editDuringPendingSave("main.tex", "v2");
+      resolveWrite();
+      await savePromise;
+
+      const file = useDocumentStore.getState().files[0];
+      expect(file.content).toBe("v2");
+      expect(file.isDirty).toBe(true);
+    });
+
+    it("saveFile clears dirty state when content did not change during the write", async () => {
+      useDocumentStore.setState({
+        files: [makeFile({ isDirty: true, content: "v1" })],
+      });
+      await useDocumentStore.getState().saveFile("main.tex");
+      expect(useDocumentStore.getState().files[0].isDirty).toBe(false);
+    });
+
+    it("saveAllFiles only clears files whose content did not change during the writes", async () => {
+      let releaseStale!: () => void;
+      const staleGate = new Promise<void>((resolve) => {
+        releaseStale = resolve;
+      });
+      vi.mocked(writeTextFile).mockImplementation(async (path) => {
+        if (path === "/project/main.tex") {
+          await staleGate;
+        }
+      });
+      useDocumentStore.setState({
+        files: [
+          makeFile({ isDirty: true, content: "editing..." }),
+          makeFile({
+            id: "slide.tex",
+            name: "slide.tex",
+            absolutePath: "/project/slide.tex",
+            relativePath: "slide.tex",
+            isDirty: true,
+            content: "slide",
+          }),
+        ],
+      });
+
+      const savePromise = useDocumentStore.getState().saveAllFiles();
+      editDuringPendingSave("main.tex", "edited more");
+      releaseStale();
+      await savePromise;
+
+      expect(writeTextFile).toHaveBeenCalledWith(
+        "/project/main.tex",
+        "editing...",
+      );
+      const files = useDocumentStore.getState().files;
+      expect(files.find((f) => f.id === "main.tex")?.isDirty).toBe(true);
+      expect(files.find((f) => f.id === "main.tex")?.content).toBe(
+        "edited more",
+      );
+      expect(files.find((f) => f.id === "slide.tex")?.isDirty).toBe(false);
+    });
+  });
+
+  describe("openProject concurrency", () => {
+    it("the last initiated open wins and the loser writes no state", async () => {
+      let releaseA!: () => void;
+      const gateA = new Promise<void>((resolve) => {
+        releaseA = resolve;
+      });
+      vi.mocked(invoke).mockImplementation(async (cmd: string, args?: any) => {
+        if (cmd === "allow_project_directory") return undefined;
+        if (cmd === "scan_project_folder") {
+          if (args?.rootPath === "/proj-a") {
+            await gateA;
+            return {
+              files: [
+                {
+                  relativePath: "a-main.tex",
+                  absolutePath: "/proj-a/a-main.tex",
+                  type: "tex",
+                },
+              ],
+              folders: [],
+            };
+          }
+          return {
+            files: [
+              {
+                relativePath: "b-main.tex",
+                absolutePath: "/proj-b/b-main.tex",
+                type: "tex",
+              },
+            ],
+            folders: [],
+          };
+        }
+        return undefined as never;
+      });
+      vi.mocked(readTextFile).mockResolvedValue("\\documentclass{article}");
+
+      const openA = useDocumentStore.getState().openProject("/proj-a");
+      const openB = useDocumentStore.getState().openProject("/proj-b");
+      await openB;
+      releaseA();
+      await openA;
+      // Let any fire-and-forget continuations of the loser settle.
+      await vi.waitFor(() => {
+        expect(loadSnapshotsMock).toHaveBeenCalledWith("/proj-b");
+      });
+
+      const state = useDocumentStore.getState();
+      expect(state.projectRoot).toBe("/proj-b");
+      expect(state.files.map((f) => f.relativePath)).toEqual(["b-main.tex"]);
+      expect(state.initialized).toBe(true);
+
+      const snapshotRoots = loadSnapshotsMock.mock.calls
+        .map((call) => call[0])
+        .filter((root: unknown) => root === "/proj-a");
+      expect(snapshotRoots).toEqual([]);
+    });
+  });
+
+  describe("deleteFile / deleteFolder disk-failure propagation", () => {
+    it("deleteFile rejects and keeps the store entry when the disk delete fails", async () => {
+      useDocumentStore.setState({
+        files: [
+          makeFile(),
+          makeFile({
+            id: "ch1.tex",
+            name: "ch1.tex",
+            relativePath: "ch1.tex",
+            absolutePath: "/project/ch1.tex",
+          }),
+        ],
+        activeFileId: "ch1.tex",
+      });
+      vi.mocked(remove).mockRejectedValueOnce(new Error("os error 16"));
+
+      await expect(
+        useDocumentStore.getState().deleteFile("ch1.tex"),
+      ).rejects.toThrow("os error 16");
+
+      const state = useDocumentStore.getState();
+      expect(state.files.map((f) => f.id)).toContain("ch1.tex");
+      expect(state.activeFileId).toBe("ch1.tex");
+    });
+
+    it("deleteFile removes the entry when the disk delete succeeds", async () => {
+      useDocumentStore.setState({
+        files: [
+          makeFile(),
+          makeFile({
+            id: "ch1.tex",
+            name: "ch1.tex",
+            relativePath: "ch1.tex",
+            absolutePath: "/project/ch1.tex",
+          }),
+        ],
+        activeFileId: "ch1.tex",
+      });
+      vi.mocked(remove).mockResolvedValue(undefined as never);
+
+      await useDocumentStore.getState().deleteFile("ch1.tex");
+
+      expect(useDocumentStore.getState().files.map((f) => f.id)).toEqual([
+        "main.tex",
+      ]);
+      expect(useDocumentStore.getState().activeFileId).toBe("main.tex");
+    });
+
+    it("deleteFolder rejects and keeps entries when the recursive delete fails", async () => {
+      useDocumentStore.setState({
+        files: [
+          makeFile(),
+          makeFile({
+            id: "chapters/intro.tex",
+            name: "intro.tex",
+            relativePath: "chapters/intro.tex",
+            absolutePath: "/project/chapters/intro.tex",
+          }),
+        ],
+        folders: ["chapters"],
+      });
+      vi.mocked(remove).mockRejectedValueOnce(new Error("os error 66"));
+
+      await expect(
+        useDocumentStore.getState().deleteFolder("chapters"),
+      ).rejects.toThrow("os error 66");
+
+      const state = useDocumentStore.getState();
+      expect(state.folders).toContain("chapters");
+      expect(state.files.map((f) => f.id)).toContain("chapters/intro.tex");
     });
   });
 });

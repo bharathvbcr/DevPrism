@@ -29,6 +29,12 @@ let unsubscribe: (() => void) | null = null;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 /** Suppress saves while we're loading state into the store. */
 let loading = false;
+/**
+ * Set when highlights.json failed to parse. While set, nothing persists —
+ * otherwise the freshly-reset empty store would overwrite the (recoverable)
+ * corrupt file with `{}`. Cleared by the next successful explicit load.
+ */
+let persistBlocked = false;
 
 async function metaDir(projectRoot: string): Promise<string> {
   return join(projectRoot, META_DIR);
@@ -39,6 +45,7 @@ async function filePath(projectRoot: string): Promise<string> {
 }
 
 function scheduleSave(): void {
+  if (persistBlocked) return;
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     saveTimer = null;
@@ -47,6 +54,7 @@ function scheduleSave(): void {
 }
 
 async function saveNow(): Promise<void> {
+  if (persistBlocked) return;
   const projectRoot = currentProjectRoot;
   if (!projectRoot) return;
   const map = useAnnotationStore.getState().highlightsByRoot;
@@ -77,11 +85,34 @@ export async function attachHighlights(projectRoot: string): Promise<void> {
     const path = await filePath(projectRoot);
     if (await exists(path)) {
       const raw = await readTextFile(path);
-      const parsed = JSON.parse(raw) as Partial<HighlightsFile>;
+      let parsed: Partial<HighlightsFile>;
+      try {
+        parsed = JSON.parse(raw) as Partial<HighlightsFile>;
+      } catch (parseError) {
+        // Preserve the corrupt bytes before anything can overwrite them, and
+        // block persistence so the reset store never clobbers the file.
+        persistBlocked = true;
+        const badPath = `${path}.bad`;
+        log.error(
+          `Corrupt highlights file; persistence disabled until a successful reload. Backed up to ${badPath}`,
+          { error: String(parseError) },
+        );
+        try {
+          await writeTextFile(badPath, raw);
+        } catch (backupError) {
+          log.error("Failed to back up corrupt highlights file", {
+            error: String(backupError),
+          });
+        }
+        useAnnotationStore.setState({ highlightsByRoot: {} });
+        return;
+      }
+      persistBlocked = false;
       useAnnotationStore.setState({
         highlightsByRoot: parsed.highlightsByRoot ?? {},
       });
     } else {
+      persistBlocked = false;
       useAnnotationStore.setState({ highlightsByRoot: {} });
     }
   } catch (e) {

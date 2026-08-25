@@ -62,6 +62,15 @@ function createClient(): MupdfClient {
     resolveReady = resolve;
   });
 
+  /** Fail every in-flight RPC so callers don't ride out the full call timeout
+   * after the worker is gone. */
+  function failAllPending(): void {
+    for (const request of pending.values()) {
+      request.reject(new Error("mupdf worker terminated"));
+    }
+    pending.clear();
+  }
+
   worker.onmessage = (event: MessageEvent) => {
     const data = event.data as WorkerResponse;
     const [type, id, payload] = data;
@@ -86,6 +95,7 @@ function createClient(): MupdfClient {
 
   worker.onerror = (event) => {
     log.error("Worker fatal error", { message: event.message });
+    failAllPending();
     // Nullify singleton so next getMupdfClient() creates a fresh worker
     instance = null;
   };
@@ -148,7 +158,10 @@ function createClient(): MupdfClient {
       call("renderThumbnail", docId, pageIndex, targetWidth),
     exportAnnotatedPdf: (buffer, highlights) =>
       call("exportAnnotatedPdf", buffer, highlights),
-    destroy: () => worker.terminate(),
+    destroy: () => {
+      failAllPending();
+      worker.terminate();
+    },
   };
 }
 

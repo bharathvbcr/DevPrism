@@ -339,4 +339,69 @@ describe("usePersonalizationStore", () => {
       ).resolves.not.toThrow();
     });
   });
+
+  describe("research interests cap", () => {
+    it("keeps at most 25 interests, dropping the oldest", () => {
+      const store = usePersonalizationStore.getState();
+      for (let i = 1; i <= 30; i++) {
+        store.addResearchInterest(`Interest ${i}`);
+      }
+
+      const interests =
+        usePersonalizationStore.getState().profile.researchInterests;
+      expect(interests).toHaveLength(25);
+      expect(interests[0]).toBe("Interest 6");
+      expect(interests[24]).toBe("Interest 30");
+    });
+
+    it("treats case variants as duplicates and moves the re-added interest to the end", () => {
+      const store = usePersonalizationStore.getState();
+      store.addResearchInterest("Quantum Computing");
+      store.addResearchInterest("Machine Learning");
+
+      store.addResearchInterest("quantum computing");
+
+      expect(
+        usePersonalizationStore.getState().profile.researchInterests,
+      ).toEqual(["Machine Learning", "quantum computing"]);
+    });
+
+    it("caps AI-extracted interests at 25 with most recent kept", async () => {
+      vi.mocked(aiComplete).mockResolvedValue(
+        JSON.stringify({
+          researchInterests: Array.from(
+            { length: 30 },
+            (_, i) => `Topic ${i + 1}`,
+          ),
+        }),
+      );
+
+      await usePersonalizationStore
+        .getState()
+        .triggerAiRefinement("some document text", "LaTeX document");
+
+      const interests =
+        usePersonalizationStore.getState().profile.researchInterests;
+      expect(interests).toHaveLength(25);
+      expect(interests[0]).toBe("Topic 6");
+      expect(interests[24]).toBe("Topic 30");
+    });
+
+    it("caps auto-extracted topics from LaTeX analysis at 25", () => {
+      const store = usePersonalizationStore.getState();
+      const preexisting = Array.from({ length: 24 }, (_, i) => `Seed ${i + 1}`);
+      usePersonalizationStore.setState((s) => ({
+        profile: { ...s.profile, researchInterests: preexisting },
+      }));
+
+      const content = "\\title{Quantum Computing and Machine Learning}";
+      store.analyzeLaTeXContent("/proj/main.tex", content);
+
+      const interests =
+        usePersonalizationStore.getState().profile.researchInterests;
+      expect(interests.length).toBeLessThanOrEqual(25);
+      expect(interests).toContain("Quantum Computing");
+      expect(interests).toContain("Machine Learning");
+    });
+  });
 });

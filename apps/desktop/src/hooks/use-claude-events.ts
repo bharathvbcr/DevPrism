@@ -512,7 +512,15 @@ export function useClaudeEvents() {
       }
 
       const docStore = useDocumentStore.getState();
-      await docStore.refreshFiles();
+      // The project folder may have vanished mid-run; a failed refresh must
+      // not kill queued-guidance resumption or the auto-recompile below.
+      try {
+        await docStore.refreshFiles();
+      } catch (err) {
+        log.warn("failed to refresh files after completion", {
+          error: String(err),
+        });
+      }
 
       const queuedGuidance = success
         ? useClaudeChatStore.getState().consumeQueuedGuidance(tabId)
@@ -593,7 +601,10 @@ export function useClaudeEvents() {
       const unlistenComplete = await listen<ClaudeCompletePayload>(
         "claude-complete",
         (event) => {
-          if (!cancelled) handleComplete(event.payload);
+          if (!cancelled)
+            handleComplete(event.payload).catch((err) => {
+              log.error("handleComplete failed", { error: String(err) });
+            });
         },
       );
       if (cancelled) {

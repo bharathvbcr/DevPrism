@@ -3,7 +3,7 @@ const { execSync, spawnSync } = require("node:child_process");
 const path = require("node:path");
 const fs = require("node:fs");
 
-const MANAGED_MARKER = /Managed by dev map/i;
+const MANAGED_MARKER = /Managed by dev ?map\b/i;
 const MAP_REFERENCE = /\.devcouncil\/repo_map\.json|DEV_MAP\.md/i;
 
 const REQUIRED_RULES = [
@@ -85,7 +85,7 @@ function fileContent(filePath) {
 }
 
 function missingRequiredFields(content) {
-  // Root guides owned by `dev map` use a managed marker instead of hand-written sections.
+  // Root guides owned by `devmap` (formerly `dev map`) use a managed marker instead of hand-written sections.
   if (MANAGED_MARKER.test(content) && MAP_REFERENCE.test(content)) {
     return [];
   }

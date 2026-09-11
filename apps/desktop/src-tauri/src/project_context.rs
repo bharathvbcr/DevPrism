@@ -58,9 +58,30 @@ const EXCLUDE_DIRS: &[&str] = &[
 
 /// LaTeX/build artifact extensions hidden from the project map.
 const ARTIFACT_EXTS: &[&str] = &[
-    "aux", "log", "toc", "lof", "lot", "out", "nav", "snm", "vrb", "bbl", "blg",
-    "fls", "fdb_latexmk", "synctex", "idx", "ind", "ilg", "glo", "gls", "glg",
-    "fmt", "xdv", "bcf", "pdf",
+    "aux",
+    "log",
+    "toc",
+    "lof",
+    "lot",
+    "out",
+    "nav",
+    "snm",
+    "vrb",
+    "bbl",
+    "blg",
+    "fls",
+    "fdb_latexmk",
+    "synctex",
+    "idx",
+    "ind",
+    "ilg",
+    "glo",
+    "gls",
+    "glg",
+    "fmt",
+    "xdv",
+    "bcf",
+    "pdf",
 ];
 
 // ─── Caching ───
@@ -439,10 +460,7 @@ fn sanitize(s: &str) -> String {
 
 /// When present, surface `.devcouncil/repo_map.json` without walking the rest of
 /// `.devcouncil/` (that tree stays excluded from the compact project map).
-fn detect_devcouncil_repo_map(
-    root: &Path,
-    watch: &mut Vec<(PathBuf, u128)>,
-) -> Option<String> {
+fn detect_devcouncil_repo_map(root: &Path, watch: &mut Vec<(PathBuf, u128)>) -> Option<String> {
     let abs = root.join(".devcouncil").join("repo_map.json");
     if !abs.is_file() {
         return None;
@@ -538,7 +556,11 @@ fn build_bib_summary(root: &Path, watch: &mut Vec<(PathBuf, u128)>) -> String {
                     return None;
                 }
                 let key = t[open + 1..].trim().trim_end_matches(',').trim();
-                if key.is_empty() { None } else { Some(key) }
+                if key.is_empty() {
+                    None
+                } else {
+                    Some(key)
+                }
             })
             .collect();
         if keys.is_empty() {
@@ -756,11 +778,7 @@ mod tests {
     use super::*;
 
     fn temp_project(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "devprism_ctx_{}_{}",
-            std::process::id(),
-            tag
-        ));
+        let dir = std::env::temp_dir().join(format!("devprism_ctx_{}_{}", std::process::id(), tag));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir

@@ -625,7 +625,8 @@ mod tests {
 
         // A status-only update preserves the existing JD file.
         let updated =
-            update_variant_blocking(&owner_str, "acme-pm", None, Some("offer".into()), None).unwrap();
+            update_variant_blocking(&owner_str, "acme-pm", None, Some("offer".into()), None)
+                .unwrap();
         assert_eq!(updated.status, "offer");
         assert_eq!(updated.jd, "JD body");
 
@@ -659,8 +660,14 @@ mod tests {
             diff.iter().map(|d| (d.file_path.as_str(), d)).collect();
 
         assert_eq!(by_path["main.tex"].status, "modified");
-        assert_eq!(by_path["main.tex"].old_content.as_deref(), Some("line one\nline two\n"));
-        assert_eq!(by_path["main.tex"].new_content.as_deref(), Some("line one\nline TWO\n"));
+        assert_eq!(
+            by_path["main.tex"].old_content.as_deref(),
+            Some("line one\nline two\n")
+        );
+        assert_eq!(
+            by_path["main.tex"].new_content.as_deref(),
+            Some("line one\nline TWO\n")
+        );
         assert_eq!(by_path["cover.tex"].status, "added");
         assert_eq!(by_path["skills.tex"].status, "deleted");
         // The target file is never reported as a change.

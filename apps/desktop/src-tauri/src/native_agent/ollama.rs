@@ -324,9 +324,11 @@ async fn installed_models(base_url: &str) -> Result<Vec<(String, Option<u64>)>, 
     let root = native_base(base_url);
     let url = format!("{root}/api/tags");
     let client = build_client();
-    let res = client.get(&url).send().await.map_err(|e| {
-        format!("[E_OLLAMA_UNREACHABLE] Could not reach Ollama at {root}: {e}")
-    })?;
+    let res = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("[E_OLLAMA_UNREACHABLE] Could not reach Ollama at {root}: {e}"))?;
     if !res.status().is_success() {
         return Err(format!(
             "[E_OLLAMA_UNREACHABLE] Could not reach Ollama at {root}: HTTP {}",
@@ -406,10 +408,13 @@ const VISION_MARKERS: &[&str] = &[
 
 /// Pick an installed vision-capable model by name heuristic, or `Ok(None)`.
 pub async fn first_vision_model(base_url: &str) -> Result<Option<String>, String> {
-    Ok(installed_model_names(base_url).await?.into_iter().find(|n| {
-        let l = n.to_lowercase();
-        VISION_MARKERS.iter().any(|m| l.contains(m))
-    }))
+    Ok(installed_model_names(base_url)
+        .await?
+        .into_iter()
+        .find(|n| {
+            let l = n.to_lowercase();
+            VISION_MARKERS.iter().any(|m| l.contains(m))
+        }))
 }
 
 #[derive(serde::Serialize)]

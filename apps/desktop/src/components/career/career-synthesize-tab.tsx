@@ -66,6 +66,9 @@ export function CareerSynthesizeTab() {
 
   const resumeHeader = useSettingsStore((s) => s.resumeHeader);
   const setResumeHeader = useSettingsStore((s) => s.setResumeHeader);
+  const resumeSummary = useSettingsStore((s) => s.resumeSummary);
+  const setResumeSummary = useSettingsStore((s) => s.setResumeSummary);
+  const resumeSkillGroups = useSettingsStore((s) => s.resumeSkillGroups);
 
   const templates = useMemo(() => listResumeTemplates(), []);
   const masters = useMemo(() => listResumeMasterOptions(), [result, running]);
@@ -273,6 +276,8 @@ export function CareerSynthesizeTab() {
       personaId,
       templateId,
       header: resumeHeader,
+      seedSummary: resumeSummary,
+      seedSkillGroups: resumeSkillGroups,
     });
     if (out) {
       if (!nameTouched) {
@@ -390,6 +395,8 @@ export function CareerSynthesizeTab() {
             masters={masters}
             header={resumeHeader}
             onHeaderChange={setResumeHeader}
+            summary={resumeSummary}
+            onSummaryChange={setResumeSummary}
             running={running}
             canRun={canRun}
             embeddingsDown={Boolean(readiness?.embeddingsDown)}

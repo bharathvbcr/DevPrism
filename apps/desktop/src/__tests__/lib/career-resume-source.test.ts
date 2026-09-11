@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { unzipSync, zipSync, strToU8 } from "fflate";
 import {
+  RESUME_SOURCE_MAX_BYTES,
+  isResumeImportFileName,
   isZipFileName,
   pickResumeTexEntry,
   readResumeSourceFromFile,
@@ -79,17 +81,40 @@ describe("readResumeSourceFromZipBytes", () => {
     expect(out.source).toContain("documentclass");
   });
 
+  it("inlines \\input of sibling tex files from the archive", async () => {
+    const bytes = zipSync({
+      "resume/main.tex": strToU8(
+        "\\documentclass{article}\\begin{document}\\input{Experience}\\end{document}",
+      ),
+      "resume/Experience.tex": strToU8(
+        "\\section{Experience}\\resumeItem{Shipped}",
+      ),
+    });
+    const out = await readResumeSourceFromZipBytes(bytes, "resume.zip");
+    expect(out.source).toContain("Shipped");
+    expect(out.source).not.toMatch(/\\input\{Experience\}/);
+  });
+
   it("rejects bytes that are not a zip archive", async () => {
     await expect(
       readResumeSourceFromZipBytes(strToU8("definitely not a zip"), "x.zip"),
     ).rejects.toThrow(/not a valid zip/);
   });
 
-  it("rejects archives without any tex files", async () => {
-    const bytes = zipSync({ "notes.md": strToU8("# hi") });
+  it("falls back to a markdown resume when the archive has no .tex", async () => {
+    const bytes = zipSync({
+      "notes.md": strToU8("# Jane Doe\n\nExperience\n"),
+    });
+    const out = await readResumeSourceFromZipBytes(bytes, "notes.zip");
+    expect(out.label).toBe("notes.md");
+    expect(out.source).toContain("Jane Doe");
+  });
+
+  it("rejects archives with neither tex nor markdown/text resumes", async () => {
+    const bytes = zipSync({ "refs.bib": strToU8("@misc{x}") });
     await expect(
-      readResumeSourceFromZipBytes(bytes, "notes.zip"),
-    ).rejects.toThrow(/does not contain any LaTeX/);
+      readResumeSourceFromZipBytes(bytes, "refs.zip"),
+    ).rejects.toThrow(/does not contain a resume source/);
   });
 });
 
@@ -111,12 +136,73 @@ describe("readResumeSourceFromFile", () => {
   it("rejects unsupported file types", async () => {
     await expect(
       readResumeSourceFromFile(makeFile("photo.png", new Uint8Array([9]))),
-    ).rejects.toThrow(/\.zip archive or a \.tex file/);
+    ).rejects.toThrow(/zip, \.tex, \.pdf, \.md, or \.txt/);
+  });
+
+  it("rejects Word documents instead of silently dropping them", async () => {
+    await expect(
+      readResumeSourceFromFile(
+        makeFile(
+          "resume.docx",
+          strToU8("PK"),
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ),
+      ),
+    ).rejects.toThrow(/docx is not supported/i);
   });
 
   it("rejects an empty .tex file", async () => {
     await expect(
       readResumeSourceFromFile(makeFile("empty.tex", strToU8("   \n"))),
     ).rejects.toThrow(/is empty/);
+  });
+
+  it("reads a loose markdown resume", async () => {
+    const out = await readResumeSourceFromFile(
+      makeFile(
+        "cv.md",
+        strToU8("# Ada Lovelace\n\n## Experience\n- Built the engine"),
+      ),
+    );
+    expect(out.label).toBe("cv.md");
+    expect(out.source).toContain("Ada Lovelace");
+  });
+
+  it("reads a loose text resume", async () => {
+    const out = await readResumeSourceFromFile(
+      makeFile("cv.txt", strToU8("Ada Lovelace\nExperience\nEngineer at Acme")),
+    );
+    expect(out.source).toContain("Engineer at Acme");
+  });
+
+  it("extracts PDF text through the injected extractor", async () => {
+    const file = makeFile(
+      "resume.pdf",
+      new Uint8Array([37, 80, 68, 70]),
+      "application/pdf",
+    );
+    const out = await readResumeSourceFromFile(file, {
+      extractPdfText: async () => "Jane Doe\nExperience\nEngineer at Acme",
+    });
+    expect(out.label).toBe("resume.pdf");
+    expect(out.source).toContain("Jane Doe");
+  });
+
+  it("rejects files over the byte cap before reading", async () => {
+    const file = makeFile("huge.txt", strToU8("ok"));
+    Object.defineProperty(file, "size", { value: RESUME_SOURCE_MAX_BYTES + 1 });
+    await expect(readResumeSourceFromFile(file)).rejects.toThrow(/exceeds/);
+  });
+});
+
+describe("isResumeImportFileName", () => {
+  it("accepts the IgniteCV porting surface without Word", () => {
+    expect(isResumeImportFileName("a.PDF")).toBe(true);
+    expect(isResumeImportFileName("a.md")).toBe(true);
+    expect(isResumeImportFileName("a.txt")).toBe(true);
+    expect(isResumeImportFileName("a.tex")).toBe(true);
+    expect(isResumeImportFileName("a.zip")).toBe(true);
+    expect(isResumeImportFileName("a.docx")).toBe(false);
+    expect(isResumeImportFileName("photo.png")).toBe(false);
   });
 });

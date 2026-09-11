@@ -5,7 +5,7 @@ import {
   isAgentBackend,
   migrateNativeAgentEnabled,
 } from "@/lib/agent-backend";
-import type { HeaderFields } from "@/lib/resume-templates";
+import type { HeaderFields, SkillGroup } from "@/lib/resume-templates";
 
 type CompilerBackend = "tectonic" | "texlive";
 
@@ -21,6 +21,29 @@ export const EMPTY_RESUME_HEADER: HeaderFields = {
   githubUrl: "",
   portfolioUrl: "",
 };
+
+function normalizeResumeSkillGroups(value: unknown): SkillGroup[] {
+  if (!Array.isArray(value)) return [];
+  const out: SkillGroup[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const row = item as Record<string, unknown>;
+    const label = typeof row.label === "string" ? row.label.trim() : "";
+    const items = typeof row.items === "string" ? row.items.trim() : "";
+    if (!label || !items) continue;
+    out.push({
+      label: label.slice(0, 80),
+      items: items.slice(0, 2000),
+    });
+    if (out.length >= 8) break;
+  }
+  return out;
+}
+
+function normalizeResumeSummary(value: unknown): string {
+  if (typeof value !== "string") return "";
+  return value.trim().slice(0, 2000);
+}
 
 function normalizeResumeHeader(value: unknown): HeaderFields {
   const o =
@@ -183,6 +206,12 @@ interface SettingsState {
    */
   resumeHeader: HeaderFields;
   setResumeHeader: (header: HeaderFields | Partial<HeaderFields>) => void;
+  /** Imported professional summary; fill-empty on import, user-editable. */
+  resumeSummary: string;
+  setResumeSummary: (summary: string) => void;
+  /** Imported skill groups (typically Languages) carried into synthesis. */
+  resumeSkillGroups: SkillGroup[];
+  setResumeSkillGroups: (groups: SkillGroup[]) => void;
 }
 
 export const useSettingsStore = create<SettingsState>()(
@@ -348,10 +377,16 @@ export const useSettingsStore = create<SettingsState>()(
             ...header,
           }),
         })),
+      resumeSummary: "",
+      setResumeSummary: (summary) =>
+        set({ resumeSummary: normalizeResumeSummary(summary) }),
+      resumeSkillGroups: [],
+      setResumeSkillGroups: (groups) =>
+        set({ resumeSkillGroups: normalizeResumeSkillGroups(groups) }),
     }),
     {
       name: "claude-prism-settings",
-      version: 3,
+      version: 4,
       migrate: (persisted, version) => {
         const s = { ...(persisted as Record<string, unknown>) };
         // v2: replace nativeAgentEnabled boolean with agentBackend enum.
@@ -387,11 +422,10 @@ export const useSettingsStore = create<SettingsState>()(
             : "10m";
         }
         // v3: resume contact header for synthesis.
-        if (version < 3 || !("resumeHeader" in s)) {
-          s.resumeHeader = normalizeResumeHeader(s.resumeHeader);
-        } else {
-          s.resumeHeader = normalizeResumeHeader(s.resumeHeader);
-        }
+        s.resumeHeader = normalizeResumeHeader(s.resumeHeader);
+        // v4: imported summary + skill groups for synthesis seed.
+        s.resumeSummary = normalizeResumeSummary(s.resumeSummary);
+        s.resumeSkillGroups = normalizeResumeSkillGroups(s.resumeSkillGroups);
         return s as unknown as SettingsState;
       },
     },

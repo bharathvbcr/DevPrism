@@ -634,9 +634,14 @@ export interface AtsParseReport {
 }
 
 const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/;
-const URL_RE = /https?:\/\/[^\s]+/g;
+const URL_RE = /https?:\/\/[^\s]+/gi;
+const BARE_LINKEDIN_RE =
+  /(?:https?:\/\/)?(?:www\.)?linkedin\.com\/in\/[A-Za-z0-9_-]+/gi;
+const BARE_GITHUB_RE =
+  /(?:https?:\/\/)?(?:www\.)?github\.com\/[A-Za-z0-9_-]+/gi;
 const PHONE_CANDIDATE_RE = /\+?\d[\d\s().-]{7,}\d/g;
 const EXTENSION_RE = /^\s*(?:x|ext\.?|extension)\s*(\d{1,6})/i;
+const NAME_WORD_RE = /^[\p{Lu}\p{Lt}][\p{L}'’.-]*\.?$/u;
 
 function extractPhone(content: string): string | null {
   PHONE_CANDIDATE_RE.lastIndex = 0;
@@ -660,11 +665,53 @@ function extractPhone(content: string): string | null {
   return null;
 }
 
-function extractContactInfo(content: string): AtsContactInfo {
+function looksLikePersonName(line: string): boolean {
+  if (!line || line.length > 80 || line.includes(",") || line.includes("\\")) {
+    return false;
+  }
+  if (headerCanonical(line)) return false;
+  if (/https?:\/\//i.test(line) || EMAIL_RE.test(line)) return false;
+  const words = line.split(/\s+/).filter(Boolean);
+  if (words.length === 0 || words.length > 4) return false;
+  return words.every((w) => NAME_WORD_RE.test(w));
+}
+
+function normalizeProfileUrl(raw: string): string {
+  const trimmed = raw.replace(/[),.;]+$/g, "");
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return `https://${trimmed}`;
+}
+
+function collectProfileLinks(content: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const push = (raw: string) => {
+    const url = normalizeProfileUrl(raw);
+    const key = url.toLowerCase();
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    out.push(url);
+  };
+  URL_RE.lastIndex = 0;
+  for (const match of content.matchAll(URL_RE)) {
+    push(match[0]);
+    if (out.length >= 5) return out;
+  }
+  for (const re of [BARE_LINKEDIN_RE, BARE_GITHUB_RE]) {
+    re.lastIndex = 0;
+    for (const match of content.matchAll(re)) {
+      push(match[0]);
+      if (out.length >= 5) return out;
+    }
+  }
+  return out;
+}
+
+export function extractContactInfo(content: string): AtsContactInfo {
   const emailMatch = EMAIL_RE.exec(content);
   const email =
     emailMatch && emailMatch[0].length <= 320 ? emailMatch[0] : null;
-  const links = [...content.matchAll(URL_RE)].map((m) => m[0]).slice(0, 5);
+  const links = collectProfileLinks(content);
   let name: string | null = null;
   for (const rawLine of content.split("\n").slice(0, 12)) {
     const line = rawLine.trim();
@@ -673,8 +720,7 @@ function extractContactInfo(content: string): AtsContactInfo {
     if (/https?:\/\//i.test(line)) continue;
     const digits = line.replace(/\D/g, "").length;
     if (digits > 3) continue; // phone line, address, dates
-    const words = line.split(/\s+/).filter(Boolean);
-    if (words.length > 5 || words.length === 0) continue;
+    if (!looksLikePersonName(line)) continue;
     name = line;
     break;
   }
@@ -1179,6 +1225,11 @@ function appendSkillGroups(
   }
 }
 
+function isLanguageSkillGroup(group: SkillGroup): boolean {
+  const label = (group.label ?? "").trim().toLowerCase();
+  return label === "language" || label === "languages";
+}
+
 /**
  * Flatten synthesized `ResumeContent` to the plain text an ATS would see
  * from the printed document. Mirrors what templates print: header contact
@@ -1206,9 +1257,16 @@ export function renderedContentPlainText(content: ResumeContent): string {
   if (content.summary?.trim()) {
     lines.push("SUMMARY", content.summary.trim());
   }
-  if (content.skills?.length) {
+  const skillGroups = content.skills ?? [];
+  const languageGroups = skillGroups.filter(isLanguageSkillGroup);
+  const otherSkills = skillGroups.filter((g) => !isLanguageSkillGroup(g));
+  if (otherSkills.length) {
     lines.push("SKILLS");
-    appendSkillGroups(lines, content.skills);
+    appendSkillGroups(lines, otherSkills);
+  }
+  if (languageGroups.length) {
+    lines.push("LANGUAGES");
+    appendSkillGroups(lines, languageGroups);
   }
   const sectionSources: Array<[string, RenderedBlock[] | undefined]> = [
     ["EXPERIENCE", content.experience],
@@ -1290,5 +1348,36 @@ export function summarizeKeywordHeatmap(
     })),
     missingCriticalKeywords: heatmap.missingCriticalKeywords,
     overusedKeywords: heatmap.overusedKeywords,
+  };
+}
+
+/** Compact JD metadata persisted on MatchReport — not the full extractor dump. */
+const MAX_JD_META_TAGS = 8;
+
+export interface MatchReportJdMetadata {
+  jobTitle: string | null;
+  company: string | null;
+  location: string | null;
+  postedDate: string | null;
+  salarySummary: string | null;
+  experienceLevel: ExperienceLevel | null;
+  benefits: string[];
+  cultureKeywords: string[];
+  mustHaveCount: number;
+  preferredCount: number;
+}
+
+export function summarizeJdMetadata(meta: JdMetadata): MatchReportJdMetadata {
+  return {
+    jobTitle: meta.jobTitle,
+    company: meta.company,
+    location: meta.location,
+    postedDate: meta.postedDate,
+    salarySummary: meta.salarySummary,
+    experienceLevel: meta.experienceLevel,
+    benefits: meta.benefits.slice(0, MAX_JD_META_TAGS),
+    cultureKeywords: meta.cultureKeywords.slice(0, MAX_JD_META_TAGS),
+    mustHaveCount: meta.requirements.mustHave.length,
+    preferredCount: meta.requirements.preferred.length,
   };
 }

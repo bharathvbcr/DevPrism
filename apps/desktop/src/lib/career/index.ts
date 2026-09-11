@@ -41,18 +41,27 @@ export type {
 export * from "./ingest";
 export * from "./block-helpers";
 export * from "./block-embed";
-export { extractBlocksFromResume } from "./extract-resume";
+export {
+  extractBlocksFromResume,
+  extractResumeDeterministic,
+  extractResumeFromSource,
+  mergeResumeHeader,
+  mergeResumeSummary,
+} from "./extract-resume";
+export type { ExtractedResume, ExtractVia } from "./extract-resume";
 export {
   distillFactsFromNotes,
   parseDistilledFacts,
 } from "./distill-facts";
 export {
+  isResumeImportFileName,
   isTexFileName,
   isZipFileName,
   pickResumeTexEntry,
   readResumeSourceFromFile,
   readResumeSourceFromPath,
   readResumeSourceFromZipBytes,
+  RESUME_SOURCE_MAX_BYTES,
   type ResumeSource,
 } from "./resume-source";
 export * from "../mcp";

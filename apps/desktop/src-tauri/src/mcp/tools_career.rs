@@ -17,9 +17,7 @@
 //! - `career://personas`: list of personas.
 //! - `career://kb/sources`: list of knowledge sources.
 
-use crate::career_db::{
-    self, BlockFact, BulletMetric, ExperienceBlock, Persona,
-};
+use crate::career_db::{self, BlockFact, BulletMetric, ExperienceBlock, Persona};
 use crate::mcp::protocol::{
     InputRequest, InputRequiredResult, JsonRpcError, ResourceDefinition, ResponseMeta,
     ToolDefinition,
@@ -439,7 +437,9 @@ pub fn list_career_resources() -> Vec<ResourceDefinition> {
         ResourceDefinition {
             uri: "career://profile".to_string(),
             name: "Candidate Master Profile".to_string(),
-            description: Some("Complete career profile with all blocks, skills, and facts".to_string()),
+            description: Some(
+                "Complete career profile with all blocks, skills, and facts".to_string(),
+            ),
             mime_type: Some("application/json".to_string()),
             _meta: Some(ResponseMeta {
                 ttl_ms: Some(60_000),
@@ -480,11 +480,7 @@ pub async fn execute_career_tool(
 ) -> Result<Value, JsonRpcError> {
     match name {
         "career_search_kb" => {
-            let query = bounded_chars(
-                require_str(arguments, "query")?,
-                "query",
-                MAX_QUERY_CHARS,
-            )?;
+            let query = bounded_chars(require_str(arguments, "query")?, "query", MAX_QUERY_CHARS)?;
             let limit = bounded_limit(arguments)?;
 
             let owner_kinds = arguments
@@ -523,14 +519,9 @@ pub async fn execute_career_tool(
             // real ANN/brute-force index (`career_db::vectors::vector_search`);
             // the previous implementation built a SearchFilter, discarded it,
             // and substring-matched instead.
-            let embed = crate::native_agent::ai_embed(
-                vec![query.to_string()],
-                None,
-                None,
-                None,
-                None,
-            )
-            .await;
+            let embed =
+                crate::native_agent::ai_embed(vec![query.to_string()], None, None, None, None)
+                    .await;
 
             let mut semantic_hits: Vec<Value> = Vec::new();
             let mut semantic_error: Option<String> = None;
@@ -640,7 +631,9 @@ pub async fn execute_career_tool(
                     };
 
                     let wants = |kind: &str| -> bool {
-                        kinds_filter.as_ref().is_none_or(|k| k.iter().any(|x| x == kind))
+                        kinds_filter
+                            .as_ref()
+                            .is_none_or(|k| k.iter().any(|x| x == kind))
                     };
 
                     for block in blocks {
@@ -703,9 +696,10 @@ pub async fn execute_career_tool(
                         if wants("fact") {
                             for fact in &block.facts {
                                 let hit = hits_text(&fact.text)
-                                    || fact.skills.iter().any(|s| {
-                                        crate::career_match::text::skills_match(s, q)
-                                    });
+                                    || fact
+                                        .skills
+                                        .iter()
+                                        .any(|s| crate::career_match::text::skills_match(s, q));
                                 if hit {
                                     scored.push(json!({
                                         "ownerId": fact.id,
@@ -753,8 +747,14 @@ pub async fn execute_career_tool(
                 std::collections::HashSet::new();
             for h in semantic_hits.into_iter().chain(lexical.into_iter()) {
                 let key = (
-                    h.get("ownerKind").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                    h.get("ownerId").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    h.get("ownerKind")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    h.get("ownerId")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
                 );
                 if seen.insert(key) {
                     merged.push(h);
@@ -775,9 +775,9 @@ pub async fn execute_career_tool(
                 };
                 let sa = a.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
                 let sb = b.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                tier(a).cmp(&tier(b)).then_with(|| {
-                    sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
-                })
+                tier(a)
+                    .cmp(&tier(b))
+                    .then_with(|| sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal))
             });
             merged.truncate(limit);
             let count = merged.len();
@@ -848,8 +848,10 @@ pub async fn execute_career_tool(
                 .map_err(|e| JsonRpcError::invalid_params(format!("Unserializable block: {e}")))?;
             bounded_bytes(&encoded, "block", MAX_BLOCK_JSON_BYTES)?;
 
-            let block: ExperienceBlock = serde_json::from_value(block_val.clone())
-                .map_err(|e| JsonRpcError::invalid_params(format!("Invalid ExperienceBlock schema: {e}")))?;
+            let block: ExperienceBlock =
+                serde_json::from_value(block_val.clone()).map_err(|e| {
+                    JsonRpcError::invalid_params(format!("Invalid ExperienceBlock schema: {e}"))
+                })?;
 
             // `upsert_block_blocking` is `ON CONFLICT(id) DO UPDATE SET json =
             // excluded.json` — a whole-document replace. The caller supplies the
@@ -882,14 +884,13 @@ pub async fn execute_career_tool(
                     let request_state = optional_str(arguments, "request_state")?;
                     match request_state {
                         Some(state_str) => {
-                            let state_val = InputRequiredResult::decode_state(state_str).map_err(
-                                |e| {
+                            let state_val =
+                                InputRequiredResult::decode_state(state_str).map_err(|e| {
                                     JsonRpcError::new(
                                         crate::mcp::protocol::ERR_ELICITATION_FAILED,
                                         e,
                                     )
-                                },
-                            )?;
+                                })?;
                             let nonce = InputRequiredResult::nonce_from_state(&state_val)
                                 .ok_or_else(|| {
                                     JsonRpcError::new(
@@ -984,7 +985,9 @@ pub async fn execute_career_tool(
             let block_id = arguments
                 .get("block_id")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| JsonRpcError::invalid_params("Missing required 'block_id' argument"))?;
+                .ok_or_else(|| {
+                    JsonRpcError::invalid_params("Missing required 'block_id' argument")
+                })?;
 
             // Check if MRTR response or state was provided
             let input_responses = arguments.get("input_responses");
@@ -992,8 +995,9 @@ pub async fn execute_career_tool(
 
             if let Some(state_str) = request_state {
                 // Decode stateless requestState
-                let state_val = InputRequiredResult::decode_state(state_str)
-                    .map_err(|e| JsonRpcError::new(crate::mcp::protocol::ERR_ELICITATION_FAILED, e))?;
+                let state_val = InputRequiredResult::decode_state(state_str).map_err(|e| {
+                    JsonRpcError::new(crate::mcp::protocol::ERR_ELICITATION_FAILED, e)
+                })?;
 
                 // Prove this state came from *this* server's confirmation prompt
                 // for *this* block, and has not already been spent.
@@ -1069,8 +1073,9 @@ pub async fn execute_career_tool(
             .map_err(|e| JsonRpcError::internal_error(format!("check block error: {e}")))?
             .map_err(|e| JsonRpcError::internal_error(e))?;
 
-            let block = block_opt
-                .ok_or_else(|| JsonRpcError::invalid_params(format!("Block '{block_id}' not found")))?;
+            let block = block_opt.ok_or_else(|| {
+                JsonRpcError::invalid_params(format!("Block '{block_id}' not found"))
+            })?;
 
             // If block has multiple bullets or facts, require MRTR confirmation
             if !block.bullets.is_empty() || !block.facts.is_empty() {
@@ -1146,7 +1151,11 @@ pub async fn execute_career_tool(
                 // Extract metric candidates
                 let mut metrics = Vec::new();
                 for word in trimmed.split_whitespace() {
-                    if (word.contains('%') || word.starts_with('$') || word.chars().any(|c| c.is_ascii_digit())) && word.len() >= 2 {
+                    if (word.contains('%')
+                        || word.starts_with('$')
+                        || word.chars().any(|c| c.is_ascii_digit()))
+                        && word.len() >= 2
+                    {
                         metrics.push(BulletMetric {
                             value: word.trim_matches([',', '.', ';', '(', ')']).to_string(),
                             kind: "metric".to_string(),
@@ -1161,7 +1170,14 @@ pub async fn execute_career_tool(
                 let skills = crate::career_match::jd::skills_in_text(trimmed);
 
                 facts.push(BlockFact {
-                    id: format!("fact-{}", Uuid::new_v4().to_string().chars().take(8).collect::<String>()),
+                    id: format!(
+                        "fact-{}",
+                        Uuid::new_v4()
+                            .to_string()
+                            .chars()
+                            .take(8)
+                            .collect::<String>()
+                    ),
                     text: trimmed.to_string(),
                     skills,
                     metrics,
@@ -1254,8 +1270,9 @@ pub async fn execute_career_tool(
                 .ok_or_else(|| JsonRpcError::invalid_params("Missing required 'persona' object"))?;
             // `Persona` carries an unbounded `skill_weights` map and an
             // unbounded `tone_directive`; neither was capped.
-            let persona_encoded = serde_json::to_string(p_val)
-                .map_err(|e| JsonRpcError::invalid_params(format!("Unserializable persona: {e}")))?;
+            let persona_encoded = serde_json::to_string(p_val).map_err(|e| {
+                JsonRpcError::invalid_params(format!("Unserializable persona: {e}"))
+            })?;
             bounded_bytes(&persona_encoded, "persona", MAX_BLOCK_JSON_BYTES)?;
 
             let persona: Persona = serde_json::from_value(p_val.clone())
@@ -1291,8 +1308,7 @@ pub async fn execute_career_tool(
         }
 
         "career_ingest_knowledge" => {
-            let title =
-                bounded_chars(require_str(arguments, "title")?, "title", MAX_LABEL_CHARS)?;
+            let title = bounded_chars(require_str(arguments, "title")?, "title", MAX_LABEL_CHARS)?;
             let text = bounded_bytes(require_str(arguments, "text")?, "text", MAX_TEXT_BYTES)?;
             let source_type = optional_str(arguments, "source_type")?
                 .map(|s| bounded_chars(s, "source_type", MAX_LABEL_CHARS))
@@ -1337,7 +1353,10 @@ pub async fn execute_career_tool(
                     let hash = format!("{digest:x}");
 
                     // Chunk paragraphs
-                    let paragraphs: Vec<&str> = text_owned.split("\n\n").filter(|s| !s.trim().is_empty()).collect();
+                    let paragraphs: Vec<&str> = text_owned
+                        .split("\n\n")
+                        .filter(|s| !s.trim().is_empty())
+                        .collect();
                     let mut prepared_chunks = Vec::new();
                     for (i, p) in paragraphs.iter().enumerate() {
                         let cdigest = sha1::Sha1::digest(p.as_bytes());

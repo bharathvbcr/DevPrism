@@ -19,9 +19,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use typst::diag::{FileError, FileResult, Severity, SourceDiagnostic};
 use typst::foundations::{Bytes, Datetime, Duration, Smart};
-use typst::syntax::{
-    DiagSpan, DiagSpanKind, FileId, RootedPath, Source, VirtualPath, VirtualRoot,
-};
+use typst::syntax::{DiagSpan, DiagSpanKind, FileId, RootedPath, Source, VirtualPath, VirtualRoot};
 use typst::text::{Font, FontBook};
 use typst::utils::LazyHash;
 use typst::{Library, LibraryExt, World, WorldExt};
@@ -102,7 +100,6 @@ impl ResumeWorld {
             main: Source::new(main_file_id(), text),
         }
     }
-
 }
 
 impl World for ResumeWorld {
@@ -218,10 +215,7 @@ impl TypstCompileResult {
 ///
 /// Works for any `World`, so single-file synthesis and multi-file workspace
 /// projects share one diagnostic path.
-fn locate(
-    world: &dyn World,
-    span: DiagSpan,
-) -> (Option<String>, Option<u32>, Option<u32>) {
+fn locate(world: &dyn World, span: DiagSpan) -> (Option<String>, Option<u32>, Option<u32>) {
     let file_id = match span.get() {
         DiagSpanKind::Detached => return (None, None, None),
         DiagSpanKind::Number { id, .. } | DiagSpanKind::Range { id, .. } => id,
@@ -235,9 +229,7 @@ fn locate(
     };
     // Typst reports 0-based; editors and our UI are 1-based.
     match source.lines().byte_to_line_column(range.start) {
-        Some((line, col)) => {
-            (Some(name), Some(line as u32 + 1), Some(col as u32 + 1))
-        }
+        Some((line, col)) => (Some(name), Some(line as u32 + 1), Some(col as u32 + 1)),
         None => (Some(name), None, None),
     }
 }
@@ -322,9 +314,7 @@ where
                             file: None,
                             line: None,
                             column: None,
-                            hints: vec![
-                                "Trim bullet text or reduce selected blocks.".to_string()
-                            ],
+                            hints: vec!["Trim bullet text or reduce selected blocks.".to_string()],
                         }],
                         warnings,
                         duration_ms: 0,
@@ -390,8 +380,11 @@ where
 
 /// Font families the engine can actually resolve on this machine.
 pub fn available_font_families() -> Vec<String> {
-    let mut names: Vec<String> =
-        FONTS.book().families().map(|(name, _)| name.to_string()).collect();
+    let mut names: Vec<String> = FONTS
+        .book()
+        .families()
+        .map(|(name, _)| name.to_string())
+        .collect();
     names.sort();
     names.dedup();
     names
@@ -554,7 +547,11 @@ mod tests {
     fn runaway_page_count_is_rejected() {
         let huge = "word ".repeat(200_000);
         let r = compile_resume_pdf(&doc_with_bullet(&huge));
-        assert!(!r.success, "expected page cap to trip, got {} pages", r.page_count);
+        assert!(
+            !r.success,
+            "expected page cap to trip, got {} pages",
+            r.page_count
+        );
         assert!(r.page_count > MAX_PAGES);
         assert!(r.pdf_bytes.is_none());
     }
@@ -608,11 +605,9 @@ mod tests {
     /// `src/__tests__/lib/typst-fixtures.emit.test.ts`.
     #[test]
     fn rendered_fixtures_compile() {
-        let dir = std::env::var("TYPST_FIXTURE_DIR").unwrap_or_else(|_| {
-            format!("{}/tests/fixtures/typst", env!("CARGO_MANIFEST_DIR"))
-        });
-        let entries = std::fs::read_dir(&dir)
-            .unwrap_or_else(|e| panic!("fixture dir {dir}: {e}"));
+        let dir = std::env::var("TYPST_FIXTURE_DIR")
+            .unwrap_or_else(|_| format!("{}/tests/fixtures/typst", env!("CARGO_MANIFEST_DIR")));
+        let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("fixture dir {dir}: {e}"));
 
         let mut checked = 0usize;
         let mut failures = Vec::new();
@@ -623,7 +618,11 @@ mod tests {
             }
             let src = std::fs::read_to_string(&path).expect("read fixture");
             let result = compile_resume_pdf(&src);
-            let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
             if !result.success {
                 failures.push(format!("{name}: {:?}", result.errors));
             } else {
@@ -647,7 +646,10 @@ mod tests {
             "expected the emitted fixture set, found {checked} files in {dir} \
              — run the TS emitter first"
         );
-        assert!(failures.is_empty(), "fixtures failed to compile: {failures:#?}");
+        assert!(
+            failures.is_empty(),
+            "fixtures failed to compile: {failures:#?}"
+        );
     }
 
     /// comemo's cache is a global static *per crate version*. If a second

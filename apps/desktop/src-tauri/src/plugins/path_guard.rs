@@ -42,10 +42,12 @@ pub fn confine(root: &Path, rel: &str) -> Result<PathBuf, String> {
         candidate.to_path_buf()
     };
 
-    if rel_path
-        .components()
-        .any(|c| matches!(c, Component::ParentDir | Component::Prefix(_) | Component::RootDir))
-    {
+    if rel_path.components().any(|c| {
+        matches!(
+            c,
+            Component::ParentDir | Component::Prefix(_) | Component::RootDir
+        )
+    }) {
         return Err("Path must stay inside the project (no '..').".to_string());
     }
     if rel_path.as_os_str().is_empty() {
@@ -185,8 +187,7 @@ pub fn backup_file(root: &Path, file: &Path) -> Result<PathBuf, String> {
         .join(ts.to_string())
         .join(rel);
     if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create backup dir: {e}"))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create backup dir: {e}"))?;
     }
     std::fs::copy(file, &dest).map_err(|e| format!("Failed to back up {}: {e}", file.display()))?;
     Ok(dest)
@@ -197,10 +198,7 @@ mod tests {
     use super::*;
 
     fn tmpdir(name: &str) -> PathBuf {
-        let base = std::env::temp_dir().join(format!(
-            "path-guard-{name}-{}",
-            std::process::id()
-        ));
+        let base = std::env::temp_dir().join(format!("path-guard-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
         base

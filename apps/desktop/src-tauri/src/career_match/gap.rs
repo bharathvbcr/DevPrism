@@ -215,9 +215,15 @@ pub fn analyze_must_have_gaps(
         })
         .collect();
 
-    let covered_count = items.iter().filter(|i| i.status == GapStatus::Covered).count();
+    let covered_count = items
+        .iter()
+        .filter(|i| i.status == GapStatus::Covered)
+        .count();
     let weak_count = items.iter().filter(|i| i.status == GapStatus::Weak).count();
-    let missing_count = items.iter().filter(|i| i.status == GapStatus::Missing).count();
+    let missing_count = items
+        .iter()
+        .filter(|i| i.status == GapStatus::Missing)
+        .count();
 
     let summary = if must_have_skills.is_empty() {
         "No must-have skills extracted from the JD.".to_string()
@@ -263,7 +269,10 @@ pub fn compute_ats_coverage_pct(
     skill_names: &[String],
     ats_keywords: &[String],
 ) -> u32 {
-    let keywords: Vec<&String> = ats_keywords.iter().filter(|k| !k.trim().is_empty()).collect();
+    let keywords: Vec<&String> = ats_keywords
+        .iter()
+        .filter(|k| !k.trim().is_empty())
+        .collect();
     if keywords.is_empty() {
         return 0;
     }
@@ -282,7 +291,10 @@ pub fn compute_ats_coverage_pct(
     if corpus.trim().is_empty() {
         return 0;
     }
-    let hits = keywords.iter().filter(|kw| text_covers_skill(&corpus, kw)).count();
+    let hits = keywords
+        .iter()
+        .filter(|kw| text_covers_skill(&corpus, kw))
+        .count();
     ((100.0 * hits as f64) / keywords.len() as f64).round() as u32
 }
 
@@ -297,7 +309,10 @@ mod tests {
             kind: "experience".into(),
             title: "Engineer".into(),
             org: "Org".into(),
-            date_range: DateRange { start: "2023-01".into(), end: None },
+            date_range: DateRange {
+                start: "2023-01".into(),
+                end: None,
+            },
             personas: vec![],
             domains: vec![],
             skills: vec![],
@@ -367,7 +382,11 @@ mod tests {
     #[test]
     fn substring_collisions_do_not_create_coverage() {
         let mut b = blk("a");
-        b.skills = vec![SkillTag { name: "MongoDB".into(), level: 3, years: None }];
+        b.skills = vec![SkillTag {
+            name: "MongoDB".into(),
+            level: 3,
+            years: None,
+        }];
         b.bullets = vec![bul("b1", "ran mongodb clusters")];
         assert!(collect_block_skill_hits(&b, "go").is_empty());
     }
@@ -375,7 +394,11 @@ mod tests {
     #[test]
     fn status_ladder_covered_weak_missing() {
         let mut selected = blk("sel");
-        selected.skills = vec![SkillTag { name: "Rust".into(), level: 4, years: None }];
+        selected.skills = vec![SkillTag {
+            name: "Rust".into(),
+            level: 4,
+            years: None,
+        }];
         let mut pool = blk("pool");
         pool.bullets = vec![bul("p1", "some Python scripting")];
 
@@ -406,7 +429,12 @@ mod tests {
     fn ats_coverage_is_computed_not_hardcoded() {
         let bullets = vec!["Built Rust services on Kubernetes".to_string()];
         let skills = vec!["Python".to_string()];
-        let kws = vec!["rust".to_string(), "kubernetes".to_string(), "python".to_string(), "cobol".to_string()];
+        let kws = vec![
+            "rust".to_string(),
+            "kubernetes".to_string(),
+            "python".to_string(),
+            "cobol".to_string(),
+        ];
         assert_eq!(compute_ats_coverage_pct(&bullets, &skills, &kws), 75);
     }
 
@@ -415,9 +443,15 @@ mod tests {
         assert_eq!(compute_ats_coverage_pct(&[], &[], &[]), 0);
         assert_eq!(compute_ats_coverage_pct(&["text".into()], &[], &[]), 0);
         assert_eq!(compute_ats_coverage_pct(&[], &[], &["rust".into()]), 0);
-        assert_eq!(compute_ats_coverage_pct(&["   ".into()], &["  ".into()], &["rust".into()]), 0);
+        assert_eq!(
+            compute_ats_coverage_pct(&["   ".into()], &["  ".into()], &["rust".into()]),
+            0
+        );
         // Whitespace-only keywords are ignored entirely.
-        assert_eq!(compute_ats_coverage_pct(&["rust".into()], &[], &["  ".into()]), 0);
+        assert_eq!(
+            compute_ats_coverage_pct(&["rust".into()], &[], &["  ".into()]),
+            0
+        );
     }
 
     #[test]
@@ -439,7 +473,11 @@ mod tests {
     #[test]
     fn blank_skill_never_matches_anything() {
         let mut b = blk("a");
-        b.skills = vec![SkillTag { name: "Rust".into(), level: 3, years: None }];
+        b.skills = vec![SkillTag {
+            name: "Rust".into(),
+            level: 3,
+            years: None,
+        }];
         assert!(collect_block_skill_hits(&b, "").is_empty());
         assert!(collect_block_skill_hits(&b, "   ").is_empty());
     }
@@ -449,7 +487,11 @@ mod tests {
         let mut b = blk("a");
         // Six identical-text hits plus one distinct: the distinct one must show.
         b.skills = (0..6)
-            .map(|_| SkillTag { name: "Rust".into(), level: 3, years: None })
+            .map(|_| SkillTag {
+                name: "Rust".into(),
+                level: 3,
+                years: None,
+            })
             .collect();
         b.domains = vec!["rust systems".into()];
         let g = analyze_must_have_gaps(&["rust".into()], &[b.clone()], &[b]);

@@ -21,11 +21,13 @@ import {
 } from "@/lib/resume-templates";
 import { compileResumeDocument } from "./compile-verify";
 import {
+  analyzeJdMetadata,
   detectAtsSystems,
   generateKeywordHeatmap,
   renderedContentPlainText,
   simulateAtsParsing,
   summarizeAtsParse,
+  summarizeJdMetadata,
   summarizeKeywordHeatmap,
 } from "./ats-simulate";
 import { analyzeJobDescription, facetsOf } from "./jd-analysis";
@@ -591,6 +593,7 @@ async function retrieveEvidence(
 function buildSkillsGroups(
   drafts: RewrittenBlockDraft[],
   profile: Awaited<ReturnType<typeof analyzeJobDescription>>["profile"],
+  seedSkillGroups?: SkillGroup[],
 ): SkillGroup[] {
   const jdAsked = [
     ...profile.mustHaveSkills,
@@ -621,8 +624,16 @@ function buildSkillsGroups(
 
   // Cap — do not dump the full ATS keyword list.
   const items = names.slice(0, 14).join(", ");
-  if (!items) return [];
-  return [{ label: "Skills", items }];
+  const groups: SkillGroup[] = items ? [{ label: "Skills", items }] : [];
+  const languages = seedSkillGroups?.find((g) => /language/i.test(g.label));
+  const languageItems = languages?.items.trim();
+  if (languageItems) {
+    groups.push({
+      label: "Languages",
+      items: languageItems.slice(0, 400),
+    });
+  }
+  return groups;
 }
 
 const SUMMARY_SYSTEM = `You write a 2-line professional resume summary.
@@ -648,8 +659,14 @@ async function draftSummary(
   profile: Awaited<ReturnType<typeof analyzeJobDescription>>["profile"],
   llm: SynthesisDeps["llmJson"],
   signal?: AbortSignal,
+  seedSummary?: string,
 ): Promise<string | undefined> {
   if (drafts.length === 0) return undefined;
+  const usableSeed = (() => {
+    const seed = seedSummary?.trim().replace(/\s+/g, " ");
+    if (!seed || /^targeting\b/i.test(seed)) return undefined;
+    return seed.slice(0, 280);
+  })();
   const payload = drafts.map((d) => ({
     title: d.block.title,
     org: d.block.org,
@@ -661,18 +678,23 @@ async function draftSummary(
       system: SUMMARY_SYSTEM,
       prompt: [
         `Target role: ${profile.roleTitle} (${profile.seniority})`,
+        usableSeed
+          ? `Imported summary (rewrite for this role, keep facts):\n${usableSeed}`
+          : "",
         `Selected experience JSON:\n${JSON.stringify(payload)}`,
-      ].join("\n\n"),
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
       temperature: 0.3,
       validate: validateSummaryOut,
       label: "summary",
       signal,
     });
     const summary = out.summary.trim().replace(/\s+/g, " ");
-    if (!summary || /^targeting\b/i.test(summary)) return undefined;
+    if (!summary || /^targeting\b/i.test(summary)) return usableSeed;
     return summary.slice(0, 280);
   } catch {
-    return undefined;
+    return usableSeed;
   }
 }
 
@@ -682,6 +704,7 @@ export function draftsToContent(
   profile: Awaited<ReturnType<typeof analyzeJobDescription>>["profile"],
   _sectionOrder: SectionKind[],
   summary?: string,
+  seedSkillGroups?: SkillGroup[],
 ): ResumeContent {
   const bySection: Partial<Record<SectionKind, RenderedBlock[]>> = {};
 
@@ -712,7 +735,7 @@ export function draftsToContent(
     header,
     summary: summary || undefined,
     canonicalSummary: summary || undefined,
-    skills: buildSkillsGroups(drafts, profile),
+    skills: buildSkillsGroups(drafts, profile, seedSkillGroups),
     experience: bySection.experience ?? [],
     projects: bySection.projects,
     education: bySection.education,
@@ -811,6 +834,7 @@ function buildMatchReport(
     gapAnalysis?: GapAnalysis;
     atsParse?: MatchReport["atsParse"];
     keywordHeatmap?: MatchReport["keywordHeatmap"];
+    jdMetadata?: MatchReport["jdMetadata"];
   },
 ): MatchReport {
   const notices = [...extraNotices];
@@ -840,6 +864,7 @@ function buildMatchReport(
     gapAnalysis: extras?.gapAnalysis,
     atsParse: extras?.atsParse,
     keywordHeatmap: extras?.keywordHeatmap,
+    jdMetadata: extras?.jdMetadata,
   };
 }
 
@@ -897,6 +922,8 @@ export async function synthesizeResume(
     onProgress,
     onEvent,
     header,
+    seedSummary,
+    seedSkillGroups,
     signal,
     deps: depOverrides,
   } = options;
@@ -1619,6 +1646,7 @@ export async function synthesizeResume(
     profile,
     (opts) => llm({ ...opts, signal }),
     signal,
+    seedSummary,
   );
   throwIfAborted(signal);
   if (!summary) {
@@ -1632,6 +1660,7 @@ export async function synthesizeResume(
     profile,
     persona.sectionOrder as SectionKind[],
     summary,
+    seedSkillGroups,
   );
 
   let adjustedDrafts = finalDrafts;
@@ -1711,6 +1740,7 @@ export async function synthesizeResume(
         profile,
         persona.sectionOrder as SectionKind[],
         summary,
+        seedSkillGroups,
       );
 
       const recompile = await deps.compile(template, condensedContent, {
@@ -1748,6 +1778,7 @@ export async function synthesizeResume(
   const atsSystem = detectAtsSystems(jdText)[0] ?? "generic";
   const atsParseReport = simulateAtsParsing(plainText, atsSystem);
   const keywordHeatmap = generateKeywordHeatmap(plainText, jdText);
+  const jdMetadata = summarizeJdMetadata(analyzeJdMetadata(jdText));
   if (atsParseReport.warnings.length > 0) {
     pushEvent({
       type: "stage-finish",
@@ -1798,6 +1829,7 @@ export async function synthesizeResume(
       ...honesty,
       atsParse: summarizeAtsParse(atsParseReport),
       keywordHeatmap: summarizeKeywordHeatmap(keywordHeatmap),
+      jdMetadata,
     },
   );
 

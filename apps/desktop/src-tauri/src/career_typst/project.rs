@@ -46,8 +46,8 @@ impl ProjectWorld {
         let root = root
             .canonicalize()
             .map_err(|e| format!("Project root {}: {e}", root.display()))?;
-        let vpath = VirtualPath::new(main_rel)
-            .map_err(|e| format!("Invalid main file {main_rel}: {e}"))?;
+        let vpath =
+            VirtualPath::new(main_rel).map_err(|e| format!("Invalid main file {main_rel}: {e}"))?;
         let main = FileId::new(RootedPath::new(VirtualRoot::Project, vpath));
         Ok(Self {
             library: LazyHash::new(Library::default()),
@@ -88,8 +88,7 @@ impl ProjectWorld {
 
     fn read_bytes(&self, id: FileId) -> FileResult<Vec<u8>> {
         let path = self.realize(id)?;
-        let meta = std::fs::metadata(&path)
-            .map_err(|e| FileError::from_io(e, &path))?;
+        let meta = std::fs::metadata(&path).map_err(|e| FileError::from_io(e, &path))?;
         if meta.is_dir() {
             return Err(FileError::IsDirectory);
         }
@@ -111,10 +110,8 @@ impl ProjectWorld {
             *budget += len;
             if *budget > MAX_PROJECT_READ_BYTES {
                 return Err(FileError::Other(Some(
-                    format!(
-                        "project read budget of {MAX_PROJECT_READ_BYTES} bytes exceeded"
-                    )
-                    .into(),
+                    format!("project read budget of {MAX_PROJECT_READ_BYTES} bytes exceeded")
+                        .into(),
                 )));
             }
         }
@@ -205,7 +202,9 @@ mod tests {
 
     impl Fixture {
         fn new() -> Self {
-            Self { dir: tempfile::TempDir::new().expect("tempdir") }
+            Self {
+                dir: tempfile::TempDir::new().expect("tempdir"),
+            }
         }
         fn write(&self, rel: &str, body: &str) -> PathBuf {
             let path = self.dir.path().join(rel);
@@ -291,7 +290,12 @@ mod tests {
     #[test]
     fn symlink_out_of_root_is_rejected() {
         let f = Fixture::new();
-        let outside = f.dir.path().parent().unwrap().join("prism-symlink-target.txt");
+        let outside = f
+            .dir
+            .path()
+            .parent()
+            .unwrap()
+            .join("prism-symlink-target.txt");
         std::fs::write(&outside, "secret").expect("write outside");
         let link = f.path().join("escape.txt");
         std::os::unix::fs::symlink(&outside, &link).expect("symlink");
@@ -345,14 +349,13 @@ mod tests {
     fn diagnostics_name_the_offending_import() {
         let f = Fixture::new();
         f.write("broken.typ", "#let x = (\n");
-        f.write(
-            "main.typ",
-            &format!("{PAGE}#import \"broken.typ\": x\n"),
-        );
+        f.write("main.typ", &format!("{PAGE}#import \"broken.typ\": x\n"));
         let r = compile_project_pdf(f.path(), "main.typ");
         assert!(!r.success);
         assert!(
-            r.errors.iter().any(|e| e.file.as_deref() == Some("broken.typ")),
+            r.errors
+                .iter()
+                .any(|e| e.file.as_deref() == Some("broken.typ")),
             "expected a diagnostic attributed to broken.typ, got {:?}",
             r.errors
         );

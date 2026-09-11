@@ -1,6 +1,6 @@
 //! SQLite schema + default persona seed for the career database.
 
-use rusqlite::{OptionalExtension, Connection};
+use rusqlite::{Connection, OptionalExtension};
 use serde_json::json;
 
 pub const SCHEMA_SQL: &str = r#"
@@ -272,11 +272,9 @@ mod tests {
         init_schema(&conn).unwrap();
         seed_default_personas(&conn).unwrap();
         let json: String = conn
-            .query_row(
-                "SELECT json FROM personas WHERE id = 'ai'",
-                [],
-                |r| r.get(0),
-            )
+            .query_row("SELECT json FROM personas WHERE id = 'ai'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         let persona: super::super::Persona =
             serde_json::from_str(&json).expect("seed json must deserialize as Persona");
@@ -301,7 +299,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(stale, 0, "a seeded persona still points at a LaTeX template");
+        assert_eq!(
+            stale, 0,
+            "a seeded persona still points at a LaTeX template"
+        );
     }
 
     #[test]

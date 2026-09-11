@@ -90,57 +90,191 @@ pub const JD_NONTRIVIAL_MIN_CHARS: usize = 200;
 /// 20-item list, so the tool reported them as covered-by-omission.
 const VOCABULARY: &[&str] = &[
     // Languages and runtimes
-    "python", "r", "sql", "rust", "go", "golang", "java", "javascript",
-    "typescript", "c++", "c#", "scala", "swift", "kotlin", "ruby", "php",
-    "matlab", "bash", "shell", "perl", "julia",
+    "python",
+    "r",
+    "sql",
+    "rust",
+    "go",
+    "golang",
+    "java",
+    "javascript",
+    "typescript",
+    "c++",
+    "c#",
+    "scala",
+    "swift",
+    "kotlin",
+    "ruby",
+    "php",
+    "matlab",
+    "bash",
+    "shell",
+    "perl",
+    "julia",
     // ML / AI
-    "machine learning", "deep learning", "nlp", "nlu", "generative ai",
-    "llm", "large language models", "transformers", "pytorch", "tensorflow",
-    "jax", "scikit-learn", "keras", "hugging face", "fine-tuning", "rlhf",
-    "prompt engineering", "embeddings", "rag", "computer vision",
-    "speech recognition", "asr", "tts", "multimodal", "reinforcement learning",
-    "model evaluation", "benchmarking", "agentic", "ai safety",
+    "machine learning",
+    "deep learning",
+    "nlp",
+    "nlu",
+    "generative ai",
+    "llm",
+    "large language models",
+    "transformers",
+    "pytorch",
+    "tensorflow",
+    "jax",
+    "scikit-learn",
+    "keras",
+    "hugging face",
+    "fine-tuning",
+    "rlhf",
+    "prompt engineering",
+    "embeddings",
+    "rag",
+    "computer vision",
+    "speech recognition",
+    "asr",
+    "tts",
+    "multimodal",
+    "reinforcement learning",
+    "model evaluation",
+    "benchmarking",
+    "agentic",
+    "ai safety",
     "responsible ai",
     // Human data / annotation / evaluation
-    "annotation", "data annotation", "labeling", "labelling", "human evaluation",
-    "human-in-the-loop", "inter-rater reliability", "inter-annotator agreement",
-    "quality assurance", "quality framework", "statistical process control",
-    "gold set", "calibration", "adjudication", "taxonomy", "guidelines",
-    "crowdsourcing", "vendor management", "data collection", "data curation",
-    "linguistics", "cognitive science", "psycholinguistics", "human factors",
-    "user research", "usability", "experimental design", "a/b testing",
-    "survey design", "qualitative research", "quantitative research",
+    "annotation",
+    "data annotation",
+    "labeling",
+    "labelling",
+    "human evaluation",
+    "human-in-the-loop",
+    "inter-rater reliability",
+    "inter-annotator agreement",
+    "quality assurance",
+    "quality framework",
+    "statistical process control",
+    "gold set",
+    "calibration",
+    "adjudication",
+    "taxonomy",
+    "guidelines",
+    "crowdsourcing",
+    "vendor management",
+    "data collection",
+    "data curation",
+    "linguistics",
+    "cognitive science",
+    "psycholinguistics",
+    "human factors",
+    "user research",
+    "usability",
+    "experimental design",
+    "a/b testing",
+    "survey design",
+    "qualitative research",
+    "quantitative research",
     // Data / infra
-    "etl", "data pipeline", "airflow", "spark", "hadoop", "kafka", "dbt",
-    "snowflake", "bigquery", "redshift", "postgresql", "mysql", "sqlite",
-    "mongodb", "redis", "elasticsearch", "pandas", "numpy", "statistics",
-    "data analysis", "data visualization", "tableau", "looker", "dashboards",
+    "etl",
+    "data pipeline",
+    "airflow",
+    "spark",
+    "hadoop",
+    "kafka",
+    "dbt",
+    "snowflake",
+    "bigquery",
+    "redshift",
+    "postgresql",
+    "mysql",
+    "sqlite",
+    "mongodb",
+    "redis",
+    "elasticsearch",
+    "pandas",
+    "numpy",
+    "statistics",
+    "data analysis",
+    "data visualization",
+    "tableau",
+    "looker",
+    "dashboards",
     // Cloud / platform
-    "aws", "gcp", "azure", "kubernetes", "docker", "terraform", "ci/cd",
-    "microservices", "rest", "graphql", "grpc", "distributed systems",
+    "aws",
+    "gcp",
+    "azure",
+    "kubernetes",
+    "docker",
+    "terraform",
+    "ci/cd",
+    "microservices",
+    "rest",
+    "graphql",
+    "grpc",
+    "distributed systems",
     // Compliance
-    "privacy", "gdpr", "compliance", "governance", "data governance",
-    "hipaa", "glp", "gcp for clinical trials", "irb",
+    "privacy",
+    "gdpr",
+    "compliance",
+    "governance",
+    "data governance",
+    "hipaa",
+    "glp",
+    "gcp for clinical trials",
+    "irb",
     // Process
-    "cross-functional", "stakeholder management", "program management",
-    "project management", "roadmap", "agile", "scrum",
+    "cross-functional",
+    "stakeholder management",
+    "program management",
+    "project management",
+    "roadmap",
+    "agile",
+    "scrum",
 ];
 
 /// Words that signal culture/tone rather than capability.
 const TONE_VOCABULARY: &[&str] = &[
-    "ownership", "impact", "collaboration", "collaborative", "scale",
-    "velocity", "autonomy", "ambiguity", "fast-paced", "cross-functional",
-    "customer-obsessed", "detail-oriented", "self-starter", "mentorship",
-    "innovative", "curious", "rigorous", "pragmatic",
+    "ownership",
+    "impact",
+    "collaboration",
+    "collaborative",
+    "scale",
+    "velocity",
+    "autonomy",
+    "ambiguity",
+    "fast-paced",
+    "cross-functional",
+    "customer-obsessed",
+    "detail-oriented",
+    "self-starter",
+    "mentorship",
+    "innovative",
+    "curious",
+    "rigorous",
+    "pragmatic",
 ];
 
 /// Domain hints.
 const DOMAIN_VOCABULARY: &[&str] = &[
-    "machine learning", "artificial intelligence", "data science",
-    "infrastructure", "security", "healthcare", "biotech", "fintech",
-    "e-commerce", "media", "education", "robotics", "search",
-    "recommendations", "advertising", "developer tools", "linguistics",
-    "cognitive science", "human factors",
+    "machine learning",
+    "artificial intelligence",
+    "data science",
+    "infrastructure",
+    "security",
+    "healthcare",
+    "biotech",
+    "fintech",
+    "e-commerce",
+    "media",
+    "education",
+    "robotics",
+    "search",
+    "recommendations",
+    "advertising",
+    "developer tools",
+    "linguistics",
+    "cognitive science",
+    "human factors",
 ];
 
 /// Headings that open a "must have" section.
@@ -212,12 +346,13 @@ fn heading_for(line: &str) -> Option<Section> {
             if l == *h {
                 return true;
             }
-            let Some(rest) = l.strip_prefix(h) else { return false };
+            let Some(rest) = l.strip_prefix(h) else {
+                return false;
+            };
             let rest = rest.trim();
             // Only punctuation-led fragments count as heading decoration.
             rest.is_empty()
-                || (rest.chars().count() <= 12
-                    && rest.starts_with(|c: char| !c.is_alphanumeric()))
+                || (rest.chars().count() <= 12 && rest.starts_with(|c: char| !c.is_alphanumeric()))
         })
     };
 
@@ -482,7 +617,10 @@ pub fn extract_profile(jd_text: &str) -> JdExtraction {
 /// lead before senior, so "Senior Engineering Manager" resolves to manager.
 pub fn normalize_seniority(value: &str) -> String {
     let v = value.trim().to_lowercase();
-    if matches!(v.as_str(), "ic" | "senior" | "lead" | "manager" | "director") {
+    if matches!(
+        v.as_str(),
+        "ic" | "senior" | "lead" | "manager" | "director"
+    ) {
         return v;
     }
     if v.contains("director") || v.contains("vp") || v.contains("head of") {
@@ -621,7 +759,14 @@ Preferred Qualifications
     fn apple_jd_surfaces_the_requirements_the_old_list_missed() {
         let e = extract_profile(APPLE_JD);
         let must = &e.profile.must_have_skills;
-        for expected in ["python", "r", "sql", "annotation", "linguistics", "cognitive science"] {
+        for expected in [
+            "python",
+            "r",
+            "sql",
+            "annotation",
+            "linguistics",
+            "cognitive science",
+        ] {
             assert!(
                 must.iter().any(|s| s == expected),
                 "must-have {expected:?} missing from {must:?}"
@@ -634,14 +779,19 @@ Preferred Qualifications
     fn preferred_section_does_not_leak_into_must_have() {
         let e = extract_profile(APPLE_JD);
         assert!(
-            e.profile.nice_to_have_skills.iter().any(|s| s == "vendor management"
-                || s == "ai safety"
-                || s == "responsible ai"),
+            e.profile
+                .nice_to_have_skills
+                .iter()
+                .any(|s| s == "vendor management" || s == "ai safety" || s == "responsible ai"),
             "nice-to-have was {:?}",
             e.profile.nice_to_have_skills
         );
         // "preferred qualifications" must not be swallowed by "qualifications".
-        assert!(!e.profile.must_have_skills.iter().any(|s| s == "responsible ai"));
+        assert!(!e
+            .profile
+            .must_have_skills
+            .iter()
+            .any(|s| s == "responsible ai"));
     }
 
     #[test]
@@ -663,14 +813,30 @@ Preferred Qualifications
 
     #[test]
     fn seniority_is_detected_from_title_and_years() {
-        assert_eq!(extract_profile("Senior Software Engineer").profile.seniority, "senior");
+        assert_eq!(
+            extract_profile("Senior Software Engineer")
+                .profile
+                .seniority,
+            "senior"
+        );
         assert_eq!(extract_profile("Staff Engineer").profile.seniority, "lead");
-        assert_eq!(extract_profile("Principal Engineer").profile.seniority, "lead");
-        assert_eq!(extract_profile("Engineering Manager").profile.seniority, "manager");
-        assert_eq!(extract_profile("Director of Data").profile.seniority, "director");
+        assert_eq!(
+            extract_profile("Principal Engineer").profile.seniority,
+            "lead"
+        );
+        assert_eq!(
+            extract_profile("Engineering Manager").profile.seniority,
+            "manager"
+        );
+        assert_eq!(
+            extract_profile("Director of Data").profile.seniority,
+            "director"
+        );
         // Untitled role with an experience floor.
         assert_eq!(
-            extract_profile("Data Scientist\n* 6+ years of experience required").profile.seniority,
+            extract_profile("Data Scientist\n* 6+ years of experience required")
+                .profile
+                .seniority,
             "senior"
         );
         assert_eq!(extract_profile("Software Engineer").profile.seniority, "ic");
@@ -679,7 +845,10 @@ Preferred Qualifications
     #[test]
     fn role_title_skips_metadata_lines() {
         let e = extract_profile(APPLE_JD);
-        assert_eq!(e.profile.role_title, "AI/ML Evaluation Specialist, Human Data");
+        assert_eq!(
+            e.profile.role_title,
+            "AI/ML Evaluation Specialist, Human Data"
+        );
     }
 
     #[test]
@@ -726,7 +895,11 @@ Preferred Qualifications
             "Minimum Qualifications\n* Deep experience with Kubernetes, at scale\n{}",
             "Filler line.\n".repeat(30)
         ));
-        assert!(ok.profile.must_have_skills.iter().any(|s| s == "kubernetes"));
+        assert!(ok
+            .profile
+            .must_have_skills
+            .iter()
+            .any(|s| s == "kubernetes"));
     }
 
     #[test]
@@ -759,7 +932,12 @@ Preferred Qualifications
             assert!(v.get(key).is_some(), "missing key {key} in {v}");
         }
         // The old, non-canonical field names must be gone.
-        for stale in ["requiredSkills", "preferredSkills", "cultureKeywords", "company"] {
+        for stale in [
+            "requiredSkills",
+            "preferredSkills",
+            "cultureKeywords",
+            "company",
+        ] {
             assert!(v.get(stale).is_none(), "stale key {stale} still present");
         }
     }
@@ -782,7 +960,11 @@ Preferred Qualifications
             "content line opened a section: must={:?}",
             e.profile.must_have_skills
         );
-        assert!(e.profile.nice_to_have_skills.iter().any(|s| s == "kubernetes"));
+        assert!(e
+            .profile
+            .nice_to_have_skills
+            .iter()
+            .any(|s| s == "kubernetes"));
     }
 
     #[test]
@@ -794,8 +976,10 @@ Preferred Qualifications
             "- Minimum Qualifications",
             "Minimum Qualifications (US)",
         ] {
-            let jd = format!("Engineer\n\n{heading}\n* Strong Python and SQL\n{}",
-                             "Filler line, more.\n".repeat(20));
+            let jd = format!(
+                "Engineer\n\n{heading}\n* Strong Python and SQL\n{}",
+                "Filler line, more.\n".repeat(20)
+            );
             let e = extract_profile(&jd);
             assert!(
                 e.profile.must_have_skills.iter().any(|s| s == "python"),
@@ -821,7 +1005,10 @@ Preferred Qualifications
         );
         assert_eq!(extract_profile(&jd).profile.seniority, "ic");
         // A genuinely senior title still resolves.
-        assert_eq!(extract_profile("Senior Data Analyst").profile.seniority, "senior");
+        assert_eq!(
+            extract_profile("Senior Data Analyst").profile.seniority,
+            "senior"
+        );
     }
 
     #[test]

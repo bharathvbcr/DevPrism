@@ -279,10 +279,7 @@ fn route_line(
         Ok(v) => v,
         Err(_) => return false,
     };
-    let waiter = pending
-        .lock()
-        .ok()
-        .and_then(|mut g| g.remove(&parsed.id));
+    let waiter = pending.lock().ok().and_then(|mut g| g.remove(&parsed.id));
     match waiter {
         Some(tx) => tx.send(parsed).is_ok(),
         None => false,
@@ -437,7 +434,11 @@ impl ManviSidecar {
     /// failed. Keeping the two apart here means callers never re-parse a
     /// formatted string to recover the error code.
     async fn request(&self, op: &str, params: Option<Value>) -> Result<Value, RequestFailure> {
-        let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed).to_string();
+        let id = self
+            .inner
+            .next_id
+            .fetch_add(1, Ordering::Relaxed)
+            .to_string();
 
         // Encoded before the waiter is registered, so a request that cannot be
         // sent at all never occupies the routing table.
@@ -893,12 +894,14 @@ mod tests {
     fn an_override_that_does_not_resolve_is_an_error_not_a_fallthrough() {
         // Guards the branch that would otherwise silently use PATH when a
         // developer's explicit override has a typo in it.
-        temp_env_var(BIN_ENV, "/definitely/not/a/real/manvi", || {
-            match resolve_binary() {
+        temp_env_var(
+            BIN_ENV,
+            "/definitely/not/a/real/manvi",
+            || match resolve_binary() {
                 Err(e) => assert!(e.contains(BIN_ENV), "error should name the variable: {e}"),
                 Ok(p) => panic!("a bogus override resolved to {}", p.display()),
-            }
-        });
+            },
+        );
     }
 
     /// Drive the real sidecar binary end to end: spawn, handshake, and three
@@ -938,7 +941,10 @@ mod tests {
         match check_file(project, "src/main.tex").await {
             Verdict::Answered(d) => {
                 assert!(!d.blocked(), "an ordinary edit was blocked: {d:?}");
-                assert!(!d.demoted.is_empty(), "a posture allow left no record: {d:?}");
+                assert!(
+                    !d.demoted.is_empty(),
+                    "a posture allow left no record: {d:?}"
+                );
             }
             other => panic!("policy.check.file did not answer: {other:?}"),
         }
@@ -1031,7 +1037,10 @@ mod tests {
         };
         for step in &second.steps {
             assert!(
-                !first.steps.iter().any(|s| s.tool_call_id == step.tool_call_id),
+                !first
+                    .steps
+                    .iter()
+                    .any(|s| s.tool_call_id == step.tool_call_id),
                 "{} was compacted twice; the prefix moved",
                 step.tool_call_id
             );
@@ -1129,9 +1138,8 @@ mod tests {
                             "role":"assistant",
                             "tool_calls":[{"id":id,"name":"Grep","arguments":"{}"}],
                         }));
-                        history.push(
-                            serde_json::json!({"role":"tool","tool_call_id":id,"text":line}),
-                        );
+                        history
+                            .push(serde_json::json!({"role":"tool","tool_call_id":id,"text":line}));
                     }
                     let messages = Value::Array(history);
                     match prepare_context(&session, "system", &tools_clone, &messages, 4096, 0)
@@ -1189,7 +1197,10 @@ mod tests {
         Arc::new(std::sync::Mutex::new(HashMap::new()))
     }
 
-    async fn waiter(table: &Arc<std::sync::Mutex<HashMap<String, oneshot::Sender<WireResponse>>>>, id: &str) -> oneshot::Receiver<WireResponse> {
+    async fn waiter(
+        table: &Arc<std::sync::Mutex<HashMap<String, oneshot::Sender<WireResponse>>>>,
+        id: &str,
+    ) -> oneshot::Receiver<WireResponse> {
         let (tx, rx) = oneshot::channel();
         table.lock().unwrap().insert(id.to_string(), tx);
         rx
@@ -1228,19 +1239,27 @@ mod tests {
         for i in order {
             let noise = match next() % 4 {
                 // An event line for an arbitrary id must not complete anything.
-                0 => format!(r#"{{"id":"id-{}","event":"delta","data":{{"t":"x"}}}}"#, (next() % N as u64) as usize),
+                0 => format!(
+                    r#"{{"id":"id-{}","event":"delta","data":{{"t":"x"}}}}"#,
+                    (next() % N as u64) as usize
+                ),
                 // An id nobody waits on.
                 1 => r#"{"id":"ghost","ok":true,"result":{}}"#.to_string(),
                 // Not JSON, not even close.
                 2 => "this is not json".to_string(),
-                _ => format!(r#"{{"id":"{}","ok":true,"result":{{}}}}"#, format!("done-{i}")),
+                _ => format!(
+                    r#"{{"id":"{}","ok":true,"result":{{}}}}"#,
+                    format!("done-{i}")
+                ),
             };
             if route_line(&noise, &pending) {
                 panic!("noise line {noise} completed a call");
             }
-            let genuine =
-                format!(r#"{{"id":"id-{i}","ok":true,"result":{{"n":{i}}}}}"#);
-            assert!(route_line(&genuine, &pending), "genuine response for id-{i} did not route");
+            let genuine = format!(r#"{{"id":"id-{i}","ok":true,"result":{{"n":{i}}}}}"#);
+            assert!(
+                route_line(&genuine, &pending),
+                "genuine response for id-{i} did not route"
+            );
             delivered += 1;
         }
 

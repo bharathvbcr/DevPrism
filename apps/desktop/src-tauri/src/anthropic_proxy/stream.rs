@@ -235,7 +235,10 @@ fn openai_stream_chunk_to_anthropic(
         // OpenAI reports prompt usage only at end-of-stream, so message_start
         // couldn't carry it. Capture it here and emit it in the final
         // message_delta so cost/quota accounting isn't silently zero.
-        let input = usage_token(usage, &["prompt_tokens", "input_tokens", "prompt_token_count"]);
+        let input = usage_token(
+            usage,
+            &["prompt_tokens", "input_tokens", "prompt_token_count"],
+        );
         if input > 0 {
             state.input_tokens = input;
         }

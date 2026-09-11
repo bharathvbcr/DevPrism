@@ -65,7 +65,10 @@ pub fn weights_for(semantic_available: bool) -> ScoreWeights {
     if semantic_available {
         DEFAULT_WEIGHTS
     } else {
-        renormalize_weights(ScoreWeights { embedding: 0.0, ..DEFAULT_WEIGHTS })
+        renormalize_weights(ScoreWeights {
+            embedding: 0.0,
+            ..DEFAULT_WEIGHTS
+        })
     }
 }
 
@@ -110,7 +113,9 @@ pub fn skill_overlap(
     };
 
     let boost_for = |s: &str| -> f64 {
-        let Some(pw) = persona_weights else { return 1.0 };
+        let Some(pw) = persona_weights else {
+            return 1.0;
+        };
         pw.get(s)
             .or_else(|| pw.get(&norm_skill(s)))
             .or_else(|| pw.get(&canonical_skill_key(s)))
@@ -137,7 +142,9 @@ pub fn skill_overlap(
     }
 
     if weight == 0.0 {
-        let Some(pw) = persona_weights else { return 0.0 };
+        let Some(pw) = persona_weights else {
+            return 0.0;
+        };
         let mut p_hits = 0.0f64;
         let mut p_w = 0.0f64;
         // Sorted: HashMap iteration order varies per process, and float addition
@@ -154,7 +161,11 @@ pub fn skill_overlap(
                 p_hits += w.abs();
             }
         }
-        return if p_w > 0.0 { clamp01(p_hits / p_w) } else { 0.0 };
+        return if p_w > 0.0 {
+            clamp01(p_hits / p_w)
+        } else {
+            0.0
+        };
     }
     clamp01(hits / weight)
 }
@@ -273,13 +284,22 @@ pub fn hybrid_score(
 ) -> ScoredBlock {
     let components = ScoreComponents {
         embedding: clamp01(embedding_score),
-        skills: skill_overlap(&block.skills, ctx.must_have, ctx.nice_to_have, ctx.persona_weights),
+        skills: skill_overlap(
+            &block.skills,
+            ctx.must_have,
+            ctx.nice_to_have,
+            ctx.persona_weights,
+        ),
         persona: persona_affinity(&block.personas, ctx.persona_id),
         recency: recency_decay(&block.date_range, ctx.now_year, ctx.now_month),
         seniority: seniority_fit(&block.seniority_level, ctx.jd_seniority),
     };
     let score = combine_score(&components, &ctx.weights);
-    ScoredBlock { block: block.clone(), components, score }
+    ScoredBlock {
+        block: block.clone(),
+        components,
+        score,
+    }
 }
 
 /// Score every block, sorted by score desc then block id asc (a total order, so
@@ -292,7 +312,11 @@ pub fn score_blocks(
     let mut out: Vec<ScoredBlock> = blocks
         .iter()
         .map(|b| {
-            hybrid_score(b, ctx, embedding_by_block_id.get(&b.id).copied().unwrap_or(0.0))
+            hybrid_score(
+                b,
+                ctx,
+                embedding_by_block_id.get(&b.id).copied().unwrap_or(0.0),
+            )
         })
         .collect();
     out.sort_by(|a, b| {
@@ -310,7 +334,11 @@ mod tests {
     use crate::career_db::{Bullet, DateRange, ExperienceBlock, SkillTag};
 
     fn skill(name: &str) -> SkillTag {
-        SkillTag { name: name.to_string(), level: 3, years: None }
+        SkillTag {
+            name: name.to_string(),
+            level: 3,
+            years: None,
+        }
     }
 
     fn block(id: &str, skills: &[&str]) -> ExperienceBlock {
@@ -319,7 +347,10 @@ mod tests {
             kind: "experience".into(),
             title: "Engineer".into(),
             org: format!("Org {id}"),
-            date_range: DateRange { start: "2023-01".into(), end: None },
+            date_range: DateRange {
+                start: "2023-01".into(),
+                end: None,
+            },
             personas: vec![],
             domains: vec![],
             skills: skills.iter().map(|s| skill(s)).collect(),
@@ -380,7 +411,12 @@ mod tests {
     #[test]
     fn skill_overlap_is_bounded() {
         let s = vec![skill("Python"), skill("Rust"), skill("Go")];
-        let v = skill_overlap(&s, &["python".into(), "rust".into(), "go".into()], &[], None);
+        let v = skill_overlap(
+            &s,
+            &["python".into(), "rust".into(), "go".into()],
+            &[],
+            None,
+        );
         assert!((0.0..=1.0).contains(&v));
         assert_eq!(v, 1.0);
         assert_eq!(skill_overlap(&[], &[], &[], None), 0.0);
@@ -396,7 +432,10 @@ mod tests {
 
     #[test]
     fn recency_halves_every_four_years() {
-        let r = DateRange { start: "2020-06".into(), end: Some("2020-06".into()) };
+        let r = DateRange {
+            start: "2020-06".into(),
+            end: Some("2020-06".into()),
+        };
         let now = recency_decay(&r, 2020, 6);
         assert!((now - 1.0).abs() < 1e-9, "got {now}");
         let four = recency_decay(&r, 2024, 6);
@@ -407,14 +446,26 @@ mod tests {
 
     #[test]
     fn open_ended_range_uses_start_and_unparseable_dates_default() {
-        let open = DateRange { start: "2024-01".into(), end: None };
+        let open = DateRange {
+            start: "2024-01".into(),
+            end: None,
+        };
         assert!(recency_decay(&open, 2024, 1) > 0.99);
-        let junk = DateRange { start: "present".into(), end: None };
+        let junk = DateRange {
+            start: "present".into(),
+            end: None,
+        };
         assert_eq!(recency_decay(&junk, 2026, 1), 0.5);
-        let empty = DateRange { start: String::new(), end: Some("  ".into()) };
+        let empty = DateRange {
+            start: String::new(),
+            end: Some("  ".into()),
+        };
         assert_eq!(recency_decay(&empty, 2026, 1), 0.5);
         // Future dates clamp rather than exceeding 1.
-        let future = DateRange { start: "2030-01".into(), end: Some("2030-01".into()) };
+        let future = DateRange {
+            start: "2030-01".into(),
+            end: Some("2030-01".into()),
+        };
         assert_eq!(recency_decay(&future, 2026, 1), 1.0);
     }
 
@@ -453,7 +504,11 @@ mod tests {
         // The unrelated block must score strictly lower, not tie at a ceiling.
         assert!(scored[1].score > scored[2].score);
         for s in &scored {
-            assert!((0.0..=1.0).contains(&s.score), "score out of range: {}", s.score);
+            assert!(
+                (0.0..=1.0).contains(&s.score),
+                "score out of range: {}",
+                s.score
+            );
         }
     }
 
@@ -513,7 +568,10 @@ mod tests {
 
     #[test]
     fn recency_does_not_overflow_on_extreme_years() {
-        let r = DateRange { start: "1970-01".into(), end: Some("1970-01".into()) };
+        let r = DateRange {
+            start: "1970-01".into(),
+            end: Some("1970-01".into()),
+        };
         assert!(recency_decay(&r, i32::MAX, 12).is_finite());
         assert!(recency_decay(&r, i32::MIN, 1).is_finite());
     }
@@ -522,7 +580,12 @@ mod tests {
     fn persona_only_scoring_is_deterministic_and_nan_safe() {
         let s = vec![skill("Python"), skill("Rust")];
         let mut pw = HashMap::new();
-        for (k, v) in [("python", 1.0), ("rust", 2.0), ("cobol", 3.0), ("bad", f64::NAN)] {
+        for (k, v) in [
+            ("python", 1.0),
+            ("rust", 2.0),
+            ("cobol", 3.0),
+            ("bad", f64::NAN),
+        ] {
             pw.insert(k.to_string(), v);
         }
         let first = skill_overlap(&s, &[], &[], Some(&pw));

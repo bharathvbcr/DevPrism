@@ -326,7 +326,10 @@ fn strip_heading_prefixes(text: &str) -> String {
         .map(|line| {
             let hashes = line.chars().take_while(|c| *c == '#').count();
             if (1..=6).contains(&hashes)
-                && line.chars().nth(hashes).is_some_and(|c| c == ' ' || c == '\t')
+                && line
+                    .chars()
+                    .nth(hashes)
+                    .is_some_and(|c| c == ' ' || c == '\t')
             {
                 line[hashes..].trim_start_matches([' ', '\t'])
             } else {
@@ -368,15 +371,12 @@ pub fn strip_markdown_formatting(content: &str) -> String {
 /// Chars preserved by strict plain-text coercion (mirrors the TS set exactly,
 /// including the accidental-but-harmless backslash).
 const PLAIN_ALLOWED_PUNCT: &[char] = &[
-    '.', ',', ';', ':', '!', '?', '(', ')', '\\', '-', '\'', '"', '&', '/',
-    '+', '#', '@', '_', '=', ' ',
+    '.', ',', ';', ':', '!', '?', '(', ')', '\\', '-', '\'', '"', '&', '/', '+', '#', '@', '_',
+    '=', ' ',
 ];
 
 fn is_plain_allowed(ch: char) -> bool {
-    ch.is_whitespace()
-        || ch.is_alphabetic()
-        || ch.is_numeric()
-        || PLAIN_ALLOWED_PUNCT.contains(&ch)
+    ch.is_whitespace() || ch.is_alphabetic() || ch.is_numeric() || PLAIN_ALLOWED_PUNCT.contains(&ch)
 }
 
 fn coerce_to_plain_text(text: &str) -> String {
@@ -492,13 +492,12 @@ pub struct JdKeywordHit {
 /// Union of both upstream stopword lists plus grammatical filler; must match
 /// the TS `KEYWORD_STOPWORDS` set.
 pub const KEYWORD_STOPWORDS: &[&str] = &[
-    "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of",
-    "with", "by", "from", "as", "is", "was", "are", "were", "been", "be",
-    "have", "has", "had", "will", "shall", "should", "can", "could", "may",
-    "might", "must", "this", "that", "these", "those", "your", "you", "our",
-    "their", "they", "also", "using", "used", "use", "who", "what", "when",
-    "where", "while", "than", "then", "them", "its", "it's", "into", "over",
-    "under", "about", "across", "along", "among", "any", "all", "each", "both",
+    "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by",
+    "from", "as", "is", "was", "are", "were", "been", "be", "have", "has", "had", "will", "shall",
+    "should", "can", "could", "may", "might", "must", "this", "that", "these", "those", "your",
+    "you", "our", "their", "they", "also", "using", "used", "use", "who", "what", "when", "where",
+    "while", "than", "then", "them", "its", "it's", "into", "over", "under", "about", "across",
+    "along", "among", "any", "all", "each", "both",
 ];
 
 fn stopwords() -> &'static std::collections::HashSet<&'static str> {
@@ -619,7 +618,12 @@ const SECTION_DEFS: &[SectionDef] = &[
     SectionDef {
         canonical: "projects",
         display: "Projects",
-        matchers: &["projects", "selected projects", "personal projects", "key projects"],
+        matchers: &[
+            "projects",
+            "selected projects",
+            "personal projects",
+            "key projects",
+        ],
     },
     SectionDef {
         canonical: "publications",
@@ -703,9 +707,13 @@ const SECTION_DEFS: &[SectionDef] = &[
     },
 ];
 
+/// Fold a candidate header to the alias-table key.
+///
+/// NFKC first (not NFC): compatibility characters such as fullwidth
+/// `Ｓｕｍｍａｒｙ` must classify as `summary`. Twin of TS `foldHeaderKey`.
 fn fold_header_key(line: &str) -> Option<String> {
     let stripped_controls: String = line
-        .nfc()
+        .nfkc()
         .filter(|ch| {
             let c = *ch as u32;
             !matches!(
@@ -735,10 +743,7 @@ fn fold_header_key(line: &str) -> Option<String> {
         while digits < 2 && digits < chars.len() && chars[digits].is_ascii_digit() {
             digits += 1;
         }
-        if digits > 0
-            && digits < chars.len()
-            && (chars[digits] == '.' || chars[digits] == ')')
-        {
+        if digits > 0 && digits < chars.len() && (chars[digits] == '.' || chars[digits] == ')') {
             chars[digits + 1..]
                 .iter()
                 .collect::<String>()
@@ -777,12 +782,11 @@ fn header_lookup() -> &'static HashMap<String, &'static str> {
 }
 
 const HEADER_LEADING_STRIP: &[char] = &[
-    '#', '>', '*', '\u{2022}', '\u{b7}', '-', '\u{2013}', '\u{2014}', '+', '=',
-    '_', ' ', '\t',
+    '#', '>', '*', '\u{2022}', '\u{b7}', '-', '\u{2013}', '\u{2014}', '+', '=', '_', ' ', '\t',
 ];
 const HEADER_TRAILING_STRIP: &[char] = &[
-    ' ', '\t', ':', '#', '*', '=', '_', '~', '-', '\u{2013}', '\u{2014}',
-    '+', '=', '\u{2022}', '\u{b7}', '|',
+    ' ', '\t', ':', '#', '*', '=', '_', '~', '-', '\u{2013}', '\u{2014}', '+', '=', '\u{2022}',
+    '\u{b7}', '|',
 ];
 
 /// Classify a line as a section header: exact alias-table match after
@@ -1025,25 +1029,74 @@ fn extract_email(content: &str) -> Option<String> {
 }
 
 fn extract_links(content: &str) -> Vec<String> {
-    let mut links = Vec::new();
+    let mut links: Vec<String> = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+    push_http_links(content, &mut links, &mut seen);
+    if links.len() < 5 {
+        push_bare_profile_links(content, &mut links, &mut seen);
+    }
+    links
+}
+
+fn push_normalized_link(raw: &str, links: &mut Vec<String>, seen: &mut Vec<String>) {
+    if links.len() >= 5 {
+        return;
+    }
+    let trimmed = raw.trim_end_matches(|c| matches!(c, ')' | ',' | '.' | ';'));
+    if trimmed.is_empty() {
+        return;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    let url = if lower.starts_with("http://") || lower.starts_with("https://") {
+        trimmed.to_string()
+    } else {
+        format!("https://{trimmed}")
+    };
+    let key = url.to_ascii_lowercase();
+    if seen.iter().any(|s| s == &key) {
+        return;
+    }
+    seen.push(key);
+    links.push(url);
+}
+
+fn push_http_links(content: &str, links: &mut Vec<String>, seen: &mut Vec<String>) {
     for marker in ["https://", "http://"] {
         let mut search_from = 0usize;
         while let Some(pos) = content[search_from..].find(marker) {
             let abs = search_from + pos;
             let rest = &content[abs..];
-            let end = rest
-                .find(char::is_whitespace)
-                .unwrap_or(rest.len());
-            links.push(rest[..end].to_string());
+            let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+            push_normalized_link(&rest[..end], links, seen);
             if links.len() >= 5 {
-                return links;
+                return;
             }
             search_from = abs + marker.len();
         }
     }
-    links
 }
 
+fn push_bare_profile_links(content: &str, links: &mut Vec<String>, seen: &mut Vec<String>) {
+    let lower = content.to_ascii_lowercase();
+    for host in ["linkedin.com/in/", "github.com/"] {
+        let mut from = 0usize;
+        while let Some(rel) = lower[from..].find(host) {
+            let abs = from + rel;
+            let slug_start = abs + host.len();
+            let slug_end = content[slug_start..]
+                .find(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-')
+                .map(|i| slug_start + i)
+                .unwrap_or(content.len());
+            if slug_end > slug_start {
+                push_normalized_link(&content[abs..slug_end], links, seen);
+            }
+            if links.len() >= 5 {
+                return;
+            }
+            from = abs + host.len();
+        }
+    }
+}
 
 /// ASCII-case-insensitive prefix strip (char-boundary safe).
 fn tail_strip_prefix_ci<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
@@ -1117,8 +1170,7 @@ fn extract_phone_candidate(content: &str, from: usize) -> Option<(String, usize)
             {
                 let digits: String = trimmed.chars().filter(|c| c.is_ascii_digit()).collect();
                 if (10..=15).contains(&digits.len()) {
-                    let lead_ok =
-                        i == 0 || !(bytes[i - 1].is_ascii_alphanumeric());
+                    let lead_ok = i == 0 || !(bytes[i - 1].is_ascii_alphanumeric());
                     let tail_index = run_start + raw.len();
                     // Optional extension first: x / ext. / extension + digits.
                     // It must be considered BEFORE the alphanumeric-trail
@@ -1157,6 +1209,31 @@ fn extract_phone_candidate(content: &str, from: usize) -> Option<(String, usize)
     None
 }
 
+fn looks_like_person_name(line: &str) -> bool {
+    if line.is_empty() || line.len() > 80 || line.contains(',') || line.contains('\\') {
+        return false;
+    }
+    if header_canonical(line).is_some() {
+        return false;
+    }
+    if line.contains("http://") || line.contains("https://") || extract_email(line).is_some() {
+        return false;
+    }
+    let words: Vec<&str> = line.split_whitespace().collect();
+    if words.is_empty() || words.len() > 4 {
+        return false;
+    }
+    words.iter().all(|w| {
+        let mut chars = w.chars();
+        let Some(first) = chars.next() else {
+            return false;
+        };
+        first.is_uppercase()
+            && w.chars()
+                .all(|c| c.is_alphabetic() || matches!(c, '\'' | '’' | '.' | '-'))
+    })
+}
+
 fn extract_contact_info(content: &str) -> AtsContactInfo {
     let email = extract_email(content);
     let links = extract_links(content);
@@ -1176,8 +1253,7 @@ fn extract_contact_info(content: &str) -> AtsContactInfo {
         if digits > 3 {
             continue;
         }
-        let words: Vec<&str> = trimmed.split_whitespace().collect();
-        if words.is_empty() || words.len() > 5 {
+        if !looks_like_person_name(trimmed) {
             continue;
         }
         name = Some(trimmed.to_string());
@@ -1193,10 +1269,8 @@ fn extract_contact_info(content: &str) -> AtsContactInfo {
 }
 
 fn detect_parse_sections(content: &str) -> Vec<AtsParsedSection> {
-    let mut bodies: HashMap<&'static str, usize> = SECTION_DEFS
-        .iter()
-        .map(|def| (def.canonical, 0))
-        .collect();
+    let mut bodies: HashMap<&'static str, usize> =
+        SECTION_DEFS.iter().map(|def| (def.canonical, 0)).collect();
     let mut detected: std::collections::HashSet<&'static str> = Default::default();
     let mut current: Option<&'static str> = None;
     for line in content.split('\n') {
@@ -1223,9 +1297,8 @@ fn detect_parse_sections(content: &str) -> Vec<AtsParsedSection> {
 }
 
 const EXOTIC_ALLOWED_PUNCT: &[char] = &[
-    '.', ',', ';', ':', '!', '?', '(', ')', '[', ']', '{', '}', '\'', '"',
-    '-', '_', '&', '/', '+', '#', '@', '=', '|', '%', '$', '\u{20ac}',
-    '\u{a3}', '~', '<', '>', '\\', '`', '*', '^',
+    '.', ',', ';', ':', '!', '?', '(', ')', '[', ']', '{', '}', '\'', '"', '-', '_', '&', '/', '+',
+    '#', '@', '=', '|', '%', '$', '\u{20ac}', '\u{a3}', '~', '<', '>', '\\', '`', '*', '^',
 ];
 
 fn has_exotic_symbols(content: &str) -> bool {
@@ -1256,9 +1329,8 @@ pub fn simulate_ats_parsing(content: &str, system: AtsSystemId) -> AtsParseRepor
         );
     }
     if clamped.lines().any(|line| line.chars().count() > 120) {
-        warnings.push(
-            "Very long lines detected: some older parsers truncate long lines.".to_string(),
-        );
+        warnings
+            .push("Very long lines detected: some older parsers truncate long lines.".to_string());
     }
 
     let detected_names: std::collections::HashSet<&str> = sections
@@ -1356,7 +1428,10 @@ fn find_ci(hay: &str, needle: &str) -> Option<usize> {
     if hay_lower.len() == hay.len() && hay.is_char_boundary(0) {
         return hay_lower.find(&needle.to_lowercase());
     }
-    let first = needle_chars[0].to_lowercase().next().unwrap_or(needle_chars[0]);
+    let first = needle_chars[0]
+        .to_lowercase()
+        .next()
+        .unwrap_or(needle_chars[0]);
     for (start, ch) in hay.char_indices() {
         if !ch.to_lowercase().eq(std::iter::once(first)) {
             continue;
@@ -1364,10 +1439,7 @@ fn find_ci(hay: &str, needle: &str) -> Option<usize> {
         let mut matched = true;
         for (offset, expected) in needle_chars.iter().enumerate() {
             match hay[start..].chars().nth(offset) {
-                Some(actual)
-                    if actual
-                        .to_lowercase()
-                        .eq(expected.to_lowercase()) => {}
+                Some(actual) if actual.to_lowercase().eq(expected.to_lowercase()) => {}
                 _ => {
                     matched = false;
                     break;
@@ -1420,9 +1492,16 @@ fn truncate_clause(title: &str) -> Option<String> {
     if words.is_empty() {
         return None;
     }
-    Some(words.join(" ").chars().take(80).collect::<String>().trim().to_string())
+    Some(
+        words
+            .join(" ")
+            .chars()
+            .take(80)
+            .collect::<String>()
+            .trim()
+            .to_string(),
+    )
 }
-
 
 /// ASCII-case-insensitive prefix test that never slices on non-boundaries.
 fn starts_with_ci(hay: &str, needle: &str) -> bool {
@@ -1444,8 +1523,7 @@ fn starts_with_ci(hay: &str, needle: &str) -> bool {
 fn labeled_value<'a>(text: &'a str, label: &str) -> Option<&'a str> {
     let rel = find_ci(text, label)?;
     let after = &text[rel + label.len()..];
-    let had_separator = after.starts_with(':')
-        || after.starts_with(|c: char| c.is_whitespace());
+    let had_separator = after.starts_with(':') || after.starts_with(|c: char| c.is_whitespace());
     if !had_separator {
         return None;
     }
@@ -1508,7 +1586,10 @@ fn profession_phrase(text: &str) -> Option<String> {
     }
     for end_index in (0..words.len()).rev() {
         let word = words[end_index].to_lowercase();
-        if PROFESSION_SUFFIXES.iter().any(|suffix| word.ends_with(suffix)) {
+        if PROFESSION_SUFFIXES
+            .iter()
+            .any(|suffix| word.ends_with(suffix))
+        {
             return Some(words[..=end_index].join(" "));
         }
     }
@@ -1536,11 +1617,7 @@ fn extract_company(text: &str) -> Option<String> {
                 .unwrap_or(text.len());
             if text[end..].starts_with(' ') {
                 let rest = &text[end + 1..];
-                if rest
-                    .chars()
-                    .next()
-                    .is_some_and(|c| c.is_ascii_uppercase())
-                {
+                if rest.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
                     cursor = end + 1;
                     continue;
                 }
@@ -1549,7 +1626,10 @@ fn extract_company(text: &str) -> Option<String> {
         }
         // Optional comma, then verb.
         let after = text[end..].trim_start();
-        let after = after.strip_prefix(',').map(str::trim_start).unwrap_or(after);
+        let after = after
+            .strip_prefix(',')
+            .map(str::trim_start)
+            .unwrap_or(after);
         for verb in ["is", "seeks", "looking"] {
             if starts_with_ci(after, &format!("{verb} ")) {
                 return Some(text[index..end].trim().chars().take(80).collect());
@@ -1577,10 +1657,9 @@ fn extract_company(text: &str) -> Option<String> {
 }
 
 const US_STATES: &[&str] = &[
-    "CA", "NY", "TX", "FL", "IL", "PA", "OH", "GA", "NC", "MI", "NJ", "VA",
-    "WA", "AZ", "MA", "TN", "IN", "MO", "MD", "WI", "CO", "MN", "SC", "AL",
-    "LA", "KY", "OR", "OK", "CT", "IA", "AR", "UT", "NV", "MS", "KS", "NM",
-    "NE", "WV", "ID", "HI", "NH", "ME", "RI", "MT", "DE", "SD", "ND", "AK",
+    "CA", "NY", "TX", "FL", "IL", "PA", "OH", "GA", "NC", "MI", "NJ", "VA", "WA", "AZ", "MA", "TN",
+    "IN", "MO", "MD", "WI", "CO", "MN", "SC", "AL", "LA", "KY", "OR", "OK", "CT", "IA", "AR", "UT",
+    "NV", "MS", "KS", "NM", "NE", "WV", "ID", "HI", "NH", "ME", "RI", "MT", "DE", "SD", "ND", "AK",
     "VT", "WY", "DC",
 ];
 
@@ -1606,10 +1685,7 @@ fn extract_location(text: &str) -> Option<String> {
             let spans = word_spans(&text[..abs]);
             let mut city_words: Vec<(usize, &str)> = Vec::new();
             for (start, token) in spans.iter().rev() {
-                let first_cap = token
-                    .chars()
-                    .next()
-                    .is_some_and(|c| c.is_ascii_uppercase());
+                let first_cap = token.chars().next().is_some_and(|c| c.is_ascii_uppercase());
                 let city_like = first_cap
                     && token.chars().all(|c| c.is_alphabetic() || c == '.')
                     && token.len() > 1;
@@ -1868,29 +1944,25 @@ fn extract_requirements(text: &str) -> JdRequirements {
             continue;
         }
         let stripped = strip_requirement_heading(line);
-        if let Some((bucket, _)) = REQUIREMENT_BUCKETS
-            .iter()
-            .find(|(_, matchers)| {
-                matchers
-                    .iter()
-                    .any(|matcher| stripped == *matcher || stripped.starts_with(&format!("{matcher} ")))
-            })
-        {
+        if let Some((bucket, _)) = REQUIREMENT_BUCKETS.iter().find(|(_, matchers)| {
+            matchers
+                .iter()
+                .any(|matcher| stripped == *matcher || stripped.starts_with(&format!("{matcher} ")))
+        }) {
             current = Some(bucket);
             continue;
         }
-        let is_bullet = line.starts_with(['\u{2022}', '*', '-', '\u{2013}', '\u{2014}', '+'])
-            || {
-                let chars: Vec<char> = line.chars().collect();
-                let mut digits = 0usize;
-                while digits < 2 && digits < chars.len() && chars[digits].is_ascii_digit() {
-                    digits += 1;
-                }
-                digits > 0
-                    && digits < chars.len()
-                    && (chars[digits] == '.' || chars[digits] == ')')
-                    && chars.get(digits + 1).is_some_and(|c| *c == ' ')
-            };
+        let is_bullet = line.starts_with(['\u{2022}', '*', '-', '\u{2013}', '\u{2014}', '+']) || {
+            let chars: Vec<char> = line.chars().collect();
+            let mut digits = 0usize;
+            while digits < 2 && digits < chars.len() && chars[digits].is_ascii_digit() {
+                digits += 1;
+            }
+            digits > 0
+                && digits < chars.len()
+                && (chars[digits] == '.' || chars[digits] == ')')
+                && chars.get(digits + 1).is_some_and(|c| *c == ' ')
+        };
         let bucket = match current {
             Some(bucket) => bucket,
             None => continue,
@@ -1928,19 +2000,21 @@ fn strip_requirement_heading(line: &str) -> String {
     while digits < 2 && digits < chars.len() && chars[digits].is_ascii_digit() {
         digits += 1;
     }
-    let after_enum = if digits > 0
-        && digits < chars.len()
-        && (chars[digits] == '.' || chars[digits] == ')')
-    {
-        chars[digits + 1..]
-            .iter()
-            .collect::<String>()
-            .trim_start()
-            .to_string()
-    } else {
-        trimmed.to_string()
-    };
-    after_enum.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+    let after_enum =
+        if digits > 0 && digits < chars.len() && (chars[digits] == '.' || chars[digits] == ')') {
+            chars[digits + 1..]
+                .iter()
+                .collect::<String>()
+                .trim_start()
+                .to_string()
+        } else {
+            trimmed.to_string()
+        };
+    after_enum
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 const EXPERIENCE_LEVEL_LADDER: &[(&str, &[&str])] = &[
@@ -1953,7 +2027,14 @@ const EXPERIENCE_LEVEL_LADDER: &[(&str, &[&str])] = &[
     ("mid", &["mid-level", "intermediate"]),
     (
         "entry",
-        &["junior", "jr.", "entry level", "entry-level", "graduate", "intern"],
+        &[
+            "junior",
+            "jr.",
+            "entry level",
+            "entry-level",
+            "graduate",
+            "intern",
+        ],
     ),
 ];
 
@@ -1989,9 +2070,7 @@ fn extract_posted_date(text: &str) -> Option<String> {
         let chars: Vec<char> = line.chars().collect();
         let read_digits = |chars: &[char], from: usize, max: usize| -> Option<usize> {
             let mut count = 0usize;
-            while count < max
-                && from + count < chars.len()
-                && chars[from + count].is_ascii_digit()
+            while count < max && from + count < chars.len() && chars[from + count].is_ascii_digit()
             {
                 count += 1;
             }
@@ -2002,19 +2081,25 @@ fn extract_posted_date(text: &str) -> Option<String> {
             }
         };
         let mut idx = 0usize;
-        let Some(part1) = read_digits(&chars, idx, 2) else { continue };
+        let Some(part1) = read_digits(&chars, idx, 2) else {
+            continue;
+        };
         idx += part1;
         if !matches!(chars.get(idx), Some('/') | Some('-')) {
             continue;
         }
         idx += 1;
-        let Some(part2) = read_digits(&chars, idx, 2) else { continue };
+        let Some(part2) = read_digits(&chars, idx, 2) else {
+            continue;
+        };
         idx += part2;
         if !matches!(chars.get(idx), Some('/') | Some('-')) {
             continue;
         }
         idx += 1;
-        let Some(part3) = read_digits(&chars, idx, 4) else { continue };
+        let Some(part3) = read_digits(&chars, idx, 4) else {
+            continue;
+        };
         idx += part3;
         return Some(chars[..idx].iter().collect());
     }
@@ -2187,7 +2272,8 @@ pub fn summarize_keyword_heatmap(heatmap: &KeywordHeatmap) -> KeywordHeatmapSumm
 mod tests {
     use super::*;
 
-    const PLATFORM_JD: &str = "We are hiring a Senior Platform Engineer to build scalable platforms. \
+    const PLATFORM_JD: &str =
+        "We are hiring a Senior Platform Engineer to build scalable platforms. \
         The platform team owns Kubernetes clusters and PostgreSQL databases. \
         Platform engineers also automate deployments with Terraform.";
 
@@ -2202,7 +2288,10 @@ mod tests {
 
     #[test]
     fn ats_rules_match_the_shared_table() {
-        assert_eq!(ats_rules_for(AtsSystemId::Taleo).required_sections, &["experience"]);
+        assert_eq!(
+            ats_rules_for(AtsSystemId::Taleo).required_sections,
+            &["experience"]
+        );
         assert_eq!(
             ats_rules_for(AtsSystemId::Workday).required_sections,
             &["experience", "education"]
@@ -2215,7 +2304,10 @@ mod tests {
         let detected = detect_ats_systems("Apply through our Workday portal");
         assert_eq!(detected, vec![AtsSystemId::Workday]);
         assert_eq!(detect_ats_systems(""), vec![AtsSystemId::Generic]);
-        assert_eq!(detect_ats_systems("no portals here"), vec![AtsSystemId::Generic]);
+        assert_eq!(
+            detect_ats_systems("no portals here"),
+            vec![AtsSystemId::Generic]
+        );
         let three = detect_ats_systems("greenhouse (lever) icims");
         assert_eq!(three.len(), 3);
     }
@@ -2245,10 +2337,19 @@ mod tests {
 
     #[test]
     fn boundary_hits_parity_with_scoring_edge_classes() {
-        assert_eq!(count_boundary_hits("Go developer with Golang and go", "go"), 2);
+        assert_eq!(
+            count_boundary_hits("Go developer with Golang and go", "go"),
+            2
+        );
         assert_eq!(count_boundary_hits("developer with mongodb", "go"), 0);
-        assert_eq!(count_boundary_hits("Java on a JavaScript project", "java"), 1);
-        assert_eq!(count_boundary_hits("skilled in C++, cpp and c++.", "c++"), 2);
+        assert_eq!(
+            count_boundary_hits("Java on a JavaScript project", "java"),
+            1
+        );
+        assert_eq!(
+            count_boundary_hits("skilled in C++, cpp and c++.", "c++"),
+            2
+        );
         assert_eq!(count_boundary_hits("Node.js runtime", "node.js"), 1);
         // Metacharacters are inert (upstream crashed building RegExp from these).
         assert_eq!(count_boundary_hits("fully (remote) role", "(remote)"), 1);
@@ -2295,7 +2396,13 @@ mod tests {
         let names: Vec<&str> = sections.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(
             names,
-            vec!["Introduction", "Summary", "Experience", "Education", "Skills"]
+            vec![
+                "Introduction",
+                "Summary",
+                "Experience",
+                "Education",
+                "Skills"
+            ]
         );
         let exp = sections.iter().find(|s| s.name == "Experience").unwrap();
         assert!(exp.text.contains("Acme Corp"));
@@ -2333,13 +2440,19 @@ mod tests {
             "Honors & Awards\nBest paper.\nLicenses and Certifications\nAWS\nCommunity Service\nTutoring.",
         );
         let alias_names: Vec<&str> = aliases.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(
-            alias_names,
-            vec!["Awards", "Certifications", "Volunteer"]
-        );
+        assert_eq!(alias_names, vec!["Awards", "Certifications", "Volunteer"]);
         let edu = split_resume_into_sections("Education & Training\nMIT BSc.");
         assert_eq!(edu[0].name, "Education");
         assert!(edu[0].text.contains("MIT BSc."));
+    }
+
+    #[test]
+    fn section_splitting_folds_fullwidth_compatibility_letters() {
+        let sections = split_resume_into_sections(
+            "Ｓｕｍｍａｒｙ\nPlatform engineer.\nＥｘｐｅｒｉｅｎｃｅ\nAcme.\nＨｏｎｏｒｓ ＆ Ａｗａｒｄｓ\nBest paper.",
+        );
+        let names: Vec<&str> = sections.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["Summary", "Experience", "Awards"]);
     }
 
     #[test]
@@ -2371,7 +2484,10 @@ mod tests {
         assert!(detected.contains(&"skills"));
         assert!(report.missing_required_sections.is_empty());
         assert_eq!(report.system, "workday");
-        assert_eq!(report.contact_info.email.as_deref(), Some("jane@example.com"));
+        assert_eq!(
+            report.contact_info.email.as_deref(),
+            Some("jane@example.com")
+        );
         assert_eq!(
             report.contact_info.phone.as_deref(),
             Some("+1 (415) 555-0100 x1234")
@@ -2383,7 +2499,10 @@ mod tests {
     #[test]
     fn parse_simulation_reports_missing_required_sections() {
         let report = simulate_ats_parsing("SUMMARY\nJust a summary.", AtsSystemId::Workday);
-        assert_eq!(report.missing_required_sections, vec!["education", "experience"]);
+        assert_eq!(
+            report.missing_required_sections,
+            vec!["education", "experience"]
+        );
     }
 
     #[test]
@@ -2393,9 +2512,18 @@ mod tests {
             &format!("SUMMARY\nA | B\tC\nEXPERIENCE\nDid \u{2728} great things\n{long_line}"),
             AtsSystemId::Generic,
         );
-        assert!(report.warnings.iter().any(|w| w.to_lowercase().contains("table")));
-        assert!(report.warnings.iter().any(|w| w.to_lowercase().contains("special")));
-        assert!(report.warnings.iter().any(|w| w.to_lowercase().contains("long")));
+        assert!(report
+            .warnings
+            .iter()
+            .any(|w| w.to_lowercase().contains("table")));
+        assert!(report
+            .warnings
+            .iter()
+            .any(|w| w.to_lowercase().contains("special")));
+        assert!(report
+            .warnings
+            .iter()
+            .any(|w| w.to_lowercase().contains("long")));
     }
 
     #[test]
@@ -2405,6 +2533,34 @@ mod tests {
             AtsSystemId::Generic,
         );
         assert!(report.contact_info.phone.is_none());
+    }
+
+    #[test]
+    fn contact_name_skips_section_headers() {
+        let report = simulate_ats_parsing(
+            "EXPERIENCE\nDid work on platforms\njane@example.com",
+            AtsSystemId::Generic,
+        );
+        assert_ne!(report.contact_info.name.as_deref(), Some("EXPERIENCE"));
+        assert!(extract_contact_info("EXPERIENCE\nDid work on platforms")
+            .name
+            .is_none());
+    }
+
+    #[test]
+    fn contact_links_capture_bare_linkedin_and_github() {
+        let info = extract_contact_info(
+            "Jane Doe\njane@example.com\nlinkedin.com/in/janedoe\ngithub.com/janedoe",
+        );
+        assert_eq!(info.name.as_deref(), Some("Jane Doe"));
+        assert!(info
+            .links
+            .iter()
+            .any(|l| l.to_ascii_lowercase().contains("linkedin.com/in/janedoe")));
+        assert!(info
+            .links
+            .iter()
+            .any(|l| l.to_ascii_lowercase().contains("github.com/janedoe")));
     }
 
     #[test]
@@ -2435,7 +2591,11 @@ mod tests {
         let resume = "SUMMARY\nEngineer.\nEXPERIENCE\nRan Kubernetes in production and tuned PostgreSQL clusters.\nSKILLS\nKubernetes, PostgreSQL";
         let heat = generate_keyword_heatmap(resume, HEAT_JD);
         assert!(heat.sections.len() >= 3);
-        let exp = heat.sections.iter().find(|s| s.name == "Experience").unwrap();
+        let exp = heat
+            .sections
+            .iter()
+            .find(|s| s.name == "Experience")
+            .unwrap();
         let words: Vec<&str> = exp.keywords.iter().map(|k| k.word.as_str()).collect();
         assert!(words.contains(&"kubernetes"));
         assert!(words.contains(&"postgresql"));
@@ -2509,7 +2669,9 @@ mod tests {
 
     #[test]
     fn salary_ranges_never_report_inverted() {
-        assert!(analyze_jd_metadata("Salary: $150,000 - $120,000").salary_range.is_none());
+        assert!(analyze_jd_metadata("Salary: $150,000 - $120,000")
+            .salary_range
+            .is_none());
         let hourly = analyze_jd_metadata("Pay: $50-$60 an hour, part time");
         assert_eq!(hourly.salary_range.map(|r| r.min), Some(50.0));
     }
@@ -2517,11 +2679,20 @@ mod tests {
     #[test]
     fn experience_levels_across_phrasings() {
         let level = |jd: &str| analyze_jd_metadata(jd).experience_level;
-        assert_eq!(level("VP of Engineering, Director level"), Some(ExperienceLevel::Executive));
-        assert_eq!(level("Principal engineer wanted"), Some(ExperienceLevel::Lead));
+        assert_eq!(
+            level("VP of Engineering, Director level"),
+            Some(ExperienceLevel::Executive)
+        );
+        assert_eq!(
+            level("Principal engineer wanted"),
+            Some(ExperienceLevel::Lead)
+        );
         assert_eq!(level("Junior developer role"), Some(ExperienceLevel::Entry));
         assert_eq!(level("Graduate program 2026"), Some(ExperienceLevel::Entry));
-        assert_eq!(level("Mid-level intermediate role"), Some(ExperienceLevel::Mid));
+        assert_eq!(
+            level("Mid-level intermediate role"),
+            Some(ExperienceLevel::Mid)
+        );
         assert_eq!(level("No signals here"), None);
     }
 
@@ -2558,9 +2729,14 @@ mod tests {
                     pieces.push(crate::career_match::stress::hostile_string(&mut rng));
                 } else {
                     pieces.push(
-                        ["SUMMARY", "EXPERIENCE", "SKILLS:", "1. Education", "== WORK HISTORY =="]
-                            [rng.below(5)]
-                            .to_string(),
+                        [
+                            "SUMMARY",
+                            "EXPERIENCE",
+                            "SKILLS:",
+                            "1. Education",
+                            "== WORK HISTORY ==",
+                        ][rng.below(5)]
+                        .to_string(),
                     );
                 }
                 if rng.bool() {

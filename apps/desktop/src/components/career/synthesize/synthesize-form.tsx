@@ -42,6 +42,8 @@ export interface SynthesizeFormProps {
     portfolioUrl?: string;
   };
   onHeaderChange: (patch: Partial<SynthesizeFormProps["header"]>) => void;
+  summary: string;
+  onSummaryChange: (value: string) => void;
   running: boolean;
   canRun: boolean;
   /** When embeddings are down — button label / degraded affordance. */
@@ -71,6 +73,8 @@ export function SynthesizeForm({
   masters,
   header,
   onHeaderChange,
+  summary,
+  onSummaryChange,
   running,
   canRun,
   embeddingsDown = false,
@@ -104,6 +108,18 @@ export function SynthesizeForm({
         onChange={onHeaderChange}
         disabled={running}
       />
+
+      <section className="space-y-2">
+        <Label htmlFor="synth-summary">Professional summary</Label>
+        <Textarea
+          id="synth-summary"
+          value={summary}
+          onChange={(e) => onSummaryChange(e.target.value)}
+          placeholder="Imported or drafted summary (optional). Used if the summary model fails."
+          className="min-h-[72px] resize-y text-xs leading-relaxed"
+          disabled={running}
+        />
+      </section>
 
       <div className="grid gap-4 sm:grid-cols-2">
         <section className="space-y-2">

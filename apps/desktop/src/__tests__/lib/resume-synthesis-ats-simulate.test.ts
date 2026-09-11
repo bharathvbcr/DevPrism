@@ -17,12 +17,14 @@ import {
   atsRulesFor,
   countBoundaryHits,
   detectAtsSystems,
+  extractContactInfo,
   extractJdKeywords,
   formatForAts,
   generateKeywordHeatmap,
   renderedContentPlainText,
   simulateAtsParsing,
   splitResumeIntoSections,
+  summarizeJdMetadata,
 } from "@/lib/resume-synthesis/ats-simulate";
 
 describe("atsRulesFor", () => {
@@ -247,6 +249,17 @@ describe("splitResumeIntoSections", () => {
     const bidi = splitResumeIntoSections("\u202E SKILLS \u202C\nrust");
     expect(bidi.map((s) => s.name)).toEqual(["Skills"]);
   });
+
+  it("folds fullwidth compatibility letters the same way as canonicalSectionFromHeader", () => {
+    const sections = splitResumeIntoSections(
+      "Ｓｕｍｍａｒｙ\nPlatform engineer.\nＥｘｐｅｒｉｅｎｃｅ\nAcme.\nＨｏｎｏｒｓ ＆ Ａｗａｒｄｓ\nBest paper.",
+    );
+    expect(sections.map((s) => s.name)).toEqual([
+      "Summary",
+      "Experience",
+      "Awards",
+    ]);
+  });
 });
 
 describe("simulateAtsParsing", () => {
@@ -308,6 +321,28 @@ describe("simulateAtsParsing", () => {
       "generic",
     );
     expect(report.contactInfo.phone).toBeNull();
+  });
+
+  it("does not treat a section header as the candidate name", () => {
+    const report = simulateAtsParsing(
+      "EXPERIENCE\nDid work on platforms\njane@example.com",
+      "generic",
+    );
+    expect(report.contactInfo.name).not.toBe("EXPERIENCE");
+    expect(
+      extractContactInfo("EXPERIENCE\nDid work on platforms").name,
+    ).toBeNull();
+  });
+
+  it("captures LinkedIn and GitHub profile URLs without a scheme", () => {
+    const info = extractContactInfo(
+      "Jane Doe\njane@example.com\nlinkedin.com/in/janedoe\ngithub.com/janedoe",
+    );
+    expect(info.name).toBe("Jane Doe");
+    expect(info.links.some((l) => /linkedin\.com\/in\/janedoe/i.test(l))).toBe(
+      true,
+    );
+    expect(info.links.some((l) => /github\.com\/janedoe/i.test(l))).toBe(true);
   });
 
   it("never throws on hostile payloads", () => {
@@ -497,6 +532,29 @@ describe("analyzeJdMetadata", () => {
     const meta = analyzeJdMetadata(`Requirements:\n${bullets}`);
     expect(meta.requirements.mustHave.length).toBeLessThanOrEqual(50);
   });
+
+  it("summarizes into a compact MatchReport shape without dumping every requirement", () => {
+    const meta = analyzeJdMetadata(
+      [
+        "Position: Senior Platform Engineer",
+        "Company: ExampleCorp is seeking a platform specialist.",
+        "Location: Remote (US)",
+        "Salary: $120,000 - $150,000",
+        "Requirements:",
+        "- Kubernetes",
+        "Preferred:",
+        "* Terraform",
+      ].join("\n"),
+    );
+    const summary = summarizeJdMetadata(meta);
+    expect(summary.jobTitle).toBe("Senior Platform Engineer");
+    expect(summary.company).toBe("ExampleCorp");
+    expect(summary.salarySummary).toContain("120,000");
+    expect(summary.mustHaveCount).toBeGreaterThan(0);
+    expect(summary.preferredCount).toBeGreaterThan(0);
+    expect(summary).not.toHaveProperty("requirements");
+    expect(summary).not.toHaveProperty("salaryRange");
+  });
 });
 
 describe("renderedContentPlainText", () => {
@@ -539,6 +597,25 @@ describe("renderedContentPlainText", () => {
       true,
     );
     expect(report.sections.find((s) => s.name === "experience")?.detected).toBe(
+      true,
+    );
+  });
+
+  it("emits Languages as its own ATS section instead of stuffing them under Skills", () => {
+    const text = renderedContentPlainText({
+      header: { fullName: "Jane Doe", cityRegion: "", email: "", phone: "" },
+      skills: [
+        { label: "Skills", items: "Python, Rust" },
+        { label: "Languages", items: "English, Tamil" },
+      ],
+      experience: [],
+    } as unknown as ResumeContent);
+    expect(text).toMatch(/LANGUAGES[\s\S]*English/);
+    const skillsBlock = text.split("LANGUAGES")[0] ?? "";
+    expect(skillsBlock).toContain("Python");
+    expect(skillsBlock).not.toContain("Tamil");
+    const report = simulateAtsParsing(text, "generic");
+    expect(report.sections.find((s) => s.name === "languages")?.detected).toBe(
       true,
     );
   });

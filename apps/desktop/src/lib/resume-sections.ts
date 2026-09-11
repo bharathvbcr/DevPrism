@@ -234,6 +234,9 @@ const BIDI_AND_CONTROLS = new RegExp(
  * Fold a candidate header to the alias-table key: strip bidi/zero-width,
  * decoration, numbering, fold `&`/`-`, drop diacritics, lowercase.
  * Length is measured on the folded key so padding cannot evade the cap.
+ *
+ * NFKC (not NFC): compatibility characters such as fullwidth
+ * `Ｓｕｍｍａｒｙ` must classify as `summary`. Twin: Rust `fold_header_key`.
  */
 function foldHeaderKey(line: string): string | null {
   if (typeof line !== "string" || !line) return null;
@@ -297,6 +300,11 @@ const BLOCK_KIND_ALIASES: Record<string, BlockKind> = {
   honours: "award",
   volunteering: "volunteer",
   "volunteer experience": "volunteer",
+  "community service": "volunteer",
+  "community involvement": "volunteer",
+  "extra curricular activities": "leadership",
+  "extracurricular activities": "leadership",
+  "co curricular activities": "leadership",
 };
 
 /** True when `value` is a career block kind. */

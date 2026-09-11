@@ -1701,9 +1701,7 @@ fn run_login_shell_command(command: &str) -> Option<String> {
         // forever. Bound it so a wedged shell costs seconds, not the runtime.
         let mut cmd = std::process::Command::new(&shell);
         cmd.args(["-l", "-c", command]);
-        if let Ok(output) =
-            crate::proc::run_with_timeout(cmd, std::time::Duration::from_secs(10))
-        {
+        if let Ok(output) = crate::proc::run_with_timeout(cmd, std::time::Duration::from_secs(10)) {
             if output.status.success() {
                 let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 if !value.is_empty() && value != "undefined" && value != "null" {
@@ -1988,9 +1986,7 @@ fn new_sync_command(program: &str) -> std::process::Command {
 /// (or an antivirus scan on Windows) can hang them indefinitely; the probe
 /// must fail instead of pinning its thread forever. The error is shaped like
 /// `std::process::Output`-based failures so call sites need no new handling.
-fn run_bounded_probe(
-    cmd: std::process::Command,
-) -> std::io::Result<std::process::Output> {
+fn run_bounded_probe(cmd: std::process::Command) -> std::io::Result<std::process::Output> {
     const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
     crate::proc::run_with_timeout(cmd, PROBE_TIMEOUT)
         .map_err(|e| std::io::Error::other(e.to_message("claude")))
@@ -2454,10 +2450,7 @@ fn is_valid_elevation_user(user: &str) -> bool {
 /// payload through to the shell unchanged.
 #[cfg(not(target_os = "windows"))]
 fn apple_script_quoted(s: &str) -> String {
-    format!(
-        "\"{}\"",
-        s.replace('\\', "\\\\").replace('"', "\\\"")
-    )
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 /// Build the shell script for elevated directory creation + chown.
@@ -2641,14 +2634,11 @@ pub async fn install_claude_cli(window: WebviewWindow) -> Result<bool, String> {
     // forever. Same structure as login_claude below.
     let child = Arc::new(Mutex::new(child));
     let child_for_timeout = child.clone();
-    let success = match tokio::time::timeout(
-        std::time::Duration::from_secs(600),
-        async move {
-            let _ = stdout_task.await;
-            let _ = stderr_task.await;
-            child_for_timeout.lock().await.wait().await
-        },
-    )
+    let success = match tokio::time::timeout(std::time::Duration::from_secs(600), async move {
+        let _ = stdout_task.await;
+        let _ = stderr_task.await;
+        child_for_timeout.lock().await.wait().await
+    })
     .await
     {
         Ok(Ok(status)) => status.success(),
@@ -2676,11 +2666,10 @@ pub async fn install_claude_cli(window: WebviewWindow) -> Result<bool, String> {
 
 #[tauri::command]
 pub async fn login_claude(window: WebviewWindow) -> Result<(), String> {
-    let binary_path =
-        tauri::async_runtime::spawn_blocking(find_claude_binary)
-            .await
-            .map_err(|e| format!("Claude lookup task failed: {e}"))?
-            .map_err(|e| format!("Claude CLI not found: {}", e))?;
+    let binary_path = tauri::async_runtime::spawn_blocking(find_claude_binary)
+        .await
+        .map_err(|e| format!("Claude lookup task failed: {e}"))?
+        .map_err(|e| format!("Claude CLI not found: {}", e))?;
 
     // Verify it actually exists (bounded, off the async workers)
     let version_check = {
@@ -3691,9 +3680,7 @@ fn apply_native_anthropic_provider_env(
 
 /// True when this credential talks Anthropic Messages API (DeepSeek / Qwen /
 /// Moonshot Anthropic roots) rather than OpenAI `/chat/completions`.
-pub(crate) fn uses_native_anthropic_route(
-    credential: &StoredOpenAiCompatibleCredential,
-) -> bool {
+pub(crate) fn uses_native_anthropic_route(credential: &StoredOpenAiCompatibleCredential) -> bool {
     native_anthropic_base_url(credential).is_some()
 }
 
@@ -4633,9 +4620,7 @@ pub async fn generate_claude_session_title(
 fn is_displayable_session_entry(entry: &serde_json::Value) -> bool {
     match entry.get("type").and_then(|t| t.as_str()) {
         Some("user") | Some("assistant") | Some("result") => true,
-        Some("system") => {
-            entry.get("subtype").and_then(|s| s.as_str()) == Some("init")
-        }
+        Some("system") => entry.get("subtype").and_then(|s| s.as_str()) == Some("init"),
         _ => false,
     }
 }
@@ -4651,8 +4636,7 @@ pub async fn load_session_history(
     }
 
     let sessions_dir = get_sessions_dir(&project_path)?;
-    let session_path =
-        sessions_dir.join(format!("{}.jsonl", session_id));
+    let session_path = sessions_dir.join(format!("{}.jsonl", session_id));
 
     if !session_path.exists() {
         return Err(format!("Session file not found: {}", session_id));
@@ -4688,41 +4672,34 @@ mod session_history_tests {
 
     #[test]
     fn keeps_displayable_entries_and_the_init_record() {
-        let entry =
-            |v: &str| -> serde_json::Value { serde_json::from_str(v).unwrap() };
+        let entry = |v: &str| -> serde_json::Value { serde_json::from_str(v).unwrap() };
 
-        assert!(is_displayable_session_entry(
-            &entry(r#"{"type":"user"}"#)
-        ));
-        assert!(is_displayable_session_entry(
-            &entry(r#"{"type":"assistant"}"#)
-        ));
-        assert!(is_displayable_session_entry(
-            &entry(r#"{"type":"result"}"#)
-        ));
+        assert!(is_displayable_session_entry(&entry(r#"{"type":"user"}"#)));
+        assert!(is_displayable_session_entry(&entry(
+            r#"{"type":"assistant"}"#
+        )));
+        assert!(is_displayable_session_entry(&entry(r#"{"type":"result"}"#)));
         assert!(is_displayable_session_entry(&entry(
             r#"{"type":"system","subtype":"init","model":"claude-x"}"#
         )));
 
         // Non-init system records (tool progress etc.) are dropped.
-        assert!(!is_displayable_session_entry(
-            &entry(r#"{"type":"system","subtype":"other"}"#)
-        ));
+        assert!(!is_displayable_session_entry(&entry(
+            r#"{"type":"system","subtype":"other"}"#
+        )));
         // Unknown / absent types are dropped.
-        assert!(!is_displayable_session_entry(
-            &entry(r#"{"type":"progress"}"#)
-        ));
+        assert!(!is_displayable_session_entry(&entry(
+            r#"{"type":"progress"}"#
+        )));
         assert!(!is_displayable_session_entry(&entry(r#"{}"#)));
         // Adversarial shapes: wrong-typed fields must not panic or match.
-        assert!(!is_displayable_session_entry(
-            &entry(r#"{"type":123}"#)
-        ));
-        assert!(!is_displayable_session_entry(
-            &entry(r#"{"type":"system"}"#)
-        ));
-        assert!(!is_displayable_session_entry(
-            &entry(r#"{"subtype":"init"}"#)
-        ));
+        assert!(!is_displayable_session_entry(&entry(r#"{"type":123}"#)));
+        assert!(!is_displayable_session_entry(&entry(
+            r#"{"type":"system"}"#
+        )));
+        assert!(!is_displayable_session_entry(&entry(
+            r#"{"subtype":"init"}"#
+        )));
         // A user entry carrying tool_result blocks stays displayable — the
         // frontend sanitizer handles those blocks itself.
         assert!(is_displayable_session_entry(&entry(
@@ -5132,19 +5109,13 @@ mod tests {
     #[test]
     fn test_extract_claude_print_result_from_json_object() {
         let raw = r#"{"type":"result","result":"hello world","is_error":false}"#;
-        assert_eq!(
-            extract_claude_print_result(raw).unwrap(),
-            "hello world"
-        );
+        assert_eq!(extract_claude_print_result(raw).unwrap(), "hello world");
     }
 
     #[test]
     fn test_extract_claude_print_result_from_ndjson() {
         let raw = "{\n\"type\":\"assistant\"}\n{\"type\":\"result\",\"result\":\"final answer\"}\n";
-        assert_eq!(
-            extract_claude_print_result(raw).unwrap(),
-            "final answer"
-        );
+        assert_eq!(extract_claude_print_result(raw).unwrap(), "final answer");
     }
 
     #[test]

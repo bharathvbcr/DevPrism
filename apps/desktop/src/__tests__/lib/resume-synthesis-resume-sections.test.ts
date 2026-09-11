@@ -401,6 +401,16 @@ describe("IgniteCV header aliases and dirty kinds still land in the right slot",
     );
   });
 
+  it("folds fullwidth compatibility letters via NFKC so ATS twins agree", () => {
+    expect(canonicalSectionFromHeader("Ｓｕｍｍａｒｙ")).toBe("summary");
+    expect(canonicalSectionFromHeader("Ｅｘｐｅｒｉｅｎｃｅ")).toBe(
+      "experience",
+    );
+    expect(canonicalSectionFromHeader("Ｈｏｎｏｒｓ ＆ Ａｗａｒｄｓ")).toBe(
+      "awards",
+    );
+  });
+
   it("sectionForBlock canonicalizes plural kinds stored on a block", () => {
     const dirty = {
       ...block("experience", "AWS SAA", "Amazon"),

@@ -154,12 +154,11 @@ pub fn ensure_vec_embeddings(conn: &Connection, dim: usize) -> Result<(), String
         return Err("embedding dim must be > 0".into());
     }
 
-    let current_dim = meta_get(conn, "vec_dim")?
-        .and_then(|s| s.parse::<usize>().ok());
+    let current_dim = meta_get(conn, "vec_dim")?.and_then(|s| s.parse::<usize>().ok());
     // A rowid-derivation change (e.g. a Rust release altering DefaultHasher)
     // silently invalidates every stored rowid, so the index must rebuild.
-    let hasher_matches = meta_get(conn, "vec_rowid_hasher_version")?.as_deref()
-        == Some(ROWID_HASHER_VERSION);
+    let hasher_matches =
+        meta_get(conn, "vec_rowid_hasher_version")?.as_deref() == Some(ROWID_HASHER_VERSION);
     let exists = table_exists(conn, "vec_embeddings")?;
     if exists && current_dim == Some(dim) && hasher_matches {
         return Ok(());
@@ -184,9 +183,7 @@ fn rebuild_vec_embeddings(conn: &Connection, dim: usize) -> Result<(), String> {
     .map_err(|e| format!("Failed to create vec_embeddings: {e}"))?;
 
     let mut stmt = conn
-        .prepare(
-            "SELECT owner_id, owner_kind, model, vec FROM embeddings WHERE dim = ?1",
-        )
+        .prepare("SELECT owner_id, owner_kind, model, vec FROM embeddings WHERE dim = ?1")
         .map_err(|e| format!("Failed to prepare vec rebuild scan: {e}"))?;
     let rows = stmt
         .query_map(params![dim as i64], |row| {
@@ -423,9 +420,7 @@ fn vector_search_brute(
     filter: &SearchFilter,
     model: Option<&str>,
 ) -> Result<Vec<ScoredHit>, String> {
-    let mut sql = String::from(
-        "SELECT owner_id, owner_kind, vec FROM embeddings WHERE dim = ?1",
-    );
+    let mut sql = String::from("SELECT owner_id, owner_kind, vec FROM embeddings WHERE dim = ?1");
     let mut bind: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
     bind.push(Box::new(query_vec.len() as i64));
 
@@ -494,7 +489,10 @@ fn vector_search_brute(
         // Same orphan tolerance as the ANN path: a stale hit is skipped, not
         // allowed to fail the whole search.
         let Ok((text, meta)) = resolve_hit_text(conn, &row.owner_id, &row.owner_kind) else {
-            eprintln!("[career_db] skipping orphaned search hit {}:{}", row.owner_kind, row.owner_id);
+            eprintln!(
+                "[career_db] skipping orphaned search hit {}:{}",
+                row.owner_kind, row.owner_id
+            );
             continue;
         };
         hits.push(ScoredHit {
@@ -640,17 +638,14 @@ fn resolve_child_hit(
             |r| r.get(0),
         )
         .optional()
-        .map_err(|e| {
-            format!("Failed to find parent block for {meta_key} {child_id}: {e}")
-        })?;
+        .map_err(|e| format!("Failed to find parent block for {meta_key} {child_id}: {e}"))?;
 
     let Some(json) = json else {
         return Ok((String::new(), serde_json::Value::Null));
     };
 
-    let value: serde_json::Value = serde_json::from_str(&json).map_err(|e| {
-        format!("Invalid block JSON while resolving {meta_key} {child_id}: {e}")
-    })?;
+    let value: serde_json::Value = serde_json::from_str(&json)
+        .map_err(|e| format!("Invalid block JSON while resolving {meta_key} {child_id}: {e}"))?;
 
     let child = value
         .get(array_path.trim_start_matches("$."))
@@ -826,7 +821,8 @@ mod tests {
     }
 
     #[test]
-    fn search_scopes_to_one_model() {        let _ = ensure_sqlite_vec_registered();
+    fn search_scopes_to_one_model() {
+        let _ = ensure_sqlite_vec_registered();
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
         conn.execute(

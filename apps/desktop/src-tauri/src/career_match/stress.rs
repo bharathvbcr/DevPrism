@@ -128,7 +128,15 @@ const KINDS: &[&str] = &[
     "unknown-kind",
 ];
 
-const SENIORITIES: &[&str] = &["ic", "senior", "lead", "manager", "director", "", "CTO-level"];
+const SENIORITIES: &[&str] = &[
+    "ic",
+    "senior",
+    "lead",
+    "manager",
+    "director",
+    "",
+    "CTO-level",
+];
 
 const DATE_SHAPES: &[&str] = &[
     "2022-01",
@@ -168,7 +176,9 @@ pub(crate) fn hostile_block(rng: &mut Lcg, slot: usize) -> ExperienceBlock {
             metrics: (0..rng.below(3))
                 .map(|_| BulletMetric {
                     value: hostile_string(rng),
-                    kind: rng.pick(&["percent", "count", "multiplier", ""]).to_string(),
+                    kind: rng
+                        .pick(&["percent", "count", "multiplier", ""])
+                        .to_string(),
                 })
                 .collect(),
             evidence_refs: Vec::new(),
@@ -182,7 +192,11 @@ pub(crate) fn hostile_block(rng: &mut Lcg, slot: usize) -> ExperienceBlock {
         org: hostile_string(rng),
         date_range: DateRange {
             start: hostile_date(rng),
-            end: if rng.bool() { None } else { Some(hostile_date(rng)) },
+            end: if rng.bool() {
+                None
+            } else {
+                Some(hostile_date(rng))
+            },
         },
         personas: (0..rng.below(3)).map(|_| hostile_string(rng)).collect(),
         domains: (0..rng.below(3)).map(|_| hostile_string(rng)).collect(),
@@ -190,17 +204,37 @@ pub(crate) fn hostile_block(rng: &mut Lcg, slot: usize) -> ExperienceBlock {
             .map(|_| SkillTag {
                 name: hostile_string(rng),
                 level: rng.below(11) as u8,
-                years: if rng.bool() { None } else { Some(rng.hostile_f64()) },
+                years: if rng.bool() {
+                    None
+                } else {
+                    Some(rng.hostile_f64())
+                },
             })
             .collect(),
         seniority_level: rng.pick(SENIORITIES).to_string(),
-        location: if rng.bool() { None } else { Some(hostile_string(rng)) },
-        url: if rng.bool() { None } else { Some(hostile_string(rng)) },
-        url_label: if rng.bool() { None } else { Some(hostile_string(rng)) },
+        location: if rng.bool() {
+            None
+        } else {
+            Some(hostile_string(rng))
+        },
+        url: if rng.bool() {
+            None
+        } else {
+            Some(hostile_string(rng))
+        },
+        url_label: if rng.bool() {
+            None
+        } else {
+            Some(hostile_string(rng))
+        },
         extra: None,
         bullets,
         facts: Vec::new(),
-        notes: if rng.bool() { None } else { Some(hostile_string(rng)) },
+        notes: if rng.bool() {
+            None
+        } else {
+            Some(hostile_string(rng))
+        },
         embedding_text: None,
         updated_at: "2026-01-01".to_string(),
     }
@@ -311,18 +345,19 @@ fn the_engine_pipeline_is_total_under_hostile_traffic() {
         };
         let now_year = *rng.pick(&[2026i32, 1970, 0, -5000, i32::MAX, i32::MIN]);
         let now_month = *rng.pick(&[1u32, 6, 8, 12, 0, 99]);
-        let ctx = scoring_context(
-            &profile,
-            &persona_id,
-            now_year,
-            now_month,
-            rng.bool(),
-        );
+        let ctx = scoring_context(&profile, &persona_id, now_year, now_month, rng.bool());
         let embeddings = hostile_embeddings(&mut rng, &blocks);
 
         let scored = scoring::score_blocks(&blocks, &ctx, &embeddings);
-        assert_eq!(scored.len(), blocks.len(), "seed {seed}: scoring dropped blocks");
-        for (s, e) in scored.iter().zip(embeddings.values().chain(std::iter::repeat(&0.0))) {
+        assert_eq!(
+            scored.len(),
+            blocks.len(),
+            "seed {seed}: scoring dropped blocks"
+        );
+        for (s, e) in scored
+            .iter()
+            .zip(embeddings.values().chain(std::iter::repeat(&0.0)))
+        {
             let _ = e;
             assert!(
                 s.score.is_finite() && (0.0..=1.0).contains(&s.score),
@@ -387,11 +422,8 @@ fn the_engine_pipeline_is_total_under_hostile_traffic() {
 
         let selected_blocks: Vec<ExperienceBlock> =
             sel.selected.iter().map(|s| s.block.clone()).collect();
-        let gaps = gap::analyze_must_have_gaps(
-            &profile.must_have_skills,
-            &selected_blocks,
-            &blocks,
-        );
+        let gaps =
+            gap::analyze_must_have_gaps(&profile.must_have_skills, &selected_blocks, &blocks);
         assert_eq!(
             gaps.covered_count + gaps.weak_count + gaps.missing_count,
             gaps.items.len(),
@@ -416,7 +448,9 @@ fn the_engine_pipeline_is_total_under_hostile_traffic() {
                 ),
             );
         }
-        let contact: Vec<String> = (0..rng.below(5)).map(|_| hostile_string(&mut rng)).collect();
+        let contact: Vec<String> = (0..rng.below(5))
+            .map(|_| hostile_string(&mut rng))
+            .collect();
         let doc = render::render_resume(
             &hostile_string(&mut rng),
             &contact,
@@ -428,8 +462,18 @@ fn the_engine_pipeline_is_total_under_hostile_traffic() {
             None,
             "seed {seed}: rendered document carries an unbalanced literal"
         );
-        let doc_again = render::render_resume("same", &["same".to_string()], &selected_blocks, Some(&bullet_ids_by_block));
-        let doc_twice = render::render_resume("same", &["same".to_string()], &selected_blocks, Some(&bullet_ids_by_block));
+        let doc_again = render::render_resume(
+            "same",
+            &["same".to_string()],
+            &selected_blocks,
+            Some(&bullet_ids_by_block),
+        );
+        let doc_twice = render::render_resume(
+            "same",
+            &["same".to_string()],
+            &selected_blocks,
+            Some(&bullet_ids_by_block),
+        );
         assert_eq!(doc_again, doc_twice, "rendering is not deterministic");
     }
 }
@@ -444,8 +488,9 @@ fn selection_is_permutation_invariant_under_hostile_content() {
         let jd_text = hostile_jd(&mut rng);
         let profile = jd::extract_profile(&jd_text).profile;
 
-        let mut blocks: Vec<ExperienceBlock> =
-            (0..rng.below(12)).map(|i| hostile_block(&mut rng, i)).collect();
+        let mut blocks: Vec<ExperienceBlock> = (0..rng.below(12))
+            .map(|i| hostile_block(&mut rng, i))
+            .collect();
 
         let run = |blocks: &[ExperienceBlock]| {
             let ctx = scoring_context(&profile, "ai", 2026, 8, false);
@@ -483,7 +528,9 @@ fn selection_is_permutation_invariant_under_hostile_content() {
 /// invention detector however hostile the canonical text is.
 #[test]
 fn the_metric_gate_stays_honest_under_hostile_values_and_texts() {
-    use metrics::{dropped_metrics, introduced_numbers, metric_preserved_in_text, metrics_values_preserved};
+    use metrics::{
+        dropped_metrics, introduced_numbers, metric_preserved_in_text, metrics_values_preserved,
+    };
 
     for seed in 0..400u64 {
         let mut rng = Lcg::new(seed ^ 0xD1FF);
@@ -491,7 +538,8 @@ fn the_metric_gate_stays_honest_under_hostile_values_and_texts() {
         let metric_list: Vec<BulletMetric> = (0..rng.below(4))
             .map(|_| BulletMetric {
                 value: if rng.bool() {
-                    rng.pick(&["25%", "$1.2M", "10,000", "5x", "1.61x", "3"]).to_string()
+                    rng.pick(&["25%", "$1.2M", "10,000", "5x", "1.61x", "3"])
+                        .to_string()
                 } else {
                     hostile_string(&mut rng)
                 },

@@ -417,13 +417,8 @@ async fn handle_messages_to_stream(
             .unwrap_or_default()
             .to_ascii_lowercase();
         if content_type.contains("stream") {
-            stream_openai_sse_to_anthropic(
-                stream,
-                response,
-                &anthropic_request,
-                credential,
-            )
-            .await?;
+            stream_openai_sse_to_anthropic(stream, response, &anthropic_request, credential)
+                .await?;
         } else {
             let response_text = response
                 .text()
@@ -707,7 +702,10 @@ mod tests {
     #[test]
     fn redaction_leaves_ordinary_text_and_short_tokens_intact() {
         // "sk-" with too short a tail is not a key; unicode is preserved.
-        assert_eq!(redact_secrets("use sk-1 flag — café ☕"), "use sk-1 flag — café ☕");
+        assert_eq!(
+            redact_secrets("use sk-1 flag — café ☕"),
+            "use sk-1 flag — café ☕"
+        );
         assert_eq!(redact_secrets("no secrets here"), "no secrets here");
     }
 
@@ -725,8 +723,14 @@ mod tests {
 
     #[test]
     fn provider_error_status_maps_to_anthropic_types() {
-        assert_eq!(map_provider_error_status(400), (400, "invalid_request_error"));
-        assert_eq!(map_provider_error_status(401), (401, "authentication_error"));
+        assert_eq!(
+            map_provider_error_status(400),
+            (400, "invalid_request_error")
+        );
+        assert_eq!(
+            map_provider_error_status(401),
+            (401, "authentication_error")
+        );
         assert_eq!(map_provider_error_status(429), (429, "rate_limit_error"));
         assert_eq!(map_provider_error_status(503), (503, "api_error"));
         assert_eq!(map_provider_error_status(529), (529, "overloaded_error"));
@@ -760,7 +764,10 @@ mod tests {
             headers: vec![("x-api-key".into(), "secret-1".into())],
             body: Vec::new(),
         };
-        assert_eq!(presented_proxy_token(&with_key).as_deref(), Some("secret-1"));
+        assert_eq!(
+            presented_proxy_token(&with_key).as_deref(),
+            Some("secret-1")
+        );
 
         let with_bearer = HttpRequest {
             method: "POST".into(),

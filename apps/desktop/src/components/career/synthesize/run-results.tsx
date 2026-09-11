@@ -25,6 +25,7 @@ import {
   type GapCoverageStatus,
   type MatchReport,
   type MatchReportAtsParse,
+  type MatchReportJdMetadata,
   type MatchReportKeywordHeatmap,
 } from "@/lib/resume-synthesis";
 
@@ -176,6 +177,7 @@ export function MatchReportPanel({
       <AtsParsePanel
         atsParse={report.atsParse}
         heatmap={report.keywordHeatmap}
+        jdMetadata={report.jdMetadata}
       />
 
       <BlockEvidenceSection report={report} />
@@ -742,11 +744,13 @@ const HEAT_CLASS: Record<number, string> = {
 export function AtsParsePanel({
   atsParse,
   heatmap,
+  jdMetadata,
 }: {
   atsParse?: MatchReportAtsParse | null;
   heatmap?: MatchReportKeywordHeatmap | null;
+  jdMetadata?: MatchReportJdMetadata | null;
 }) {
-  if (!atsParse && !heatmap) return null;
+  if (!atsParse && !heatmap && !jdMetadata) return null;
 
   const contact = atsParse?.contact;
   const missingRequired = atsParse?.missingRequiredSections ?? [];
@@ -776,6 +780,26 @@ export function AtsParsePanel({
           </Badge>
         )}
       </div>
+
+      {jdMetadata &&
+        (jdMetadata.jobTitle ||
+          jdMetadata.company ||
+          jdMetadata.location ||
+          jdMetadata.salarySummary ||
+          jdMetadata.experienceLevel) && (
+          <p className="text-[11px] text-muted-foreground">
+            JD:{" "}
+            {[
+              jdMetadata.jobTitle,
+              jdMetadata.company,
+              jdMetadata.location,
+              jdMetadata.experienceLevel,
+              jdMetadata.salarySummary,
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          </p>
+        )}
 
       {contact && (
         <p className="text-[11px] text-muted-foreground">

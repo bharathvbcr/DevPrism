@@ -357,9 +357,7 @@ fn take_ai_request_cancel(request_id: &str) {
     }
 }
 
-fn clone_cancel_parts(
-    handle: &CancelHandle,
-) -> (Arc<AtomicBool>, Arc<Notify>) {
+fn clone_cancel_parts(handle: &CancelHandle) -> (Arc<AtomicBool>, Arc<Notify>) {
     (Arc::clone(&handle.flag), Arc::clone(&handle.notify))
 }
 
@@ -985,9 +983,7 @@ pub async fn run_native_agent(
             .unwrap_or_default();
         // Vertex OpenAI-compat credentials intentionally store an empty API key;
         // the request path mints a gcloud OAuth token via resolve_vertex_bearer_token.
-        if key.trim().is_empty()
-            && !crate::google_auth::is_vertex_openai_compat_base_url(&base)
-        {
+        if key.trim().is_empty() && !crate::google_auth::is_vertex_openai_compat_base_url(&base) {
             let msg =
                 "[E_AUTH] API key is required. Add a provider credential in Settings → Provider."
                     .to_string();
@@ -1290,15 +1286,14 @@ pub async fn run_native_agent(
         // path so no tail text is lost.
         let window_for_deltas = window.clone();
         let tab_for_deltas = tab_id.clone();
-        let mut deltas = DeltaTailGuard::new(delta_coalesce::DeltaForwarder::new(
-            move |kind, text| {
+        let mut deltas =
+            DeltaTailGuard::new(delta_coalesce::DeltaForwarder::new(move |kind, text| {
                 emit_msg(
                     &window_for_deltas,
                     &tab_for_deltas,
                     &delta_coalesce::streaming_delta_event(kind, &text),
                 );
-            },
-        ));
+            }));
         let mut turn = {
             let mut attempt = 0u32;
             'chat: loop {
@@ -1423,7 +1418,8 @@ pub async fn run_native_agent(
                 turn.thinking = settled.reasoning;
             }
             for call in settled.calls {
-                let args: Value = serde_json::from_str(&call.arguments).unwrap_or_else(|_| json!({}));
+                let args: Value =
+                    serde_json::from_str(&call.arguments).unwrap_or_else(|_| json!({}));
                 turn.tool_calls.push(ollama::ToolCall {
                     name: ollama::canonicalize_tool_name(&call.name),
                     args,
@@ -2216,7 +2212,11 @@ pub async fn ai_complete(
     )
     .await;
 
-    if let Some(id) = request_id.as_deref().map(str::trim).filter(|id| !id.is_empty()) {
+    if let Some(id) = request_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
         take_ai_request_cancel(id);
     }
     result
@@ -2252,13 +2252,8 @@ async fn ai_complete_inner(
             None => (None, None),
         };
         let system = crate::personalization::augment_system_prompt(system);
-        let out = crate::claude::complete_claude_print(
-            &user,
-            system.as_deref(),
-            flag,
-            notify,
-        )
-        .await?;
+        let out =
+            crate::claude::complete_claude_print(&user, system.as_deref(), flag, notify).await?;
         let out = strip_inline_fences(&out);
         if out.is_empty() {
             return Err("The model returned an empty response.".into());
@@ -2372,16 +2367,13 @@ pub async fn ai_embed(
         .map(register_ai_request_cancel);
     let cancel_parts = cancel.as_ref().map(clone_cancel_parts);
 
-    let result = ai_embed_inner(
-        texts,
-        model,
-        base_url,
-        provider_credential_id,
-        cancel_parts,
-    )
-    .await;
+    let result = ai_embed_inner(texts, model, base_url, provider_credential_id, cancel_parts).await;
 
-    if let Some(id) = request_id.as_deref().map(str::trim).filter(|id| !id.is_empty()) {
+    if let Some(id) = request_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
         take_ai_request_cancel(id);
     }
     result
@@ -2500,7 +2492,11 @@ pub async fn ai_complete_stream(
     )
     .await;
 
-    if let Some(id) = request_id.as_deref().map(str::trim).filter(|id| !id.is_empty()) {
+    if let Some(id) = request_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
         take_ai_request_cancel(id);
     }
     result
@@ -2893,14 +2889,23 @@ mod tests {
     fn openai_probe_base_matches_the_chat_url_root_logic() {
         use super::openai_compat::probe_base;
         // Already chat-rooted: used as-is.
-        assert_eq!(probe_base("https://api.groq.com/openai/v1"), "https://api.groq.com/openai/v1");
+        assert_eq!(
+            probe_base("https://api.groq.com/openai/v1"),
+            "https://api.groq.com/openai/v1"
+        );
         assert_eq!(
             probe_base("https://generativelanguage.googleapis.com/v1beta/openai"),
             "https://generativelanguage.googleapis.com/v1beta/openai"
         );
         // Bare host: /v1 appended, exactly as the chat URL builder would.
-        assert_eq!(probe_base("http://127.0.0.1:8000"), "http://127.0.0.1:8000/v1");
-        assert_eq!(probe_base("http://localhost:1234/"), "http://localhost:1234/v1");
+        assert_eq!(
+            probe_base("http://127.0.0.1:8000"),
+            "http://127.0.0.1:8000/v1"
+        );
+        assert_eq!(
+            probe_base("http://localhost:1234/"),
+            "http://localhost:1234/v1"
+        );
     }
 
     #[test]
@@ -2946,11 +2951,10 @@ mod tests {
 
         {
             let sink = captured.clone();
-            let mut guard = DeltaTailGuard::new(delta_coalesce::DeltaForwarder::new(
-                move |kind, text| {
+            let mut guard =
+                DeltaTailGuard::new(delta_coalesce::DeltaForwarder::new(move |kind, text| {
                     sink.borrow_mut().push((kind, text.to_string()));
-                },
-            ));
+                }));
             guard.push(ollama::StreamDeltaKind::Text, "tail ");
             guard.push(ollama::StreamDeltaKind::Text, "text");
             // No explicit finish(): the drop below must flush.
@@ -2971,11 +2975,10 @@ mod tests {
 
         {
             let sink = captured.clone();
-            let mut guard = DeltaTailGuard::new(delta_coalesce::DeltaForwarder::new(
-                move |kind, text| {
+            let mut guard =
+                DeltaTailGuard::new(delta_coalesce::DeltaForwarder::new(move |kind, text| {
                     sink.borrow_mut().push((kind, text.to_string()));
-                },
-            ));
+                }));
             guard.push(ollama::StreamDeltaKind::Thinking, "hmm");
             assert!(guard.finish());
             assert!(!guard.finish(), "second finish must be a no-op");

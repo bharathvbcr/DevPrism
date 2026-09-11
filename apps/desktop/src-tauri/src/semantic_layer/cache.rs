@@ -1,5 +1,5 @@
-use super::SemanticLayerConfig;
 use super::math::cosine_similarity;
+use super::SemanticLayerConfig;
 use std::collections::HashMap;
 use std::time::Instant;
 

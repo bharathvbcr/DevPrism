@@ -17,6 +17,12 @@ import { skillOverlap, skillsMatch, textCoversSkill } from "./scoring";
 
 export interface SelectionBudget {
   totalLines: number;
+  /**
+   * Rewrite character cap copied from `ResumeTemplateBudget.perBullet`.
+   * Not wrap width (`CHARS_PER_LINE`) and not the knapsack bullet cap
+   * (`DEFAULT_MAX_BULLETS_PER_BLOCK`). The Rust twin `SelectionBudget.per_bullet`
+   * is the bullet cap — different field, same module name.
+   */
   perBullet: number;
   blocksPerSection: Partial<Record<SectionKind, number>>;
 }
@@ -179,13 +185,20 @@ export function knapsackSelect(
   let sectionCounts: Partial<Record<SectionKind, number>> = {};
   let lines = 0;
 
+  /** Pack cost: wrap at `CHARS_PER_LINE`, charge at most `DEFAULT_MAX_BULLETS_PER_BLOCK`. */
+  const packCost = (block: ExperienceBlock): number =>
+    estimateBlockLines(block, {
+      charsPerLine: CHARS_PER_LINE,
+      maxBullets: DEFAULT_MAX_BULLETS_PER_BLOCK,
+    });
+
   const tryAdd = (item: ScoredBlock): boolean => {
     const section = sectionForBlock(item.block);
     const cap = sectionCap(b, section);
     const count = sectionCounts[section] ?? 0;
     if (count >= cap) return false;
 
-    const cost = estimateBlockLines(item.block);
+    const cost = packCost(item.block);
     if (lines + cost > b.totalLines && selected.length > 0) return false;
 
     const orgKey = item.block.org.trim().toLowerCase() || item.block.id;
@@ -200,7 +213,7 @@ export function knapsackSelect(
           0,
           (sectionCounts[prevSection] ?? 1) - 1,
         );
-        lines -= estimateBlockLines(incumbent.block);
+        lines -= packCost(incumbent.block);
         selected.splice(idx, 1);
       }
     }
@@ -261,7 +274,7 @@ export function knapsackSelect(
         0,
         (sectionCounts[dropSection] ?? 1) - 1,
       );
-      lines -= estimateBlockLines(drop.block);
+      lines -= packCost(drop.block);
       selected.splice(dropIdx, 1);
       byOrg.delete(drop.block.org.trim().toLowerCase() || drop.block.id);
 

@@ -1,11 +1,13 @@
 //! Execution for the resume-documents pack. Declarations live in the parent.
 
-use crate::plugins::path_guard::{atomic_write, backup_file, canonicalize_existing, confine, sha1_hex};
-use crate::plugins::PluginContext;
 use crate::career_db::{self, KnownProject};
 use crate::mcp::protocol::{
     InputRequest, InputRequiredResult, JsonRpcError, ERR_ELICITATION_FAILED,
 };
+use crate::plugins::path_guard::{
+    atomic_write, backup_file, canonicalize_existing, confine, sha1_hex,
+};
+use crate::plugins::PluginContext;
 use crate::variants;
 use base64::prelude::*;
 use serde_json::{json, Value};
@@ -34,8 +36,17 @@ const WRITABLE_EXTENSIONS: &[&str] = &[
 
 /// Directories never listed or searched for sources.
 const EXCLUDED_DIRS: &[&str] = &[
-    ".git", ".prism", ".claudeprism", ".gitnexus", ".claude", ".devcouncil",
-    "node_modules", "target", "dist", "build", ".venv",
+    ".git",
+    ".prism",
+    ".claudeprism",
+    ".gitnexus",
+    ".claude",
+    ".devcouncil",
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    ".venv",
 ];
 
 // --- Argument helpers ---
@@ -125,10 +136,7 @@ fn resolve_known_project_blocking(
     )))
 }
 
-async fn resolve_known_project(
-    ctx: &PluginContext,
-    args: &Value,
-) -> Result<PathBuf, JsonRpcError> {
+async fn resolve_known_project(ctx: &PluginContext, args: &Value) -> Result<PathBuf, JsonRpcError> {
     let raw = require_str(args, "project_root")?.to_string();
     let db = ctx.career_db.clone();
     tokio::task::spawn_blocking(move || resolve_known_project_blocking(&db, &raw))
@@ -283,10 +291,10 @@ pub(crate) fn find_main_source(root: &Path) -> Option<PathBuf> {
     const STEMS: &[&str] = &["main", "document", "resume"];
     for stem in STEMS {
         let at_root = format!("{stem}.typ");
-        if let Some(hit) = typ_files
-            .iter()
-            .find(|p| p.file_name().is_some_and(|n| n == std::ffi::OsStr::new(&at_root)))
-        {
+        if let Some(hit) = typ_files.iter().find(|p| {
+            p.file_name()
+                .is_some_and(|n| n == std::ffi::OsStr::new(&at_root))
+        }) {
             return Some(hit.clone());
         }
     }
@@ -587,8 +595,7 @@ async fn edit(ctx: &PluginContext, args: &Value) -> Result<Value, JsonRpcError> 
 
         guard_major_reduction(original_len, working.len(), allow_major_reduction)?;
 
-        let backup =
-            backup_file(&root, &path).map_err(JsonRpcError::internal_error)?;
+        let backup = backup_file(&root, &path).map_err(JsonRpcError::internal_error)?;
         let final_sha = sha1_hex(working.as_bytes());
         atomic_write(&path, working.as_bytes()).map_err(JsonRpcError::internal_error)?;
 
@@ -640,9 +647,9 @@ async fn variant_create(ctx: &PluginContext, args: &Value) -> Result<Value, Json
             jd.len()
         )));
     }
-    tokio::task::spawn_blocking(
-        move || variants::create_variant_blocking(&root.to_string_lossy(), &name, &jd, &status),
-    )
+    tokio::task::spawn_blocking(move || {
+        variants::create_variant_blocking(&root.to_string_lossy(), &name, &jd, &status)
+    })
     .await
     .map_err(|e| JsonRpcError::internal_error(e.to_string()))?
     .map(|v| json!({ "variant": v }))
@@ -753,8 +760,10 @@ async fn variant_delete(ctx: &PluginContext, args: &Value) -> Result<Value, Json
             let info = tokio::task::spawn_blocking({
                 let root2 = root.clone();
                 let id = variant_id.clone();
-                move || variants::list_variants_blocking(&root2.to_string_lossy())
-                    .map(|all| all.into_iter().find(|v| v.id == id))
+                move || {
+                    variants::list_variants_blocking(&root2.to_string_lossy())
+                        .map(|all| all.into_iter().find(|v| v.id == id))
+                }
             })
             .await
             .map_err(|e| JsonRpcError::internal_error(e.to_string()))?
@@ -861,14 +870,20 @@ async fn compile_file(ctx: &PluginContext, args: &Value) -> Result<Value, JsonRp
                     .file_stem()
                     .map(|s| s.to_string_lossy().to_string())
                     .unwrap_or_else(|| "resume".to_string());
-                let dest = root.join(".prism").join("build").join(format!("{stem}.pdf"));
+                let dest = root
+                    .join(".prism")
+                    .join("build")
+                    .join(format!("{stem}.pdf"));
                 atomic_write(&dest, bytes).map_err(JsonRpcError::internal_error)?;
                 persisted_to = Some(dest.to_string_lossy().to_string());
             }
         }
 
         Ok(CompileOutcome {
-            source_rel: path.strip_prefix(&root).ok().map(|p| p.to_string_lossy().to_string()),
+            source_rel: path
+                .strip_prefix(&root)
+                .ok()
+                .map(|p| p.to_string_lossy().to_string()),
             result,
             persisted_to,
         })
@@ -918,9 +933,11 @@ async fn save_synthesis(ctx: &PluginContext, args: &Value) -> Result<Value, Json
         )));
     }
 
-    tokio::task::spawn_blocking(move || save_synthesis_blocking(&root, &version_name, &typst_source, &jd_text, &status))
-        .await
-        .map_err(|e| JsonRpcError::internal_error(e.to_string()))?
+    tokio::task::spawn_blocking(move || {
+        save_synthesis_blocking(&root, &version_name, &typst_source, &jd_text, &status)
+    })
+    .await
+    .map_err(|e| JsonRpcError::internal_error(e.to_string()))?
 }
 
 fn save_synthesis_blocking(
@@ -933,8 +950,9 @@ fn save_synthesis_blocking(
     // Create the variant snapshot from the master. On any failure after this
     // point we roll the variant back rather than leaving half-written state,
     // mirroring the frontend materializer's rollback.
-    let info = variants::create_variant_blocking(&root.to_string_lossy(), version_name, jd_text, status)
-        .map_err(JsonRpcError::internal_error)?;
+    let info =
+        variants::create_variant_blocking(&root.to_string_lossy(), version_name, jd_text, status)
+            .map_err(JsonRpcError::internal_error)?;
     let variant_dir = PathBuf::from(&info.path);
 
     let rollback = |dir: &Path| {
@@ -954,10 +972,7 @@ fn save_synthesis_blocking(
 
     let mut pdf_path = None;
     if let Some(bytes) = &compiled.pdf_bytes {
-        let dest = variant_dir
-            .join(".prism")
-            .join("build")
-            .join("resume.pdf");
+        let dest = variant_dir.join(".prism").join("build").join("resume.pdf");
         // A failed PDF write does not invalidate the saved source; it is
         // simply reported as absent.
         if atomic_write(&dest, bytes).is_ok() {
@@ -1007,7 +1022,10 @@ mod unit_tests {
     fn apply_edit_missing_match_reports_a_helpful_hint() {
         let err = apply_one_edit("# Heading\nbody", "zzz-absent", "y", false).unwrap_err();
         assert!(err.contains("not found"), "{err}");
-        assert!(err.contains("File starts with"), "the hint is the point: {err}");
+        assert!(
+            err.contains("File starts with"),
+            "the hint is the point: {err}"
+        );
     }
 
     #[test]
@@ -1050,7 +1068,10 @@ mod unit_tests {
             uuid::Uuid::new_v4().simple()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        assert!(find_main_source(&dir).is_none(), "empty project has no source");
+        assert!(
+            find_main_source(&dir).is_none(),
+            "empty project has no source"
+        );
         std::fs::write(dir.join("other.typ"), "x").unwrap();
         assert_eq!(
             find_main_source(&dir),

@@ -95,13 +95,9 @@ fn meta_content_hash(meta: &serde_json::Value) -> Option<String> {
 fn read_source_text(path: &Path) -> Result<(String, String), String> {
     // Stat before reading: refuse non-regular files outright and never pull an
     // unbounded file into memory (same cap the MCP ingest path enforces).
-    let meta =
-        fs::metadata(path).map_err(|e| format!("Failed to stat {}: {e}", path.display()))?;
+    let meta = fs::metadata(path).map_err(|e| format!("Failed to stat {}: {e}", path.display()))?;
     if !meta.is_file() {
-        return Err(format!(
-            "Source is not a regular file: {}",
-            path.display()
-        ));
+        return Err(format!("Source is not a regular file: {}", path.display()));
     }
     let max_bytes = crate::mcp::tools_career::MAX_TEXT_BYTES;
     if meta.len() > max_bytes as u64 {
@@ -472,8 +468,7 @@ pub fn upsert_prepared_source(
                 // Reuse id; only re-embed if no embedding exists under the
                 // active model (PK is (owner_id, model), so an unqualified
                 // check would mask a switched embed model).
-                let has_emb =
-                    chunk_has_embedding(&tx, existing_id, active_model.as_deref())?;
+                let has_emb = chunk_has_embedding(&tx, existing_id, active_model.as_deref())?;
                 if !has_emb {
                     needs_embedding.push(existing_id.clone());
                 }
@@ -603,7 +598,9 @@ fn chunk_has_embedding(
         .prepare(sql)
         .map_err(|e| format!("Failed to check embedding: {e}"))?;
     let found = match active_model {
-        Some(m) => stmt.query_row(params![chunk_id, m], |_| Ok(true)).optional(),
+        Some(m) => stmt
+            .query_row(params![chunk_id, m], |_| Ok(true))
+            .optional(),
         None => stmt.query_row(params![chunk_id], |_| Ok(true)).optional(),
     }
     .map_err(|e| format!("Failed to check embedding: {e}"))?;
@@ -1163,10 +1160,7 @@ mod tests {
             source_type: "markdown".into(),
             title: "doom".into(),
             content_hash: "doom_v1".into(),
-            chunks: vec![
-                chunk_of("alpha", "doom"),
-                chunk_of("BOOM", "doom"),
-            ],
+            chunks: vec![chunk_of("alpha", "doom"), chunk_of("BOOM", "doom")],
         };
         let err = upsert_prepared_source(&conn, &prepared).unwrap_err();
         assert!(err.contains("boom"), "unexpected error: {err}");
@@ -1199,8 +1193,7 @@ mod tests {
         upsert_prepared_source(&conn, &build("v1", &["old one", "old two"])).unwrap();
         create_boom_trigger(&conn, true);
 
-        let err =
-            upsert_prepared_source(&conn, &build("v2", &["fresh", "BOOM"])).unwrap_err();
+        let err = upsert_prepared_source(&conn, &build("v2", &["fresh", "BOOM"])).unwrap_err();
         assert!(err.contains("boom"), "unexpected error: {err}");
 
         assert_eq!(
@@ -1220,7 +1213,9 @@ mod tests {
         };
         assert_eq!(texts, vec!["old one".to_string(), "old two".to_string()]);
         let hash: String = conn
-            .query_row("SELECT content_hash FROM kb_sources LIMIT 1", [], |r| r.get(0))
+            .query_row("SELECT content_hash FROM kb_sources LIMIT 1", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(hash, "v1", "failed upsert still advanced the source hash");
     }
@@ -1234,8 +1229,11 @@ mod tests {
         let file = dir.path().join("path-doom.md");
         // Two chunks: a >TARGET_CHUNK_CHARS paragraph, then one containing the
         // trigger marker so the second insert fails.
-        fs::write(&file, format!("{}\n\nBOOM", "a".repeat(TARGET_CHUNK_CHARS + 100)))
-            .unwrap();
+        fs::write(
+            &file,
+            format!("{}\n\nBOOM", "a".repeat(TARGET_CHUNK_CHARS + 100)),
+        )
+        .unwrap();
 
         let conn = mem_conn();
         create_boom_trigger(&conn, false);
@@ -1439,7 +1437,10 @@ mod tests {
         let err = delete_kb_source(&conn, "src_none").unwrap_err();
         assert!(err.contains("KB source not found"), "got: {err}");
         assert_eq!(
-            count_rows(&conn, "SELECT COUNT(*) FROM kb_chunks WHERE id = 'chk_orph'"),
+            count_rows(
+                &conn,
+                "SELECT COUNT(*) FROM kb_chunks WHERE id = 'chk_orph'"
+            ),
             1,
             "failed delete removed orphaned chunks"
         );

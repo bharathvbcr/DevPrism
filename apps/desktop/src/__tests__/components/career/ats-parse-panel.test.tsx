@@ -3,6 +3,7 @@ import { render, screen } from "@testing-library/react";
 import { AtsParsePanel } from "@/components/career/synthesize/run-results";
 import type {
   MatchReportAtsParse,
+  MatchReportJdMetadata,
   MatchReportKeywordHeatmap,
 } from "@/lib/resume-synthesis";
 
@@ -22,6 +23,19 @@ const atsParse: MatchReportAtsParse = {
   plainTextChars: 900,
 };
 
+const jdMetadata: MatchReportJdMetadata = {
+  jobTitle: "ML Engineer",
+  company: "Acme",
+  location: "Remote",
+  postedDate: null,
+  salarySummary: "$120,000 - $150,000",
+  experienceLevel: "senior",
+  benefits: ["401(k)"],
+  cultureKeywords: ["collaborative"],
+  mustHaveCount: 2,
+  preferredCount: 1,
+};
+
 const heatmap: MatchReportKeywordHeatmap = {
   overallDensity: 2.41,
   sections: [
@@ -38,7 +52,7 @@ describe("AtsParsePanel", () => {
     const { container } = render(<AtsParsePanel />);
     expect(container).toBeEmptyDOMElement();
     const { container: empty2 } = render(
-      <AtsParsePanel atsParse={null} heatmap={null} />,
+      <AtsParsePanel atsParse={null} heatmap={null} jdMetadata={null} />,
     );
     expect(empty2).toBeEmptyDOMElement();
   });
@@ -60,5 +74,13 @@ describe("AtsParsePanel", () => {
     // Heatmap chips with densities.
     expect(screen.getByText(/Experience · 6\.2%/)).toBeInTheDocument();
     expect(screen.getByText(/Skills · 2\.4%/)).toBeInTheDocument();
+  });
+
+  it("shows extracted JD metadata when present", () => {
+    render(<AtsParsePanel jdMetadata={jdMetadata} />);
+    expect(screen.getByText("ATS parse check")).toBeInTheDocument();
+    expect(screen.getByText(/ML Engineer/)).toBeInTheDocument();
+    expect(screen.getByText(/Acme/)).toBeInTheDocument();
+    expect(screen.getByText(/\$120,000/)).toBeInTheDocument();
   });
 });

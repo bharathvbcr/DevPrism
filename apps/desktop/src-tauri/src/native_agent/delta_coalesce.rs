@@ -42,12 +42,7 @@ impl DeltaCoalescer {
     /// Feed one fragment. Returns a buffered block to emit first when the new
     /// fragment cannot join it (kind switch, size cap reached, or the buffer
     /// has been open longer than [`FLUSH_INTERVAL`]).
-    pub fn push(
-        &mut self,
-        kind: StreamDeltaKind,
-        frag: &str,
-        now: Instant,
-    ) -> Option<DeltaBlock> {
+    pub fn push(&mut self, kind: StreamDeltaKind, frag: &str, now: Instant) -> Option<DeltaBlock> {
         if frag.is_empty() {
             return None;
         }
@@ -165,10 +160,9 @@ mod forwarder_tests {
         let captured: std::rc::Rc<std::cell::RefCell<Recording>> =
             std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let sink_handle = captured.clone();
-        let forwarder =
-            DeltaForwarder::new(move |kind, text| {
-                sink_handle.borrow_mut().push((kind, text.to_string()));
-            });
+        let forwarder = DeltaForwarder::new(move |kind, text| {
+            sink_handle.borrow_mut().push((kind, text.to_string()));
+        });
         (forwarder, captured)
     }
 
@@ -187,12 +181,13 @@ mod forwarder_tests {
                 }
                 assert!(f.finish() || stop_after_pushes == 0);
                 assert!(!f.finish(), "second finish must be a no-op");
-                let text: String = out
-                    .borrow()
-                    .iter()
-                    .map(|(_, t)| t.as_str())
-                    .collect();
-                assert_eq!(text, (0..stop_after_pushes).map(|i| format!("t{i}")).collect::<String>());
+                let text: String = out.borrow().iter().map(|(_, t)| t.as_str()).collect();
+                assert_eq!(
+                    text,
+                    (0..stop_after_pushes)
+                        .map(|i| format!("t{i}"))
+                        .collect::<String>()
+                );
             }
             // Error path: finish before "emit_result", then the convergent
             // post-loop finish — combined output still complete, exactly once.
@@ -203,12 +198,13 @@ mod forwarder_tests {
                 }
                 let _ = f.finish();
                 let _ = f.finish();
-                let text: String = out
-                    .borrow()
-                    .iter()
-                    .map(|(_, t)| t.as_str())
-                    .collect();
-                assert_eq!(text, (0..stop_after_pushes).map(|i| format!("t{i}")).collect::<String>());
+                let text: String = out.borrow().iter().map(|(_, t)| t.as_str()).collect();
+                assert_eq!(
+                    text,
+                    (0..stop_after_pushes)
+                        .map(|i| format!("t{i}"))
+                        .collect::<String>()
+                );
                 assert_eq!(out.borrow().len() <= 1, true);
             }
         }
@@ -376,7 +372,10 @@ mod tests {
                 StreamDeltaKind::Thinking
             };
             let len = 1 + (rand() % 24) as usize;
-            input.push((kind, format!("{}{:03}", if i % 7 == 0 { "\n" } else { "" }, i).repeat(len / 4 + 1)));
+            input.push((
+                kind,
+                format!("{}{:03}", if i % 7 == 0 { "\n" } else { "" }, i).repeat(len / 4 + 1),
+            ));
         }
 
         let mut c = DeltaCoalescer::new();

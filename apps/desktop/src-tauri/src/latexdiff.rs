@@ -87,12 +87,13 @@ fn run_latexdiff(old_content: String, new_content: String) -> Result<String, Str
 
     // `dir` (TempDir) is dropped at end of scope, removing the scratch files.
     match output {
-        Ok(out) if out.status.success() => {
-            Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-        }
+        Ok(out) if out.status.success() => Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr);
-            Err(format!("latexdiff failed:\n{}", tail_lines(stderr.trim(), 15)))
+            Err(format!(
+                "latexdiff failed:\n{}",
+                tail_lines(stderr.trim(), 15)
+            ))
         }
         Err(e) => Err(e.to_message("latexdiff")),
     }

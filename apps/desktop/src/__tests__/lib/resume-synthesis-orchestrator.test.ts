@@ -643,4 +643,79 @@ describe("synthesizeResume (mocked llmJson)", () => {
     expect(previews.some((p) => p.startsWith("analyzing:"))).toBe(true);
     expect(previews.some((p) => p.startsWith("critic:"))).toBe(true);
   });
+
+  it("falls back to an imported seed summary when the summary LLM fails", async () => {
+    const llmJson = vi.fn(
+      async <T>(opts: {
+        label?: string;
+        validate: (v: unknown) => v is T;
+      }): Promise<T> => {
+        const label = opts.label ?? "";
+        if (label === "jd-analysis") {
+          if (!opts.validate(profile)) throw new Error("bad profile");
+          return profile as T;
+        }
+        if (label.startsWith("distill:") || label.startsWith("rewrite:")) {
+          const blockId = label.slice(label.indexOf(":") + 1);
+          const v = {
+            bullets: [
+              {
+                id: `${blockId}_b1`,
+                text: `Delivered Python systems with 40% gain for ${blockId}`,
+              },
+            ],
+          };
+          if (!opts.validate(v)) throw new Error("bad rewrite");
+          return v as T;
+        }
+        if (label === "critic") {
+          const v = { atsCoveragePct: 80, verdicts: [] };
+          if (!opts.validate(v)) throw new Error("bad critic");
+          return v as T;
+        }
+        if (label === "summary") {
+          throw new Error("summary model down");
+        }
+        throw new Error(`unexpected llmJson label: ${label}`);
+      },
+    );
+
+    const result = await synthesizeResume({
+      jdText:
+        "We need a senior ML engineer with Python experience and strong systems skills for production ML platforms.",
+      personaId: "ai",
+      templateId: TYPST_ATS_SINGLE_TEMPLATE.id,
+      header: {
+        fullName: "Test User",
+        cityRegion: "SF",
+        email: "t@example.com",
+        phone: "555",
+      },
+      seedSummary: "Staff engineer shipping ML systems in production.",
+      seedSkillGroups: [{ label: "Languages", items: "English, Tamil" }],
+      deps: {
+        listBlocks: async () => [block("exp_a", ["Python", "PyTorch"])],
+        listPersonas: async () => [persona],
+        vectorSearch: async () => [],
+        saveRun: async () => {},
+        llmJson: llmJson as never,
+        embed: async () => {
+          throw new Error("[E_NO_MODEL] no embedding model");
+        },
+        compile: async (_t, content) => ({
+          tex: "tex",
+          content,
+          repairs: [],
+          result: { success: true, summary: "ok" },
+        }),
+      },
+    });
+
+    expect(result.content.summary).toBe(
+      "Staff engineer shipping ML systems in production.",
+    );
+    expect(result.content.skills?.some((g) => /english/i.test(g.items))).toBe(
+      true,
+    );
+  });
 });

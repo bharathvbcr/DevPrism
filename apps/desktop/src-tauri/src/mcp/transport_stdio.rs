@@ -202,8 +202,13 @@ mod tests {
     #[test]
     fn an_invalid_utf8_line_yields_an_error_and_leaves_the_stream_usable() {
         // The pre-fix loop exited the process here, reporting success.
-        let input: Vec<u8> = [b"{\"a\":\"".as_slice(), &[0xff, 0xfe], b"\"}\n", b"{\"b\":1}\n"]
-            .concat();
+        let input: Vec<u8> = [
+            b"{\"a\":\"".as_slice(),
+            &[0xff, 0xfe],
+            b"\"}\n",
+            b"{\"b\":1}\n",
+        ]
+        .concat();
         let mut reader = BufReader::new(input.as_slice());
 
         let first = read_line_bounded(&mut reader).expect("first line reads");

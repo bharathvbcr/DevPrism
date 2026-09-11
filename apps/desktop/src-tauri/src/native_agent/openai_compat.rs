@@ -4,8 +4,8 @@
 use serde_json::{json, Value};
 
 use super::ollama::{
-    canonicalize_tool_name, read_success_body, ChatTurn, DEFAULT_CONTEXT_WINDOW,
-    MAX_TOOL_CALLS_PER_TURN, StreamDeltaKind, ToolCall,
+    canonicalize_tool_name, read_success_body, ChatTurn, StreamDeltaKind, ToolCall,
+    DEFAULT_CONTEXT_WINDOW, MAX_TOOL_CALLS_PER_TURN,
 };
 
 const DEFAULT_MAX_COMPLETION_TOKENS: u32 = 4096;
@@ -197,9 +197,7 @@ fn provider_auth_error(base_url: &str, api_key: &str, snippet: &str) -> String {
 /// cap — only content+thinking were checked — so a provider streaming endless
 /// argument fragments aborted the process at allocation failure.
 fn accumulated_turn_bytes(content: &str, thinking: &str, tool_arg_buffers: &[String]) -> usize {
-    content.len()
-        + thinking.len()
-        + tool_arg_buffers.iter().map(|b| b.len()).sum::<usize>()
+    content.len() + thinking.len() + tool_arg_buffers.iter().map(|b| b.len()).sum::<usize>()
 }
 
 fn accumulate_openai_stream_line<F: FnMut(StreamDeltaKind, &str)>(
@@ -1342,9 +1340,6 @@ mod tests {
             accumulated_turn_bytes("", "", &[String::from("ab"), String::from("cdef")]),
             6
         );
-        assert_eq!(
-            accumulated_turn_bytes("x", "yy", &[String::from("zzz")]),
-            6
-        );
+        assert_eq!(accumulated_turn_bytes("x", "yy", &[String::from("zzz")]), 6);
     }
 }

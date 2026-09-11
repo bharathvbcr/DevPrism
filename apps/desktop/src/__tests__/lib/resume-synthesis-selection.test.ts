@@ -84,6 +84,7 @@ describe("estimateBlockLines", () => {
     const s = makeBlock("long", { bullets });
     expect(estimateBlockLines(s.block)).toBe(2 + DEFAULT_MAX_BULLETS_PER_BLOCK);
     expect(estimateBlockLines(s.block)).toBeLessThan(2 + bullets.length);
+    expect(estimateBlockLines(s.block, { maxBullets: 2 })).toBe(2 + 2);
   });
 
   it("estimates wrap from long bullet character length", () => {

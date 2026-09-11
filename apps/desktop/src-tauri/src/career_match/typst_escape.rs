@@ -52,7 +52,10 @@ fn is_bidi_or_zero_width(c: char) -> bool {
 
 /// Line/paragraph separators folded to a single space.
 fn is_line_break(c: char) -> bool {
-    matches!(c, '\r' | '\n' | '\t' | '\u{B}' | '\u{C}' | '\u{2028}' | '\u{2029}')
+    matches!(
+        c,
+        '\r' | '\n' | '\t' | '\u{B}' | '\u{C}' | '\u{2028}' | '\u{2029}'
+    )
 }
 
 /// Normalise plain text before it becomes a Typst literal.
@@ -211,7 +214,8 @@ pub fn parse_rich_parts(input: &str) -> Vec<RichPart> {
         while j < chars.len() && chars[j] != '*' {
             j += 1;
         }
-        let matched = j > content_start && j + 1 < chars.len() && chars[j] == '*' && chars[j + 1] == '*';
+        let matched =
+            j > content_start && j + 1 < chars.len() && chars[j] == '*' && chars[j + 1] == '*';
         if !matched {
             i += 1;
             continue;
@@ -220,18 +224,30 @@ pub fn parse_rich_parts(input: &str) -> Vec<RichPart> {
             break;
         }
         if i > last {
-            parts.push(RichPart { bold: false, text: chars[last..i].iter().collect() });
+            parts.push(RichPart {
+                bold: false,
+                text: chars[last..i].iter().collect(),
+            });
         }
-        parts.push(RichPart { bold: true, text: chars[content_start..j].iter().collect() });
+        parts.push(RichPart {
+            bold: true,
+            text: chars[content_start..j].iter().collect(),
+        });
         last = j + 2;
         i = last;
     }
 
     if last < chars.len() {
-        parts.push(RichPart { bold: false, text: chars[last..].iter().collect() });
+        parts.push(RichPart {
+            bold: false,
+            text: chars[last..].iter().collect(),
+        });
     }
     if parts.is_empty() {
-        parts.push(RichPart { bold: false, text: String::new() });
+        parts.push(RichPart {
+            bold: false,
+            text: String::new(),
+        });
     }
     parts
 }
@@ -455,7 +471,10 @@ mod tests {
         assert_eq!(to_typst_url("javascript:alert(1)"), "\"\"");
         assert_eq!(to_typst_url("file:///etc/passwd"), "\"\"");
         assert_eq!(to_typst_url("data:text/html,<script>"), "\"\"");
-        assert_eq!(to_typst_url("https://example.com"), "\"https://example.com\"");
+        assert_eq!(
+            to_typst_url("https://example.com"),
+            "\"https://example.com\""
+        );
         assert_eq!(to_typst_url("example.com"), "\"https://example.com\"");
         assert_eq!(to_typst_url("mailto:a@b.c"), "\"mailto:a@b.c\"");
         assert_eq!(to_typst_url(""), "\"\"");

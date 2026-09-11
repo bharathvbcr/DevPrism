@@ -86,16 +86,20 @@ impl ProcError {
 /// Reading must happen concurrently with waiting: a child that fills the OS
 /// pipe buffer blocks on write, and if we were only polling `try_wait` it would
 /// never exit — a deadlock that looks exactly like the hang we are preventing.
-fn spawn_readers(child: &mut Child) -> (
+fn spawn_readers(
+    child: &mut Child,
+) -> (
     Option<std::thread::JoinHandle<Vec<u8>>>,
     Option<std::thread::JoinHandle<Vec<u8>>>,
 ) {
-    let out = child.stdout.take().map(|mut pipe| {
-        std::thread::spawn(move || drain_capped(&mut pipe, MAX_CAPTURED_OUTPUT))
-    });
-    let err = child.stderr.take().map(|mut pipe| {
-        std::thread::spawn(move || drain_capped(&mut pipe, MAX_CAPTURED_OUTPUT))
-    });
+    let out = child
+        .stdout
+        .take()
+        .map(|mut pipe| std::thread::spawn(move || drain_capped(&mut pipe, MAX_CAPTURED_OUTPUT)));
+    let err = child
+        .stderr
+        .take()
+        .map(|mut pipe| std::thread::spawn(move || drain_capped(&mut pipe, MAX_CAPTURED_OUTPUT)));
     (out, err)
 }
 
@@ -122,7 +126,11 @@ pub fn run_with_timeout_and_cancel(
             Ok(Some(status)) => {
                 let stdout = out_reader.and_then(|h| h.join().ok()).unwrap_or_default();
                 let stderr = err_reader.and_then(|h| h.join().ok()).unwrap_or_default();
-                return Ok(Output { status, stdout, stderr });
+                return Ok(Output {
+                    status,
+                    stdout,
+                    stderr,
+                });
             }
             Ok(None) => {}
             Err(e) => return Err(ProcError::Io(e.to_string())),
@@ -183,8 +191,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn returns_output_for_a_fast_command() {
-        let out = run_with_timeout(sh("printf hello"), Duration::from_secs(10))
-            .expect("should complete");
+        let out =
+            run_with_timeout(sh("printf hello"), Duration::from_secs(10)).expect("should complete");
         assert!(out.status.success());
         assert_eq!(String::from_utf8_lossy(&out.stdout), "hello");
     }
@@ -322,7 +330,10 @@ mod tests {
             .collect();
 
         let results: Vec<bool> = handles.into_iter().map(|h| h.join().unwrap()).collect();
-        assert!(results.iter().all(|ok| *ok), "some runs misbehaved: {results:?}");
+        assert!(
+            results.iter().all(|ok| *ok),
+            "some runs misbehaved: {results:?}"
+        );
         assert!(
             started.elapsed() < Duration::from_secs(20),
             "concurrent runs took {:?} — something serialized or wedged",
@@ -351,16 +362,16 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_child_killed_by_a_signal_is_reported_not_hung() {
-        let out = run_with_timeout(sh("kill -9 $$"), Duration::from_secs(10))
-            .expect("should return");
+        let out =
+            run_with_timeout(sh("kill -9 $$"), Duration::from_secs(10)).expect("should return");
         assert!(!out.status.success());
     }
 
     #[cfg(unix)]
     #[test]
     fn zero_timeout_kills_immediately_without_panicking() {
-        let err = run_with_timeout(sh("sleep 10"), Duration::from_millis(0))
-            .expect_err("must time out");
+        let err =
+            run_with_timeout(sh("sleep 10"), Duration::from_millis(0)).expect_err("must time out");
         assert!(matches!(err, ProcError::TimedOut { .. }));
     }
 
@@ -379,11 +390,9 @@ mod tests {
         });
 
         let started = Instant::now();
-        let err = run_with_timeout_and_cancel(
-            sh("sleep 30"),
-            Duration::from_secs(60),
-            || cancelled.load(Ordering::Relaxed),
-        )
+        let err = run_with_timeout_and_cancel(sh("sleep 30"), Duration::from_secs(60), || {
+            cancelled.load(Ordering::Relaxed)
+        })
         .expect_err("must be cancelled");
         assert!(matches!(err, ProcError::Cancelled));
         assert!(
@@ -400,11 +409,9 @@ mod tests {
 
         let cancelled = AtomicBool::new(true);
         let started = Instant::now();
-        let err = run_with_timeout_and_cancel(
-            sh("sleep 30"),
-            Duration::from_secs(60),
-            || cancelled.load(Ordering::Relaxed),
-        )
+        let err = run_with_timeout_and_cancel(sh("sleep 30"), Duration::from_secs(60), || {
+            cancelled.load(Ordering::Relaxed)
+        })
         .expect_err("must be cancelled");
         assert!(matches!(err, ProcError::Cancelled));
         assert!(started.elapsed() < Duration::from_secs(2));
@@ -440,11 +447,10 @@ mod tests {
                 })
                 .collect();
 
-            let result = run_with_timeout_and_cancel(
-                sh("sleep 5"),
-                Duration::from_secs(30),
-                || cancelled.load(Ordering::Relaxed),
-            );
+            let result =
+                run_with_timeout_and_cancel(sh("sleep 5"), Duration::from_secs(30), || {
+                    cancelled.load(Ordering::Relaxed)
+                });
 
             match result {
                 Ok(_) => {}

@@ -241,7 +241,9 @@ fn augmented_path() -> String {
     #[cfg(not(target_os = "windows"))]
     let sep = ":";
 
-    let mut current = std::env::var("PATH").unwrap_or_default().replace('\u{0}', "");
+    let mut current = std::env::var("PATH")
+        .unwrap_or_default()
+        .replace('\u{0}', "");
 
     #[cfg(not(target_os = "windows"))]
     {
@@ -305,12 +307,7 @@ async fn run_capture(mut cmd: Command, timeout: Duration) -> Result<(String, Str
         .map_err(|e| format!("Failed to launch WisDev runtime: {e}"))?;
     let out = tokio::time::timeout(timeout, child.wait_with_output())
         .await
-        .map_err(|_| {
-            format!(
-                "WisDev runtime timed out after {}s.",
-                timeout.as_secs()
-            )
-        })?
+        .map_err(|_| format!("WisDev runtime timed out after {}s.", timeout.as_secs()))?
         .map_err(|e| format!("WisDev runtime failed: {e}"))?;
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
@@ -375,10 +372,7 @@ async fn run_streaming(
 
     let stderr_tail = stderr_task.await.unwrap_or_default();
     if status.code().unwrap_or(-1) != 0 && stdout_str.trim().is_empty() {
-        return Err(format!(
-            "WisDev research failed:\n{}",
-            stderr_tail.trim()
-        ));
+        return Err(format!("WisDev research failed:\n{}", stderr_tail.trim()));
     }
     Ok((stdout_str, status.code().unwrap_or(-1)))
 }
@@ -438,7 +432,11 @@ pub async fn wisdev_check(
         }),
         Ok(Runner::GoRun { .. }) => Ok(WisdevStatus {
             available: go,
-            mode: if go { "go".into() } else { "unavailable".into() },
+            mode: if go {
+                "go".into()
+            } else {
+                "unavailable".into()
+            },
             binary: None,
             dist_binary: dist_exists,
             go_available: go,
@@ -647,7 +645,10 @@ pub async fn wisdev_docgen(
     };
     let (stdout, stderr, code) = run_capture(cmd, timeout).await?;
     if code != 0 {
-        return Err(format!("WisDev docgen failed (exit {code}):\n{}", stderr.trim()));
+        return Err(format!(
+            "WisDev docgen failed (exit {code}):\n{}",
+            stderr.trim()
+        ));
     }
     let body = strip_log_prefix(&stdout);
     if body.is_empty() {

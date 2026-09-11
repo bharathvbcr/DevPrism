@@ -29,9 +29,7 @@ mod tests;
 
 use crate::career_db::CareerDbState;
 use crate::mcp::elicitation::ElicitationStore;
-use crate::mcp::protocol::{
-    JsonRpcError, PromptDefinition, ResourceDefinition, ToolDefinition,
-};
+use crate::mcp::protocol::{JsonRpcError, PromptDefinition, ResourceDefinition, ToolDefinition};
 use crate::mcp::tasks::TaskManager;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -110,9 +108,7 @@ pub trait CapabilityPlugin: Send + Sync {
     ) -> BoxedToolFuture<'a>;
 
     fn read_resource<'a>(&'a self, _ctx: &'a PluginContext, uri: &'a str) -> BoxedToolFuture<'a> {
-        Box::pin(async move {
-            Err(JsonRpcError::method_not_found(uri))
-        })
+        Box::pin(async move { Err(JsonRpcError::method_not_found(uri)) })
     }
 
     fn get_prompt<'a>(
@@ -232,7 +228,11 @@ impl PluginRegistry {
         }
     }
 
-    pub async fn read_resource(&self, ctx: &PluginContext, uri: &str) -> Result<Value, JsonRpcError> {
+    pub async fn read_resource(
+        &self,
+        ctx: &PluginContext,
+        uri: &str,
+    ) -> Result<Value, JsonRpcError> {
         // Route by exact URI first; fall back to longest owning-prefix match
         // for parameterised resources (none ship in v1.0, but template URIs
         // like `resume-docs://project/{path}` would route here).

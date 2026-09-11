@@ -256,11 +256,9 @@ pub async fn history_snapshot(
 ) -> Result<Option<SnapshotInfo>, String> {
     let lock = state.lock_for(&project_root).await;
     let _guard = lock.lock().await;
-    tauri::async_runtime::spawn_blocking(move || {
-        history_snapshot_blocking(project_root, message)
-    })
-    .await
-    .map_err(|e| format!("history_snapshot task failed: {e}"))?
+    tauri::async_runtime::spawn_blocking(move || history_snapshot_blocking(project_root, message))
+        .await
+        .map_err(|e| format!("history_snapshot task failed: {e}"))?
 }
 
 pub fn history_snapshot_blocking(
@@ -422,9 +420,7 @@ fn collect_linear_chain(repo: &Repository) -> Result<Vec<Oid>, String> {
             .find_commit(oid)
             .map_err(|e| format!("Failed to find commit: {}", e))?;
         if commit.parent_count() > 1 {
-            return Err(
-                "Refusing to compact: history contains a merge commit".to_string(),
-            );
+            return Err("Refusing to compact: history contains a merge commit".to_string());
         }
         chain.push(oid);
     }
@@ -448,9 +444,7 @@ fn collect_linear_chain(repo: &Repository) -> Result<Vec<Oid>, String> {
 ///
 /// Returns `Ok(None)` when there was nothing to do (below threshold, fully
 /// labeled, merge detected upstream of the refusal, etc.).
-pub fn history_compact_blocking(
-    project_root: String,
-) -> Result<Option<CompactionReport>, String> {
+pub fn history_compact_blocking(project_root: String) -> Result<Option<CompactionReport>, String> {
     let repo = open_repo(&project_root)?;
     Ok(compact_repo_if_needed(&repo)?.map(|(report, _)| report))
 }
@@ -499,10 +493,10 @@ fn compact_repo_with(
         .enumerate()
         .filter_map(|(i, oid)| (!labeled.contains(oid)).then_some(i))
         .collect();
-    let Some(cutoff_position) =
-        unlabeled_positions.len().checked_sub(keep_unlabeled).and_then(|from| {
-            unlabeled_positions.get(from).copied()
-        })
+    let Some(cutoff_position) = unlabeled_positions
+        .len()
+        .checked_sub(keep_unlabeled)
+        .and_then(|from| unlabeled_positions.get(from).copied())
     else {
         // Fewer unlabeled commits than the budget keeps — nothing to drop.
         return Ok(None);
@@ -520,7 +514,9 @@ fn compact_repo_with(
 
     // Rebuild the kept chain on the temp ref. Original trees/blobs stay in the
     // object database, so recreation is metadata-only (no blob copying).
-    let _ = repo.find_reference(COMPACT_TMP_REF).and_then(|mut r| r.delete());
+    let _ = repo
+        .find_reference(COMPACT_TMP_REF)
+        .and_then(|mut r| r.delete());
     let mut old_to_new: HashMap<Oid, Oid> = HashMap::with_capacity(kept_count);
     let mut new_tip: Option<Oid> = None;
 
@@ -531,9 +527,7 @@ fn compact_repo_with(
         let commit = repo
             .find_commit(old_oid)
             .map_err(|e| format!("Failed to find commit: {}", e))?;
-        let tree = commit
-            .tree()
-            .map_err(|e| format!("Tree error: {}", e))?;
+        let tree = commit.tree().map_err(|e| format!("Tree error: {}", e))?;
         let time = commit.time();
         let sig = Signature::new("DevPrism", "history@claudeprism.local", &time)
             .map_err(|e| format!("Signature error: {}", e))?;
@@ -548,7 +542,14 @@ fn compact_repo_with(
         let parent_refs: Vec<&git2::Commit> = parent_commits.iter().collect();
 
         let new_oid = repo
-            .commit(Some(COMPACT_TMP_REF), &sig, &sig, &message, &tree, &parent_refs)
+            .commit(
+                Some(COMPACT_TMP_REF),
+                &sig,
+                &sig,
+                &message,
+                &tree,
+                &parent_refs,
+            )
             .map_err(|e| format!("Failed to rebuild commit: {}", e))?;
 
         old_to_new.insert(old_oid, new_oid);
@@ -558,11 +559,7 @@ fn compact_repo_with(
 
     // Remap tags onto the rebuilt chain. On any failure, roll back the tags we
     // already moved so the repository is left exactly as it was.
-    let tag_names: Vec<String> = tags
-        .values()
-        .flatten()
-        .cloned()
-        .collect();
+    let tag_names: Vec<String> = tags.values().flatten().cloned().collect();
 
     // Remap each lightweight tag onto the rebuilt chain. Returns the already-
     // moved tags on failure so the caller can roll them back.
@@ -578,20 +575,16 @@ fn compact_repo_with(
                 let mut reference = repo
                     .find_reference(&refname)
                     .map_err(|e| format!("Label ref missing: {}", e))?;
-                let target = reference.target().ok_or_else(|| {
-                    format!("Refusing to compact: label `{name}` is symbolic")
-                })?;
+                let target = reference
+                    .target()
+                    .ok_or_else(|| format!("Refusing to compact: label `{name}` is symbolic"))?;
                 // Annotated tags point at tag objects, not commits; we never
                 // create them, so their presence means something else wrote here.
                 if repo.find_tag(target).is_ok() {
-                    return Err(format!(
-                        "Refusing to compact: label `{name}` is annotated"
-                    ));
+                    return Err(format!("Refusing to compact: label `{name}` is annotated"));
                 }
                 let new_oid = old_to_new.get(&target).copied().ok_or_else(|| {
-                    format!(
-                        "Refusing to compact: label `{name}` points outside the history chain"
-                    )
+                    format!("Refusing to compact: label `{name}` points outside the history chain")
                 })?;
                 reference
                     .delete()
@@ -612,7 +605,9 @@ fn compact_repo_with(
         for (refname, old_target) in applied_remaps.iter().rev() {
             let _ = repo.reference(refname, *old_target, true, "devprism: compaction rollback");
         }
-        let _ = repo.find_reference(COMPACT_TMP_REF).and_then(|mut r| r.delete());
+        let _ = repo
+            .find_reference(COMPACT_TMP_REF)
+            .and_then(|mut r| r.delete());
         return Err(err);
     }
 
@@ -661,11 +656,9 @@ pub async fn history_list(
     limit: u32,
     offset: u32,
 ) -> Result<Vec<SnapshotInfo>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        history_list_blocking(project_root, limit, offset)
-    })
-    .await
-    .map_err(|e| format!("history_list task failed: {e}"))?
+    tauri::async_runtime::spawn_blocking(move || history_list_blocking(project_root, limit, offset))
+        .await
+        .map_err(|e| format!("history_list task failed: {e}"))?
 }
 
 pub fn history_list_blocking(
@@ -890,7 +883,10 @@ pub async fn history_restore(
     .map_err(|e| format!("history_restore task failed: {e}"))?
 }
 
-pub fn history_restore_blocking(project_root: String, snapshot_id: String) -> Result<SnapshotInfo, String> {
+pub fn history_restore_blocking(
+    project_root: String,
+    snapshot_id: String,
+) -> Result<SnapshotInfo, String> {
     // Safety net before force-checkout: capture any uncommitted work so a
     // restore can never silently destroy it. No-op when the tree matches HEAD.
     history_snapshot_blocking(
@@ -977,11 +973,9 @@ pub fn history_add_label_blocking(
 
 #[tauri::command]
 pub async fn history_remove_label(project_root: String, label: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        history_remove_label_blocking(project_root, label)
-    })
-    .await
-    .map_err(|e| format!("history_remove_label task failed: {e}"))?
+    tauri::async_runtime::spawn_blocking(move || history_remove_label_blocking(project_root, label))
+        .await
+        .map_err(|e| format!("history_remove_label task failed: {e}"))?
 }
 
 pub fn history_remove_label_blocking(project_root: String, label: String) -> Result<(), String> {
@@ -1063,8 +1057,18 @@ mod tests {
 
         let content =
             fs::read_to_string(dir.path().join(".claudeprism").join("history-exclude")).unwrap();
-        for pattern in ["node_modules/", "target/", "dist/", "build/", ".venv/", "vendor/"] {
-            assert!(content.contains(pattern), "history excludes missing {pattern}");
+        for pattern in [
+            "node_modules/",
+            "target/",
+            "dist/",
+            "build/",
+            ".venv/",
+            "vendor/",
+        ] {
+            assert!(
+                content.contains(pattern),
+                "history excludes missing {pattern}"
+            );
         }
     }
 
@@ -1165,7 +1169,9 @@ mod tests {
         // Add a new file
         fs::write(dir.path().join("chapter1.tex"), "new chapter").unwrap();
 
-        let snap = history_snapshot_blocking(r, "add chapter".into()).unwrap().unwrap();
+        let snap = history_snapshot_blocking(r, "add chapter".into())
+            .unwrap()
+            .unwrap();
         assert!(snap.changed_files.contains(&"chapter1.tex".to_string()));
     }
 
@@ -1447,7 +1453,9 @@ mod tests {
         history_snapshot_blocking(r.clone(), "s1".into()).unwrap();
 
         fs::write(dir.path().join("a.tex"), "v3").unwrap();
-        let snap3 = history_snapshot_blocking(r.clone(), "s2".into()).unwrap().unwrap();
+        let snap3 = history_snapshot_blocking(r.clone(), "s2".into())
+            .unwrap()
+            .unwrap();
 
         // Diff from init directly to s2 (skipping s1)
         let diffs = history_diff_blocking(r, init_id, snap3.id).unwrap();
@@ -1543,10 +1551,7 @@ mod tests {
             let snap = history_snapshot_blocking(r.clone(), format!("snap {i}"))
                 .unwrap()
                 .expect("snapshot must be created");
-            assert!(
-                !snap.id.is_empty(),
-                "snapshot id must be usable by callers"
-            );
+            assert!(!snap.id.is_empty(), "snapshot id must be usable by callers");
         }
         history_list_blocking(r, u32::MAX, 0)
             .unwrap()
@@ -1616,8 +1621,7 @@ mod tests {
                 .unwrap()
                 .unwrap();
             if i == 2 {
-                history_add_label_blocking(r.clone(), snap.id.clone(), "keep-me".into())
-                    .unwrap();
+                history_add_label_blocking(r.clone(), snap.id.clone(), "keep-me".into()).unwrap();
             }
         }
 
@@ -1634,7 +1638,11 @@ mod tests {
             "label must point into the rebuilt chain"
         );
         let commit = repo.find_commit(target).unwrap();
-        let entry = commit.tree().unwrap().get_path(Path::new("main.tex")).unwrap();
+        let entry = commit
+            .tree()
+            .unwrap()
+            .get_path(Path::new("main.tex"))
+            .unwrap();
         let blob = repo.find_blob(entry.id()).unwrap();
         assert_eq!(
             String::from_utf8_lossy(blob.content()),
@@ -1702,17 +1710,28 @@ mod tests {
 
             fs::write(dir.path().join("branch-file.tex"), "from branch").unwrap();
             let mut index = repo.index().unwrap();
-            index.add_all(["*"].iter(), IndexAddOption::DEFAULT, None).unwrap();
+            index
+                .add_all(["*"].iter(), IndexAddOption::DEFAULT, None)
+                .unwrap();
             index.write().unwrap();
             let side_tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
             let side = repo
-                .commit(Some("refs/heads/side"), &sig, &sig, "side", &side_tree, &[&tip])
+                .commit(
+                    Some("refs/heads/side"),
+                    &sig,
+                    &sig,
+                    "side",
+                    &side_tree,
+                    &[&tip],
+                )
                 .unwrap();
             let side_commit = repo.find_commit(side).unwrap();
 
             fs::write(dir.path().join("a.tex"), "merged").unwrap();
             let mut index = repo.index().unwrap();
-            index.add_all(["*"].iter(), IndexAddOption::DEFAULT, None).unwrap();
+            index
+                .add_all(["*"].iter(), IndexAddOption::DEFAULT, None)
+                .unwrap();
             index.write().unwrap();
             let merge_tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
             repo.commit(
@@ -1831,12 +1850,10 @@ mod tests {
         history_init_blocking(r.clone()).unwrap();
 
         for i in 0..super::COMPACT_THRESHOLD - 2 {
-            fs::write(
-                dir.path().join("main.tex"),
-                format!("content v{i}"),
-            )
-            .unwrap();
-            history_snapshot_blocking(r.clone(), format!("fill {i}")).unwrap().unwrap();
+            fs::write(dir.path().join("main.tex"), format!("content v{i}")).unwrap();
+            history_snapshot_blocking(r.clone(), format!("fill {i}"))
+                .unwrap()
+                .unwrap();
         }
         // This one crosses the threshold and triggers auto-compaction.
         fs::write(dir.path().join("main.tex"), "final content").unwrap();
@@ -1844,9 +1861,8 @@ mod tests {
             .unwrap()
             .expect("snapshot created");
 
-        let content =
-            history_file_at_blocking(r.clone(), snap.id.clone(), "main.tex".into())
-                .expect("returned id must survive compaction");
+        let content = history_file_at_blocking(r.clone(), snap.id.clone(), "main.tex".into())
+            .expect("returned id must survive compaction");
         assert_eq!(content, "final content");
 
         let repo = open_repo(&r).unwrap();

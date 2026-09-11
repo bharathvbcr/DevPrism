@@ -1360,8 +1360,9 @@ pub async fn install_bundled_skills(
     project_path: String,
     only: Option<Vec<String>>,
 ) -> Result<Vec<SkillInfo>, String> {
-    let source_root = bundled_skills_dir(&app)
-        .ok_or_else(|| "Bundled DevPrism skills were not found in the app resources.".to_string())?;
+    let source_root = bundled_skills_dir(&app).ok_or_else(|| {
+        "Bundled DevPrism skills were not found in the app resources.".to_string()
+    })?;
 
     let mut skill_dirs = Vec::new();
     collect_skill_dirs(&source_root, &mut skill_dirs);
@@ -1371,8 +1372,13 @@ pub async fn install_bundled_skills(
     }
 
     let target_root = skills_dir(Some(&project_path));
-    std::fs::create_dir_all(&target_root)
-        .map_err(|e| format!("Failed to create skills dir {}: {}", target_root.display(), e))?;
+    std::fs::create_dir_all(&target_root).map_err(|e| {
+        format!(
+            "Failed to create skills dir {}: {}",
+            target_root.display(),
+            e
+        )
+    })?;
 
     // Install each skill independently so one bad skill doesn't abort the rest.
     let mut installed = Vec::new();
@@ -1387,9 +1393,9 @@ pub async fn install_bundled_skills(
             continue;
         }
         if let Some(ref filter) = only {
-            let matches = filter.iter().any(|name| {
-                name.eq_ignore_ascii_case(raw) || name.eq_ignore_ascii_case(&folder)
-            });
+            let matches = filter
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(raw) || name.eq_ignore_ascii_case(&folder));
             if !matches {
                 continue;
             }
@@ -1436,13 +1442,18 @@ pub async fn create_custom_skill(
     }
     let description = description.trim();
     if description.is_empty() {
-        return Err("Please provide a short description so the agent knows when to use this skill.".into());
+        return Err(
+            "Please provide a short description so the agent knows when to use this skill.".into(),
+        );
     }
 
     let target_root = skills_dir(Some(&project_path));
     let target = target_root.join(&folder);
     if target.exists() {
-        return Err(format!("A skill named '{}' already exists in this project.", folder));
+        return Err(format!(
+            "A skill named '{}' already exists in this project.",
+            folder
+        ));
     }
     std::fs::create_dir_all(&target)
         .map_err(|e| format!("Failed to create skill folder {}: {}", target.display(), e))?;
@@ -1495,7 +1506,11 @@ fn split_markdown_frontmatter(content: &str) -> (Option<String>, Option<String>,
             }
         }
         if closed {
-            return (name, description, body_lines.join("\n").trim_start().to_string());
+            return (
+                name,
+                description,
+                body_lines.join("\n").trim_start().to_string(),
+            );
         }
     }
 

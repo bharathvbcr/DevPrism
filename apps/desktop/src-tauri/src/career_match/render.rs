@@ -23,7 +23,9 @@
 
 use crate::career_db::ExperienceBlock;
 
+use super::selection::section_for_block;
 use super::typst_escape::{to_typst_rich, to_typst_string, to_typst_url, validate_typst_string};
+use std::collections::{HashMap, HashSet};
 
 /// Preamble defining the helpers every value position flows through.
 ///
@@ -36,6 +38,76 @@ pub const PREAMBLE: &str = r#"#set page(paper: "us-letter", margin: 0.6in)
 #let entrylink(title, org, when, url, label) = [#strong(title) #h(1fr) #when \ #emph(org) #h(4pt) #link(url)[#label] ]
 "#;
 
+/// Headless section catalog. Order here is the MCP default when no persona
+/// order is supplied — do not silently change it.
+const HEADLESS_SECTION_CATALOG: &[(&str, &str)] = &[
+    ("experience", "Experience"),
+    ("projects", "Projects"),
+    ("education", "Education"),
+    ("publications", "Publications"),
+    ("leadership", "Leadership"),
+    ("certifications", "Certifications"),
+    ("awards", "Awards"),
+    ("volunteer", "Volunteer"),
+    ("skills", "Skills"),
+];
+
+/// Fill order for sections a persona omitted. Matches TS `DEFAULT_SECTION_ORDER`
+/// minus summary (not a block section in this renderer).
+const PERSONA_FILL_ORDER: &[&str] = &[
+    "skills",
+    "experience",
+    "projects",
+    "education",
+    "publications",
+    "leadership",
+    "certifications",
+    "awards",
+    "volunteer",
+];
+
+fn section_pair(id: &str) -> Option<(&'static str, &'static str)> {
+    HEADLESS_SECTION_CATALOG
+        .iter()
+        .copied()
+        .find(|(s, _)| *s == id)
+}
+
+/// Persona order is a sort key, not a filter. Twin of TS `resolveSectionOrder`
+/// for the block sections this renderer emits (no summary/header/languages).
+pub fn resolve_render_section_order(
+    requested: Option<&[String]>,
+) -> Vec<(&'static str, &'static str)> {
+    let Some(order) = requested else {
+        return HEADLESS_SECTION_CATALOG.to_vec();
+    };
+    let mut result = Vec::new();
+    let mut seen = HashSet::<&'static str>::new();
+    for raw in order {
+        let id = raw.trim().to_ascii_lowercase();
+        if matches!(
+            id.as_str(),
+            "summary" | "header" | "languages" | "contact" | "links"
+        ) {
+            continue;
+        }
+        let Some((sid, label)) = section_pair(&id) else {
+            continue;
+        };
+        if seen.insert(sid) {
+            result.push((sid, label));
+        }
+    }
+    for id in PERSONA_FILL_ORDER {
+        if let Some((sid, label)) = section_pair(id) {
+            if seen.insert(sid) {
+                result.push((sid, label));
+            }
+        }
+    }
+    result
+}
+
 /// Render selected blocks into a compilable, injection-safe Typst document.
 ///
 /// `bullet_ids_by_block` optionally restricts which bullets are emitted (the
@@ -44,7 +116,24 @@ pub fn render_resume(
     header_name: &str,
     contact_lines: &[String],
     blocks: &[ExperienceBlock],
-    bullet_ids_by_block: Option<&std::collections::HashMap<String, Vec<String>>>,
+    bullet_ids_by_block: Option<&HashMap<String, Vec<String>>>,
+) -> String {
+    render_resume_with_section_order(
+        header_name,
+        contact_lines,
+        blocks,
+        bullet_ids_by_block,
+        None,
+    )
+}
+
+/// Like [`render_resume`], but applying persona `sectionOrder` as a sort key.
+pub fn render_resume_with_section_order(
+    header_name: &str,
+    contact_lines: &[String],
+    blocks: &[ExperienceBlock],
+    bullet_ids_by_block: Option<&HashMap<String, Vec<String>>>,
+    section_order: Option<&[String]>,
 ) -> String {
     let mut out = String::with_capacity(2048);
     out.push_str(PREAMBLE);
@@ -57,27 +146,15 @@ pub fn render_resume(
         // `[...]` is markup, so the helper call needs its own `#` to re-enter
         // code mode. Without it Typst parses the raw call as text and an
         // address like "a@b.com" becomes a label reference.
-        out.push_str(&format!(
-            "#align(center)[#{}]\n",
-            to_typst_rich(line, None)
-        ));
+        out.push_str(&format!("#align(center)[#{}]\n", to_typst_rich(line, None)));
     }
 
-    // Group by section so headings appear once, in a fixed order.
-    for (section, label) in [
-        ("experience", "Experience"),
-        ("projects", "Projects"),
-        ("education", "Education"),
-        ("publications", "Publications"),
-        ("leadership", "Leadership"),
-        ("certifications", "Certifications"),
-        ("awards", "Awards"),
-        ("volunteer", "Volunteer"),
-        ("skills", "Skills"),
-    ] {
+    // Group by section so headings appear once. Persona order is a sort key;
+    // omitted contentful sections still emit (empty sections are skipped).
+    for (section, label) in resolve_render_section_order(section_order) {
         let in_section: Vec<&ExperienceBlock> = blocks
             .iter()
-            .filter(|b| super::selection::section_for_block(b) == section)
+            .filter(|b| section_for_block(b) == section)
             .collect();
         if in_section.is_empty() {
             continue;
@@ -184,10 +261,10 @@ pub fn audit_rendered_literals(source: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::typst_escape::MAX_SLOT_CHARS;
     use super::*;
     use crate::career_db::{Bullet, DateRange, ExperienceBlock, SkillTag};
     use crate::career_typst::engine;
-    use super::super::typst_escape::MAX_SLOT_CHARS;
 
     fn block_with(title: &str, org: &str, bullets: &[&str]) -> ExperienceBlock {
         ExperienceBlock {
@@ -195,10 +272,17 @@ mod tests {
             kind: "experience".into(),
             title: title.into(),
             org: org.into(),
-            date_range: DateRange { start: "2023-01".into(), end: None },
+            date_range: DateRange {
+                start: "2023-01".into(),
+                end: None,
+            },
             personas: vec![],
             domains: vec![],
-            skills: vec![SkillTag { name: "Rust".into(), level: 4, years: None }],
+            skills: vec![SkillTag {
+                name: "Rust".into(),
+                level: 4,
+                years: None,
+            }],
             seniority_level: "senior".into(),
             location: None,
             url: None,
@@ -264,7 +348,11 @@ mod tests {
                 "unbalanced literal for payload {payload:?}"
             );
             let r = engine::compile_resume_pdf(&src);
-            assert!(r.success, "payload {payload:?} broke compile: {:?}", r.errors);
+            assert!(
+                r.success,
+                "payload {payload:?} broke compile: {:?}",
+                r.errors
+            );
             assert_eq!(r.page_count, 1, "payload {payload:?} changed page count");
         }
     }
@@ -381,5 +469,32 @@ mod tests {
         let r = engine::compile_resume_pdf(&src);
         assert!(r.success, "errors: {:?}", r.errors);
         assert!(src.contains("https://example.com"));
+    }
+
+    #[test]
+    fn default_order_keeps_experience_before_publications() {
+        let exp = block_with("Engineer", "Acme", &["did work"]);
+        let mut paper = block_with("Paper", "Nature", &["found a thing"]);
+        paper.id = "p1".into();
+        paper.kind = "publication".into();
+        let src = render_resume("N", &[], &[exp, paper], None);
+        let exp_pos = src.find("Experience").expect("experience heading");
+        let pub_pos = src.find("Publications").expect("publications heading");
+        assert!(exp_pos < pub_pos);
+    }
+
+    #[test]
+    fn persona_section_order_is_a_sort_key_not_a_filter() {
+        let exp = block_with("Engineer", "Acme", &["did work"]);
+        let mut paper = block_with("Paper", "Nature", &["found a thing"]);
+        paper.id = "p1".into();
+        paper.kind = "publication".into();
+        let order = ["publications".to_string(), "experience".to_string()];
+        let src = render_resume_with_section_order("N", &[], &[exp, paper], None, Some(&order));
+        let pub_pos = src.find("Publications").expect("publications heading");
+        let exp_pos = src.find("Experience").expect("experience heading");
+        assert!(pub_pos < exp_pos);
+        let r = engine::compile_resume_pdf(&src);
+        assert!(r.success, "errors: {:?}", r.errors);
     }
 }

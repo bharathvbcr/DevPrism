@@ -211,9 +211,7 @@ async fn ensure_venv_pip(venv_dir: &Path) -> Result<(), String> {
     match tokio::time::timeout(std::time::Duration::from_secs(300), ensure_cmd.output()).await {
         Ok(Ok(output)) if output.status.success() && venv_pip(venv_dir).exists() => Ok(()),
         Ok(_) => write_pip_shim(venv_dir),
-        Err(_) => Err(
-            "ensurepip did not finish within 300s and was abandoned".to_string(),
-        ),
+        Err(_) => Err("ensurepip did not finish within 300s and was abandoned".to_string()),
     }
 }
 
@@ -253,7 +251,11 @@ fn check_uv_status_blocking() -> Result<UvStatus, String> {
             .map_err(|e| e.to_message("uv --version"))?;
 
     let version = match version_output.status.success() {
-        true => Some(String::from_utf8_lossy(&version_output.stdout).trim().to_string()),
+        true => Some(
+            String::from_utf8_lossy(&version_output.stdout)
+                .trim()
+                .to_string(),
+        ),
         false => {
             return Ok(UvStatus {
                 installed: false,
@@ -463,13 +465,10 @@ pub async fn uv_add_packages(
     {
         pip_cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    let output =
-        tokio::time::timeout(std::time::Duration::from_secs(900), pip_cmd.output())
-            .await
-            .map_err(|_| {
-                "uv pip install did not finish within 900s and was abandoned".to_string()
-            })?
-            .map_err(|e| format!("Failed to run uv pip install: {}", e))?;
+    let output = tokio::time::timeout(std::time::Duration::from_secs(900), pip_cmd.output())
+        .await
+        .map_err(|_| "uv pip install did not finish within 900s and was abandoned".to_string())?
+        .map_err(|e| format!("Failed to run uv pip install: {}", e))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

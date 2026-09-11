@@ -106,9 +106,10 @@ fn default_registry_builds_and_is_collision_free() {
         }
     }
     let mut reg2 = super::PluginRegistry::new();
-    reg2
-        .register(std::sync::Arc::new(super::resume_synthesis::ResumeSynthesisPlugin))
-        .expect("first registration");
+    reg2.register(std::sync::Arc::new(
+        super::resume_synthesis::ResumeSynthesisPlugin,
+    ))
+    .expect("first registration");
     assert!(
         reg2.register(std::sync::Arc::new(Squatter)).is_err(),
         "duplicate tool names must fail registration loudly"
@@ -117,14 +118,21 @@ fn default_registry_builds_and_is_collision_free() {
 
 #[test]
 fn every_tool_definition_has_a_valid_schema() {
-    for tool in super::default_registry().expect("registry").list_all_tools() {
+    for tool in super::default_registry()
+        .expect("registry")
+        .list_all_tools()
+    {
         assert_eq!(
             tool.input_schema.get("type").and_then(Value::as_str),
             Some("object"),
             "tool {} must declare an object schema",
             tool.name
         );
-        assert!(!tool.description.is_empty(), "{} needs a description", tool.name);
+        assert!(
+            !tool.description.is_empty(),
+            "{} needs a description",
+            tool.name
+        );
     }
 }
 
@@ -147,7 +155,11 @@ fn native_agent_advertised_tools_all_exist_and_route() {
     let total = names.len();
     names.sort();
     names.dedup();
-    assert_eq!(names.len(), total, "duplicate schema names in agent surface");
+    assert_eq!(
+        names.len(),
+        total,
+        "duplicate schema names in agent surface"
+    );
     assert!(
         arr.len() >= 12,
         "agent surface should carry the document pack plus the career/resume subset, got {total}"
@@ -182,7 +194,12 @@ async fn read_write_edit_round_trip_through_mcp() {
     let root = dir.to_string_lossy().to_string();
 
     // Read gives a sha1 we can chain on.
-    let read = call_ok(&srv, "resume_doc_read", json!({ "project_root": root, "file_path": "resume.typ" })).await;
+    let read = call_ok(
+        &srv,
+        "resume_doc_read",
+        json!({ "project_root": root, "file_path": "resume.typ" }),
+    )
+    .await;
     let sha1 = read["sha1"].as_str().expect("sha1").to_string();
     assert_eq!(read["totalLines"].as_u64(), Some(5));
 
@@ -198,8 +215,7 @@ async fn read_write_edit_round_trip_through_mcp() {
     }))
     .await;
     assert_eq!(edited["appliedEdits"].as_array().map(Vec::len), Some(2));
-    let content =
-        std::fs::read_to_string(dir.join("resume.typ")).expect("edited file readable");
+    let content = std::fs::read_to_string(dir.join("resume.typ")).expect("edited file readable");
     assert!(content.contains("Jane A. Doe"));
     assert!(content.contains("Shipped two things."));
     assert_ne!(edited["sha1"], serde_json::Value::Null);
@@ -220,7 +236,10 @@ async fn read_write_edit_round_trip_through_mcp() {
         json!({ "project_root": root, "file_path": "resume.typ", "content": "x" }),
     )
     .await;
-    assert!(blind.contains("refusing blind overwrite"), "unexpected: {blind}");
+    assert!(
+        blind.contains("refusing blind overwrite"),
+        "unexpected: {blind}"
+    );
 
     cleanup(&dir);
 }
@@ -235,19 +254,26 @@ async fn edit_is_all_or_nothing() {
     let before = std::fs::read_to_string(dir.join("resume.typ")).unwrap();
     let sha1 = super::resume_documents::exec::tests_sha_of(&before);
 
-    let err = call_err(&srv, "resume_doc_edit", json!({
-        "project_root": root,
-        "file_path": "resume.typ",
-        "expected_sha1": sha1,
-        "edits": [
-            { "old_string": "Jane Doe", "new_string": "Jane A. Doe" },
-            { "old_string": "NOT PRESENT ANYWHERE", "new_string": "boom" },
-        ],
-    }))
+    let err = call_err(
+        &srv,
+        "resume_doc_edit",
+        json!({
+            "project_root": root,
+            "file_path": "resume.typ",
+            "expected_sha1": sha1,
+            "edits": [
+                { "old_string": "Jane Doe", "new_string": "Jane A. Doe" },
+                { "old_string": "NOT PRESENT ANYWHERE", "new_string": "boom" },
+            ],
+        }),
+    )
     .await;
     assert!(err.contains("All-or-nothing"), "unexpected: {err}");
     let after = std::fs::read_to_string(dir.join("resume.typ")).unwrap();
-    assert_eq!(before, after, "a failing batch must leave the file untouched");
+    assert_eq!(
+        before, after,
+        "a failing batch must leave the file untouched"
+    );
 
     cleanup(&dir);
 }
@@ -327,7 +353,10 @@ async fn major_reduction_requires_explicit_acknowledgement() {
         }),
     )
     .await;
-    assert!(refused.contains("allow_major_reduction"), "unexpected: {refused}");
+    assert!(
+        refused.contains("allow_major_reduction"),
+        "unexpected: {refused}"
+    );
 
     // Acknowledged reduction goes through.
     let ok = call_ok(
@@ -364,7 +393,10 @@ async fn variant_lifecycle_including_human_confirmation_gate() {
         json!({ "project_root": root, "name": "Acme Tailor", "jd_text": "Rust role" }),
     )
     .await;
-    let vid = created["variant"]["id"].as_str().expect("variant id").to_string();
+    let vid = created["variant"]["id"]
+        .as_str()
+        .expect("variant id")
+        .to_string();
 
     let listed = call_ok(&srv, "resume_variant_list", json!({ "project_root": root })).await;
     assert_eq!(listed["count"].as_u64(), Some(1));
@@ -377,7 +409,10 @@ async fn variant_lifecycle_including_human_confirmation_gate() {
     )
     .await;
     assert_eq!(challenge["resultType"], "inputRequired");
-    let state = challenge["requestState"].as_str().expect("request state").to_string();
+    let state = challenge["requestState"]
+        .as_str()
+        .expect("request state")
+        .to_string();
 
     // …and a forged/absent confirm does not delete.
     let cancelled = call_ok(
@@ -401,7 +436,7 @@ async fn variant_lifecycle_including_human_confirmation_gate() {
             "project_root": root, "variant_id": vid,
             "request_state": state,
             "input_responses": { "confirm": true },
-        })
+        }),
     );
     let replay = replay.await;
     assert!(
@@ -416,7 +451,10 @@ async fn variant_lifecycle_including_human_confirmation_gate() {
         json!({ "project_root": root, "variant_id": vid }),
     )
     .await;
-    let state2 = challenge2["requestState"].as_str().expect("state").to_string();
+    let state2 = challenge2["requestState"]
+        .as_str()
+        .expect("state")
+        .to_string();
     let done = call_ok(
         &srv,
         "resume_variant_delete",
@@ -487,7 +525,11 @@ async fn save_synthesis_persists_a_compiled_tailored_version() {
 
     let variant = &out["variant"];
     assert_eq!(variant["status"], "draft");
-    assert_eq!(out["compile"]["compiled"], true, "errors: {:?}", out["compile"]["errors"]);
+    assert_eq!(
+        out["compile"]["compiled"], true,
+        "errors: {:?}",
+        out["compile"]["errors"]
+    );
     let vdir = PathBuf::from(variant["path"].as_str().expect("variant path"));
     // The JD was recorded where both agents and users can see it.
     assert!(vdir.join("JOB_DESCRIPTION.md").is_file());
@@ -595,7 +637,12 @@ async fn doc_listing_excludes_managed_dirs() {
     register_project(&srv, &dir);
     let root = dir.to_string_lossy().to_string();
 
-    let listing = call_ok(&srv, "resume_doc_list_files", json!({ "project_root": root })).await;
+    let listing = call_ok(
+        &srv,
+        "resume_doc_list_files",
+        json!({ "project_root": root }),
+    )
+    .await;
     let paths: Vec<String> = listing["files"]
         .as_array()
         .expect("files")
@@ -604,7 +651,9 @@ async fn doc_listing_excludes_managed_dirs() {
         .collect();
     assert!(paths.contains(&"main.typ".to_string()));
     assert!(
-        !paths.iter().any(|p| p.contains(".prism") || p.contains("node_modules")),
+        !paths
+            .iter()
+            .any(|p| p.contains(".prism") || p.contains("node_modules")),
         "managed dirs leaked into the listing: {paths:?}"
     );
 

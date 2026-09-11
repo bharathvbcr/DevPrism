@@ -14,11 +14,27 @@ pub struct RouterDecision {
 }
 
 const HEAVY_TERMS: &[&str] = &[
-    "analyze", "compare", "implement", "refactor", "architect", "design", "prove",
-    "evaluate", "synthesize", "debug", "optimize", "rewrite",
+    "analyze",
+    "compare",
+    "implement",
+    "refactor",
+    "architect",
+    "design",
+    "prove",
+    "evaluate",
+    "synthesize",
+    "debug",
+    "optimize",
+    "rewrite",
 ];
 const LIGHT_TERMS: &[&str] = &[
-    "grammar", "typo", "summarize", "short", "one line", "json only", "fix lint",
+    "grammar",
+    "typo",
+    "summarize",
+    "short",
+    "one line",
+    "json only",
+    "fix lint",
     "continue after",
 ];
 

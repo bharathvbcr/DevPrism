@@ -15,8 +15,7 @@ import { InlineBanner } from "@/components/ui/inline-banner";
 import { Skeleton } from "@/components/ui/skeleton";
 import { debounce, onCareerDbChanged } from "@/lib/career/db-events";
 import {
-  isTexFileName,
-  isZipFileName,
+  isResumeImportFileName,
   readResumeSourceFromFile,
   readResumeSourceFromPath,
   type ResumeSource,
@@ -36,7 +35,7 @@ function firstImportablePath(paths: string[]): string | null {
   return (
     paths.find((p) => {
       const base = p.split(/[\\/]/).pop() ?? "";
-      return isZipFileName(base) || isTexFileName(base);
+      return isResumeImportFileName(base);
     }) ?? null
   );
 }
@@ -46,7 +45,7 @@ function firstImportableBrowserFile(
 ): File | null {
   for (const item of files) {
     const base = item.relativePath.split("/").pop() ?? "";
-    if (isZipFileName(base) || isTexFileName(base)) return item.file;
+    if (isResumeImportFileName(base)) return item.file;
   }
   return null;
 }
@@ -124,7 +123,7 @@ export function CareerView() {
             const target = firstImportablePath(paths);
             if (!target) {
               toast.error(
-                "Drop a .zip resume archive or a .tex file to import.",
+                "Drop a resume as .zip, .tex, .pdf, .md, or .txt to import.",
               );
               return;
             }
@@ -174,7 +173,9 @@ export function CareerView() {
         .then(async (files) => {
           const target = firstImportableBrowserFile(files);
           if (!target) {
-            toast.error("Drop a .zip resume archive or a .tex file to import.");
+            toast.error(
+              "Drop a resume as .zip, .tex, .pdf, .md, or .txt to import.",
+            );
             return;
           }
           try {
@@ -224,11 +225,11 @@ export function CareerView() {
           <div className="flex w-full max-w-md flex-col items-center gap-2 rounded-xl border-2 border-primary/60 border-dashed px-6 py-10 text-center">
             <FileUpIcon className="size-8 text-primary/70" />
             <p className="font-medium text-sm">
-              Drop a .zip resume archive or .tex file
+              Drop a resume (.zip, .tex, .pdf, .md, .txt)
             </p>
             <p className="text-muted-foreground text-xs">
-              The LaTeX source is loaded into the resume import wizard — nothing
-              is saved until you confirm.
+              The source is loaded into the resume import wizard — nothing is
+              saved until you confirm.
             </p>
           </div>
         </div>

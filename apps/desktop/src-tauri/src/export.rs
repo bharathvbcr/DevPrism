@@ -58,9 +58,7 @@ pub fn resolve_project_relative(root: &Path, rel: &str) -> Result<PathBuf, Strin
     for part in candidate.components() {
         match part {
             Component::Normal(_) | Component::CurDir => {}
-            Component::ParentDir => {
-                return Err(format!("Path must not leave the project: {rel}"))
-            }
+            Component::ParentDir => return Err(format!("Path must not leave the project: {rel}")),
             Component::RootDir | Component::Prefix(_) => {
                 return Err(format!("Path must be inside the project: {rel}"))
             }

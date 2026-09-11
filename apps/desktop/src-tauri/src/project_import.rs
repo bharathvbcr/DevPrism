@@ -124,8 +124,7 @@ fn contains_tex(dir: &Path) -> bool {
 }
 
 fn extract_zip(zip_path: &Path, dest: &Path) -> Result<(), String> {
-    let file = fs::File::open(zip_path)
-        .map_err(|e| format!("Failed to open archive: {}", e))?;
+    let file = fs::File::open(zip_path).map_err(|e| format!("Failed to open archive: {}", e))?;
     let mut archive =
         zip::ZipArchive::new(file).map_err(|e| format!("Not a valid zip archive: {}", e))?;
 
@@ -151,10 +150,7 @@ fn extract_zip(zip_path: &Path, dest: &Path) -> Result<(), String> {
         };
 
         // Skip macOS resource-fork noise.
-        if enclosed
-            .components()
-            .any(|c| c.as_os_str() == "__MACOSX")
-        {
+        if enclosed.components().any(|c| c.as_os_str() == "__MACOSX") {
             continue;
         }
 
@@ -185,8 +181,7 @@ fn extract_zip(zip_path: &Path, dest: &Path) -> Result<(), String> {
             }
             let mut out = fs::File::create(&out_path)
                 .map_err(|e| format!("Failed to write extracted file: {}", e))?;
-            io::copy(&mut entry, &mut out)
-                .map_err(|e| format!("Failed to extract file: {}", e))?;
+            io::copy(&mut entry, &mut out).map_err(|e| format!("Failed to extract file: {}", e))?;
         }
     }
 
@@ -199,7 +194,8 @@ fn import_zip_blocking(zip_path: &str) -> Result<ImportedProject, String> {
         return Err("Dropped item is not a file.".to_string());
     }
 
-    let home = dirs::home_dir().ok_or_else(|| "Could not locate the home directory.".to_string())?;
+    let home =
+        dirs::home_dir().ok_or_else(|| "Could not locate the home directory.".to_string())?;
     let base = home.join("Documents").join("DevPrism");
     fs::create_dir_all(&base)
         .map_err(|e| format!("Failed to create the DevPrism projects folder: {}", e))?;
@@ -211,8 +207,7 @@ fn import_zip_blocking(zip_path: &str) -> Result<ImportedProject, String> {
     let name = sanitize_project_name(stem);
     let dest = unique_dir(&base, &name);
 
-    fs::create_dir_all(&dest)
-        .map_err(|e| format!("Failed to create the project folder: {}", e))?;
+    fs::create_dir_all(&dest).map_err(|e| format!("Failed to create the project folder: {}", e))?;
 
     if let Err(err) = extract_zip(zip, &dest) {
         let _ = fs::remove_dir_all(&dest);
@@ -273,10 +268,8 @@ fn copy_item(src: &Path, dest_dir: &Path, budget: &mut CopyBudget) -> Result<(),
     let target = dest_dir.join(name);
 
     if src.is_dir() {
-        fs::create_dir_all(&target)
-            .map_err(|e| format!("Failed to create directory: {}", e))?;
-        let entries =
-            fs::read_dir(src).map_err(|e| format!("Failed to read directory: {}", e))?;
+        fs::create_dir_all(&target).map_err(|e| format!("Failed to create directory: {}", e))?;
+        let entries = fs::read_dir(src).map_err(|e| format!("Failed to read directory: {}", e))?;
         for entry in entries.flatten() {
             copy_item(&entry.path(), &target, budget)?;
         }
@@ -291,8 +284,7 @@ fn copy_item(src: &Path, dest_dir: &Path, budget: &mut CopyBudget) -> Result<(),
         }
         budget.bytes -= size;
         if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create directory: {}", e))?;
+            fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {}", e))?;
         }
         fs::copy(src, &target).map_err(|e| format!("Failed to copy file: {}", e))?;
     }
@@ -333,8 +325,7 @@ fn import_loose_blocking(paths: &[String]) -> Result<ImportedProject, String> {
     };
     let name = sanitize_project_name(stem);
     let dest = unique_dir(&base, &name);
-    fs::create_dir_all(&dest)
-        .map_err(|e| format!("Failed to create the project folder: {}", e))?;
+    fs::create_dir_all(&dest).map_err(|e| format!("Failed to create the project folder: {}", e))?;
 
     let mut budget = CopyBudget {
         entries: MAX_ENTRIES,
@@ -408,19 +399,13 @@ mod tests {
 
     #[test]
     fn no_flatten_with_multiple_roots() {
-        let names = vec![
-            "a/main.tex".to_string(),
-            "b/extra.tex".to_string(),
-        ];
+        let names = vec!["a/main.tex".to_string(), "b/extra.tex".to_string()];
         assert_eq!(single_root_prefix(&names), None);
     }
 
     #[test]
     fn ignores_macosx_when_flattening() {
-        let names = vec![
-            "__MACOSX/".to_string(),
-            "paper/main.tex".to_string(),
-        ];
+        let names = vec!["__MACOSX/".to_string(), "paper/main.tex".to_string()];
         assert_eq!(single_root_prefix(&names), Some("paper".to_string()));
     }
 

@@ -7,28 +7,93 @@ const commitBlocks = vi.fn(async (blocks: ExperienceBlock[]) => ({
   saved: blocks.length,
   deferredEmbeddings: 0,
 }));
-const extractBlocksFromResume = vi.fn();
+const extractResumeFromSourceMock = vi.fn();
+const setResumeHeader = vi.fn();
+const setResumeSummary = vi.fn();
+const setResumeSkillGroups = vi.fn();
 
 vi.mock("@/stores/career-store", () => ({
-  useCareerStore: (
-    selector: (s: {
-      commitBlocks: typeof commitBlocks;
-      saving: boolean;
-    }) => unknown,
-  ) => selector({ commitBlocks, saving: false }),
+  useCareerStore: Object.assign(
+    (
+      selector: (s: {
+        commitBlocks: typeof commitBlocks;
+        saving: boolean;
+        resumeImportSource: string | null;
+        clearResumeImportSource: () => void;
+      }) => unknown,
+    ) =>
+      selector({
+        commitBlocks,
+        saving: false,
+        resumeImportSource: null,
+        clearResumeImportSource: () => {},
+      }),
+    {
+      getState: () => ({ closeCareer: vi.fn() }),
+    },
+  ),
+}));
+
+vi.mock("@/stores/settings-store", () => ({
+  useSettingsStore: Object.assign(
+    (
+      selector: (s: {
+        resumeHeader: {
+          fullName: string;
+          email: string;
+          phone: string;
+          cityRegion: string;
+        };
+        resumeSummary: string;
+        resumeSkillGroups: unknown[];
+        setResumeHeader: typeof setResumeHeader;
+        setResumeSummary: typeof setResumeSummary;
+        setResumeSkillGroups: typeof setResumeSkillGroups;
+      }) => unknown,
+    ) =>
+      selector({
+        resumeHeader: {
+          fullName: "",
+          email: "",
+          phone: "",
+          cityRegion: "",
+        },
+        resumeSummary: "",
+        resumeSkillGroups: [],
+        setResumeHeader,
+        setResumeSummary,
+        setResumeSkillGroups,
+      }),
+    {
+      getState: () => ({
+        resumeHeader: {
+          fullName: "",
+          email: "",
+          phone: "",
+          cityRegion: "",
+        },
+        resumeSummary: "",
+        resumeSkillGroups: [],
+        setResumeHeader,
+        setResumeSummary,
+        setResumeSkillGroups,
+      }),
+    },
+  ),
 }));
 
 vi.mock("@/lib/career", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/career")>();
   return {
     ...actual,
-    extractBlocksFromResume: (...args: unknown[]) =>
-      extractBlocksFromResume(...args),
+    extractResumeFromSource: (...args: unknown[]) =>
+      extractResumeFromSourceMock(...args),
   };
 });
 
+const canUseAiAssist = vi.fn(() => true);
 vi.mock("@/lib/ai-assist", () => ({
-  canUseAiAssist: () => true,
+  canUseAiAssist: () => canUseAiAssist(),
 }));
 
 vi.mock("@/lib/platform-dialog", () => ({
@@ -70,8 +135,18 @@ describe("ResumeImportWizard commit path", () => {
 
   beforeEach(() => {
     commitBlocks.mockClear();
-    extractBlocksFromResume.mockReset();
-    extractBlocksFromResume.mockResolvedValue([draft]);
+    extractResumeFromSourceMock.mockReset();
+    extractResumeFromSourceMock.mockResolvedValue({
+      blocks: [draft],
+      header: { email: "ada@example.com" },
+      summary: "Staff engineer shipping ML systems.",
+      skillGroups: [{ label: "Languages", items: "English, Tamil" }],
+      via: "deterministic",
+    });
+    setResumeHeader.mockClear();
+    setResumeSummary.mockClear();
+    setResumeSkillGroups.mockClear();
+    canUseAiAssist.mockReturnValue(true);
     vi.mocked(toast.success).mockClear();
     vi.mocked(toast.error).mockClear();
   });
@@ -91,7 +166,11 @@ describe("ResumeImportWizard commit path", () => {
     await waitFor(() => {
       expect(screen.getByText("Imported Role")).toBeInTheDocument();
     });
-    expect(extractBlocksFromResume).toHaveBeenCalledWith(source);
+    expect(extractResumeFromSourceMock).toHaveBeenCalledWith(source);
+    expect(setResumeHeader).toHaveBeenCalled();
+    expect(setResumeSummary).toHaveBeenCalledWith(
+      "Staff engineer shipping ML systems.",
+    );
 
     await user.click(screen.getByRole("button", { name: /save 1 block/i }));
 
@@ -101,6 +180,23 @@ describe("ResumeImportWizard commit path", () => {
     expect(commitBlocks.mock.calls[0]![0]).toEqual([draft]);
     expect(toast.success).toHaveBeenCalledWith("Saved 1 block");
     expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("extracts drafts when AI assist is off", async () => {
+    canUseAiAssist.mockReturnValue(false);
+    const user = userEvent.setup();
+    render(<ResumeImportWizard open onOpenChange={vi.fn()} />);
+
+    fireEvent.change(screen.getByPlaceholderText(/documentclass\{article\}/i), {
+      target: { value: "x".repeat(50) },
+    });
+    const extract = screen.getByRole("button", { name: /extract drafts/i });
+    expect(extract).toBeEnabled();
+    await user.click(extract);
+    await waitFor(() => {
+      expect(screen.getByText("Imported Role")).toBeInTheDocument();
+    });
+    expect(extractResumeFromSourceMock).toHaveBeenCalled();
   });
 });
 

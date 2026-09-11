@@ -100,7 +100,7 @@ describe("synthesizer ATS parse integration", () => {
     const llmJson = mockLlm();
     const result = await synthesizeResume({
       jdText:
-        "We are hiring via Workday: Senior ML Engineer with Python and PyTorch experience for production systems.",
+        "Title: ML Engineer\nWe are hiring via Workday: Senior ML Engineer with Python and PyTorch experience for production systems.",
       personaId: "ai",
       templateId: TYPST_ATS_SINGLE_TEMPLATE.id,
       header: {
@@ -147,6 +147,10 @@ describe("synthesizer ATS parse integration", () => {
       expect(s.heatLevel).toBeGreaterThanOrEqual(0);
       expect(s.heatLevel).toBeLessThanOrEqual(5);
     }
+
+    const jdMeta = result.report.jdMetadata;
+    expect(jdMeta).toBeDefined();
+    expect(jdMeta!.jobTitle).toMatch(/ML Engineer/i);
   });
 
   it("persists the ATS summaries alongside the run for replay", async () => {
@@ -179,9 +183,11 @@ describe("synthesizer ATS parse integration", () => {
     const persisted = saved as {
       atsParse?: unknown;
       keywordHeatmap?: unknown;
+      jdMetadata?: unknown;
     };
     expect(persisted.atsParse).toBeDefined();
     expect(persisted.keywordHeatmap).toBeDefined();
+    expect(persisted.jdMetadata).toBeDefined();
   });
 
   it("flags formatting hazards from user data in the final report", async () => {

@@ -91,8 +91,14 @@ pub fn skills_match(a: &str, b: &str) -> bool {
         return true;
     }
 
-    let ta: Vec<String> = skill_tokens(a).iter().map(|t| canonical_skill_key(t)).collect();
-    let tb: Vec<String> = skill_tokens(b).iter().map(|t| canonical_skill_key(t)).collect();
+    let ta: Vec<String> = skill_tokens(a)
+        .iter()
+        .map(|t| canonical_skill_key(t))
+        .collect();
+    let tb: Vec<String> = skill_tokens(b)
+        .iter()
+        .map(|t| canonical_skill_key(t))
+        .collect();
     if ta.is_empty() || tb.is_empty() {
         return false;
     }
@@ -102,7 +108,11 @@ pub fn skills_match(a: &str, b: &str) -> bool {
     }
 
     // The shorter token list must be a subset of the longer one.
-    let (needle, hay) = if ta.len() <= tb.len() { (&ta, &tb) } else { (&tb, &ta) };
+    let (needle, hay) = if ta.len() <= tb.len() {
+        (&ta, &tb)
+    } else {
+        (&tb, &ta)
+    };
     needle.iter().all(|t| hay.contains(t))
 }
 
@@ -140,7 +150,10 @@ pub fn contains_at_boundary(hay: &str, needle: &str) -> bool {
         let start = from + rel;
         let end = start + needle.len();
 
-        let before_ok = hay[..start].chars().next_back().is_none_or(is_leading_boundary);
+        let before_ok = hay[..start]
+            .chars()
+            .next_back()
+            .is_none_or(is_leading_boundary);
         let after_ok = hay[end..].chars().next().is_none_or(is_trailing_boundary);
         if before_ok && after_ok {
             return true;
@@ -205,8 +218,14 @@ mod tests {
 
     #[test]
     fn skill_tokens_splits_on_non_skill_chars() {
-        assert_eq!(skill_tokens("Machine Learning"), vec!["machine", "learning"]);
-        assert_eq!(skill_tokens("PyTorch  Lightning"), vec!["pytorch", "lightning"]);
+        assert_eq!(
+            skill_tokens("Machine Learning"),
+            vec!["machine", "learning"]
+        );
+        assert_eq!(
+            skill_tokens("PyTorch  Lightning"),
+            vec!["pytorch", "lightning"]
+        );
         assert_eq!(skill_tokens("C++/CUDA"), vec!["c++", "cuda"]);
         assert!(skill_tokens("   ").is_empty());
     }
@@ -253,7 +272,10 @@ mod tests {
     #[test]
     fn a_sentence_final_skill_matches() {
         assert!(text_covers_skill("we chose go. it was fast", "golang"));
-        assert!(text_covers_skill("deep experience with kubernetes.", "kubernetes"));
+        assert!(text_covers_skill(
+            "deep experience with kubernetes.",
+            "kubernetes"
+        ));
         assert!(text_covers_skill("expert in c++.", "c++"));
         assert!(text_covers_skill("fluent in c#.", "c#"));
         assert!(text_covers_skill("we chose go, it was fast", "golang"));

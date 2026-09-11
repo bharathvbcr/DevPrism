@@ -20,11 +20,17 @@ fn main() {
     }
 
     // Stateless MCP 2.0 Stdio mode: `--mcp` or `mcp-server` or `--mcp-stdio`
-    if args.iter().any(|a| a == "--mcp" || a == "mcp-server" || a == "--mcp-stdio") {
+    if args
+        .iter()
+        .any(|a| a == "--mcp" || a == "mcp-server" || a == "--mcp-stdio")
+    {
         // Exit with a diagnostic rather than panicking: this runs as a
         // headless MCP transport, where a panic message is far less useful to
         // the calling host than a clean non-zero exit on stderr.
-        let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+        let runtime = match tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+        {
             Ok(runtime) => runtime,
             Err(e) => {
                 eprintln!("[mcp_stdio] failed to build Tokio runtime: {e}");
@@ -33,7 +39,8 @@ fn main() {
         };
 
         let res = runtime.block_on(async {
-            claude_prism_desktop_lib::mcp::transport_stdio::run_stdio_transport(Default::default()).await
+            claude_prism_desktop_lib::mcp::transport_stdio::run_stdio_transport(Default::default())
+                .await
         });
 
         match res {
@@ -55,7 +62,10 @@ fn main() {
         // Exit with a diagnostic rather than panicking: this runs as a
         // headless MCP transport, where a panic message is far less useful to
         // the calling host than a clean non-zero exit on stderr.
-        let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+        let runtime = match tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+        {
             Ok(runtime) => runtime,
             Err(e) => {
                 eprintln!("[mcp_http] failed to build Tokio runtime: {e}");
@@ -64,7 +74,11 @@ fn main() {
         };
 
         let res = runtime.block_on(async {
-            claude_prism_desktop_lib::mcp::transport_http::run_http_transport(Default::default(), port).await
+            claude_prism_desktop_lib::mcp::transport_http::run_http_transport(
+                Default::default(),
+                port,
+            )
+            .await
         });
 
         match res {

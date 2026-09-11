@@ -64,8 +64,15 @@ async fn read_file_for_edit(path: PathBuf) -> Result<String, String> {
 /// build-tree section of the history snapshot excludes (see history.rs), so
 /// agent walks and snapshot staging agree on what is ignorable.
 pub(crate) const EXCLUDE_DIRS: &[&str] = &[
-    ".git", ".prism", ".claudeprism", ".venv", ".gitnexus", "node_modules",
-    "target", "dist", "build",
+    ".git",
+    ".prism",
+    ".claudeprism",
+    ".venv",
+    ".gitnexus",
+    "node_modules",
+    "target",
+    "dist",
+    "build",
 ];
 
 /// OpenAI-style function schemas advertised to the model.
@@ -150,9 +157,10 @@ pub fn tool_schemas() -> Value {
     // Plugins 1.0: career/resume capability packs advertise through the shared
     // registry (previously four hand-copied schemas drifted from the MCP
     // definitions they mirrored).
-    if let (Some(base), Value::Array(extra)) =
-        (out.as_array_mut(), crate::plugins::shared_registry().native_agent_schemas())
-    {
+    if let (Some(base), Value::Array(extra)) = (
+        out.as_array_mut(),
+        crate::plugins::shared_registry().native_agent_schemas(),
+    ) {
         base.extend(extra);
     }
     out
@@ -190,21 +198,21 @@ fn resolve(project_dir: &Path, rel: &str) -> Result<PathBuf, String> {
     let rel_path: PathBuf = if is_abs {
         match strip_project_prefix(project_dir, candidate) {
             Some(stripped) => stripped,
-            None => {
-                return Err(
-                    "Path must stay inside the project (absolute path is outside the project root)."
-                        .into(),
-                )
-            }
+            None => return Err(
+                "Path must stay inside the project (absolute path is outside the project root)."
+                    .into(),
+            ),
         }
     } else {
         candidate.to_path_buf()
     };
 
-    if rel_path
-        .components()
-        .any(|c| matches!(c, Component::ParentDir | Component::Prefix(_) | Component::RootDir))
-    {
+    if rel_path.components().any(|c| {
+        matches!(
+            c,
+            Component::ParentDir | Component::Prefix(_) | Component::RootDir
+        )
+    }) {
         return Err("Path must stay inside the project (no '..').".into());
     }
     if rel_path.as_os_str().is_empty() {
@@ -294,7 +302,12 @@ fn arg<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
 /// trivial line-ending mismatches don't fail. Returns the updated buffer on
 /// success or a human-readable reason on failure (no disk I/O). Shared by Edit
 /// and MultiEdit so both get identical matching semantics.
-fn replace_in_content(content: &str, old: &str, new: &str, replace_all: bool) -> Result<String, String> {
+fn replace_in_content(
+    content: &str,
+    old: &str,
+    new: &str,
+    replace_all: bool,
+) -> Result<String, String> {
     // An empty old_string matches at every character boundary: with replace_all
     // it would splice new_string between every char (total corruption), and
     // without it reports a misleading "occurs N times". Forbid it outright.
@@ -392,7 +405,10 @@ fn apply_edit(
 /// reason are reported, so a partial mutation can never corrupt the file.
 fn apply_multi_edit(path: &Path, rel: &str, content: &str, edits: &[Value]) -> (String, bool) {
     if edits.is_empty() {
-        return ("MultiEdit failed: 'edits' is empty — provide at least one edit.".into(), true);
+        return (
+            "MultiEdit failed: 'edits' is empty — provide at least one edit.".into(),
+            true,
+        );
     }
     let mut buf = content.to_string();
     for (i, e) in edits.iter().enumerate() {
@@ -402,17 +418,27 @@ fn apply_multi_edit(path: &Path, rel: &str, content: &str, edits: &[Value]) -> (
             (Some(o), Some(n)) => (o, n),
             _ => {
                 return (
-                    format!("MultiEdit failed: edit #{} is missing 'old_string' or 'new_string'.", i + 1),
+                    format!(
+                        "MultiEdit failed: edit #{} is missing 'old_string' or 'new_string'.",
+                        i + 1
+                    ),
                     true,
                 )
             }
         };
-        let replace_all = e.get("replace_all").and_then(|v| v.as_bool()).unwrap_or(false);
+        let replace_all = e
+            .get("replace_all")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         match replace_in_content(&buf, old, new, replace_all) {
             Ok(updated) => buf = updated,
             Err(reason) => {
                 return (
-                    format!("MultiEdit failed at edit #{} (no changes written): {}", i + 1, reason),
+                    format!(
+                        "MultiEdit failed at edit #{} (no changes written): {}",
+                        i + 1,
+                        reason
+                    ),
                     true,
                 )
             }
@@ -425,7 +451,11 @@ fn apply_multi_edit(path: &Path, rel: &str, content: &str, edits: &[Value]) -> (
 /// file lines that contain the start of old_string, so a weak model can see the
 /// real text (whitespace/wording drift) and correct its next Edit.
 fn edit_not_found_hint(content: &str, old: &str) -> String {
-    let first = old.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    let first = old
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim();
     let probe: String = first.chars().take(24).collect();
     if probe.chars().count() < 4 {
         return String::new();
@@ -443,7 +473,11 @@ fn edit_not_found_hint(content: &str, old: &str) -> String {
     if hints.is_empty() {
         String::new()
     } else {
-        format!("\nClosest lines containing \"{}\":\n{}", probe, hints.join("\n"))
+        format!(
+            "\nClosest lines containing \"{}\":\n{}",
+            probe,
+            hints.join("\n")
+        )
     }
 }
 
@@ -460,8 +494,12 @@ fn write_edit(path: &Path, rel: &str, updated: &str, note: &str) -> (String, boo
 fn read_searchable(path: &Path, max_bytes: usize) -> Option<String> {
     let mut f = std::fs::File::open(path).ok()?;
     let mut buf = Vec::new();
-    f.by_ref().take(max_bytes as u64).read_to_end(&mut buf).ok()?;
-    if buf.len() >= 2 && ((buf[0] == 0xFF && buf[1] == 0xFE) || (buf[0] == 0xFE && buf[1] == 0xFF)) {
+    f.by_ref()
+        .take(max_bytes as u64)
+        .read_to_end(&mut buf)
+        .ok()?;
+    if buf.len() >= 2 && ((buf[0] == 0xFF && buf[1] == 0xFE) || (buf[0] == 0xFE && buf[1] == 0xFF))
+    {
         let le = buf[0] == 0xFF;
         let units: Vec<u16> = buf[2..]
             .chunks_exact(2)
@@ -485,8 +523,7 @@ fn read_searchable(path: &Path, max_bytes: usize) -> Option<String> {
 /// and rejecting binary files with a clear message instead of mojibake. Returns
 /// (text, truncated) where `truncated` means the file was larger than `cap`.
 fn decode_capped(path: &Path, rel: &str, cap_bytes: usize) -> Result<(String, bool), String> {
-    let mut f =
-        std::fs::File::open(path).map_err(|e| format!("Could not read {}: {}", rel, e))?;
+    let mut f = std::fs::File::open(path).map_err(|e| format!("Could not read {}: {}", rel, e))?;
     let mut buf = Vec::new();
     // Read one byte past the cap so we can tell whether truncation happened.
     if f.by_ref()
@@ -498,8 +535,7 @@ fn decode_capped(path: &Path, rel: &str, cap_bytes: usize) -> Result<(String, bo
     }
     let truncated = buf.len() > cap_bytes;
     // UTF-16 text (with BOM) has null bytes but is not binary — decode it.
-    if buf.len() >= 2
-        && ((buf[0] == 0xFF && buf[1] == 0xFE) || (buf[0] == 0xFE && buf[1] == 0xFF))
+    if buf.len() >= 2 && ((buf[0] == 0xFF && buf[1] == 0xFE) || (buf[0] == 0xFE && buf[1] == 0xFF))
     {
         let le = buf[0] == 0xFF;
         let units: Vec<u16> = buf[2..]
@@ -573,13 +609,9 @@ fn read_file(
         // Line-by-line byte streaming doesn't apply to UTF-16; decode a bounded
         // window and slice (UTF-16 files are rare and usually small).
         return match decode_capped(path, rel, MAX_RANGE_SCAN_BYTES) {
-            Ok((text, scan_truncated)) => slice_lines(
-                &text,
-                rel,
-                Some(start),
-                limit,
-                scan_truncated,
-            ),
+            Ok((text, scan_truncated)) => {
+                slice_lines(&text, rel, Some(start), limit, scan_truncated)
+            }
             Err(msg) => (msg, true),
         };
     }
@@ -664,9 +696,14 @@ fn read_line_capped<R: BufRead>(
 /// Skipped lines use constant memory and each emitted line is capped, so total
 /// memory stays ~MAX_READ_BYTES while ANY offset is reachable regardless of file
 /// size. Footer reports the visible range and the next offset to continue from.
-fn read_range_utf8<R: BufRead>(mut reader: R, rel: &str, start: usize, take: usize) -> (String, bool) {
+fn read_range_utf8<R: BufRead>(
+    mut reader: R,
+    rel: &str,
+    start: usize,
+    take: usize,
+) -> (String, bool) {
     let mut idx = 0usize; // 1-based number of the most recent line consumed
-    // Skip lines before the window without buffering them.
+                          // Skip lines before the window without buffering them.
     while idx + 1 < start {
         match skip_line(&mut reader) {
             Ok(true) => idx += 1,
@@ -806,9 +843,13 @@ fn slice_lines(
         );
     }
     if byte_capped {
-        out.push_str("\n…[range truncated at the byte cap; lower limit or raise offset to continue]");
+        out.push_str(
+            "\n…[range truncated at the byte cap; lower limit or raise offset to continue]",
+        );
     } else if scan_truncated && start - 1 + count >= total_lines {
-        out.push_str("\n…[end of the scanned window; the file continues beyond it — use a higher offset]");
+        out.push_str(
+            "\n…[end of the scanned window; the file continues beyond it — use a higher offset]",
+        );
     } else if start - 1 + count < total_lines {
         // `+` when the scan window was truncated: total_lines counts only the
         // scanned prefix, so the real file has at least that many lines.
@@ -855,7 +896,9 @@ async fn run_mcp_tool(tool: &str, args: &Value) -> (String, bool) {
     // spans calls. (The MCP transports share one store instead.)
     let db = crate::career_db::CareerDbState::default();
     let ctx = crate::plugins::PluginContext::new(db);
-    let result = crate::plugins::shared_registry().execute_tool(&ctx, tool, &args).await;
+    let result = crate::plugins::shared_registry()
+        .execute_tool(&ctx, tool, &args)
+        .await;
 
     match result {
         Ok(val) => (cap(val.to_string(), MAX_OUTPUT_BYTES), false),
@@ -1011,10 +1054,16 @@ async fn policy_refusal(project_dir: &Path, name: &str, args: &Value) -> Option<
             // that could not run, is not a clean pass and does not get to look
             // like one in the log.
             if !decision.demoted.is_empty() {
-                eprintln!("[manvi] {name} allowed by posture, not by rule: {}", decision.demoted);
+                eprintln!(
+                    "[manvi] {name} allowed by posture, not by rule: {}",
+                    decision.demoted
+                );
             }
             if !decision.degraded.is_empty() {
-                eprintln!("[manvi] {name} allowed with checks skipped: {:?}", decision.degraded);
+                eprintln!(
+                    "[manvi] {name} allowed with checks skipped: {:?}",
+                    decision.degraded
+                );
             }
             None
         }
@@ -1039,15 +1088,26 @@ async fn execute_inner(project_dir: &Path, name: &str, args: &Value) -> (String,
                 Ok(path) => {
                     // Treat 0 (and any non-positive) as "unset" — weak models often
                     // emit offset/limit 0 to mean "from the start" / "no limit".
-                    let offset = args.get("offset").and_then(|v| v.as_u64()).map(|n| n as usize).filter(|&n| n > 0);
-                    let limit = args.get("limit").and_then(|v| v.as_u64()).map(|n| n as usize).filter(|&n| n > 0);
+                    let offset = args
+                        .get("offset")
+                        .and_then(|v| v.as_u64())
+                        .map(|n| n as usize)
+                        .filter(|&n| n > 0);
+                    let limit = args
+                        .get("limit")
+                        .and_then(|v| v.as_u64())
+                        .map(|n| n as usize)
+                        .filter(|&n| n > 0);
                     read_file(&path, fp, offset, limit)
                 }
                 Err(e) => (e, true),
             },
             None => ("Read requires 'file_path'.".into(), true),
         },
-        "Write" => match (arg(args, "file_path"), args.get("content").and_then(|c| c.as_str())) {
+        "Write" => match (
+            arg(args, "file_path"),
+            args.get("content").and_then(|c| c.as_str()),
+        ) {
             (Some(fp), Some(content)) => match resolve(project_dir, fp) {
                 Ok(path) => {
                     // Refuse to truncate an existing non-empty file to nothing: a
@@ -1087,15 +1147,20 @@ async fn execute_inner(project_dir: &Path, name: &str, args: &Value) -> (String,
                 (Some(fp), Some(old), Some(new)) => match resolve(project_dir, fp) {
                     Ok(path) => match read_file_for_edit(path.clone()).await {
                         Ok(content) => {
-                            let replace_all =
-                                args.get("replace_all").and_then(|v| v.as_bool()).unwrap_or(false);
+                            let replace_all = args
+                                .get("replace_all")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
                             apply_edit(&path, fp, &content, old, new, replace_all)
                         }
                         Err(e) => (format!("Could not read {}: {}", fp, e), true),
                     },
                     Err(e) => (e, true),
                 },
-                _ => ("Edit requires 'file_path', 'old_string', 'new_string'.".into(), true),
+                _ => (
+                    "Edit requires 'file_path', 'old_string', 'new_string'.".into(),
+                    true,
+                ),
             }
         }
         "MultiEdit" => {
@@ -1109,7 +1174,10 @@ async fn execute_inner(project_dir: &Path, name: &str, args: &Value) -> (String,
                     },
                     Err(e) => (e, true),
                 },
-                _ => ("MultiEdit requires 'file_path' and a non-empty 'edits' array.".into(), true),
+                _ => (
+                    "MultiEdit requires 'file_path' and a non-empty 'edits' array.".into(),
+                    true,
+                ),
             }
         }
         "LS" => {
@@ -1156,7 +1224,14 @@ async fn execute_inner(project_dir: &Path, name: &str, args: &Value) -> (String,
                         let pattern = pattern.to_string();
                         let glob = glob.map(str::to_string);
                         let search = tokio::task::spawn_blocking(move || {
-                            grep(&root, &project, &pattern, glob.as_deref(), case_sensitive, context)
+                            grep(
+                                &root,
+                                &project,
+                                &pattern,
+                                glob.as_deref(),
+                                case_sensitive,
+                                context,
+                            )
                         })
                         .await;
                         match search {
@@ -1293,8 +1368,8 @@ fn ls_walk(
         if is_dir {
             out.push(format!("{}{}/", indent, name));
             *count += 1;
-            let skip = name.starts_with('.')
-                || EXCLUDE_DIRS.contains(&name.to_lowercase().as_str());
+            let skip =
+                name.starts_with('.') || EXCLUDE_DIRS.contains(&name.to_lowercase().as_str());
             if depth + 1 < max_depth && !skip {
                 ls_walk(&e.path(), depth + 1, max_depth, out, count, truncated);
             }
@@ -1645,7 +1720,9 @@ fn is_catastrophic(command: &str) -> bool {
         return true;
     }
     // Filesystem creation / raw write to a block device.
-    if collapsed.starts_with("mkfs") || collapsed.contains(" mkfs") || collapsed.contains("of=/dev/")
+    if collapsed.starts_with("mkfs")
+        || collapsed.contains(" mkfs")
+        || collapsed.contains("of=/dev/")
     {
         return true;
     }
@@ -1667,18 +1744,32 @@ fn is_catastrophic(command: &str) -> bool {
             .skip(1)
             .take_while(|t| !matches!(*t, "&&" | "||" | ";" | "|" | "&"))
             .collect();
-        let short_flag = |t: &str, ch: char| {
-            t.starts_with('-') && !t.starts_with("--") && t.contains(ch)
-        };
+        let short_flag =
+            |t: &str, ch: char| t.starts_with('-') && !t.starts_with("--") && t.contains(ch);
         let has_r = rm_args
             .iter()
             .any(|t| *t == "--recursive" || short_flag(t, 'r'));
-        let has_f = rm_args.iter().any(|t| *t == "--force" || short_flag(t, 'f'));
+        let has_f = rm_args
+            .iter()
+            .any(|t| *t == "--force" || short_flag(t, 'f'));
         let dangerous = rm_args.iter().any(|t| {
             matches!(
                 *t,
-                "/" | "/*" | "/." | "~" | "~/" | "$home" | "${home}" | "/home" | "/root"
-                    | "/etc" | "/usr" | "/bin" | "/var" | "/lib" | "/boot" | "/sys"
+                "/" | "/*"
+                    | "/."
+                    | "~"
+                    | "~/"
+                    | "$home"
+                    | "${home}"
+                    | "/home"
+                    | "/root"
+                    | "/etc"
+                    | "/usr"
+                    | "/bin"
+                    | "/var"
+                    | "/lib"
+                    | "/boot"
+                    | "/sys"
             )
         });
         if has_r && has_f && dangerous {
@@ -1789,7 +1880,11 @@ async fn run_bash(project_dir: &Path, command: &str) -> (String, bool) {
             venv.join("bin")
         };
         cmd.env("VIRTUAL_ENV", &venv);
-        let sep = if cfg!(target_os = "windows") { ";" } else { ":" };
+        let sep = if cfg!(target_os = "windows") {
+            ";"
+        } else {
+            ":"
+        };
         let existing = std::env::var("PATH").unwrap_or_default();
         cmd.env("PATH", format!("{}{}{}", bin.display(), sep, existing));
     }
@@ -1859,7 +1954,10 @@ async fn run_bash(project_dir: &Path, command: &str) -> (String, bool) {
         Err(_) => {
             let _ = child.start_kill();
             let _ = child.wait().await;
-            return (format!("Command timed out after {}s.", BASH_TIMEOUT_SECS), true);
+            return (
+                format!("Command timed out after {}s.", BASH_TIMEOUT_SECS),
+                true,
+            );
         }
     };
 
@@ -1949,9 +2047,7 @@ mod tests {
         assert!(gated_action("Read", &json!({ "file_path": "a.tex" })).is_none());
         assert!(gated_action("Grep", &json!({ "pattern": "x" })).is_none());
         // A registry tool with no usable file_path stays ungated.
-        assert!(
-            gated_action("resume_doc_list_projects", &json!({})).is_none()
-        );
+        assert!(gated_action("resume_doc_list_projects", &json!({})).is_none());
     }
 
     /// Edit/MultiEdit read the whole file to replace text in it; an absurdly
@@ -1973,7 +2069,10 @@ mod tests {
         )
         .await;
         assert!(is_error, "expected refusal for an oversized Edit target");
-        assert!(out.contains("too large") || out.contains("limit"), "got: {out}");
+        assert!(
+            out.contains("too large") || out.contains("limit"),
+            "got: {out}"
+        );
 
         // Within the cap, editing still works normally.
         std::fs::write(dir.path().join("small.tex"), "hello world").unwrap();
@@ -1988,7 +2087,10 @@ mod tests {
         )
         .await;
         assert!(!is_error, "normal-sized Edit failed: {out}");
-        assert_eq!(std::fs::read_to_string(dir.path().join("small.tex")).unwrap(), "hello there");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("small.tex")).unwrap(),
+            "hello there"
+        );
     }
 
     #[test]
@@ -1996,7 +2098,9 @@ mod tests {
         let s = tool_schemas();
         let arr = s.as_array().unwrap();
         // 10 built-in tools + every tool a plugin pack advertises to the agent.
-        let advertised = crate::plugins::shared_registry().native_agent_tool_names().len();
+        let advertised = crate::plugins::shared_registry()
+            .native_agent_tool_names()
+            .len();
         assert_eq!(arr.len(), 10 + advertised);
         let mut names: Vec<&str> = arr
             .iter()
@@ -2005,7 +2109,11 @@ mod tests {
         let total = names.len();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), total, "duplicate tool names in the schema list");
+        assert_eq!(
+            names.len(),
+            total,
+            "duplicate tool names in the schema list"
+        );
         for t in arr {
             assert_eq!(t["type"], "function");
             assert!(t["function"]["name"].is_string());
@@ -2056,7 +2164,10 @@ mod tests {
     fn normalizes_globs() {
         assert_eq!(normalize_glob("*.tex"), ("*.tex".to_string(), false));
         assert_eq!(normalize_glob("**/*.tex"), ("*/*.tex".to_string(), true));
-        assert_eq!(normalize_glob("./chapters/*.tex"), ("chapters/*.tex".to_string(), true));
+        assert_eq!(
+            normalize_glob("./chapters/*.tex"),
+            ("chapters/*.tex".to_string(), true)
+        );
         assert_eq!(normalize_glob("src\\*.rs"), ("src/*.rs".to_string(), true));
     }
 
@@ -2089,8 +2200,12 @@ mod tests {
         std::fs::write(root.join("keep.tex"), "important").unwrap();
 
         // Empty content over a non-empty file is refused; the file is untouched.
-        let (msg, err) =
-            execute(root, "Write", &json!({ "file_path": "keep.tex", "content": "" })).await;
+        let (msg, err) = execute(
+            root,
+            "Write",
+            &json!({ "file_path": "keep.tex", "content": "" }),
+        )
+        .await;
         assert!(err);
         assert!(msg.contains("Refusing to overwrite"));
         assert_eq!(
@@ -2099,14 +2214,25 @@ mod tests {
         );
 
         // Writing real content still works.
-        let (_m, err) =
-            execute(root, "Write", &json!({ "file_path": "keep.tex", "content": "new" })).await;
+        let (_m, err) = execute(
+            root,
+            "Write",
+            &json!({ "file_path": "keep.tex", "content": "new" }),
+        )
+        .await;
         assert!(!err);
-        assert_eq!(std::fs::read_to_string(root.join("keep.tex")).unwrap(), "new");
+        assert_eq!(
+            std::fs::read_to_string(root.join("keep.tex")).unwrap(),
+            "new"
+        );
 
         // Creating a brand-new empty file is still allowed.
-        let (_m, err) =
-            execute(root, "Write", &json!({ "file_path": "fresh.txt", "content": "" })).await;
+        let (_m, err) = execute(
+            root,
+            "Write",
+            &json!({ "file_path": "fresh.txt", "content": "" }),
+        )
+        .await;
         assert!(!err);
         assert!(root.join("fresh.txt").exists());
     }
@@ -2138,7 +2264,10 @@ mod tests {
         let content = "function greet(name) {\n  return 'hi ' + name;\n}\n";
         // old_string differs on line 2 (quotes), so it isn't found; the hint should
         // surface the real first line so the model can copy the exact text.
-        let hint = edit_not_found_hint(content, "function greet(name) {\n  return \"hi \" + name;\n}");
+        let hint = edit_not_found_hint(
+            content,
+            "function greet(name) {\n  return \"hi \" + name;\n}",
+        );
         assert!(hint.contains("function greet(name)"));
         // A too-short probe yields no hint (avoids noise).
         assert_eq!(edit_not_found_hint(content, "fn"), "");
@@ -2151,7 +2280,14 @@ mod tests {
         let content = "alpha\r\nbeta\ngamma\r\n"; // the beta line ends in a lone LF
         std::fs::write(&p, content).unwrap();
         // old_string uses LF; the file's first boundary is CRLF (exact match fails).
-        let (_m, err) = apply_edit(&p, "mixed.txt", content, "alpha\nbeta", "alpha\nBETA", false);
+        let (_m, err) = apply_edit(
+            &p,
+            "mixed.txt",
+            content,
+            "alpha\nbeta",
+            "alpha\nBETA",
+            false,
+        );
         assert!(!err);
         let after = std::fs::read_to_string(&p).unwrap();
         // The untouched lone LF after BETA is preserved (old code forced CRLF).
@@ -2172,7 +2308,15 @@ mod tests {
         ] {
             assert!(is_secret_env_key(k), "{k} should be treated as secret");
         }
-        for k in ["PATH", "HOME", "SHELL", "LANG", "SSH_AUTH_SOCK", "VIRTUAL_ENV", "TERM"] {
+        for k in [
+            "PATH",
+            "HOME",
+            "SHELL",
+            "LANG",
+            "SSH_AUTH_SOCK",
+            "VIRTUAL_ENV",
+            "TERM",
+        ] {
             assert!(!is_secret_env_key(k), "{k} must be preserved");
         }
     }
@@ -2222,7 +2366,10 @@ mod tests {
         assert!(err, "should fail");
         assert!(msg.contains("edit #2"), "got: {msg}");
         // The file is untouched (no partial mutation from edit #1).
-        assert_eq!(std::fs::read_to_string(root.join("a.rs")).unwrap(), original);
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.rs")).unwrap(),
+            original
+        );
     }
 
     #[test]
@@ -2295,7 +2442,10 @@ mod tests {
         )
         .await;
         assert!(!err);
-        assert!(out.contains("line150000\n"), "high offset should be reachable");
+        assert!(
+            out.contains("line150000\n"),
+            "high offset should be reachable"
+        );
         assert!(out.contains("line150001\n"));
         assert!(!out.contains("line149999\n"));
     }
@@ -2318,7 +2468,11 @@ mod tests {
         )
         .await;
         assert!(!err);
-        assert!(out.len() <= MAX_READ_BYTES + 128, "output not bounded: {}", out.len());
+        assert!(
+            out.len() <= MAX_READ_BYTES + 128,
+            "output not bounded: {}",
+            out.len()
+        );
         assert!(out.contains("range truncated at the byte cap"));
 
         // The following line is still reachable past the giant line.
@@ -2339,8 +2493,7 @@ mod tests {
         // merge, so a `--` separator must appear between the two regions.
         std::fs::write(root.join("a.txt"), "FOO\nx\nx\nx\nx\nx\nFOO\n").unwrap();
 
-        let (out, err) =
-            execute(root, "Grep", &json!({ "pattern": "FOO", "context": 1 })).await;
+        let (out, err) = execute(root, "Grep", &json!({ "pattern": "FOO", "context": 1 })).await;
         assert!(!err);
         assert!(out.contains("a.txt:1: FOO")); // match line uses ':'
         assert!(out.contains("a.txt:7: FOO"));
@@ -2366,7 +2519,10 @@ mod tests {
         let root = dir.path();
         // A match-dense file with more matches than the whole global budget: without
         // a per-file cap it would starve every later file of the budget.
-        let dense = std::iter::repeat("FOO").take(100).collect::<Vec<_>>().join("\n");
+        let dense = std::iter::repeat("FOO")
+            .take(100)
+            .collect::<Vec<_>>()
+            .join("\n");
         std::fs::write(root.join("a_dense.txt"), dense).unwrap();
         // A second (alphabetically-later) file that also matches.
         std::fs::write(root.join("z_other.txt"), "nope\nFOO here\n").unwrap();
@@ -2374,9 +2530,15 @@ mod tests {
         let (out, err) = execute(root, "Grep", &json!({ "pattern": "FOO" })).await;
         assert!(!err);
         // The dense file is capped, so the second file's match still appears.
-        assert!(out.contains("z_other.txt"), "second file must appear:\n{out}");
+        assert!(
+            out.contains("z_other.txt"),
+            "second file must appear:\n{out}"
+        );
         // The summary reports the number of files matched, not just line count.
-        assert!(out.contains("matched in 2 files"), "summary line missing:\n{out}");
+        assert!(
+            out.contains("matched in 2 files"),
+            "summary line missing:\n{out}"
+        );
         // The dense file contributes at most the per-file cap.
         let dense_hits = out.matches("a_dense.txt:").count();
         assert!(

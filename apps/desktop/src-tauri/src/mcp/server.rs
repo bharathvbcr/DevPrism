@@ -114,10 +114,9 @@ impl StatelessMcpServer {
             }
 
             "tools/call" => {
-                let tool_name = params
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| JsonRpcError::invalid_params("Missing required 'name' parameter"))?;
+                let tool_name = params.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
+                    JsonRpcError::invalid_params("Missing required 'name' parameter")
+                })?;
                 let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
                 self.registry
                     .execute_tool(&self.context(), tool_name, &arguments)
@@ -137,10 +136,9 @@ impl StatelessMcpServer {
             }
 
             "resources/read" => {
-                let uri = params
-                    .get("uri")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| JsonRpcError::invalid_params("Missing required 'uri' parameter"))?;
+                let uri = params.get("uri").and_then(|v| v.as_str()).ok_or_else(|| {
+                    JsonRpcError::invalid_params("Missing required 'uri' parameter")
+                })?;
                 self.registry.read_resource(&self.context(), uri).await
             }
 
@@ -157,10 +155,9 @@ impl StatelessMcpServer {
             }
 
             "prompts/get" => {
-                let prompt_name = params
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| JsonRpcError::invalid_params("Missing required 'name' parameter"))?;
+                let prompt_name = params.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
+                    JsonRpcError::invalid_params("Missing required 'name' parameter")
+                })?;
                 let args_map = params
                     .get("arguments")
                     .and_then(|v| v.as_object())
@@ -170,7 +167,9 @@ impl StatelessMcpServer {
                             .collect::<HashMap<_, _>>()
                     })
                     .unwrap_or_default();
-                self.registry.get_prompt(&self.context(), prompt_name, &args_map).await
+                self.registry
+                    .get_prompt(&self.context(), prompt_name, &args_map)
+                    .await
             }
 
             // Tasks Extension (SEP-2663)
@@ -178,12 +177,16 @@ impl StatelessMcpServer {
                 let task_id = params
                     .get("taskId")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| JsonRpcError::invalid_params("Missing required 'taskId' parameter"))?;
+                    .ok_or_else(|| {
+                        JsonRpcError::invalid_params("Missing required 'taskId' parameter")
+                    })?;
 
-                let task = self
-                    .task_manager
-                    .get_task(task_id)
-                    .ok_or_else(|| JsonRpcError::new(crate::mcp::protocol::ERR_TASK_FAILED, format!("Task '{task_id}' not found")))?;
+                let task = self.task_manager.get_task(task_id).ok_or_else(|| {
+                    JsonRpcError::new(
+                        crate::mcp::protocol::ERR_TASK_FAILED,
+                        format!("Task '{task_id}' not found"),
+                    )
+                })?;
 
                 Ok(json!({
                     "task": task
@@ -194,7 +197,9 @@ impl StatelessMcpServer {
                 let task_id = params
                     .get("taskId")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| JsonRpcError::invalid_params("Missing required 'taskId' parameter"))?;
+                    .ok_or_else(|| {
+                        JsonRpcError::invalid_params("Missing required 'taskId' parameter")
+                    })?;
 
                 let cancelled = self.task_manager.cancel_task(task_id);
                 Ok(json!({

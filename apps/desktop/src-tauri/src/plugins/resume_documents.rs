@@ -262,7 +262,9 @@ impl CapabilityPlugin for ResumeDocumentsPlugin {
                 },
                 PromptArgument {
                     name: "project_root".to_string(),
-                    description: Some("Optional known project path; discovered when omitted".to_string()),
+                    description: Some(
+                        "Optional known project path; discovered when omitted".to_string(),
+                    ),
                     required: false,
                 },
             ],
@@ -327,7 +329,7 @@ impl CapabilityPlugin for ResumeDocumentsPlugin {
                 "messages": [{
                     "role": "user",
                     "content": { "type": "text", "text": format!(
-"Edit my resume documents per this instruction:\n\n=== INSTRUCTION ===\n{instruction}\n\n{project_line}\nWorkflow:\n1. resume_doc_list_projects → pick the project (variants are allowed too).\n2. resume_doc_list_files / resume_variant_list → orient yourself.\n3. resume_doc_read every file you will change; keep each returned sha1.\n4. Make changes with resume_doc_edit (preferred) or resume_doc_write; pass the matching expected_sha1. For a fresh targeted version of the master, use resume_variant_create or resume_save_synthesis instead of editing the master.\n5. Verify with resume_compile_file before reporting success; report diagnostics verbatim on failure.\nNever invent metrics or employers; only edit what the instruction covers."
+            "Edit my resume documents per this instruction:\n\n=== INSTRUCTION ===\n{instruction}\n\n{project_line}\nWorkflow:\n1. resume_doc_list_projects → pick the project (variants are allowed too).\n2. resume_doc_list_files / resume_variant_list → orient yourself.\n3. resume_doc_read every file you will change; keep each returned sha1.\n4. Make changes with resume_doc_edit (preferred) or resume_doc_write; pass the matching expected_sha1. For a fresh targeted version of the master, use resume_variant_create or resume_save_synthesis instead of editing the master.\n5. Verify with resume_compile_file before reporting success; report diagnostics verbatim on failure.\nNever invent metrics or employers; only edit what the instruction covers."
                     ) }
                 }]
             }))

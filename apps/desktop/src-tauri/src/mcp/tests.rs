@@ -2,7 +2,7 @@
 mod tests {
     use crate::career_db::{Bullet, CareerDbState, DateRange, ExperienceBlock, SkillTag};
     use crate::mcp::protocol::{
-        HttpHeaders, JsonRpcRequest, JsonRpcResponse, MCP_PROTOCOL_VERSION, ERR_HEADER_MISMATCH,
+        HttpHeaders, JsonRpcRequest, JsonRpcResponse, ERR_HEADER_MISMATCH, MCP_PROTOCOL_VERSION,
     };
     use crate::mcp::server::StatelessMcpServer;
     use serde_json::{json, Value};
@@ -44,12 +44,19 @@ mod tests {
             kind: "experience".into(),
             title: "Engineer".into(),
             org: org.to_string(),
-            date_range: DateRange { start: "2024-01".into(), end: None },
+            date_range: DateRange {
+                start: "2024-01".into(),
+                end: None,
+            },
             personas: vec!["ai".into()],
             domains: vec![],
             skills: skills
                 .iter()
-                .map(|s| SkillTag { name: (*s).to_string(), level: 4, years: None })
+                .map(|s| SkillTag {
+                    name: (*s).to_string(),
+                    level: 4,
+                    years: None,
+                })
                 .collect(),
             seniority_level: "senior".into(),
             location: None,
@@ -85,12 +92,21 @@ mod tests {
             "blk-rust",
             "Acme",
             &["Rust", "Kubernetes"],
-            &[("bul-1", "Cut p99 latency by 25% across the Rust ingest path", &["25%"][..])],
+            &[(
+                "bul-1",
+                "Cut p99 latency by 25% across the Rust ingest path",
+                &["25%"][..],
+            )],
         )
     }
 
     fn mongo_block() -> ExperienceBlock {
-        mk_block("blk-mongo", "Globex", &["MongoDB"], &[("bul-2", "Ran MongoDB clusters", &[][..])])
+        mk_block(
+            "blk-mongo",
+            "Globex",
+            &["MongoDB"],
+            &[("bul-2", "Ran MongoDB clusters", &[][..])],
+        )
     }
 
     async fn call_tool(server: &StatelessMcpServer, name: &str, args: Value) -> JsonRpcResponse {
@@ -172,7 +188,9 @@ mod tests {
         assert!(res.result.is_none());
         let err = res.error.expect("error present");
         assert_eq!(err.code, ERR_HEADER_MISMATCH);
-        assert!(err.message.contains("Header 'mcp-method: tools/call' does not match"));
+        assert!(err
+            .message
+            .contains("Header 'mcp-method: tools/call' does not match"));
 
         // 2. Header name does not match body name
         let mut headers2 = HashMap::new();
@@ -193,7 +211,9 @@ mod tests {
         assert!(res2.result.is_none());
         let err2 = res2.error.expect("error present");
         assert_eq!(err2.code, ERR_HEADER_MISMATCH);
-        assert!(err2.message.contains("Header 'mcp-name: resume_analyze_jd' does not match"));
+        assert!(err2
+            .message
+            .contains("Header 'mcp-name: resume_analyze_jd' does not match"));
     }
 
     #[tokio::test]
@@ -223,8 +243,13 @@ mod tests {
         // names nothing else in the system consumed.
         let profile = &val["profile"];
         assert_eq!(profile["seniority"], "senior");
-        assert!(profile.get("requiredSkills").is_none(), "stale shape returned");
-        let must = profile["mustHaveSkills"].as_array().expect("mustHaveSkills");
+        assert!(
+            profile.get("requiredSkills").is_none(),
+            "stale shape returned"
+        );
+        let must = profile["mustHaveSkills"]
+            .as_array()
+            .expect("mustHaveSkills");
         assert!(
             must.iter().any(|s| s == "rust" || s == "typescript"),
             "expected rust/typescript in {must:?}"
@@ -278,7 +303,8 @@ mod tests {
             extra: None,
             bullets: vec![Bullet {
                 id: "b1".to_string(),
-                canonical: "Engineered distributed stream parser improving throughput by 40%".to_string(),
+                canonical: "Engineered distributed stream parser improving throughput by 40%"
+                    .to_string(),
                 variants: serde_json::Map::new(),
                 metrics: Vec::new(),
                 evidence_refs: Vec::new(),
@@ -319,7 +345,9 @@ mod tests {
         assert!(res_del.error.is_none());
         let del_val = res_del.result.expect("mrtr result");
         assert_eq!(del_val["resultType"], "inputRequired");
-        let request_state = del_val["requestState"].as_str().expect("requestState string");
+        let request_state = del_val["requestState"]
+            .as_str()
+            .expect("requestState string");
         assert!(!request_state.is_empty());
 
         // 3. Confirm deletion in second roundtrip with requestState
@@ -483,11 +511,24 @@ Preferred Qualifications
             call_tool(&server, "resume_analyze_jd", json!({ "jd_text": APPLE_JD })).await,
         ));
         let p = &out["profile"];
-        for key in ["roleTitle", "seniority", "mustHaveSkills", "niceToHaveSkills",
-                    "domains", "atsKeywords", "toneSignals", "extractionMethod"] {
+        for key in [
+            "roleTitle",
+            "seniority",
+            "mustHaveSkills",
+            "niceToHaveSkills",
+            "domains",
+            "atsKeywords",
+            "toneSignals",
+            "extractionMethod",
+        ] {
             assert!(!p[key].is_null(), "missing {key} in {p}");
         }
-        for stale in ["requiredSkills", "preferredSkills", "cultureKeywords", "company"] {
+        for stale in [
+            "requiredSkills",
+            "preferredSkills",
+            "cultureKeywords",
+            "company",
+        ] {
             assert!(p.get(stale).is_none(), "stale field {stale} still emitted");
         }
         let empty: Vec<Value> = Vec::new();
@@ -498,7 +539,10 @@ Preferred Qualifications
             .filter_map(|v| v.as_str())
             .collect();
         for expected in ["python", "r", "sql", "annotation"] {
-            assert!(must.contains(&expected), "must-have {expected} missing from {must:?}");
+            assert!(
+                must.contains(&expected),
+                "must-have {expected} missing from {must:?}"
+            );
         }
         assert_eq!(p["extractionMethod"], "heuristic");
     }
@@ -515,7 +559,10 @@ Preferred Qualifications
             )
             .await,
         ));
-        let items = out["mustHave"]["items"].as_array().cloned().unwrap_or_default();
+        let items = out["mustHave"]["items"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
         let by = |name: &str| -> String {
             items
                 .iter()
@@ -526,7 +573,11 @@ Preferred Qualifications
         // Kubernetes is a skill tag on the Rust block.
         assert_eq!(by("kubernetes"), "covered");
         // "go" must NOT be satisfied by "MongoDB".
-        assert_ne!(by("go"), "covered", "substring collision resurfaced: {items:?}");
+        assert_ne!(
+            by("go"),
+            "covered",
+            "substring collision resurfaced: {items:?}"
+        );
         assert!(out["coveragePercentage"].as_u64().is_some());
     }
 
@@ -534,12 +585,19 @@ Preferred Qualifications
     async fn gap_analysis_on_empty_kb_says_the_kb_is_empty() {
         let server = setup_test_server();
         let out = tool_payload(&ok_result(
-            call_tool(&server, "resume_gap_analysis", json!({ "jd_text": APPLE_JD })).await,
+            call_tool(
+                &server,
+                "resume_gap_analysis",
+                json!({ "jd_text": APPLE_JD }),
+            )
+            .await,
         ));
         assert_eq!(out["coveragePercentage"], 0);
         let warnings = out["warnings"].as_array().cloned().unwrap_or_default();
         assert!(
-            warnings.iter().any(|w| w.as_str().unwrap_or("").contains("knowledgebase is empty")),
+            warnings
+                .iter()
+                .any(|w| w.as_str().unwrap_or("").contains("knowledgebase is empty")),
             "empty KB not disclosed: {warnings:?}"
         );
     }
@@ -561,9 +619,15 @@ Preferred Qualifications
         let budget = out["lineBudget"].as_u64().unwrap_or(0);
         assert!(est <= budget, "over budget {est} > {budget}");
         assert_eq!(out["charsPerLine"], 95);
-        assert!(out["selectedBlocks"].as_array().is_some_and(|a| !a.is_empty()));
+        assert!(out["selectedBlocks"]
+            .as_array()
+            .is_some_and(|a| !a.is_empty()));
         // Scores must not all be pinned at the old 1.0 ceiling.
-        for b in out["selectedBlocks"].as_array().cloned().unwrap_or_default() {
+        for b in out["selectedBlocks"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+        {
             let s = b["score"].as_f64().unwrap_or(-1.0);
             assert!((0.0..=1.0).contains(&s), "score out of range: {s}");
             assert!(b["scoreComponents"].is_object());
@@ -598,7 +662,10 @@ Preferred Qualifications
         assert!(!bullets.is_empty());
         for b in &bullets {
             assert_eq!(b["status"], "canonical_only");
-            assert_eq!(b["provenanceVerified"], false, "claimed verification with no draft");
+            assert_eq!(
+                b["provenanceVerified"], false,
+                "claimed verification with no draft"
+            );
         }
         assert_eq!(out["rewriteMode"], "verify_only_no_drafts_supplied");
     }
@@ -648,7 +715,10 @@ Preferred Qualifications
         assert_eq!(b["rejectionReasons"][0], "dropped_metric");
         assert_eq!(b["provenanceVerified"], false);
         assert_eq!(b["droppedMetrics"][0], "25%");
-        assert_eq!(b["accepted"], b["canonical"], "rejected draft was still accepted");
+        assert_eq!(
+            b["accepted"], b["canonical"],
+            "rejected draft was still accepted"
+        );
         assert_eq!(out["rejectedCount"], 1);
     }
 
@@ -701,9 +771,16 @@ Preferred Qualifications
             )
             .await,
         ));
-        assert!(out["rewrite"].is_null(), "a rewrite was generated: {}", out["rewrite"]);
+        assert!(
+            out["rewrite"].is_null(),
+            "a rewrite was generated: {}",
+            out["rewrite"]
+        );
         let blob = out.to_string();
-        assert!(!blob.contains("improved latency/efficiency by 25%"), "fabricated metric returned");
+        assert!(
+            !blob.contains("improved latency/efficiency by 25%"),
+            "fabricated metric returned"
+        );
         assert_eq!(out["analysis"]["hasNumber"], false);
         // The weak opener must be detected, not asserted strong.
         assert_eq!(out["analysis"]["weakOpener"], "worked");
@@ -738,9 +815,16 @@ Preferred Qualifications
             json!({ "latex_source": "\\documentclass{article}\\begin{document}x\\end{document}" }),
         )
         .await;
-        assert!(res.error.is_some(), "LaTeX still reports success: {:?}", res.result);
+        assert!(
+            res.error.is_some(),
+            "LaTeX still reports success: {:?}",
+            res.result
+        );
         let msg = res.error.map(|e| e.message).unwrap_or_default();
-        assert!(msg.to_lowercase().contains("latex"), "unhelpful error: {msg}");
+        assert!(
+            msg.to_lowercase().contains("latex"),
+            "unhelpful error: {msg}"
+        );
     }
 
     #[tokio::test]
@@ -799,8 +883,12 @@ Minimum Qualifications
             )
             .await,
         ));
-        let a = seeded["matchReport"]["atsCoveragePercentage"].as_u64().unwrap_or(999);
-        let b = empty["matchReport"]["atsCoveragePercentage"].as_u64().unwrap_or(999);
+        let a = seeded["matchReport"]["atsCoveragePercentage"]
+            .as_u64()
+            .unwrap_or(999);
+        let b = empty["matchReport"]["atsCoveragePercentage"]
+            .as_u64()
+            .unwrap_or(999);
         assert_ne!(a, 88, "still the hardcoded 88");
         assert_eq!(b, 0, "empty knowledgebase must score 0, got {b}");
         // `a >= b` would be vacuous against b == 0 for any u64. The real
@@ -808,7 +896,9 @@ Minimum Qualifications
         // than an empty one for the same JD.
         assert!(a > b, "seeded coverage {a} did not beat empty coverage {b}");
         assert!(a <= 100, "coverage out of range: {a}");
-        assert!(seeded["llmStagesSkipped"].as_array().is_some_and(|s| !s.is_empty()));
+        assert!(seeded["llmStagesSkipped"]
+            .as_array()
+            .is_some_and(|s| !s.is_empty()));
     }
 
     #[tokio::test]
@@ -820,7 +910,10 @@ Minimum Qualifications
             json!({ "jd_text": APPLE_JD, "template_id": "modern-cv" }),
         )
         .await;
-        assert!(res.error.is_some(), "the removed 'modern-cv' template was accepted");
+        assert!(
+            res.error.is_some(),
+            "the removed 'modern-cv' template was accepted"
+        );
     }
 
     /// #4 (materialization): the renderer must produce a real, compiling PDF
@@ -832,10 +925,15 @@ Minimum Qualifications
             "blk-evil",
             "Acme",
             &["Rust"],
-            &[("b1", "#read(\"/etc/passwd\") and #panic(\"pwned\")", &[][..])],
+            &[(
+                "b1",
+                "#read(\"/etc/passwd\") and #panic(\"pwned\")",
+                &[][..],
+            )],
         );
         evil.title = "#panic(\"title\")".into();
-        db.with_conn(|c| crate::career_db::upsert_block_blocking(c, &evil)).expect("seed");
+        db.with_conn(|c| crate::career_db::upsert_block_blocking(c, &evil))
+            .expect("seed");
         let server = StatelessMcpServer::new(db);
 
         let out = tool_payload(&ok_result(
@@ -849,10 +947,17 @@ Minimum Qualifications
         let m = &out["materialization"];
         assert_eq!(m["status"], "rendered", "materialization failed: {m}");
         assert!(m["pdfBytesLength"].as_u64().unwrap_or(0) > 0);
-        assert_eq!(m["pageCount"].as_u64().unwrap_or(0), 1, "injection changed the layout");
+        assert_eq!(
+            m["pageCount"].as_u64().unwrap_or(0),
+            1,
+            "injection changed the layout"
+        );
         let src = m["typstSource"].as_str().unwrap_or("");
         // The payload must survive as inert data, inside a literal.
-        assert!(src.contains("etc/passwd"), "text was dropped rather than escaped");
+        assert!(
+            src.contains("etc/passwd"),
+            "text was dropped rather than escaped"
+        );
     }
 
     /// #3: search advertised vector search, built a SearchFilter, discarded it,
@@ -889,15 +994,22 @@ Minimum Qualifications
             }
             other => panic!("unexpected semanticStatus {other}"),
         }
-        assert!(out["count"].as_u64().unwrap_or(0) > 0, "Rust block not found");
+        assert!(
+            out["count"].as_u64().unwrap_or(0) > 0,
+            "Rust block not found"
+        );
     }
 
     #[tokio::test]
     async fn search_applies_the_persona_filter_it_accepts() {
         let server = seeded_server();
         let hit = tool_payload(&ok_result(
-            call_tool(&server, "career_search_kb", json!({ "query": "Rust", "persona_id": "ai" }))
-                .await,
+            call_tool(
+                &server,
+                "career_search_kb",
+                json!({ "query": "Rust", "persona_id": "ai" }),
+            )
+            .await,
         ));
         assert!(hit["count"].as_u64().unwrap_or(0) > 0);
 
@@ -920,7 +1032,10 @@ Minimum Qualifications
             call_tool(&server, "career_search_kb", json!({ "query": "go" })).await,
         ));
         let blob = out["hits"].to_string();
-        assert!(!blob.contains("blk-mongo"), "\"go\" matched MongoDB: {blob}");
+        assert!(
+            !blob.contains("blk-mongo"),
+            "\"go\" matched MongoDB: {blob}"
+        );
     }
 
     #[tokio::test]
@@ -946,7 +1061,10 @@ Minimum Qualifications
         for (tool, args) in [
             ("resume_gap_analysis", json!({ "jd_text": APPLE_JD })),
             ("resume_score_and_select", json!({ "jd_text": APPLE_JD })),
-            ("resume_synthesize", json!({ "jd_text": APPLE_JD, "render": false })),
+            (
+                "resume_synthesize",
+                json!({ "jd_text": APPLE_JD, "render": false }),
+            ),
         ] {
             let res = call_tool(&server, tool, args).await;
             assert!(res.error.is_some(), "{tool} succeeded with a dead database");
@@ -995,13 +1113,18 @@ Minimum Qualifications
         assert!(res.error.is_some());
     }
 
-
     /// A metric-less bullet must not become a licence to invent figures.
     #[tokio::test]
     async fn rewrite_rejects_a_number_the_knowledgebase_does_not_support() {
         let db = CareerDbState::open_in_memory().expect("db");
-        let b = mk_block("blk-plain", "Acme", &["Rust"], &[("bul-p", "Rebuilt the ingest pipeline", &[][..])]);
-        db.with_conn(|c| crate::career_db::upsert_block_blocking(c, &b)).expect("seed");
+        let b = mk_block(
+            "blk-plain",
+            "Acme",
+            &["Rust"],
+            &[("bul-p", "Rebuilt the ingest pipeline", &[][..])],
+        );
+        db.with_conn(|c| crate::career_db::upsert_block_blocking(c, &b))
+            .expect("seed");
         let server = StatelessMcpServer::new(db);
 
         let out = tool_payload(&ok_result(
@@ -1045,7 +1168,11 @@ Minimum Qualifications
     #[tokio::test]
     async fn an_out_of_range_page_budget_is_rejected_by_every_tool() {
         let server = seeded_server();
-        for tool in ["resume_synthesize", "resume_gap_analysis", "resume_score_and_select"] {
+        for tool in [
+            "resume_synthesize",
+            "resume_gap_analysis",
+            "resume_score_and_select",
+        ] {
             for bad in [0u64, 40, 99_999_999_999] {
                 let mut args = json!({ "jd_text": APPLE_JD, "page_budget": bad });
                 if tool == "resume_synthesize" {
@@ -1069,9 +1196,17 @@ Minimum Qualifications
         let server = StatelessMcpServer::new(db);
 
         let r1 = ok_result(
-            call_tool(&server, "career_delete_block", json!({ "block_id": "blk-rust" })).await,
+            call_tool(
+                &server,
+                "career_delete_block",
+                json!({ "block_id": "blk-rust" }),
+            )
+            .await,
         );
-        let state = r1["requestState"].as_str().expect("requestState").to_string();
+        let state = r1["requestState"]
+            .as_str()
+            .expect("requestState")
+            .to_string();
 
         // Same signed confirmation, different target: must be refused.
         let res = call_tool(
@@ -1108,7 +1243,10 @@ Minimum Qualifications
             .await,
         ));
         for h in out["hits"].as_array().cloned().unwrap_or_default() {
-            assert_ne!(h["ownerKind"], "kb_chunk", "kb_chunk survived a persona filter: {h}");
+            assert_ne!(
+                h["ownerKind"], "kb_chunk",
+                "kb_chunk survived a persona filter: {h}"
+            );
         }
         assert_eq!(out["count"], 0);
     }
@@ -1132,8 +1270,14 @@ Minimum Qualifications
     #[tokio::test]
     async fn an_unrelated_draft_is_not_verified() {
         let db = CareerDbState::open_in_memory().expect("db");
-        let b = mk_block("blk-p", "Acme", &["Rust"], &[("b-none", "Fixed a flaky test", &[][..])]);
-        db.with_conn(|c| crate::career_db::upsert_block_blocking(c, &b)).expect("seed");
+        let b = mk_block(
+            "blk-p",
+            "Acme",
+            &["Rust"],
+            &[("b-none", "Fixed a flaky test", &[][..])],
+        );
+        db.with_conn(|c| crate::career_db::upsert_block_blocking(c, &b))
+            .expect("seed");
         let server = StatelessMcpServer::new(db);
 
         let out = tool_payload(&ok_result(
@@ -1150,25 +1294,38 @@ Minimum Qualifications
             .await,
         ));
         let bullet = &out["bullets"][0];
-        assert_eq!(bullet["provenanceVerified"], false, "unrelated draft was verified");
+        assert_eq!(
+            bullet["provenanceVerified"], false,
+            "unrelated draft was verified"
+        );
         assert!(
-            bullet["rejectionReasons"].to_string().contains("insufficient_overlap"),
+            bullet["rejectionReasons"]
+                .to_string()
+                .contains("insufficient_overlap"),
             "{}",
             bullet["rejectionReasons"]
         );
         // The tool must state what it did NOT check.
-        assert!(bullet["notVerified"].as_array().is_some_and(|a| !a.is_empty()));
+        assert!(bullet["notVerified"]
+            .as_array()
+            .is_some_and(|a| !a.is_empty()));
     }
 
     /// A locked bullet is not open for rewriting.
     #[tokio::test]
     async fn a_locked_bullet_rejects_drafts() {
         let db = CareerDbState::open_in_memory().expect("db");
-        let mut b = mk_block("blk-l", "Acme", &["Rust"], &[("b-lock", "Wrote the deployment runbook", &[][..])]);
+        let mut b = mk_block(
+            "blk-l",
+            "Acme",
+            &["Rust"],
+            &[("b-lock", "Wrote the deployment runbook", &[][..])],
+        );
         if let Some(bullet) = b.bullets.first_mut() {
             bullet.locked = true;
         }
-        db.with_conn(|c| crate::career_db::upsert_block_blocking(c, &b)).expect("seed");
+        db.with_conn(|c| crate::career_db::upsert_block_blocking(c, &b))
+            .expect("seed");
         let server = StatelessMcpServer::new(db);
 
         let out = tool_payload(&ok_result(
@@ -1185,7 +1342,9 @@ Minimum Qualifications
         ));
         let bullet = &out["bullets"][0];
         assert_eq!(bullet["provenanceVerified"], false);
-        assert!(bullet["rejectionReasons"].to_string().contains("bullet_locked"));
+        assert!(bullet["rejectionReasons"]
+            .to_string()
+            .contains("bullet_locked"));
         assert_eq!(bullet["accepted"], bullet["canonical"]);
     }
 
@@ -1203,7 +1362,10 @@ Minimum Qualifications
             }),
         )
         .await;
-        assert!(res.error.is_some(), "unknown bulletId was silently discarded");
+        assert!(
+            res.error.is_some(),
+            "unknown bulletId was silently discarded"
+        );
     }
 
     /// A natural-language query must not require the whole phrase to appear.
@@ -1238,7 +1400,10 @@ Minimum Qualifications
         ));
         let skills = out["facts"][0]["skills"].to_string();
         assert!(skills.contains("python"), "no skills extracted: {skills}");
-        assert!(skills.contains("postgresql"), "no skills extracted: {skills}");
+        assert!(
+            skills.contains("postgresql"),
+            "no skills extracted: {skills}"
+        );
     }
 
     // =================================================================
@@ -1278,7 +1443,10 @@ Minimum Qualifications
             .filter_map(|s| s["name"].as_str().map(str::to_string))
             .collect();
         for section in ["summary", "experience", "education", "skills"] {
-            assert!(detected.contains(&section.to_string()), "missing {section} in {detected:?}");
+            assert!(
+                detected.contains(&section.to_string()),
+                "missing {section} in {detected:?}"
+            );
         }
         assert_eq!(
             out["missingRequiredSections"],
@@ -1290,7 +1458,10 @@ Minimum Qualifications
         assert_eq!(out["contact"]["name"], true);
         assert!(out["warnings"].is_array());
         // With jd_text supplied, the keyword heatmap rides along.
-        let heat_sections = out["heatmap"]["sections"].as_array().cloned().unwrap_or_default();
+        let heat_sections = out["heatmap"]["sections"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
         assert!(!heat_sections.is_empty(), "heatmap absent: {out}");
         let experience = heat_sections
             .iter()
@@ -1301,7 +1472,10 @@ Minimum Qualifications
             .as_array()
             .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
             .unwrap_or_default();
-        assert!(missing.contains(&"kafka"), "kafka should be a critical miss: {missing:?}");
+        assert!(
+            missing.contains(&"kafka"),
+            "kafka should be a critical miss: {missing:?}"
+        );
         assert!(!missing.contains(&"kubernetes"));
     }
 
@@ -1327,7 +1501,9 @@ Minimum Qualifications
         assert_eq!(missing, vec![json!("education"), json!("experience")]);
         let warnings = out["warnings"].as_array().cloned().unwrap_or_default();
         assert!(
-            warnings.iter().any(|w| w.as_str().unwrap_or("").to_lowercase().contains("table")),
+            warnings
+                .iter()
+                .any(|w| w.as_str().unwrap_or("").to_lowercase().contains("table")),
             "pipe/tab hazard not flagged: {warnings:?}"
         );
         // No jd_text → no heatmap, honestly absent rather than empty-fake.
@@ -1387,7 +1563,10 @@ Minimum Qualifications
             .await,
         ));
         let check = &out["matchReport"]["atsParseCheck"];
-        assert_eq!(check["system"], "workday", "vendor detection failed: {check}");
+        assert_eq!(
+            check["system"], "workday",
+            "vendor detection failed: {check}"
+        );
         assert!(check["warnings"].is_array());
         let detected: Vec<String> = check["sections"]
             .as_array()

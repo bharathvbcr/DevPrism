@@ -94,8 +94,7 @@ fn load_profile_from_disk() -> Result<PersonalizationProfile, String> {
         return Ok(PersonalizationProfile::default());
     }
     let raw = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let mut profile: PersonalizationProfile =
-        serde_json::from_str(&raw).unwrap_or_default();
+    let mut profile: PersonalizationProfile = serde_json::from_str(&raw).unwrap_or_default();
     if profile.version == 0 {
         profile.version = PROFILE_VERSION;
     }
@@ -112,7 +111,9 @@ fn save_profile_to_disk(profile: &PersonalizationProfile) -> Result<(), String> 
 }
 
 fn with_profile_mut<R>(f: impl FnOnce(&mut PersonalizationProfile) -> R) -> Result<R, String> {
-    let mut guard = profile_lock().lock().map_err(|_| "Profile lock poisoned.".to_string())?;
+    let mut guard = profile_lock()
+        .lock()
+        .map_err(|_| "Profile lock poisoned.".to_string())?;
     let result = f(&mut guard);
     save_profile_to_disk(&guard)?;
     Ok(result)
@@ -181,7 +182,11 @@ fn analyze_chat_text(profile: &mut PersonalizationProfile, text: &str) {
     }
 }
 
-fn apply_event(profile: &mut PersonalizationProfile, event: &str, payload: Option<&serde_json::Value>) {
+fn apply_event(
+    profile: &mut PersonalizationProfile,
+    event: &str,
+    payload: Option<&serde_json::Value>,
+) {
     profile.interaction_count = profile.interaction_count.saturating_add(1);
     profile.updated_at_ms = now_ms();
 
@@ -192,7 +197,10 @@ fn apply_event(profile: &mut PersonalizationProfile, event: &str, payload: Optio
             }
         }
         "suggestion_clicked" | "follow_up_clicked" => {
-            if let Some(label) = payload.and_then(|p| p.get("label")).and_then(|v| v.as_str()) {
+            if let Some(label) = payload
+                .and_then(|p| p.get("label"))
+                .and_then(|v| v.as_str())
+            {
                 push_recent_topic(profile, label);
             }
             bump_counter(
@@ -225,12 +233,18 @@ fn apply_event(profile: &mut PersonalizationProfile, event: &str, payload: Optio
             }
         }
         "feature_used" => {
-            if let Some(feature) = payload.and_then(|p| p.get("feature")).and_then(|v| v.as_str()) {
+            if let Some(feature) = payload
+                .and_then(|p| p.get("feature"))
+                .and_then(|v| v.as_str())
+            {
                 bump_counter(&mut profile.feature_counts, feature);
             }
         }
         "document_class_compiled" => {
-            if let Some(doc_class) = payload.and_then(|p| p.get("docClass")).and_then(|v| v.as_str()) {
+            if let Some(doc_class) = payload
+                .and_then(|p| p.get("docClass"))
+                .and_then(|v| v.as_str())
+            {
                 bump_counter(&mut profile.favorite_document_classes, doc_class);
             }
         }
@@ -269,7 +283,11 @@ fn dominant_formality(profile: &PersonalizationProfile) -> Option<&'static str> 
 }
 
 fn top_space_kinds(profile: &PersonalizationProfile, limit: usize) -> Vec<String> {
-    let mut items: Vec<(String, u32)> = profile.space_kinds.iter().map(|(k, v)| (k.clone(), *v)).collect();
+    let mut items: Vec<(String, u32)> = profile
+        .space_kinds
+        .iter()
+        .map(|(k, v)| (k.clone(), *v))
+        .collect();
     items.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     items.into_iter().take(limit).map(|(k, _)| k).collect()
 }
@@ -286,10 +304,7 @@ fn top_features(profile: &PersonalizationProfile, limit: usize) -> Vec<String> {
 
 /// Compact personalization block appended to agent system prompts.
 pub fn build_personalization_prompt() -> String {
-    let profile = profile_lock()
-        .lock()
-        .map(|p| p.clone())
-        .unwrap_or_default();
+    let profile = profile_lock().lock().map(|p| p.clone()).unwrap_or_default();
     build_personalization_prompt_from(&profile)
 }
 
@@ -350,7 +365,10 @@ fn build_personalization_prompt_from(profile: &PersonalizationProfile) -> String
             ));
         }
         if !id.custom_instructions.trim().is_empty() {
-            lines.push(format!("  - Instructions: {}", id.custom_instructions.trim()));
+            lines.push(format!(
+                "  - Instructions: {}",
+                id.custom_instructions.trim()
+            ));
         }
     }
 
@@ -444,7 +462,12 @@ fn sanitize_identity(mut identity: IdentityProfile) -> IdentityProfile {
     identity.role = identity.role.trim().chars().take(120).collect();
     identity.affiliation = identity.affiliation.trim().chars().take(200).collect();
     identity.writing_style = identity.writing_style.trim().chars().take(160).collect();
-    identity.custom_instructions = identity.custom_instructions.trim().chars().take(600).collect();
+    identity.custom_instructions = identity
+        .custom_instructions
+        .trim()
+        .chars()
+        .take(600)
+        .collect();
     identity.research_interests = identity
         .research_interests
         .into_iter()
@@ -470,7 +493,9 @@ pub fn record_personalization_event(
 
 #[tauri::command]
 pub fn get_personalization_profile() -> Result<PersonalizationProfile, String> {
-    let guard = profile_lock().lock().map_err(|_| "Profile lock poisoned.".to_string())?;
+    let guard = profile_lock()
+        .lock()
+        .map_err(|_| "Profile lock poisoned.".to_string())?;
     Ok(guard.clone())
 }
 
@@ -584,7 +609,10 @@ mod tests {
                 "follow_up_clicked",
                 Some(&serde_json::json!({ "label": "Add citations" })),
             );
-            assert_eq!(profile.recent_topics.last().map(|s| s.as_str()), Some("Add citations"));
+            assert_eq!(
+                profile.recent_topics.last().map(|s| s.as_str()),
+                Some("Add citations")
+            );
         });
     }
 

@@ -59,7 +59,9 @@ struct CommentsFile {
 // ---------- Paths + IO ----------
 
 fn comments_path(project_root: &str) -> PathBuf {
-    Path::new(project_root).join(".claudeprism").join("comments.json")
+    Path::new(project_root)
+        .join(".claudeprism")
+        .join("comments.json")
 }
 
 fn notifications_path(project_root: &str) -> PathBuf {
@@ -91,8 +93,7 @@ fn atomic_write(path: &Path, data: &str) -> Result<(), String> {
         .to_string_lossy();
     let tmp = parent.join(format!(".{}.tmp", file_name));
     {
-        let mut f =
-            fs::File::create(&tmp).map_err(|e| format!("create tmp {:?}: {}", tmp, e))?;
+        let mut f = fs::File::create(&tmp).map_err(|e| format!("create tmp {:?}: {}", tmp, e))?;
         f.write_all(data.as_bytes())
             .map_err(|e| format!("write tmp: {}", e))?;
         f.sync_all().map_err(|e| format!("sync tmp: {}", e))?;
@@ -126,8 +127,7 @@ fn gen_id() -> String {
 }
 
 fn write_all(project_root: &str, file: &CommentsFile) -> Result<(), String> {
-    let serialized =
-        serde_json::to_string_pretty(file).map_err(|e| format!("serialize: {}", e))?;
+    let serialized = serde_json::to_string_pretty(file).map_err(|e| format!("serialize: {}", e))?;
     atomic_write(&comments_path(project_root), &serialized)
 }
 

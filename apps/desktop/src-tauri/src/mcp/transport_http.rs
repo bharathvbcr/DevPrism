@@ -506,12 +506,9 @@ async fn handle_connection(
         }
     };
 
-    if let Err((status, detail)) = authorize(
-        &parsed.method,
-        &parsed.path,
-        &parsed.headers,
-        auth_token,
-    ) {
+    if let Err((status, detail)) =
+        authorize(&parsed.method, &parsed.path, &parsed.headers, auth_token)
+    {
         write_plain(&mut stream, status, &detail).await;
         return;
     }
@@ -602,7 +599,10 @@ mod tests {
         let err = authorize(
             "POST",
             "/mcp",
-            &headers(&[("host", "127.0.0.1:39200"), ("origin", "https://evil.example")]),
+            &headers(&[
+                ("host", "127.0.0.1:39200"),
+                ("origin", "https://evil.example"),
+            ]),
             None,
         )
         .expect_err("a page-originated request must be refused");
@@ -668,7 +668,10 @@ mod tests {
         let err = authorize(
             "POST",
             "/mcp",
-            &headers(&[("host", "localhost:39200"), ("sec-fetch-site", "cross-site")]),
+            &headers(&[
+                ("host", "localhost:39200"),
+                ("sec-fetch-site", "cross-site"),
+            ]),
             None,
         )
         .expect_err("browser-initiated requests must be refused");
@@ -717,11 +720,15 @@ mod tests {
             "405 Method Not Allowed"
         );
         assert_eq!(
-            authorize("OPTIONS", "/mcp", &h, None).expect_err("OPTIONS").0,
+            authorize("OPTIONS", "/mcp", &h, None)
+                .expect_err("OPTIONS")
+                .0,
             "405 Method Not Allowed"
         );
         assert_eq!(
-            authorize("POST", "/admin", &h, None).expect_err("bad route").0,
+            authorize("POST", "/admin", &h, None)
+                .expect_err("bad route")
+                .0,
             "404 Not Found"
         );
     }
@@ -747,7 +754,10 @@ mod tests {
             authorize(
                 "POST",
                 "/mcp",
-                &headers(&[("host", "127.0.0.1:39200"), ("authorization", "Bearer wrong")]),
+                &headers(&[
+                    ("host", "127.0.0.1:39200"),
+                    ("authorization", "Bearer wrong")
+                ]),
                 Some("s3cret")
             )
             .expect_err("wrong token")
@@ -757,7 +767,10 @@ mod tests {
         assert!(authorize(
             "POST",
             "/mcp",
-            &headers(&[("host", "127.0.0.1:39200"), ("authorization", "Bearer s3cret")]),
+            &headers(&[
+                ("host", "127.0.0.1:39200"),
+                ("authorization", "Bearer s3cret")
+            ]),
             Some("s3cret")
         )
         .is_ok());
@@ -822,10 +835,16 @@ mod tests {
         );
 
         let bad = HashMap::from([("content-length".to_string(), "12abc".to_string())]);
-        assert_eq!(content_length(&bad).expect_err("malformed").0, "400 Bad Request");
+        assert_eq!(
+            content_length(&bad).expect_err("malformed").0,
+            "400 Bad Request"
+        );
 
         let negative = HashMap::from([("content-length".to_string(), "-1".to_string())]);
-        assert_eq!(content_length(&negative).expect_err("negative").0, "400 Bad Request");
+        assert_eq!(
+            content_length(&negative).expect_err("negative").0,
+            "400 Bad Request"
+        );
 
         assert_eq!(content_length(&HashMap::new()).expect("absent is zero"), 0);
     }
@@ -877,11 +896,7 @@ mod tests {
         for seed in 0..3_000u64 {
             let mut rng = Lcg::new(seed ^ 0x4854_5450);
 
-            let mut head = format!(
-                "{} {} HTTP/1.1\r\n",
-                rng.pick(&methods),
-                rng.pick(&targets)
-            );
+            let mut head = format!("{} {} HTTP/1.1\r\n", rng.pick(&methods), rng.pick(&targets));
             for _ in 0..rng.below(6) {
                 let name = match rng.below(6) {
                     0 => "Host".to_string(),
@@ -919,7 +934,11 @@ mod tests {
                             "seed {seed}: allowed foreign origin '{o}'"
                         ),
                     }
-                    let route = path.split('?').next().unwrap_or(&path).trim_end_matches('/');
+                    let route = path
+                        .split('?')
+                        .next()
+                        .unwrap_or(&path)
+                        .trim_end_matches('/');
                     assert!(
                         route.is_empty() || route == "/mcp",
                         "seed {seed}: allowed route '{path}'"

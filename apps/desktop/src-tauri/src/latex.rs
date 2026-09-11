@@ -196,10 +196,7 @@ pub struct LatexCompileErrorItem {
 fn parse_latex_line_number(s: &str) -> Option<u32> {
     let trimmed = s.trim();
     let rest = trimmed.strip_prefix("l.")?;
-    let num: String = rest
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect();
+    let num: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
     let n: u32 = num.parse().ok()?;
     (n > 0).then_some(n)
 }
@@ -211,10 +208,7 @@ fn parse_latex_file_line_ref(s: &str) -> Option<(String, u32)> {
     if !file_part.ends_with(".tex") {
         return None;
     }
-    let line_str: String = after
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect();
+    let line_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
     let line: u32 = line_str.parse().ok()?;
     (line > 0).then_some((file_part.to_string(), line))
 }
@@ -229,8 +223,7 @@ pub fn parse_structured_latex_errors(log: &str) -> Vec<LatexCompileErrorItem> {
     let mut i = 0usize;
     while i < lines.len() && out.len() < 20 {
         let line = lines[i].trim();
-        let is_error =
-            line.starts_with('!') || line.contains("Error:") || line.contains("error:");
+        let is_error = line.starts_with('!') || line.contains("Error:") || line.contains("error:");
         if !is_error {
             i += 1;
             continue;
@@ -363,7 +356,9 @@ fn source_loads_package(content: &str, name: &str) -> bool {
             let Some(open) = after_opts.trim_start().strip_prefix('{') else {
                 continue;
             };
-            let Some(close) = open.find('}') else { continue };
+            let Some(close) = open.find('}') else {
+                continue;
+            };
             if open[..close]
                 .split(',')
                 .any(|pkg| pkg.trim().eq_ignore_ascii_case(name))
@@ -567,8 +562,8 @@ pub fn agent_compile_project(
 
     // Read the pristine project source, not the build copy a previous compile
     // spliced the XeTeX shim into.
-    let main_tex_content = std::fs::read_to_string(project_dir.join(&main_rel))
-        .unwrap_or_else(|_| {
+    let main_tex_content =
+        std::fs::read_to_string(project_dir.join(&main_rel)).unwrap_or_else(|_| {
             strip_xetex_compat_input(&std::fs::read_to_string(&main_tex_path).unwrap_or_default())
         });
     let requested_engine = detect_tex_engine(&main_tex_content);
@@ -1023,9 +1018,28 @@ fn is_generated_artifact(path: &Path) -> bool {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     matches!(
         ext,
-        "aux" | "log" | "toc" | "lof" | "lot" | "out" | "nav" | "snm" | "vrb"
-            | "bbl" | "blg" | "fls" | "fdb_latexmk" | "idx" | "ind" | "ilg"
-            | "glo" | "gls" | "glg" | "fmt" | "xdv" | "bcf"
+        "aux"
+            | "log"
+            | "toc"
+            | "lof"
+            | "lot"
+            | "out"
+            | "nav"
+            | "snm"
+            | "vrb"
+            | "bbl"
+            | "blg"
+            | "fls"
+            | "fdb_latexmk"
+            | "idx"
+            | "ind"
+            | "ilg"
+            | "glo"
+            | "gls"
+            | "glg"
+            | "fmt"
+            | "xdv"
+            | "bcf"
     )
 }
 
@@ -1631,10 +1645,9 @@ mod texlive_pass_tests {
             cancel_on_call: None,
             cancelled_flag: flag.clone(),
         });
-        let ran = run_resolve_and_stabilize(false, &flag, &aux_path, &mut || {
-            runner.borrow_mut().run()
-        })
-        .unwrap();
+        let ran =
+            run_resolve_and_stabilize(false, &flag, &aux_path, &mut || runner.borrow_mut().run())
+                .unwrap();
         assert_eq!(ran, 1);
         assert_eq!(runner.borrow().calls, 1);
     }
@@ -1649,10 +1662,9 @@ mod texlive_pass_tests {
             cancel_on_call: None,
             cancelled_flag: flag.clone(),
         });
-        let ran = run_resolve_and_stabilize(true, &flag, &aux_path, &mut || {
-            runner.borrow_mut().run()
-        })
-        .unwrap();
+        let ran =
+            run_resolve_and_stabilize(true, &flag, &aux_path, &mut || runner.borrow_mut().run())
+                .unwrap();
         assert_eq!(ran, 2);
         assert_eq!(runner.borrow().calls, 2);
     }
@@ -1667,10 +1679,9 @@ mod texlive_pass_tests {
             cancel_on_call: None,
             cancelled_flag: flag.clone(),
         });
-        let ran = run_resolve_and_stabilize(true, &flag, &aux_path, &mut || {
-            runner.borrow_mut().run()
-        })
-        .unwrap();
+        let ran =
+            run_resolve_and_stabilize(true, &flag, &aux_path, &mut || runner.borrow_mut().run())
+                .unwrap();
         assert_eq!(ran, 1);
         assert_eq!(runner.borrow().calls, 1);
     }
@@ -1685,10 +1696,9 @@ mod texlive_pass_tests {
             cancel_on_call: None,
             cancelled_flag: flag.clone(),
         });
-        let ran = run_resolve_and_stabilize(true, &flag, &aux_path, &mut || {
-            runner.borrow_mut().run()
-        })
-        .unwrap();
+        let ran =
+            run_resolve_and_stabilize(true, &flag, &aux_path, &mut || runner.borrow_mut().run())
+                .unwrap();
         assert_eq!(ran, 2);
     }
 
@@ -1717,10 +1727,9 @@ mod texlive_pass_tests {
             cancel_on_call: Some(1),
             cancelled_flag: flag.clone(),
         });
-        let err = run_resolve_and_stabilize(true, &flag, &aux_path, &mut || {
-            runner.borrow_mut().run()
-        })
-        .unwrap_err();
+        let err =
+            run_resolve_and_stabilize(true, &flag, &aux_path, &mut || runner.borrow_mut().run())
+                .unwrap_err();
         assert_eq!(err, SUPERSEDED_COMPILE_MESSAGE);
         assert_eq!(runner.borrow().calls, 1, "stabilization must not run");
     }
@@ -1744,11 +1753,10 @@ fn run_texlive_pass(
         .env("PATH", texlive_env_path(engine));
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW);
-    let output =
-        crate::proc::run_with_timeout_and_cancel(cmd, ENGINE_TIMEOUT, || {
-            cancelled.load(Ordering::Relaxed)
-        })
-        .map_err(|e| e.to_message(&format!("{}", engine.display())))?;
+    let output = crate::proc::run_with_timeout_and_cancel(cmd, ENGINE_TIMEOUT, || {
+        cancelled.load(Ordering::Relaxed)
+    })
+    .map_err(|e| e.to_message(&format!("{}", engine.display())))?;
 
     // TeXLive returns non-zero on warnings too — don't fail here.
     // The caller decides success by checking whether the PDF was produced.
@@ -1800,7 +1808,13 @@ fn compile_with_texlive(
     let main_file_path = Path::new(main_file);
 
     // Pass 1
-    run_texlive_pass(&engine_path, &common_args, main_file_path, work_dir, cancelled)?;
+    run_texlive_pass(
+        &engine_path,
+        &common_args,
+        main_file_path,
+        work_dir,
+        cancelled,
+    )?;
 
     // Bib pass (if needed)
     let main_stem = Path::new(main_file)
@@ -1816,15 +1830,13 @@ fn compile_with_texlive(
             let mut cmd = std::process::Command::new(&biber_path);
             cmd.arg(main_stem)
                 .current_dir(work_dir)
-                .env("PATH", &env_path)
-                ;
+                .env("PATH", &env_path);
             #[cfg(target_os = "windows")]
             cmd.creation_flags(CREATE_NO_WINDOW);
-            let output =
-                crate::proc::run_with_timeout_and_cancel(cmd, BIB_TIMEOUT, || {
-                    cancelled.load(Ordering::Relaxed)
-                })
-                .map_err(|e| e.to_message("biber"))?;
+            let output = crate::proc::run_with_timeout_and_cancel(cmd, BIB_TIMEOUT, || {
+                cancelled.load(Ordering::Relaxed)
+            })
+            .map_err(|e| e.to_message("biber"))?;
             if !output.status.success() {
                 eprintln!(
                     "[texlive] biber warning: {}",
@@ -1838,15 +1850,13 @@ fn compile_with_texlive(
             let mut cmd = std::process::Command::new(&bibtex_path);
             cmd.arg(&aux_file)
                 .current_dir(work_dir)
-                .env("PATH", &env_path)
-                ;
+                .env("PATH", &env_path);
             #[cfg(target_os = "windows")]
             cmd.creation_flags(CREATE_NO_WINDOW);
-            let output =
-                crate::proc::run_with_timeout_and_cancel(cmd, BIB_TIMEOUT, || {
-                    cancelled.load(Ordering::Relaxed)
-                })
-                .map_err(|e| e.to_message("bibtex"))?;
+            let output = crate::proc::run_with_timeout_and_cancel(cmd, BIB_TIMEOUT, || {
+                cancelled.load(Ordering::Relaxed)
+            })
+            .map_err(|e| e.to_message("bibtex"))?;
             if !output.status.success() {
                 eprintln!(
                     "[texlive] bibtex warning: {}",
@@ -1862,7 +1872,13 @@ fn compile_with_texlive(
     let aux_path = work_dir.join(format!("{}.aux", main_stem));
     let bib_used = !matches!(bib_tool, BibTool::None);
     let mut resolve_pass = || {
-        run_texlive_pass(&engine_path, &common_args, &main_file_path, work_dir, cancelled)
+        run_texlive_pass(
+            &engine_path,
+            &common_args,
+            &main_file_path,
+            work_dir,
+            cancelled,
+        )
     };
     run_resolve_and_stabilize(bib_used, cancelled, &aux_path, &mut resolve_pass)?;
 
@@ -1882,11 +1898,10 @@ fn compile_with_texlive(
                 .env("PATH", &env_path);
             #[cfg(target_os = "windows")]
             cmd.creation_flags(CREATE_NO_WINDOW);
-            let output =
-                crate::proc::run_with_timeout_and_cancel(cmd, ENGINE_TIMEOUT, || {
-                    cancelled.load(Ordering::Relaxed)
-                })
-                .map_err(|e| e.to_message("xdvipdfmx"))?;
+            let output = crate::proc::run_with_timeout_and_cancel(cmd, ENGINE_TIMEOUT, || {
+                cancelled.load(Ordering::Relaxed)
+            })
+            .map_err(|e| e.to_message("xdvipdfmx"))?;
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 if !stderr.trim().is_empty() {
@@ -1937,8 +1952,14 @@ fn synctex_paths_match(stored: &str, target: &str) -> bool {
     if a.ends_with(&format!("/{b}")) || b.ends_with(&format!("/{a}")) {
         return true;
     }
-    let a_name = Path::new(&a).file_name().and_then(|s| s.to_str()).unwrap_or("");
-    let b_name = Path::new(&b).file_name().and_then(|s| s.to_str()).unwrap_or("");
+    let a_name = Path::new(&a)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    let b_name = Path::new(&b)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
     !a_name.is_empty() && a_name == b_name
 }
 
@@ -2223,10 +2244,12 @@ pub fn detect_texlive() -> TexliveStatus {
         cmd.arg("--version");
         #[cfg(target_os = "windows")]
         cmd.creation_flags(CREATE_NO_WINDOW);
-        crate::proc::run_with_timeout(cmd, PROBE_TIMEOUT).ok().and_then(|o| {
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            stdout.lines().next().map(|l| l.to_string())
-        })
+        crate::proc::run_with_timeout(cmd, PROBE_TIMEOUT)
+            .ok()
+            .and_then(|o| {
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                stdout.lines().next().map(|l| l.to_string())
+            })
     });
 
     TexliveStatus {
@@ -2388,9 +2411,8 @@ async fn compile_latex_inner(
     // every later `join` (stale-output removal, engine-detection read, XeTeX
     // shim rewrite, retry rewrite, engine argv) uses this value. This is the
     // same seam the agent path clears in `agent_compile_project`.
-    let main_file = validated_main_rel(Path::new(&project_dir), &main_file).map_err(|e| {
-        CompileFail::new("n/a", format!("Invalid main file: {e}"))
-    })?;
+    let main_file = validated_main_rel(Path::new(&project_dir), &main_file)
+        .map_err(|e| CompileFail::new("n/a", format!("Invalid main file: {e}")))?;
 
     // Register this request's cancel flag and cancel any in-flight run for
     // the same project. Without this, edits made during a slow compile queue
@@ -2522,9 +2544,12 @@ async fn compile_latex_inner(
     let use_texlive_requested = use_texlive;
     let probe_content = main_tex_content.clone();
     let resolved = tokio::task::spawn_blocking(move || {
-        resolve_backend(use_texlive_requested, requested_engine, &probe_content, &|name| {
-            find_texlive_binary(name).is_ok()
-        })
+        resolve_backend(
+            use_texlive_requested,
+            requested_engine,
+            &probe_content,
+            &|name| find_texlive_binary(name).is_ok(),
+        )
     })
     .await
     .map_err(|e| CompileFail::new("n/a", format!("Backend resolution task panicked: {e}")))?;
@@ -3348,14 +3373,23 @@ mod tests {
             "\\RequirePackage{microtype}",
             "microtype"
         ));
-        assert!(!source_loads_package("% \\usepackage{microtype}", "microtype"));
-        assert!(!source_loads_package("\\usepackage{microtypo}", "microtype"));
+        assert!(!source_loads_package(
+            "% \\usepackage{microtype}",
+            "microtype"
+        ));
+        assert!(!source_loads_package(
+            "\\usepackage{microtypo}",
+            "microtype"
+        ));
         assert!(!source_loads_package("", "microtype"));
     }
 
     #[test]
     fn strip_tex_comments_respects_escaped_percent() {
-        assert_eq!(strip_tex_comments("50\\% off % a comment\n"), "50\\% off \n");
+        assert_eq!(
+            strip_tex_comments("50\\% off % a comment\n"),
+            "50\\% off \n"
+        );
     }
 
     // --- fidelity notes ---
@@ -3368,7 +3402,9 @@ mod tests {
             ActualEngine::TectonicXetex,
             None,
         );
-        assert!(notes.iter().any(|n| n.code == "microtype-expansion-unavailable"));
+        assert!(notes
+            .iter()
+            .any(|n| n.code == "microtype-expansion-unavailable"));
     }
 
     #[test]
@@ -3384,12 +3420,8 @@ mod tests {
 
     #[test]
     fn engine_substitution_is_reported() {
-        let notes = collect_fidelity_notes(
-            "",
-            "",
-            ActualEngine::TectonicXetex,
-            Some(TexEngine::Latex),
-        );
+        let notes =
+            collect_fidelity_notes("", "", ActualEngine::TectonicXetex, Some(TexEngine::Latex));
         assert!(notes.iter().any(|n| n.code == "engine-substituted"));
     }
 
@@ -3416,7 +3448,9 @@ mod tests {
         // The preamble lives in a `.sty`, so only the log knows microtype loaded.
         let log = "(microtype.sty ... (microtype-xetex.def)";
         let notes = collect_fidelity_notes("", log, ActualEngine::TectonicXetex, None);
-        assert!(notes.iter().any(|n| n.code == "microtype-expansion-unavailable"));
+        assert!(notes
+            .iter()
+            .any(|n| n.code == "microtype-expansion-unavailable"));
     }
 
     // --- page count parsing ---
@@ -3441,7 +3475,10 @@ mod tests {
         );
         assert_eq!(parse_output_pages("No pages of output."), None);
         assert_eq!(parse_output_pages(""), None);
-        assert_eq!(parse_output_pages("Output written on main.xdv (bytes)."), None);
+        assert_eq!(
+            parse_output_pages("Output written on main.xdv (bytes)."),
+            None
+        );
     }
 
     // --- extract_error_lines ---
@@ -4025,7 +4062,10 @@ Postamble:
             !dst.path().join("ch1.tex").exists(),
             "deleted source file must not survive in the build dir"
         );
-        assert!(dst.path().join("main.tex").exists(), "kept file was removed");
+        assert!(
+            dst.path().join("main.tex").exists(),
+            "kept file was removed"
+        );
     }
 
     #[test]

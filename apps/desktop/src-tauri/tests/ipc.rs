@@ -19,10 +19,10 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 use serde_json::{json, Value};
+use tauri::test::MockRuntime;
 use tauri::test::{mock_builder, mock_context, noop_assets, INVOKE_KEY};
 use tauri::webview::InvokeRequest;
 use tauri::{ipc::CallbackFn, App, WebviewWindow};
-use tauri::test::MockRuntime;
 
 /// Commands exercised over real IPC here.
 ///
@@ -63,11 +63,7 @@ fn webview(app: &App<MockRuntime>) -> WebviewWindow<MockRuntime> {
 }
 
 /// Dispatch a command the way the frontend does, returning the JSON result.
-fn invoke(
-    webview: &WebviewWindow<MockRuntime>,
-    cmd: &str,
-    args: Value,
-) -> Result<Value, Value> {
+fn invoke(webview: &WebviewWindow<MockRuntime>, cmd: &str, args: Value) -> Result<Value, Value> {
     let request = InvokeRequest {
         cmd: cmd.into(),
         callback: CallbackFn(0),
@@ -152,11 +148,7 @@ fn career_typst_compile_project_accepts_camel_case_arguments() {
     // `projectDir`/`mainFile`, Rust declares `project_dir`/`main_file`. If that
     // mapping ever breaks the app fails only at runtime.
     let dir = tempfile::TempDir::new().unwrap();
-    std::fs::write(
-        dir.path().join("lib.typ"),
-        "#let greet(n) = [Hello #n]\n",
-    )
-    .unwrap();
+    std::fs::write(dir.path().join("lib.typ"), "#let greet(n) = [Hello #n]\n").unwrap();
     std::fs::write(
         dir.path().join("main.typ"),
         "#set page(paper: \"us-letter\")\n#import \"lib.typ\": greet\n#greet(\"world\")\n",
@@ -215,7 +207,11 @@ fn career_typst_fonts_returns_the_embedded_families() {
     let res = invoke(&wv, "career_typst_fonts", json!({})).expect("should succeed");
 
     let families: Vec<String> = serde_json::from_value(res).expect("string array");
-    for want in ["Libertinus Serif", "New Computer Modern", "DejaVu Sans Mono"] {
+    for want in [
+        "Libertinus Serif",
+        "New Computer Modern",
+        "DejaVu Sans Mono",
+    ] {
         assert!(
             families.iter().any(|f| f == want),
             "missing embedded family {want}"
@@ -274,7 +270,9 @@ fn export_document_rejects_an_unsupported_format() {
     .expect_err("pdf is not a pandoc target here");
 
     assert!(
-        err.as_str().unwrap_or_default().contains("Unsupported export format"),
+        err.as_str()
+            .unwrap_or_default()
+            .contains("Unsupported export format"),
         "unexpected error: {err}"
     );
 }
@@ -344,7 +342,10 @@ fn registered_commands() -> std::collections::BTreeSet<String> {
     let start = lib
         .find("pub fn command_handler(")
         .expect("command_handler not found in lib.rs");
-    let list_start = lib[start..].find("generate_handler![").expect("handler list") + start;
+    let list_start = lib[start..]
+        .find("generate_handler![")
+        .expect("handler list")
+        + start;
     let list_end = lib[list_start..].find("\n    ]").expect("handler list end") + list_start;
     lib[list_start..list_end]
         .lines()
@@ -406,10 +407,7 @@ fn ipc_tested_commands_are_registered_in_the_app() {
     }
 }
 
-fn collect_invoked_commands(
-    dir: &std::path::Path,
-    out: &mut std::collections::BTreeSet<String>,
-) {
+fn collect_invoked_commands(dir: &std::path::Path, out: &mut std::collections::BTreeSet<String>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };

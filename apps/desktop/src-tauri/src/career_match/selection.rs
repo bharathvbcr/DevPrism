@@ -43,20 +43,24 @@ pub const DEFAULT_SECTION_CAP: usize = 3;
 #[derive(Debug, Clone)]
 pub struct SelectionBudget {
     pub total_lines: usize,
+    /// Max bullets charged/kept per selected block (`bullets_per_block`).
+    /// Not wrap width — that is `CHARS_PER_LINE`. Twin of TS
+    /// `DEFAULT_MAX_BULLETS_PER_BLOCK`, not TS `SelectionBudget.perBullet`
+    /// (a rewrite character cap).
     pub per_bullet: usize,
     pub blocks_per_section: HashMap<String, usize>,
 }
 
 impl SelectionBudget {
-    /// A one- or two-page budget.
-    ///
-    /// Page capacity is derived from the same line model the packer uses, so
-    /// `total_lines` and the cost function cannot drift apart.
     /// Max bullets to keep per selected block for this budget.
     pub fn bullets_per_block(&self) -> usize {
         self.per_bullet.max(1)
     }
 
+    /// A one- to four-page budget.
+    ///
+    /// Page capacity is derived from the same line model the packer uses, so
+    /// `total_lines` and the cost function cannot drift apart.
     pub fn for_pages(pages: usize) -> Self {
         // ~48 body lines per page at 10pt with 0.5in margins.
         const LINES_PER_PAGE: usize = 48;
@@ -70,7 +74,10 @@ impl SelectionBudget {
     }
 
     fn section_cap(&self, section: &str) -> usize {
-        self.blocks_per_section.get(section).copied().unwrap_or(DEFAULT_SECTION_CAP)
+        self.blocks_per_section
+            .get(section)
+            .copied()
+            .unwrap_or(DEFAULT_SECTION_CAP)
     }
 }
 
@@ -88,11 +95,19 @@ pub fn section_for_block(block: &ExperienceBlock) -> String {
         "publication" | "publications" | "papers" | "paper" => "publications",
         "education" | "academic" | "academics" => "education",
         "skill_group" | "skills" => "skills",
-        "leadership" | "positions of responsibility" => "leadership",
-        "certification" | "certifications" | "certificate" | "certificates"
-        | "license" | "licenses" => "certifications",
+        "leadership"
+        | "positions of responsibility"
+        | "extra curricular activities"
+        | "extracurricular activities"
+        | "co curricular activities" => "leadership",
+        "certification" | "certifications" | "certificate" | "certificates" | "license"
+        | "licenses" => "certifications",
         "award" | "awards" | "honor" | "honors" | "honours" => "awards",
-        "volunteer" | "volunteering" | "volunteer experience" => "volunteer",
+        "volunteer"
+        | "volunteering"
+        | "volunteer experience"
+        | "community service"
+        | "community involvement" => "volunteer",
         _ => "experience",
     }
     .to_string()
@@ -142,7 +157,11 @@ pub fn covers_skill(block: &ExperienceBlock, skill: &str) -> bool {
     if skill.trim().is_empty() {
         return false;
     }
-    if block.skills.iter().any(|s| super::text::skills_match(&s.name, skill)) {
+    if block
+        .skills
+        .iter()
+        .any(|s| super::text::skills_match(&s.name, skill))
+    {
         return true;
     }
     if block
@@ -152,7 +171,10 @@ pub fn covers_skill(block: &ExperienceBlock, skill: &str) -> bool {
     {
         return true;
     }
-    block.bullets.iter().any(|b| text_covers_skill(&b.canonical, skill))
+    block
+        .bullets
+        .iter()
+        .any(|b| text_covers_skill(&b.canonical, skill))
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -191,6 +213,9 @@ pub fn knapsack_select(
     let mut by_org: HashMap<String, String> = HashMap::new();
     let mut section_counts: HashMap<String, usize> = HashMap::new();
     let mut lines = 0usize;
+    let pack_cost = |block: &ExperienceBlock| {
+        estimate_block_lines_capped(block, CHARS_PER_LINE, budget.bullets_per_block())
+    };
 
     for item in &sorted {
         let section = section_for_block(&item.block);
@@ -200,18 +225,25 @@ pub fn knapsack_select(
             continue;
         }
 
-        let cost = estimate_block_lines(&item.block, CHARS_PER_LINE);
+        let cost = pack_cost(&item.block);
         if lines + cost > budget.total_lines && !selected.is_empty() {
             continue;
         }
 
         let org_key = {
             let k = item.block.org.trim().to_lowercase();
-            if k.is_empty() { item.block.id.clone() } else { k }
+            if k.is_empty() {
+                item.block.id.clone()
+            } else {
+                k
+            }
         };
 
         if let Some(incumbent_id) = by_org.get(&org_key).cloned() {
-            let Some(incumbent) = selected.iter().find(|s| s.block.id == incumbent_id).cloned()
+            let Some(incumbent) = selected
+                .iter()
+                .find(|s| s.block.id == incumbent_id)
+                .cloned()
             else {
                 continue;
             };
@@ -222,7 +254,7 @@ pub fn knapsack_select(
                 let prev_section = section_for_block(&incumbent.block);
                 let e = section_counts.entry(prev_section).or_insert(1);
                 *e = e.saturating_sub(1);
-                lines = lines.saturating_sub(estimate_block_lines(&incumbent.block, CHARS_PER_LINE));
+                lines = lines.saturating_sub(pack_cost(&incumbent.block));
                 selected.remove(idx);
             }
         }
@@ -249,7 +281,7 @@ pub fn knapsack_select(
         else {
             continue;
         };
-        let cand_cost = estimate_block_lines(&candidate.block, CHARS_PER_LINE);
+        let cand_cost = pack_cost(&candidate.block);
         let cand_section = section_for_block(&candidate.block);
 
         // The repair pass may not undo what the main loop guarantees: a fresh
@@ -282,22 +314,30 @@ pub fn knapsack_select(
             .filter(|(_, s)| {
                 !must_have_skills.iter().any(|m| {
                     covers_skill(&s.block, m)
-                        && selected.iter().filter(|o| covers_skill(&o.block, m)).count() == 1
+                        && selected
+                            .iter()
+                            .filter(|o| covers_skill(&o.block, m))
+                            .count()
+                            == 1
                 })
             })
             .min_by(|a, b| {
-                a.1.score.partial_cmp(&b.1.score).unwrap_or(std::cmp::Ordering::Equal)
+                a.1.score
+                    .partial_cmp(&b.1.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
             })
             .map(|(i, s)| (i, s.clone()));
 
-        let Some((idx, weakest)) = victim else { continue };
+        let Some((idx, weakest)) = victim else {
+            continue;
+        };
         if weakest.score >= candidate.score {
             continue;
         }
         // Dropping the victim may still not free enough room. Committing the
         // swap regardless would push the resume past its page budget, which is
         // the one invariant selection exists to hold.
-        let freed = estimate_block_lines(&weakest.block, CHARS_PER_LINE);
+        let freed = pack_cost(&weakest.block);
         if lines.saturating_sub(freed) + cand_cost > budget.total_lines {
             continue;
         }
@@ -335,7 +375,12 @@ pub fn knapsack_select(
             .then_with(|| a.block.id.cmp(&b.block.id))
     });
 
-    SelectionResult { selected, uncovered_must_haves, swaps, estimated_lines: lines }
+    SelectionResult {
+        selected,
+        uncovered_must_haves,
+        swaps,
+        estimated_lines: lines,
+    }
 }
 
 /// Keep at most `max_bullets` bullets per block, ranked by how many must-have
@@ -381,9 +426,14 @@ pub fn budget_violations(selected: &[ScoredBlock], budget: &SelectionBudget) -> 
     let mut violations = Vec::new();
     let mut section_counts: HashMap<String, usize> = HashMap::new();
     let mut lines = 0usize;
+    let pack_cost = |block: &ExperienceBlock| {
+        estimate_block_lines_capped(block, CHARS_PER_LINE, budget.bullets_per_block())
+    };
     for s in selected {
-        *section_counts.entry(section_for_block(&s.block)).or_insert(0) += 1;
-        lines += estimate_block_lines(&s.block, CHARS_PER_LINE);
+        *section_counts
+            .entry(section_for_block(&s.block))
+            .or_insert(0) += 1;
+        lines += pack_cost(&s.block);
     }
     let mut sections: Vec<(&String, &usize)> = section_counts.iter().collect();
     sections.sort_by_key(|(k, _)| (*k).clone());
@@ -396,7 +446,7 @@ pub fn budget_violations(selected: &[ScoredBlock], budget: &SelectionBudget) -> 
     if lines > budget.total_lines && !selected.is_empty() {
         let min_cost = selected
             .iter()
-            .map(|s| estimate_block_lines(&s.block, CHARS_PER_LINE))
+            .map(|s| pack_cost(&s.block))
             .min()
             .unwrap_or(0);
         // A single block that alone exceeds the budget is allowed to overflow;
@@ -476,19 +526,32 @@ mod tests {
         }
     }
 
-    fn scored(id: &str, org: &str, score: f64, bullets: Vec<Bullet>, skills: &[&str]) -> ScoredBlock {
+    fn scored(
+        id: &str,
+        org: &str,
+        score: f64,
+        bullets: Vec<Bullet>,
+        skills: &[&str],
+    ) -> ScoredBlock {
         ScoredBlock {
             block: ExperienceBlock {
                 id: id.to_string(),
                 kind: "experience".into(),
                 title: "T".into(),
                 org: org.to_string(),
-                date_range: DateRange { start: "2023-01".into(), end: None },
+                date_range: DateRange {
+                    start: "2023-01".into(),
+                    end: None,
+                },
                 personas: vec![],
                 domains: vec![],
                 skills: skills
                     .iter()
-                    .map(|s| SkillTag { name: s.to_string(), level: 3, years: None })
+                    .map(|s| SkillTag {
+                        name: s.to_string(),
+                        level: 3,
+                        years: None,
+                    })
                     .collect(),
                 seniority_level: "senior".into(),
                 location: None,
@@ -587,12 +650,17 @@ mod tests {
     fn same_org_entries_are_deduplicated_unless_clearly_better() {
         let blocks = vec![
             scored("low", "Acme", 0.50, vec![], &[]),
-            scored("mid", "Acme", 0.55, vec![], &[]),   // within the 0.12 gap
-            scored("high", "Acme", 0.90, vec![], &[]),  // clears the gap
+            scored("mid", "Acme", 0.55, vec![], &[]), // within the 0.12 gap
+            scored("high", "Acme", 0.90, vec![], &[]), // clears the gap
         ];
         let budget = SelectionBudget::for_pages(2);
         let r = knapsack_select(&blocks, &budget, &[], DEFAULT_ORG_SCORE_GAP);
-        assert_eq!(r.selected.len(), 1, "got {:?}", r.selected.iter().map(|s| &s.block.id).collect::<Vec<_>>());
+        assert_eq!(
+            r.selected.len(),
+            1,
+            "got {:?}",
+            r.selected.iter().map(|s| &s.block.id).collect::<Vec<_>>()
+        );
         assert_eq!(r.selected[0].block.id, "high");
     }
 
@@ -604,8 +672,20 @@ mod tests {
         // defect `coverage_repair_respects_section_caps` pins.
         let budget = SelectionBudget::for_pages(1);
         let blocks = vec![
-            scored("top", "A", 0.99, vec![bullet("x", "generic work")], &["Excel"]),
-            scored("rust", "A", 0.10, vec![bullet("y", "wrote Rust systems")], &["Rust"]),
+            scored(
+                "top",
+                "A",
+                0.99,
+                vec![bullet("x", "generic work")],
+                &["Excel"],
+            ),
+            scored(
+                "rust",
+                "A",
+                0.10,
+                vec![bullet("y", "wrote Rust systems")],
+                &["Rust"],
+            ),
         ];
         let r = knapsack_select(&blocks, &budget, &["rust".into()], DEFAULT_ORG_SCORE_GAP);
         assert!(
@@ -626,10 +706,34 @@ mod tests {
     fn coverage_repair_respects_section_caps() {
         let budget = SelectionBudget::for_pages(1);
         let blocks = vec![
-            scored("a", "org-a", 0.90, vec![bullet("x", "wrote Rust services")], &["Rust"]),
-            scored("b", "org-b", 0.89, vec![bullet("y", "more Rust work")], &["Rust"]),
-            scored("c", "org-c", 0.88, vec![bullet("z", "yet more Rust")], &["Rust"]),
-            scored("d", "org-d", 0.40, vec![bullet("w", "runs Kubernetes fleets")], &["Kubernetes"]),
+            scored(
+                "a",
+                "org-a",
+                0.90,
+                vec![bullet("x", "wrote Rust services")],
+                &["Rust"],
+            ),
+            scored(
+                "b",
+                "org-b",
+                0.89,
+                vec![bullet("y", "more Rust work")],
+                &["Rust"],
+            ),
+            scored(
+                "c",
+                "org-c",
+                0.88,
+                vec![bullet("z", "yet more Rust")],
+                &["Rust"],
+            ),
+            scored(
+                "d",
+                "org-d",
+                0.40,
+                vec![bullet("w", "runs Kubernetes fleets")],
+                &["Kubernetes"],
+            ),
         ];
         let must = vec!["rust".into(), "kubernetes".into()];
         let r = knapsack_select(&blocks, &budget, &must, DEFAULT_ORG_SCORE_GAP);
@@ -650,7 +754,13 @@ mod tests {
     #[test]
     fn uncovered_must_haves_are_reported_not_hidden() {
         let budget = SelectionBudget::for_pages(1);
-        let blocks = vec![scored("a", "A", 0.9, vec![bullet("x", "generic")], &["Excel"])];
+        let blocks = vec![scored(
+            "a",
+            "A",
+            0.9,
+            vec![bullet("x", "generic")],
+            &["Excel"],
+        )];
         let r = knapsack_select(&blocks, &budget, &["fortran".into()], DEFAULT_ORG_SCORE_GAP);
         assert_eq!(r.uncovered_must_haves, vec!["fortran".to_string()]);
     }
@@ -689,10 +799,6 @@ mod tests {
         assert_eq!(ids1, ids2, "tie-break is not order-independent");
     }
 
-
-
-
-
     #[test]
     fn bullet_trim_keeps_the_most_relevant_in_document_order() {
         let b = scored(
@@ -714,7 +820,13 @@ mod tests {
 
     #[test]
     fn bullet_trim_is_a_noop_below_the_cap() {
-        let b = scored("a", "Org", 0.9, vec![bullet("b1", "x"), bullet("b2", "y")], &[]);
+        let b = scored(
+            "a",
+            "Org",
+            0.9,
+            vec![bullet("b1", "x"), bullet("b2", "y")],
+            &[],
+        );
         assert_eq!(trim_selected_bullets(&b.block, &[], 4), vec!["b1", "b2"]);
     }
 
@@ -779,6 +891,24 @@ mod tests {
     }
 
     #[test]
+    fn knapsack_line_cost_honors_budget_bullet_cap() {
+        let many: Vec<Bullet> = (0..10).map(|i| bullet(&format!("b{i}"), "short")).collect();
+        let block = scored("long", "Org", 0.9, many, &[]);
+        let mut budget = SelectionBudget::for_pages(1);
+        budget.per_bullet = 2;
+        budget.blocks_per_section.insert("experience".into(), 99);
+        let r = knapsack_select(&[block.clone()], &budget, &[], DEFAULT_ORG_SCORE_GAP);
+        assert_eq!(r.selected.len(), 1);
+        let capped = estimate_block_lines_capped(&block.block, CHARS_PER_LINE, 2);
+        assert_eq!(capped, 4); // 2 header + 2 one-line bullets
+        assert_eq!(r.estimated_lines, capped);
+        assert_ne!(
+            r.estimated_lines,
+            estimate_block_lines(&block.block, CHARS_PER_LINE)
+        );
+    }
+
+    #[test]
     fn capped_cost_is_an_upper_bound_on_any_trim() {
         let mixed = vec![
             bullet("a", &"x".repeat(300)),
@@ -808,10 +938,17 @@ mod tests {
             "long",
             "Acme",
             0.9,
-            (0..30).map(|i| bullet(&format!("b{i}"), &"x".repeat(90))).collect(),
+            (0..30)
+                .map(|i| bullet(&format!("b{i}"), &"x".repeat(90)))
+                .collect(),
             &["Rust"],
         );
-        let r = knapsack_select(&[long_role], &budget, &["rust".into()], DEFAULT_ORG_SCORE_GAP);
+        let r = knapsack_select(
+            &[long_role],
+            &budget,
+            &["rust".into()],
+            DEFAULT_ORG_SCORE_GAP,
+        );
         assert_eq!(r.selected.len(), 1);
         assert!(r.estimated_lines <= budget.total_lines);
     }
@@ -845,7 +982,8 @@ mod tests {
             .collect();
         let v = budget_violations(&sel, &b);
         assert!(
-            v.iter().any(|m| m.contains("experience") && m.contains("cap")),
+            v.iter()
+                .any(|m| m.contains("experience") && m.contains("cap")),
             "expected a section-cap violation, got {v:?}"
         );
     }
@@ -859,7 +997,9 @@ mod tests {
         // `knapsack_select`, so reporting it as a violation would be noise.
         let one = vec![scored("solo", "OrgA", 0.9, vec![huge()], &[])];
         assert!(
-            !budget_violations(&one, &b).iter().any(|m| m.contains("totalLines")),
+            !budget_violations(&one, &b)
+                .iter()
+                .any(|m| m.contains("totalLines")),
             "a lone oversized block must not be reported as an overrun"
         );
 
@@ -869,7 +1009,9 @@ mod tests {
             scored("b", "OrgB", 0.8, vec![huge()], &[]),
         ];
         assert!(
-            budget_violations(&two, &b).iter().any(|m| m.contains("totalLines")),
+            budget_violations(&two, &b)
+                .iter()
+                .any(|m| m.contains("totalLines")),
             "an overrun across several blocks must be reported"
         );
     }
@@ -877,9 +1019,21 @@ mod tests {
     #[test]
     fn mmr_at_lambda_one_is_pure_relevance() {
         let cands = vec![
-            MmrCandidate { item: "low", relevance: 0.1, vec: vec![1.0, 0.0] },
-            MmrCandidate { item: "high", relevance: 0.9, vec: vec![1.0, 0.0] },
-            MmrCandidate { item: "mid", relevance: 0.5, vec: vec![0.0, 1.0] },
+            MmrCandidate {
+                item: "low",
+                relevance: 0.1,
+                vec: vec![1.0, 0.0],
+            },
+            MmrCandidate {
+                item: "high",
+                relevance: 0.9,
+                vec: vec![1.0, 0.0],
+            },
+            MmrCandidate {
+                item: "mid",
+                relevance: 0.5,
+                vec: vec![0.0, 1.0],
+            },
         ];
         assert_eq!(mmr_select(&cands, 3, 1.0), vec!["high", "mid", "low"]);
     }
@@ -888,9 +1042,21 @@ mod tests {
     fn mmr_below_one_prefers_a_dissimilar_second_pick() {
         // "near" is more relevant than "far" but is a duplicate of "top".
         let cands = vec![
-            MmrCandidate { item: "top", relevance: 0.90, vec: vec![1.0, 0.0] },
-            MmrCandidate { item: "near", relevance: 0.80, vec: vec![1.0, 0.0] },
-            MmrCandidate { item: "far", relevance: 0.70, vec: vec![0.0, 1.0] },
+            MmrCandidate {
+                item: "top",
+                relevance: 0.90,
+                vec: vec![1.0, 0.0],
+            },
+            MmrCandidate {
+                item: "near",
+                relevance: 0.80,
+                vec: vec![1.0, 0.0],
+            },
+            MmrCandidate {
+                item: "far",
+                relevance: 0.70,
+                vec: vec![0.0, 1.0],
+            },
         ];
         assert_eq!(
             mmr_select(&cands, 2, 1.0),
@@ -906,15 +1072,31 @@ mod tests {
 
     #[test]
     fn mmr_handles_degenerate_requests() {
-        let cands = vec![MmrCandidate { item: "a", relevance: 0.5, vec: vec![1.0] }];
+        let cands = vec![MmrCandidate {
+            item: "a",
+            relevance: 0.5,
+            vec: vec![1.0],
+        }];
         assert!(mmr_select(&cands, 0, 0.7).is_empty());
-        assert_eq!(mmr_select(&cands, 99, 0.7), vec!["a"], "k above len yields all");
+        assert_eq!(
+            mmr_select(&cands, 99, 0.7),
+            vec!["a"],
+            "k above len yields all"
+        );
         let empty: Vec<MmrCandidate<&str>> = Vec::new();
         assert!(mmr_select(&empty, 3, 0.7).is_empty());
         // A zero vector cannot produce a NaN similarity and stall the loop.
         let zeros = vec![
-            MmrCandidate { item: "z1", relevance: 0.5, vec: vec![0.0, 0.0] },
-            MmrCandidate { item: "z2", relevance: 0.4, vec: vec![0.0, 0.0] },
+            MmrCandidate {
+                item: "z1",
+                relevance: 0.5,
+                vec: vec![0.0, 0.0],
+            },
+            MmrCandidate {
+                item: "z2",
+                relevance: 0.4,
+                vec: vec![0.0, 0.0],
+            },
         ];
         assert_eq!(mmr_select(&zeros, 2, 0.5).len(), 2);
     }
@@ -928,6 +1110,10 @@ mod tests {
         assert_eq!(section_for_block(&block), "certifications");
         block.kind = "volunteer experience".into();
         assert_eq!(section_for_block(&block), "volunteer");
+        block.kind = "community service".into();
+        assert_eq!(section_for_block(&block), "volunteer");
+        block.kind = "extra curricular activities".into();
+        assert_eq!(section_for_block(&block), "leadership");
         block.kind = "drop-table".into();
         assert_eq!(section_for_block(&block), "experience");
     }

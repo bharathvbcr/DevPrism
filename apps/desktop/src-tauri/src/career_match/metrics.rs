@@ -101,7 +101,10 @@ fn num_followed_by_suffix(hay: &str, num: &str, suffixes: &[&str]) -> bool {
     while let Some(rel) = hay[from..].find(num) {
         let start = from + rel;
         let end = start + num.len();
-        let before = hay[..start].chars().next_back().is_none_or(quantity_left_ok);
+        let before = hay[..start]
+            .chars()
+            .next_back()
+            .is_none_or(quantity_left_ok);
         if before {
             // Skip `\s*`.
             let rest = &hay[end..];
@@ -359,7 +362,9 @@ pub fn numeric_tokens(text: &str) -> Vec<String> {
         // A digit run glued to a preceding letter is an identifier ("p99",
         // "v2", "Q5"), not a quantity the bullet is claiming.
         if i > 0 && (chars[i - 1].is_ascii_alphabetic() || chars[i - 1] == '.') {
-            while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.' || chars[i] == ',') {
+            while i < chars.len()
+                && (chars[i].is_ascii_digit() || chars[i] == '.' || chars[i] == ',')
+            {
                 i += 1;
             }
             continue;
@@ -395,11 +400,38 @@ pub fn numeric_tokens(text: &str) -> Vec<String> {
 /// Spelled-out quantities. A draft can invent a figure without using a digit
 /// ("tripled throughput", "ten million rows"), which a digit-only scan misses.
 const QUANTITY_WORDS: &[&str] = &[
-    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
-    "ten", "eleven", "twelve", "twenty", "thirty", "forty", "fifty", "hundred",
-    "thousand", "million", "billion", "trillion", "double", "doubled",
-    "doubling", "triple", "tripled", "tripling", "quadrupled", "half", "halved",
-    "tenfold", "hundredfold",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "twenty",
+    "thirty",
+    "forty",
+    "fifty",
+    "hundred",
+    "thousand",
+    "million",
+    "billion",
+    "trillion",
+    "double",
+    "doubled",
+    "doubling",
+    "triple",
+    "tripled",
+    "tripling",
+    "quadrupled",
+    "half",
+    "halved",
+    "tenfold",
+    "hundredfold",
 ];
 
 pub fn introduced_numbers(
@@ -421,16 +453,17 @@ pub fn introduced_numbers(
             continue;
         }
         // A digit metric can license its own word form ("3" licenses "three").
-        let licensed = canonical_metrics.iter().any(|m| {
-            metric_preserved_in_text(&m.value, &format!(" {w} "))
-        }) || metric_preserved_in_text(
-            NUMBER_WORDS
-                .iter()
-                .find(|(_, word)| word == w)
-                .map(|(d, _)| *d)
-                .unwrap_or("\u{0}"),
-            &canon_lower,
-        );
+        let licensed = canonical_metrics
+            .iter()
+            .any(|m| metric_preserved_in_text(&m.value, &format!(" {w} ")))
+            || metric_preserved_in_text(
+                NUMBER_WORDS
+                    .iter()
+                    .find(|(_, word)| word == w)
+                    .map(|(d, _)| *d)
+                    .unwrap_or("\u{0}"),
+                &canon_lower,
+            );
         if !licensed && !out.contains(&(*w).to_string()) {
             out.push((*w).to_string());
         }
@@ -535,11 +568,20 @@ mod tests {
 
     #[test]
     fn magnitudes_expand_to_full_numbers() {
-        assert!(metric_preserved_in_text("$1.2M", "generated 1,200,000 in revenue"));
-        assert!(metric_preserved_in_text("$1.2M", "generated 1200000 in revenue"));
+        assert!(metric_preserved_in_text(
+            "$1.2M",
+            "generated 1,200,000 in revenue"
+        ));
+        assert!(metric_preserved_in_text(
+            "$1.2M",
+            "generated 1200000 in revenue"
+        ));
         assert!(metric_preserved_in_text("$100K", "saved 100,000 dollars"));
         assert!(metric_preserved_in_text("$5B", "a 5 billion dollar market"));
-        assert!(!metric_preserved_in_text("$1.2M", "generated 2,400,000 in revenue"));
+        assert!(!metric_preserved_in_text(
+            "$1.2M",
+            "generated 2,400,000 in revenue"
+        ));
     }
 
     #[test]
@@ -583,7 +625,10 @@ mod tests {
     fn unicode_and_pathological_input_do_not_panic() {
         assert!(!metric_preserved_in_text("25%", "改善しました"));
         assert!(!metric_preserved_in_text("5", &"5".repeat(1000)));
-        assert!(metric_preserved_in_text("5", &format!("a 5 {}", "x".repeat(5000))));
+        assert!(metric_preserved_in_text(
+            "5",
+            &format!("a 5 {}", "x".repeat(5000))
+        ));
         // Needle longer than haystack.
         assert!(!metric_preserved_in_text("123456789", "1"));
     }
@@ -592,9 +637,18 @@ mod tests {
     fn dropped_metrics_reports_exactly_what_was_lost() {
         use crate::career_db::BulletMetric;
         let metrics = vec![
-            BulletMetric { value: "25%".into(), kind: "pct".into() },
-            BulletMetric { value: "5x".into(), kind: "mult".into() },
-            BulletMetric { value: "".into(), kind: "noise".into() },
+            BulletMetric {
+                value: "25%".into(),
+                kind: "pct".into(),
+            },
+            BulletMetric {
+                value: "5x".into(),
+                kind: "mult".into(),
+            },
+            BulletMetric {
+                value: "".into(),
+                kind: "noise".into(),
+            },
         ];
         let kept = "improved 25 percent with a 5-fold gain";
         assert!(metrics_values_preserved(&metrics, kept));
@@ -607,8 +661,14 @@ mod tests {
 
     #[test]
     fn numeric_tokens_extracts_quantities_with_units() {
-        assert_eq!(numeric_tokens("cut latency 25% via 3x batching"), vec!["25%", "3x"]);
-        assert_eq!(numeric_tokens("processed 1,200,000 rows"), vec!["1,200,000"]);
+        assert_eq!(
+            numeric_tokens("cut latency 25% via 3x batching"),
+            vec!["25%", "3x"]
+        );
+        assert_eq!(
+            numeric_tokens("processed 1,200,000 rows"),
+            vec!["1,200,000"]
+        );
         assert!(numeric_tokens("no numbers here").is_empty());
         assert_eq!(numeric_tokens("ends with 5."), vec!["5"]);
     }
@@ -628,17 +688,24 @@ mod tests {
     fn numbers_already_in_the_canonical_text_are_not_flagged() {
         let canonical = "Cut p99 latency by 25% across 3 services";
         assert!(
-            introduced_numbers(canonical, &[], "Reduced p99 latency 25% over 3 services").is_empty()
+            introduced_numbers(canonical, &[], "Reduced p99 latency 25% over 3 services")
+                .is_empty()
         );
     }
 
     #[test]
     fn numbers_backed_by_a_recorded_metric_are_not_flagged() {
         use crate::career_db::BulletMetric;
-        let m = vec![BulletMetric { value: "25%".into(), kind: "pct".into() }];
+        let m = vec![BulletMetric {
+            value: "25%".into(),
+            kind: "pct".into(),
+        }];
         let canonical = "Cut latency substantially";
         assert!(introduced_numbers(canonical, &m, "Cut latency by 25%").is_empty());
-        assert_eq!(introduced_numbers(canonical, &m, "Cut latency by 80%"), vec!["80%"]);
+        assert_eq!(
+            introduced_numbers(canonical, &m, "Cut latency by 80%"),
+            vec!["80%"]
+        );
     }
 
     // --- Regressions from the adversarial pass (all previously FALSE POSITIVES,
@@ -652,14 +719,23 @@ mod tests {
         assert!(!metric_preserved_in_text("5%", "improved by 5.5%"));
         assert!(!metric_preserved_in_text("25", "improved by 25.7"));
         assert!(!metric_preserved_in_text("1.2", "grew to 11.2"));
-        assert!(!metric_preserved_in_text("10,000", "processed 110,000 rows"));
+        assert!(!metric_preserved_in_text(
+            "10,000",
+            "processed 110,000 rows"
+        ));
     }
 
     #[test]
     fn magnitude_expansion_is_not_satisfied_by_a_partial_group() {
         // "$1.2M" expands to 1,200,000; "200,000" must not satisfy it.
-        assert!(!metric_preserved_in_text("$1.2M", "generated 200,000 in revenue"));
-        assert!(metric_preserved_in_text("$1.2M", "generated 1,200,000 in revenue"));
+        assert!(!metric_preserved_in_text(
+            "$1.2M",
+            "generated 200,000 in revenue"
+        ));
+        assert!(metric_preserved_in_text(
+            "$1.2M",
+            "generated 1,200,000 in revenue"
+        ));
     }
 
     #[test]
@@ -701,7 +777,10 @@ mod tests {
             ("$1.2M", "generated 1,200,000,000 in revenue"),
             ("10,000", "processed 110,000 rows"),
         ] {
-            assert!(!metric_preserved_in_text(metric, text), "{metric:?} vs {text:?}");
+            assert!(
+                !metric_preserved_in_text(metric, text),
+                "{metric:?} vs {text:?}"
+            );
         }
         for (metric, text) in [
             ("25%", "improved by 25.0%"),
@@ -709,7 +788,10 @@ mod tests {
             ("$1.2M", "generated 1,200,000 in revenue"),
             ("10,000", "processed 10k rows"),
         ] {
-            assert!(metric_preserved_in_text(metric, text), "{metric:?} vs {text:?}");
+            assert!(
+                metric_preserved_in_text(metric, text),
+                "{metric:?} vs {text:?}"
+            );
         }
     }
 
@@ -733,7 +815,10 @@ mod tests {
         assert!(introduced_numbers(canonical, &[], "Led three engineers").is_empty());
         // And the digit form licenses the word form.
         use crate::career_db::BulletMetric;
-        let m = vec![BulletMetric { value: "3".into(), kind: "count".into() }];
+        let m = vec![BulletMetric {
+            value: "3".into(),
+            kind: "count".into(),
+        }];
         assert!(introduced_numbers("Directed a small team", &m, "Led three engineers").is_empty());
     }
 
@@ -806,7 +891,9 @@ mod adversarial_regressions {
         let mut bad = vec![];
         for (metric, text, want) in cases {
             let got = m(metric, text);
-            if got != want { bad.push(format!("{metric:?} vs {text:?} => {got}, want {want}")); }
+            if got != want {
+                bad.push(format!("{metric:?} vs {text:?} => {got}, want {want}"));
+            }
         }
         assert!(bad.is_empty(), "STILL BROKEN:\n{}", bad.join("\n"));
     }

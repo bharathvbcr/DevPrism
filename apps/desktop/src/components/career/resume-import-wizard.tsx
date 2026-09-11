@@ -15,13 +15,16 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
-  extractBlocksFromResume,
+  extractResumeFromSource,
+  mergeResumeHeader,
+  mergeResumeSummary,
   readResumeSourceFromFile,
   type ExperienceBlock,
 } from "@/lib/career";
 import { canUseAiAssist } from "@/lib/ai-assist";
 import { dispatchOpenSettings } from "@/lib/home-flow-events";
 import { useCareerStore } from "@/stores/career-store";
+import { useSettingsStore } from "@/stores/settings-store";
 import { IngestProgressList, type IngestProgressItem } from "./ingest-progress";
 
 type WizardStep = "source" | "review";
@@ -119,9 +122,22 @@ export function ResumeImportWizard({
     setError(null);
     setExtracting(true);
     try {
-      const blocks = await extractBlocksFromResume(source);
-      setDrafts(blocks);
-      setSelected(new Set(blocks.map((b) => b.id)));
+      const extracted = await extractResumeFromSource(source);
+      setDrafts(extracted.blocks);
+      setSelected(new Set(extracted.blocks.map((b) => b.id)));
+      const settings = useSettingsStore.getState();
+      settings.setResumeHeader(
+        mergeResumeHeader(settings.resumeHeader, extracted.header),
+      );
+      settings.setResumeSummary(
+        mergeResumeSummary(settings.resumeSummary, extracted.summary),
+      );
+      if (
+        settings.resumeSkillGroups.length === 0 &&
+        extracted.skillGroups.length > 0
+      ) {
+        settings.setResumeSkillGroups(extracted.skillGroups);
+      }
       setStep("review");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -229,9 +245,9 @@ export function ResumeImportWizard({
         <DialogHeader>
           <DialogTitle>Import resume</DialogTitle>
           <DialogDescription>
-            Paste, upload, or drag a LaTeX .tex file or a .zip archive. AI
-            extracts draft experience blocks for your review — nothing is saved
-            until you confirm.
+            Paste, upload, or drag a resume as .zip, .tex, .pdf, .md, or .txt.
+            Extraction is deterministic without AI; enable AI in Settings for
+            unusual layouts. Nothing is saved until you confirm.
           </DialogDescription>
         </DialogHeader>
 
@@ -246,12 +262,12 @@ export function ResumeImportWizard({
                 onClick={() => fileInputRef.current?.click()}
               >
                 <UploadIcon className="size-3.5" />
-                Upload .tex / .zip
+                Upload resume
               </Button>
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".tex,.ltx,.zip,text/plain,text/x-tex,application/zip,application/x-zip-compressed"
+                accept=".tex,.ltx,.zip,.pdf,.md,.markdown,.txt,text/plain,text/markdown,text/x-tex,application/pdf,application/zip,application/x-zip-compressed"
                 className="hidden"
                 onChange={(e) => void applyResumeFile(e.target.files?.[0])}
               />
@@ -276,8 +292,9 @@ export function ResumeImportWizard({
             {!canUseAiAssist() && (
               <div className="flex flex-wrap items-center gap-2 rounded-md border border-border/60 bg-muted/40 px-2.5 py-2">
                 <p className="min-w-0 flex-1 text-muted-foreground text-xs">
-                  AI assist is off or no provider is configured. Enable one in
-                  Settings before extracting.
+                  AI assist is off. Extraction uses the deterministic parser.
+                  Enable a provider in Settings for better coverage of unusual
+                  layouts.
                 </p>
                 <Button
                   type="button"
@@ -300,7 +317,7 @@ export function ResumeImportWizard({
             {dragActive && (
               <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-md border-2 border-primary/60 border-dashed bg-background/80">
                 <p className="font-medium text-sm">
-                  Drop a .zip archive or .tex file
+                  Drop a resume (.zip, .tex, .pdf, .md, .txt)
                 </p>
               </div>
             )}
@@ -391,9 +408,7 @@ export function ResumeImportWizard({
           {step === "source" ? (
             <Button
               type="button"
-              disabled={
-                extracting || source.trim().length < 40 || !canUseAiAssist()
-              }
+              disabled={extracting || source.trim().length < 40}
               onClick={() => void handleExtract()}
             >
               {extracting ? (

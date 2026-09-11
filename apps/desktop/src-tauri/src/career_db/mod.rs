@@ -215,7 +215,6 @@ impl CareerDbState {
         }
     }
 
-
     pub fn with_conn<F, T>(&self, f: F) -> Result<T, String>
     where
         F: FnOnce(&Connection) -> Result<T, String>,
@@ -432,7 +431,10 @@ fn removed_child_owner_ids(prior_json: &str, next: &ExperienceBlock) -> Vec<Stri
     removed
 }
 
-pub(crate) fn upsert_block_blocking(conn: &Connection, block: &ExperienceBlock) -> Result<(), String> {
+pub(crate) fn upsert_block_blocking(
+    conn: &Connection,
+    block: &ExperienceBlock,
+) -> Result<(), String> {
     let json =
         serde_json::to_string(block).map_err(|e| format!("Failed to serialize block: {e}"))?;
     let updated_at = parse_updated_at_ms(&block.updated_at);
@@ -495,8 +497,8 @@ pub(crate) fn append_facts_to_block_blocking(
         serde_json::from_str(&json).map_err(|e| format!("Invalid block JSON in db: {e}"))?;
     block.facts.extend(facts);
     block.updated_at = chrono::Utc::now().to_rfc3339();
-    let updated = serde_json::to_string(&block)
-        .map_err(|e| format!("Failed to serialize block: {e}"))?;
+    let updated =
+        serde_json::to_string(&block).map_err(|e| format!("Failed to serialize block: {e}"))?;
     tx.execute(
         "INSERT INTO blocks (id, kind, json, updated_at) VALUES (?1, ?2, ?3, ?4)
          ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, json = excluded.json, updated_at = excluded.updated_at",
@@ -512,11 +514,9 @@ pub(crate) fn delete_block_blocking(conn: &Connection, id: &str) -> Result<(), S
     // owner embeddings first and only reported 'Block not found' after a
     // zero-row DELETE — mutating the DB on a miss.
     let block_json: Option<String> = conn
-        .query_row(
-            "SELECT json FROM blocks WHERE id = ?1",
-            params![id],
-            |r| r.get(0),
-        )
+        .query_row("SELECT json FROM blocks WHERE id = ?1", params![id], |r| {
+            r.get(0)
+        })
         .optional()
         .map_err(|e| format!("Failed to load block {id} before delete: {e}"))?;
     let Some(block_json) = block_json else {
@@ -621,7 +621,10 @@ pub(crate) fn delete_persona_blocking(conn: &Connection, id: &str) -> Result<(),
     Ok(())
 }
 
-pub(crate) fn store_embeddings_blocking(conn: &Connection, items: &[EmbeddingItem]) -> Result<(), String> {
+pub(crate) fn store_embeddings_blocking(
+    conn: &Connection,
+    items: &[EmbeddingItem],
+) -> Result<(), String> {
     for item in items {
         // Reject non-finite components at the boundary rather than letting them
         // poison every later similarity score. `Vec<f32>` arrives straight from
@@ -650,13 +653,7 @@ pub(crate) fn store_embeddings_blocking(conn: &Connection, items: &[EmbeddingIte
         )
         .map_err(|e| format!("Failed to store embedding for {}: {e}", item.owner_id))?;
         // Keep ANN index in sync; soft-fails if sqlite-vec is unavailable.
-        vectors::upsert_ann_embedding(
-            conn,
-            &item.owner_id,
-            &item.owner_kind,
-            model,
-            &item.vec,
-        )?;
+        vectors::upsert_ann_embedding(conn, &item.owner_id, &item.owner_kind, model, &item.vec)?;
         // Record the model for reuse checks, so a later switch of embed models
         // re-embeds instead of counting old-model rows as current.
         vectors::set_active_embed_model(conn, model)?;
@@ -770,19 +767,21 @@ pub(crate) fn upsert_known_project_blocking(
     Ok(())
 }
 
-pub(crate) fn remove_known_project_blocking(
-    conn: &Connection,
-    path: &str,
-) -> Result<bool, String> {
+pub(crate) fn remove_known_project_blocking(conn: &Connection, path: &str) -> Result<bool, String> {
     let n = conn
-        .execute("DELETE FROM known_projects WHERE path = ?1", params![path.trim()])
+        .execute(
+            "DELETE FROM known_projects WHERE path = ?1",
+            params![path.trim()],
+        )
         .map_err(|e| format!("Failed to forget project: {e}"))?;
     Ok(n > 0)
 }
 
 pub(crate) fn list_known_projects_blocking(conn: &Connection) -> Result<Vec<KnownProject>, String> {
     let mut stmt = conn
-        .prepare("SELECT path, name, last_opened_at FROM known_projects ORDER BY last_opened_at DESC")
+        .prepare(
+            "SELECT path, name, last_opened_at FROM known_projects ORDER BY last_opened_at DESC",
+        )
         .map_err(|e| format!("Failed to prepare list known projects: {e}"))?;
     let rows = stmt
         .query_map([], |row| {
@@ -973,9 +972,7 @@ pub async fn career_count_kb_chunks_missing_embeddings(
 ) -> Result<u32, String> {
     let state = state.inner().clone();
     tokio::task::spawn_blocking(move || {
-        state.with_conn(|c| {
-            ingest::count_kb_chunks_missing_embeddings(c, source_id.as_deref())
-        })
+        state.with_conn(|c| ingest::count_kb_chunks_missing_embeddings(c, source_id.as_deref()))
     })
     .await
     .map_err(|e| format!("career_count_kb_chunks_missing_embeddings task failed: {e}"))?
@@ -1116,11 +1113,8 @@ mod tests {
             let ui = ui.clone();
             handles.push(std::thread::spawn(move || {
                 for _ in 0..READER_ITERS {
-                    let _sources =
-                        ui.with_conn(ingest::list_kb_sources)?;
-                    let _chunks = ui.with_conn(|conn| {
-                        ingest::list_kb_chunks(conn, None, false)
-                    })?;
+                    let _sources = ui.with_conn(ingest::list_kb_sources)?;
+                    let _chunks = ui.with_conn(|conn| ingest::list_kb_chunks(conn, None, false))?;
                 }
                 Ok(())
             }));
@@ -1258,24 +1252,18 @@ mod tests {
         state
             .with_conn(|c| upsert_block_blocking(c, &block))
             .unwrap();
-        let listed = state
-            .with_conn(|c| list_blocks_blocking(c, false))
-            .unwrap();
+        let listed = state.with_conn(|c| list_blocks_blocking(c, false)).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].title, "Engineer");
-        let missing = state
-            .with_conn(|c| list_blocks_blocking(c, true))
-            .unwrap();
+        let missing = state.with_conn(|c| list_blocks_blocking(c, true)).unwrap();
         assert_eq!(missing.len(), 1);
         state
             .with_conn(|c| delete_block_blocking(c, "exp_1"))
             .unwrap();
-        assert!(
-            state
-                .with_conn(|c| list_blocks_blocking(c, false))
-                .unwrap()
-                .is_empty()
-        );
+        assert!(state
+            .with_conn(|c| list_blocks_blocking(c, false))
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -1448,7 +1436,9 @@ mod tests {
         let _ = vectors::ensure_sqlite_vec_registered();
         let state = test_state();
         state
-            .with_conn(|c| upsert_block_blocking(c, &mk_test_block("exp_g", &["b1", "b2"], &["f1"])))
+            .with_conn(|c| {
+                upsert_block_blocking(c, &mk_test_block("exp_g", &["b1", "b2"], &["f1"]))
+            })
             .unwrap();
         let items = |pairs: &[(&str, &str)]| {
             pairs
@@ -1495,7 +1485,11 @@ mod tests {
         };
         assert_eq!(remaining(&["b2"]), 0, "dropped bullet kept its embedding");
         assert_eq!(remaining(&["f1"]), 0, "dropped fact kept its embedding");
-        assert_eq!(remaining(&["b1"]), 1, "kept bullet must retain its embedding");
+        assert_eq!(
+            remaining(&["b1"]),
+            1,
+            "kept bullet must retain its embedding"
+        );
         assert_eq!(remaining(&["exp_g"]), 1, "block embedding must survive");
     }
 
@@ -1573,11 +1567,9 @@ mod tests {
         // corrupt sibling we planted.
         let json: String = state
             .with_conn(|c| {
-                c.query_row(
-                    "SELECT json FROM blocks WHERE id = 'exp_ok'",
-                    [],
-                    |r| r.get(0),
-                )
+                c.query_row("SELECT json FROM blocks WHERE id = 'exp_ok'", [], |r| {
+                    r.get(0)
+                })
                 .map_err(|e| e.to_string())
             })
             .unwrap();
@@ -1648,9 +1640,7 @@ mod tests {
             handle.join().unwrap().unwrap();
         }
 
-        let listed = ui
-            .with_conn(|c| list_blocks_blocking(c, false))
-            .unwrap();
+        let listed = ui.with_conn(|c| list_blocks_blocking(c, false)).unwrap();
         let block = listed.iter().find(|b| b.id == "exp_race").unwrap();
         let seen: std::collections::HashSet<String> =
             block.facts.iter().map(|f| f.id.clone()).collect();

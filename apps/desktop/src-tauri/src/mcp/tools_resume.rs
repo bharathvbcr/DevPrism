@@ -17,8 +17,8 @@
 //! - `finetune-bullet-metrics`: Prompt template for strengthening bullet metrics.
 
 use crate::career_db::{self, ExperienceBlock};
-use crate::career_match::{gap, jd, metrics, render, scoring, selection};
 use crate::career_match::ats_sim;
+use crate::career_match::{gap, jd, metrics, render, scoring, selection};
 use crate::career_typst::engine;
 use crate::mcp::protocol::{
     JsonRpcError, PromptArgument, PromptDefinition, ResponseMeta, ToolDefinition,
@@ -342,11 +342,17 @@ pub fn list_resume_prompts() -> Vec<PromptDefinition> {
     ]
 }
 
-pub fn get_resume_prompt(name: &str, arguments: &HashMap<String, String>) -> Result<Value, JsonRpcError> {
+pub fn get_resume_prompt(
+    name: &str,
+    arguments: &HashMap<String, String>,
+) -> Result<Value, JsonRpcError> {
     match name {
         "tailor-resume-for-jd" => {
             let jd = arguments.get("jd_text").cloned().unwrap_or_default();
-            let persona = arguments.get("persona_id").cloned().unwrap_or_else(|| "ai".to_string());
+            let persona = arguments
+                .get("persona_id")
+                .cloned()
+                .unwrap_or_else(|| "ai".to_string());
             Ok(json!({
                 "description": "Tailor resume for target job description",
                 "messages": [
@@ -433,10 +439,7 @@ struct ResumeContext {
     extraction: jd::JdExtraction,
 }
 
-fn load_context(
-    db: &career_db::CareerDbState,
-    jd_text: &str,
-) -> Result<ResumeContext, String> {
+fn load_context(db: &career_db::CareerDbState, jd_text: &str) -> Result<ResumeContext, String> {
     let extraction = jd::extract_profile(jd_text);
     let blocks = db.with_conn(|conn| career_db::list_blocks_blocking(conn, false))?;
     Ok(ResumeContext { blocks, extraction })
@@ -483,7 +486,10 @@ fn canonical_overlap(canonical: &str, draft: &str) -> f64 {
 /// to be silently clamped and then echoed back verbatim: a request for 40 pages
 /// answered "pageBudget: 40" while packing 4 pages' worth.
 fn page_budget_arg(args: &Value) -> Result<u64, JsonRpcError> {
-    let n = args.get("page_budget").and_then(|v| v.as_u64()).unwrap_or(1);
+    let n = args
+        .get("page_budget")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(1);
     if !(1..=4).contains(&n) {
         return Err(JsonRpcError::invalid_params(format!(
             "page_budget must be between 1 and 4, got {n}"
@@ -531,7 +537,11 @@ pub async fn execute_resume_tool(
         // Defect #7: emit the canonical JDProfile shape from a real scan.
         // ---------------------------------------------------------------
         "resume_analyze_jd" => {
-            let jd_text = bounded_bytes(require_str(arguments, "jd_text")?, "jd_text", MAX_TEXT_BYTES)?;
+            let jd_text = bounded_bytes(
+                require_str(arguments, "jd_text")?,
+                "jd_text",
+                MAX_TEXT_BYTES,
+            )?;
             let extraction = jd::extract_profile(jd_text);
             let mut out = serde_json::to_value(&extraction)
                 .map_err(|e| JsonRpcError::internal_error(format!("profile encode: {e}")))?;
@@ -555,7 +565,12 @@ pub async fn execute_resume_tool(
         // word-boundary matching and a covered/weak/missing ladder.
         // ---------------------------------------------------------------
         "resume_gap_analysis" => {
-            let jd_text = bounded_bytes(require_str(arguments, "jd_text")?, "jd_text", MAX_TEXT_BYTES)?.to_string();
+            let jd_text = bounded_bytes(
+                require_str(arguments, "jd_text")?,
+                "jd_text",
+                MAX_TEXT_BYTES,
+            )?
+            .to_string();
             let persona_id = arguments
                 .get("persona_id")
                 .and_then(|v| v.as_str())
@@ -643,7 +658,12 @@ pub async fn execute_resume_tool(
         // caps, per-org de-duplication and must-have coverage repair.
         // ---------------------------------------------------------------
         "resume_score_and_select" => {
-            let jd_text = bounded_bytes(require_str(arguments, "jd_text")?, "jd_text", MAX_TEXT_BYTES)?.to_string();
+            let jd_text = bounded_bytes(
+                require_str(arguments, "jd_text")?,
+                "jd_text",
+                MAX_TEXT_BYTES,
+            )?
+            .to_string();
             let persona_id = arguments
                 .get("persona_id")
                 .and_then(|v| v.as_str())
@@ -721,11 +741,20 @@ pub async fn execute_resume_tool(
         // ---------------------------------------------------------------
         "resume_rewrite_bullets" => {
             let block_id = require_str(arguments, "block_id")?.to_string();
-            let jd_text = bounded_bytes(require_str(arguments, "jd_text")?, "jd_text", MAX_TEXT_BYTES)?.to_string();
+            let jd_text = bounded_bytes(
+                require_str(arguments, "jd_text")?,
+                "jd_text",
+                MAX_TEXT_BYTES,
+            )?
+            .to_string();
             let bullet_ids: Option<HashSet<String>> = arguments
                 .get("bullet_ids")
                 .and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect());
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                });
 
             // { bulletId -> proposed text } supplied by the calling agent.
             let mut drafts: HashMap<String, String> = HashMap::new();
@@ -928,15 +957,26 @@ pub async fn execute_resume_tool(
         // Defect #4: real analysis, real ATS coverage, no mock renderer.
         // ---------------------------------------------------------------
         "resume_synthesize" => {
-            let jd_text = bounded_bytes(require_str(arguments, "jd_text")?, "jd_text", MAX_TEXT_BYTES)?.to_string();
+            let jd_text = bounded_bytes(
+                require_str(arguments, "jd_text")?,
+                "jd_text",
+                MAX_TEXT_BYTES,
+            )?
+            .to_string();
             let persona_id = arguments
                 .get("persona_id")
                 .and_then(|v| v.as_str())
                 .unwrap_or("ai")
                 .to_string();
             let page_budget = page_budget_arg(arguments)?;
-            let is_async = arguments.get("async").and_then(|v| v.as_bool()).unwrap_or(false);
-            let render_doc = arguments.get("render").and_then(|v| v.as_bool()).unwrap_or(true);
+            let is_async = arguments
+                .get("async")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let render_doc = arguments
+                .get("render")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
             let header_name = arguments
                 .get("header_name")
                 .and_then(|v| v.as_str())
@@ -945,7 +985,11 @@ pub async fn execute_resume_tool(
             let contact_lines: Vec<String> = arguments
                 .get("contact_lines")
                 .and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
                 .unwrap_or_default();
 
             if let Some(t) = arguments.get("template_id").and_then(|v| v.as_str()) {
@@ -1051,8 +1095,11 @@ pub async fn execute_resume_tool(
                             (start, None) => format!("{start} - Present"),
                         };
                         corpus_lines.push(dates);
-                        let kept =
-                            selection::trim_selected_bullets(b, &profile.must_have_skills, budget.bullets_per_block());
+                        let kept = selection::trim_selected_bullets(
+                            b,
+                            &profile.must_have_skills,
+                            budget.bullets_per_block(),
+                        );
                         for bullet in &b.bullets {
                             if kept.contains(&bullet.id) && !bullet.canonical.trim().is_empty() {
                                 corpus_lines.push(bullet.canonical.trim().to_string());
@@ -1060,10 +1107,7 @@ pub async fn execute_resume_tool(
                         }
                     }
                     let ats_parse_json = serde_json::to_value(ats_sim::summarize_ats_parse(
-                        &ats_sim::simulate_ats_parsing(
-                            &corpus_lines.join("\n"),
-                            ats_system,
-                        ),
+                        &ats_sim::simulate_ats_parsing(&corpus_lines.join("\n"), ats_system),
                     ))
                     .map_err(|e| format!("ats parse encode: {e}"))?;
 
@@ -1083,11 +1127,18 @@ pub async fn execute_resume_tool(
                                 ),
                             );
                         }
-                        let source = render::render_resume(
+                        let section_order = db_clone
+                            .with_conn(|conn| career_db::list_personas_blocking(conn))?
+                            .into_iter()
+                            .find(|p| p.id == persona_id)
+                            .map(|p| p.section_order)
+                            .filter(|o| !o.is_empty());
+                        let source = render::render_resume_with_section_order(
                             &header_name,
                             &contact_lines,
                             &selected_blocks,
                             Some(&kept_by_block),
+                            section_order.as_deref(),
                         );
                         // Defence in depth: refuse to emit source whose literals
                         // do not round-trip, rather than handing back something
@@ -1224,7 +1275,10 @@ pub async fn execute_resume_tool(
                         })?;
 
                 let pdf_base64 = if include_pdf {
-                    compile_res.pdf_bytes.as_ref().map(|b| BASE64_STANDARD.encode(b))
+                    compile_res
+                        .pdf_bytes
+                        .as_ref()
+                        .map(|b| BASE64_STANDARD.encode(b))
                 } else {
                     None
                 };
@@ -1305,9 +1359,20 @@ pub async fn execute_resume_tool(
         // Defect #2: never fabricate a metric. Report only what is there.
         // ---------------------------------------------------------------
         "resume_finetune_bullet" => {
-            let bullet_text = bounded_bytes(require_str(arguments, "bullet_text")?, "bullet_text", MAX_TEXT_BYTES)?;
-            let jd_text = bounded_bytes(require_str(arguments, "jd_text")?, "jd_text", MAX_TEXT_BYTES)?;
-            let context = arguments.get("context").and_then(|v| v.as_str()).unwrap_or("");
+            let bullet_text = bounded_bytes(
+                require_str(arguments, "bullet_text")?,
+                "bullet_text",
+                MAX_TEXT_BYTES,
+            )?;
+            let jd_text = bounded_bytes(
+                require_str(arguments, "jd_text")?,
+                "jd_text",
+                MAX_TEXT_BYTES,
+            )?;
+            let context = arguments
+                .get("context")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
 
             let extraction = jd::extract_profile(jd_text);
             let profile = &extraction.profile;
@@ -1320,7 +1385,11 @@ pub async fn execute_resume_tool(
             let supplied_metrics: Vec<String> = arguments
                 .get("verified_metrics")
                 .and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
                 .unwrap_or_default();
             // Blank entries are dropped rather than counted: an empty metric is
             // vacuously "preserved", which inflated suppliedMetricsPresent.
@@ -1339,9 +1408,18 @@ pub async fn execute_resume_tool(
 
             let first_word = trimmed.split_whitespace().next().unwrap_or("");
             let weak_openers = [
-                "responsible", "helped", "assisted", "worked", "tasked",
-                "involved", "participated", "supported", "contributed",
-                "handled", "did", "made",
+                "responsible",
+                "helped",
+                "assisted",
+                "worked",
+                "tasked",
+                "involved",
+                "participated",
+                "supported",
+                "contributed",
+                "handled",
+                "did",
+                "made",
             ];
             let weak_opener = weak_openers
                 .iter()
@@ -1456,10 +1534,7 @@ mod tests {
             ),
             ("resume_synthesize", json!({ "jd_text": big })),
             ("resume_ats_check", json!({ "text": big })),
-            (
-                "resume_ats_check",
-                json!({ "text": "ok", "jd_text": big }),
-            ),
+            ("resume_ats_check", json!({ "text": "ok", "jd_text": big })),
             (
                 "resume_finetune_bullet",
                 json!({ "bullet_text": "ok", "jd_text": big }),

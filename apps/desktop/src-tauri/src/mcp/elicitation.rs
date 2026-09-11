@@ -68,9 +68,7 @@ pub enum ElicitationRejection {
 impl ElicitationRejection {
     pub fn detail(self) -> &'static str {
         match self {
-            Self::Unknown => {
-                "requestState was not issued by this server, or has already been used"
-            }
+            Self::Unknown => "requestState was not issued by this server, or has already been used",
             Self::Expired => "requestState has expired; re-request confirmation",
             Self::ToolMismatch => "requestState was issued for a different tool",
             Self::SubjectMismatch => "requestState was issued for a different subject",
@@ -183,14 +181,20 @@ mod tests {
     fn a_freshly_issued_token_is_accepted_once() {
         let store = ElicitationStore::new();
         let nonce = store.issue("career_delete_block", "block-1");
-        assert_eq!(store.consume(&nonce, "career_delete_block", "block-1"), Ok(()));
+        assert_eq!(
+            store.consume(&nonce, "career_delete_block", "block-1"),
+            Ok(())
+        );
     }
 
     #[test]
     fn a_token_cannot_be_replayed() {
         let store = ElicitationStore::new();
         let nonce = store.issue("career_delete_block", "block-1");
-        assert_eq!(store.consume(&nonce, "career_delete_block", "block-1"), Ok(()));
+        assert_eq!(
+            store.consume(&nonce, "career_delete_block", "block-1"),
+            Ok(())
+        );
         assert_eq!(
             store.consume(&nonce, "career_delete_block", "block-1"),
             Err(ElicitationRejection::Unknown),
@@ -265,6 +269,9 @@ mod tests {
             store.issue("career_delete_block", &format!("filler-{i}"));
         }
         let nonce = store.issue("career_delete_block", "block-1");
-        assert_eq!(store.consume(&nonce, "career_delete_block", "block-1"), Ok(()));
+        assert_eq!(
+            store.consume(&nonce, "career_delete_block", "block-1"),
+            Ok(())
+        );
     }
 }

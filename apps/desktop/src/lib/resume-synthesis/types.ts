@@ -7,13 +7,19 @@ import type {
   HeaderFields,
   ResumeContent,
   ResumeTemplateBudget,
+  SkillGroup,
 } from "@/lib/resume-templates/types";
 import type {
   MatchReportAtsParse,
+  MatchReportJdMetadata,
   MatchReportKeywordHeatmap,
 } from "./ats-simulate";
 
-export type { MatchReportAtsParse, MatchReportKeywordHeatmap };
+export type {
+  MatchReportAtsParse,
+  MatchReportJdMetadata,
+  MatchReportKeywordHeatmap,
+};
 
 /** Pipeline stages reported via `onProgress` / synthesis-store. */
 export type SynthesisStageId =
@@ -401,6 +407,11 @@ export interface MatchReport {
    * Absent on older runs.
    */
   keywordHeatmap?: MatchReportKeywordHeatmap;
+  /**
+   * Deterministic JD metadata (title, company, salary, level) from
+   * `analyzeJdMetadata`. Absent on older runs — UI hides gracefully.
+   */
+  jdMetadata?: MatchReportJdMetadata;
 }
 
 export interface SynthesisResult {
@@ -431,6 +442,10 @@ export interface SynthesizeResumeOptions {
   onEvent?: (event: RunEvent) => void;
   /** Optional contact header; defaults to empty placeholders. */
   header?: HeaderFields;
+  /** Imported professional summary; used when the summary LLM fails. */
+  seedSummary?: string;
+  /** Imported skill groups (languages, etc.) merged into the assembled resume. */
+  seedSkillGroups?: SkillGroup[];
   /** Abort mid-pipeline (checked between stages and rewrite iterations). */
   signal?: AbortSignal;
   /** Injected for tests. */

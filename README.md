@@ -4,6 +4,8 @@
 
 <h1 align="center">DevPrism</h1>
 
+[![Website](https://img.shields.io/badge/website-devprism.vbcr.dev-B91C1C?style=flat&logo=safari&logoColor=white)](https://devprism.vbcr.dev/)
+
 <p align="center">
   An offline-first scientific writing workspace powered by your local LLM (Ollama).<br/>
   LaTeX + Python + scientific & custom skills + project spaces — runs entirely on your desktop.

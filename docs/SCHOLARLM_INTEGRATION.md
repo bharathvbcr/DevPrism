@@ -99,6 +99,6 @@ degrades gracefully to a heuristic synthesis.
 ## Notes
 
 - The desktop Rust build requires the project's Tectonic native toolchain
-  (`pnpm build:macos` with the vcpkg backend). The ScholarLM commands themselves
+  (`bun run build:macos` with the vcpkg backend). The ScholarLM commands themselves
   depend only on std/tokio/serde, already in `Cargo.toml`.
 - Parsing logic is covered by an offline harness run against real CLI output.

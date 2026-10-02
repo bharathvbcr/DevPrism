@@ -7,7 +7,7 @@ Contributions are welcome! This guide covers the development environment, workfl
 ### Prerequisites
 
 - [Node.js](https://nodejs.org/) 22+
-- [pnpm](https://pnpm.io/) 10+
+- [Bun](https://bun.com/) 1.4+
 - [Rust](https://rustup.rs/) (stable)
 - Platform-specific native dependencies (required by [Tectonic](https://tectonic-typesetting.github.io/)):
   - **macOS:** `brew install icu4c harfbuzz pkg-config`
@@ -39,19 +39,19 @@ vcpkg install harfbuzz[graphite2]:x64-windows freetype:x64-windows icu:x64-windo
 ```bash
 git clone https://github.com/bharathvbcr/DevPrism.git
 cd DevPrism
-pnpm install
+bun install
 ```
 
 ### Run
 
 ```bash
-pnpm dev:desktop
+bun run dev:desktop
 ```
 
 ### Build
 
 ```bash
-pnpm build:desktop
+bun run build:desktop
 ```
 
 ## Project Structure
@@ -90,10 +90,10 @@ DevPrism/
 ### Frontend (Vitest)
 
 ```bash
-cd apps/desktop && pnpm test
+cd apps/desktop && bun run test
 
 # Watch mode
-cd apps/desktop && pnpm test:watch
+cd apps/desktop && bun run test:watch
 ```
 
 ### Rust
@@ -102,18 +102,18 @@ cd apps/desktop && pnpm test:watch
 cd apps/desktop/src-tauri && cargo test
 ```
 
-Run `pnpm --filter @devprism/desktop test` and `cargo test` for the current counts — both suites grow with every feature, so this guide does not pin numbers that would immediately go stale.
+Run `bun run --filter @devprism/desktop test` and `cargo test` for the current counts — both suites grow with every feature, so this guide does not pin numbers that would immediately go stale.
 
 ### Documentation & repo checks
 
-- `pnpm docs:verify` — re-derives stated doc facts from the code (MCP tool counts, tool identifiers, translation section parity, relative links, mermaid syntax). Run it whenever you touch docs or rename a `resume_*` / `career_*` symbol.
-- `pnpm agents:verify:all` — checks the AGENTS.md / CLAUDE.md instruction files stay in sync.
-- `pnpm map:if-stale` — refreshes the repo map (`.devcouncil/repo_map.json`) after large refactors.
+- `bun run docs:verify` — re-derives stated doc facts from the code (MCP tool counts, tool identifiers, translation section parity, relative links, mermaid syntax). Run it whenever you touch docs or rename a `resume_*` / `career_*` symbol.
+- `bun run agents:verify:all` — checks the AGENTS.md / CLAUDE.md instruction files stay in sync.
+- `bun run map:if-stale` — refreshes the repo map (`.devcouncil/repo_map.json`) after large refactors.
 
 ### Performance benchmark
 
 ```bash
-pnpm --filter @devprism/desktop bench:typing
+bun run --filter @devprism/desktop bench:typing
 ```
 
 Simulates a 500-keystroke burst on a ~200 KB manuscript and reports editor → store commit coalescing (`p50`/`p99.9`, commit count vs per-keystroke baseline). Useful after touching the editor, document store, or chat streaming paths.
@@ -152,8 +152,8 @@ mod tests {
 This project uses [Biome](https://biomejs.dev/) for TypeScript/React linting and formatting.
 
 ```bash
-pnpm lint          # check
-pnpm lint:fix      # auto-fix
+bun run lint      # check
+bun run lint:fix  # auto-fix
 ```
 
 Rust code follows standard `rustfmt` conventions.
@@ -162,7 +162,7 @@ Rust code follows standard `rustfmt` conventions.
 
 A [Husky](https://typicode.github.io/husky/) pre-commit hook runs automatically on every commit. It checks and auto-fixes staged files via `biome check --staged --write`, so lint issues are caught before they reach the repository.
 
-The hook is set up automatically when you run `pnpm install`.
+The hook is set up automatically when you run `bun install`.
 
 ### CI
 
@@ -173,7 +173,7 @@ A GitHub Actions workflow runs `biome ci` on every pull request and push to `mai
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feat/my-feature`)
 3. Make your changes
-4. Run tests: `pnpm test` (frontend) and `cargo test` (Rust)
+4. Run tests: `bun run test` (frontend) and `cargo test` (Rust)
 5. Commit — the pre-commit hook will auto-fix lint issues on staged files
 6. Push to your fork and open a PR
 7. CI will verify lint and tests pass

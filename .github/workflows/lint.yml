@@ -12,23 +12,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
+      - uses: oven-sh/setup-bun@v2
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
 
-      - run: pnpm install --frozen-lockfile
+      - run: bun install --frozen-lockfile
 
       - name: Biome CI
-        run: pnpm exec biome ci
+        run: bun run biome ci
 
       # The documentation is a declaration layer, and nothing was checking it.
       # Needs no build: the contract reports which evidence tier it used, and
       # falls back to reading the tool definitions from source when the desktop
       # binary is not present.
       - name: Documentation contract
-        run: pnpm docs:verify --verbose
+        run: bun run docs:verify --verbose
 
       - name: Agent instructions contract
-        run: pnpm agents:verify:all
+        run: bun run agents:verify:all

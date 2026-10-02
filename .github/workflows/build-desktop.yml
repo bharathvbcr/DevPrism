@@ -84,13 +84,12 @@ jobs:
         with:
           workspaces: apps/desktop/src-tauri -> target
 
-      - uses: pnpm/action-setup@v4
+      - uses: oven-sh/setup-bun@v2
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
 
-      - run: pnpm install --frozen-lockfile
+      - run: bun install --frozen-lockfile
 
       - name: Build Tauri app
         shell: bash
@@ -218,13 +217,12 @@ jobs:
         with:
           workspaces: apps/desktop/src-tauri -> target
 
-      - uses: pnpm/action-setup@v4
+      - uses: oven-sh/setup-bun@v2
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
 
-      - run: pnpm install --frozen-lockfile
+      - run: bun install --frozen-lockfile
 
       - name: Build Tauri app
         shell: bash
@@ -285,7 +283,7 @@ jobs:
           echo "==> Rebuilding $TAR_PATH from the stapled app bundle..."
           rm -f "$TAR_PATH" "$TAR_PATH.sig"
           tar -czf "$TAR_PATH" -C "$BUNDLE/macos" DevPrism.app
-          pnpm --filter @devprism/desktop exec tauri signer sign \
+          bun run --filter @devprism/desktop tauri signer sign \
             -k "$TAURI_SIGNING_PRIVATE_KEY" \
             -p "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" \
             "$TAR_PATH"
@@ -410,13 +408,12 @@ jobs:
         with:
           workspaces: apps/desktop/src-tauri -> target
 
-      - uses: pnpm/action-setup@v4
+      - uses: oven-sh/setup-bun@v2
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
 
-      - run: pnpm install --frozen-lockfile
+      - run: bun install --frozen-lockfile
 
       - name: Build Tauri app
         shell: bash
@@ -477,7 +474,7 @@ jobs:
           echo "==> Rebuilding $TAR_PATH from the stapled app bundle..."
           rm -f "$TAR_PATH" "$TAR_PATH.sig"
           tar -czf "$TAR_PATH" -C "$BUNDLE/macos" DevPrism.app
-          pnpm --filter @devprism/desktop exec tauri signer sign \
+          bun run --filter @devprism/desktop tauri signer sign \
             -k "$TAURI_SIGNING_PRIVATE_KEY" \
             -p "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" \
             "$TAR_PATH"
@@ -534,13 +531,12 @@ jobs:
         with:
           workspaces: apps/desktop/src-tauri -> target
 
-      - uses: pnpm/action-setup@v4
+      - uses: oven-sh/setup-bun@v2
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
 
-      - run: pnpm install --frozen-lockfile
+      - run: bun install --frozen-lockfile
 
       - name: Build Tauri app
         shell: bash

@@ -14,14 +14,14 @@ git push -u origin main
 ## Local Verification
 
 ```bash
-pnpm install --frozen-lockfile
-pnpm lint
-pnpm --filter @devprism/desktop test
-pnpm --filter @devprism/desktop build
-pnpm build
+bun install --frozen-lockfile
+bun run lint
+bun run --filter @devprism/desktop test
+bun run --filter @devprism/desktop build
+bun run build
 ```
 
-`pnpm build` creates unsigned local desktop bundles. GitHub release builds use `apps/desktop/src-tauri/tauri.release.conf.json`, which turns on Tauri updater artifacts only when release signing secrets are available.
+`bun run build` creates unsigned local desktop bundles. GitHub release builds use `apps/desktop/src-tauri/tauri.release.conf.json`, which turns on Tauri updater artifacts only when release signing secrets are available.
 
 ## Release
 

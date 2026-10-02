@@ -17,4 +17,4 @@ if [[ "$TARGET" == *-apple-* ]] && [ -z "${APPLE_CERTIFICATE:-}" ]; then
 fi
 
 cd "$ROOT/apps/desktop"
-pnpm --filter @devprism/desktop "${BUILD_ARGS[@]}"
+bun run --filter @devprism/desktop "${BUILD_ARGS[@]}"

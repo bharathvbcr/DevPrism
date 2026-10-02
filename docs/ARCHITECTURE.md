@@ -44,7 +44,7 @@ The UI talks to the Rust host through Tauri commands. Browser storage is only us
 
 Notable frontend subsystems:
 
-- `lib/editor/debounced-content-push.ts` coalesces CodeMirror keystrokes into trailing document-store commits so typing on large manuscripts stays O(1) per keystroke (`pnpm --filter @devprism/desktop bench:typing` measures this path).
+- `lib/editor/debounced-content-push.ts` coalesces CodeMirror keystrokes into trailing document-store commits so typing on large manuscripts stays O(1) per keystroke (`bun run --filter @devprism/desktop bench:typing` measures this path).
 - `lib/mupdf/page-bitmap-cache.ts` is a byte-budgeted LRU of rendered PDF pages, so zoom/scroll restores do not re-rasterize.
 - `lib/career/db-events.ts` subscribes to the Rust `career-db-changed` event so Career surfaces refresh live when an external MCP process commits to `career.db`.
 
@@ -82,19 +82,19 @@ A background watcher polls `career.db`'s `data_version` every 3 s and emits `car
 Local compile:
 
 ```bash
-pnpm install --frozen-lockfile
-pnpm lint
-pnpm --filter @devprism/desktop test
-pnpm docs:verify        # documentation contract (stated facts vs code)
-pnpm --filter @devprism/desktop build
+bun install --frozen-lockfile
+bun run lint
+bun run --filter @devprism/desktop test
+bun run docs:verify     # documentation contract (stated facts vs code)
+bun run --filter @devprism/desktop build
 ```
 
 Native desktop build:
 
 ```bash
-pnpm build:desktop
+bun run build:desktop
 ```
 
 GitHub Actions builds Windows, macOS Apple Silicon, macOS Intel, and Linux packages from `.github/workflows/build-desktop.yml`. Tags matching `v*` publish draft release assets and `latest.json` for the Tauri updater at `bharathvbcr/DevPrism`.
 
-Local `pnpm build:desktop` produces unsigned bundles. Release builds pass `apps/desktop/src-tauri/tauri.release.conf.json` so updater artifacts are only created in the signed GitHub release path.
+Local `bun run build:desktop` produces unsigned bundles. Release builds pass `apps/desktop/src-tauri/tauri.release.conf.json` so updater artifacts are only created in the signed GitHub release path.

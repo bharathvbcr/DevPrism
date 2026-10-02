@@ -13,7 +13,7 @@
  * check whose pattern stops matching is itself a failure, so rewording a claim
  * past the guard cannot silently retire it.
  *
- * Run: pnpm docs:verify        (add --verbose to see what each check examined)
+ * Run: bun run docs:verify     (add --verbose to see what each check examined)
  */
 
 const fs = require("node:fs");

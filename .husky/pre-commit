@@ -49,7 +49,7 @@ if [ -z "$biome" ] && [ -n "$main_root" ] && [ -x "$main_root/node_modules/.bin/
 fi
 
 if [ -z "$biome" ]; then
-	echo "pre-commit: biome not found in node_modules/.bin between $toplevel and ${main_root:-/} — run 'pnpm install'" >&2
+	echo "pre-commit: biome not found in node_modules/.bin between $toplevel and ${main_root:-/} — run 'bun install'" >&2
 	exit 1
 fi
 
@@ -98,6 +98,6 @@ status=0
 "$biome" check --staged --no-errors-on-unmatched || status=$?
 if [ "$status" -ne 0 ]; then
 	echo "pre-commit: the working tree has unstaged changes, so fixes were not applied" >&2
-	echo "automatically. Run 'pnpm lint:fix', stage the result, and commit again." >&2
+	echo "automatically. Run 'bun run lint:fix', stage the result, and commit again." >&2
 fi
 exit "$status"

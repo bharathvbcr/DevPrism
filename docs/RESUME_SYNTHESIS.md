@@ -84,7 +84,7 @@ Still LaTeX-only, by nature: SyncTeX forward/inverse sync, latexdiff
 track-changes export, the rich (Word-like) editor, compile profiles, and the
 LaTeX autocomplete/linter.
 
-**Cross-language fixtures.** `npx vitest run
+**Cross-language fixtures.** `bunx vitest run
 src/__tests__/lib/typst-fixtures.emit.test.ts` writes the documents the TS
 templates actually emit into `src-tauri/tests/fixtures/typst/`; the Rust test
 `rendered_fixtures_compile` compiles all of them. This is the only check that

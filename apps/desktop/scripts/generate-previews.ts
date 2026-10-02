@@ -1,7 +1,7 @@
 /**
  * Generate example projects for all LaTeX templates.
  *
- * Usage:  pnpm --filter @devprism/desktop generate-previews
+ * Usage:  bun run --filter @devprism/desktop generate-previews
  *
  * Requires the `tectonic` CLI (`brew install tectonic`). Tectonic is the app's
  * default engine (`compile_with_tectonic_subprocess` in src-tauri/src/latex.rs),

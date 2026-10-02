@@ -72,5 +72,5 @@ its own `relative_command_path` resolves against. `resolve_binary()` in
 ## macOS signing
 
 `tauri build` signs bundled external binaries as part of the `.app`. Builds
-passing `--no-sign` (including `pnpm build:macos`) do not, so a sidecar in such
+passing `--no-sign` (including `bun run build:macos`) do not, so a sidecar in such
 a bundle may need re-signing before it will launch on another machine.

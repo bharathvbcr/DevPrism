@@ -11,7 +11,7 @@ export function BrowserPreviewBanner() {
     <InlineBanner
       kind="info"
       title="Browser preview mode"
-      message="Projects open from in-browser storage or a linked folder. LaTeX compile, native AI, and some file dialogs need the desktop app (pnpm dev:desktop)."
+      message="Projects open from in-browser storage or a linked folder. LaTeX compile, native AI, and some file dialogs need the desktop app (bun run dev:desktop)."
       actionLabel="Dismiss"
       onAction={() => sessionStorage.setItem(DISMISS_KEY, "1")}
       onDismiss={() => sessionStorage.setItem(DISMISS_KEY, "1")}

@@ -23,18 +23,13 @@ const child =
   process.platform === "win32"
     ? spawn(
         process.env.ComSpec ?? "cmd.exe",
-        [
-          "/d",
-          "/s",
-          "/c",
-          "corepack pnpm --filter=@devprism/desktop tauri dev",
-        ],
+        ["/d", "/s", "/c", "bun run --filter=@devprism/desktop tauri dev"],
         {
           env,
           stdio: "inherit",
         },
       )
-    : spawn("pnpm", ["--filter=@devprism/desktop", "tauri", "dev"], {
+    : spawn("bun", ["run", "--filter=@devprism/desktop", "tauri", "dev"], {
         env,
         stdio: "inherit",
       });

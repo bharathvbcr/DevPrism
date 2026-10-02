@@ -23,7 +23,7 @@ JD → hybrid scoring → knapsack selection → gap analysis → evidence (KB +
 - `RenderedBlock.location` / `url` / `urlLabel` / `extra` (GPA, honors) come from `ExperienceBlock` via `draftsToContent` — these were unmapped and therefore unreachable before; keep the mapping when touching that function
 - `MatchReport.repairs` is legacy-only (pre-Typst runs); nothing writes it
 - Typst text safety: `typst-escape.ts` emits **code-mode string literals** only; the body is one `#{ … }` block (`typst-ats.ts`, `assertCodeModeOnly`). Injection is impossible by construction, so the Typst path has **no bisect/repair loop**
-- Regenerate cross-language fixtures with `npx vitest run src/__tests__/lib/typst-fixtures.emit.test.ts`; the Rust test `rendered_fixtures_compile` compiles them
+- Regenerate cross-language fixtures with `bunx vitest run src/__tests__/lib/typst-fixtures.emit.test.ts`; the Rust test `rendered_fixtures_compile` compiles them
 - Progress store: `apps/desktop/src/stores/synthesis-store.ts` (`openStoredReport` for run history + tex)
 
 ## Must Use Map

@@ -39,7 +39,7 @@ try {
   process.exit(1);
 }
 
-const args = ["--filter=@devprism/desktop", "tauri", "build"];
+const args = ["run", "--filter=@devprism/desktop", "tauri", "build"];
 
 if (!env.TAURI_SIGNING_PRIVATE_KEY) {
   args.push("--config", "src-tauri/tauri.local-build.conf.json");
@@ -59,13 +59,13 @@ const child =
   process.platform === "win32"
     ? spawn(
         process.env.ComSpec ?? "cmd.exe",
-        ["/d", "/s", "/c", `corepack pnpm ${args.join(" ")}`],
+        ["/d", "/s", "/c", `bun ${args.join(" ")}`],
         {
           env,
           stdio: "inherit",
         },
       )
-    : spawn("pnpm", args, {
+    : spawn("bun", args, {
         env,
         stdio: "inherit",
       });

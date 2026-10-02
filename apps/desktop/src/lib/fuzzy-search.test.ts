@@ -1,6 +1,6 @@
 /**
  * Test file for fuzzy search scoring logic.
- * Run: npx vitest run src/lib/fuzzy-search.test.ts
+ * Run: bunx vitest run src/lib/fuzzy-search.test.ts
  */
 
 // ─── Copy of scoring functions from slash-command-picker.tsx ───

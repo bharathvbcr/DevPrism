@@ -33,18 +33,18 @@ $missing
 ```
 
 Automatic enforcement:
-- `pre-commit` now runs `pnpm agents:verify`.
-- Use `pnpm agents:verify` anytime to validate staged files manually.
+- `pre-commit` now runs `bun run agents:verify`.
+- Use `bun run agents:verify` anytime to validate staged files manually.
 
 Pass criteria:
 - No files appear in `$missing`.
 - New scope has a DevCouncil map pointer before edits begin.
 
 Additional audit:
-- `pnpm agents:verify:all` checks all tracked `AGENTS.md` / `CLAUDE.md` files in the repo for compliance.
+- `bun run agents:verify:all` checks all tracked `AGENTS.md` / `CLAUDE.md` files in the repo for compliance.
 - Pre-commit runs:
-  - `pnpm agents:verify` first
-  - `pnpm exec biome check --staged --write --no-errors-on-unmatched` second
+  - `bun run agents:verify` first
+  - `bun run biome check --staged --write --no-errors-on-unmatched` second
 
 CI enforcement:
-- `.github/workflows/lint.yml` runs `pnpm agents:verify:all` on `pull_request` and `push` to `main`.
+- `.github/workflows/lint.yml` runs `bun run agents:verify:all` on `pull_request` and `push` to `main`.

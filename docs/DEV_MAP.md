@@ -4,7 +4,7 @@
 
 - Primary index: `.devcouncil/repo_map.json` (also via MCP `devcouncil_repo_map`).
 - Symbol graph: `dev graph query|trace|impact|dead` or MCP `devcouncil_graph_*` / `devcouncil_code_*`.
-- Ownership boundaries in this file; refresh the machine map with `dev map` / `pnpm map`.
+- Ownership boundaries in this file; refresh the machine map with `dev map` / `bun run map`.
 - Do not use GitNexus or Graphify in this repo.
 
 ## Indexing

@@ -18,12 +18,13 @@ import {
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 import { EditorView } from "@codemirror/view";
 import StarterKit from "@tiptap/starter-kit";
-import Underline from "@tiptap/extension-underline";
-import Placeholder from "@tiptap/extension-placeholder";
-import Table from "@tiptap/extension-table";
-import TableRow from "@tiptap/extension-table-row";
-import TableCell from "@tiptap/extension-table-cell";
-import TableHeader from "@tiptap/extension-table-header";
+import { Placeholder } from "@tiptap/extensions";
+import {
+  Table,
+  TableCell,
+  TableHeader,
+  TableRow,
+} from "@tiptap/extension-table";
 import {
   BoldIcon,
   CodeIcon,
@@ -271,8 +272,9 @@ export function RichLatexEditor() {
         blockquote: false,
         horizontalRule: false,
         strike: false,
+        // StarterKit v3 bundles Link; the LaTeX serializer has no link mark.
+        link: false,
       }),
-      Underline,
       Placeholder.configure({ placeholder: "Start writing your manuscript…" }),
       Table.configure({ resizable: false }),
       TableRow,
@@ -298,6 +300,9 @@ export function RichLatexEditor() {
       },
     },
     onUpdate: ({ editor: e }) => scheduleSync(e),
+    // The toolbar reads editor.isActive() during render, so it needs the
+    // per-transaction rerender that tiptap v3 turned off by default.
+    shouldRerenderOnTransaction: true,
   });
 
   // Load (or reload) the document when the file switches or its content
@@ -312,7 +317,7 @@ export function RichLatexEditor() {
     };
     lastEmittedRef.current = null;
     // setContent without emitting an update (no echo back to the store).
-    editor.commands.setContent(parsed.doc as never, false);
+    editor.commands.setContent(parsed.doc as never, { emitUpdate: false });
   }, [editor, activeFileId, activeContent]);
 
   // Flush pending sync on unmount so no edits are lost when switching views.

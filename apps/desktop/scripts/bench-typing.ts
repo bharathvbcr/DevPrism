@@ -2,7 +2,7 @@
  * Manual benchmark: editor keystroke → store-commit path on a large
  * manuscript.
  *
- * Run with:  pnpm --filter @devprism/desktop bench:typing
+ * Run with:  bun run --filter @devprism/desktop bench:typing
  *
  * Reports, over simulated continuous typing:
  *   - wall-clock per-keystroke overhead of schedule() (the hot path)

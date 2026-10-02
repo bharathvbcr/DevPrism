@@ -1,13 +1,13 @@
 ---
 name: run-desktop-macos
-description: Launch and drive the DevPrism desktop app (Tauri dev) on macOS. Use when asked to run, start, preview, or screenshot the Mac app, or to confirm a change works in the real desktop window. Covers the one-time native-dependency setup that plain `pnpm dev:desktop` does not handle on macOS.
+description: Launch and drive the DevPrism desktop app (Tauri dev) on macOS. Use when asked to run, start, preview, or screenshot the Mac app, or to confirm a change works in the real desktop window. Covers the one-time native-dependency setup that plain `bun run dev:desktop` does not handle on macOS.
 ---
 
 # Run the DevPrism desktop app on macOS
 
 The Tauri shell embeds **Tectonic** (a LaTeX engine) which compiles C/C++ that
 links against `icu4c`, `harfbuzz`, `freetype`, `graphite2`, `fontconfig`, and
-`openssl`. The repo's `pnpm dev:desktop` script only sets the Tectonic build
+`openssl`. The repo's `bun run dev:desktop` script only sets the Tectonic build
 env vars on **Windows**, so on macOS you must supply them yourself. The wrapper
 script `scripts/dev-desktop-macos.sh` does this.
 
@@ -19,13 +19,13 @@ Run these once per machine (skip any already present):
 # Native libs Tectonic links against, plus pkg-config
 brew install icu4c harfbuzz freetype graphite2 fontconfig openssl@3 pkgconf
 
-# pnpm (matches packageManager in package.json); install globally if not on PATH
-npm install -g pnpm@10.28.2   # only if `which pnpm` is empty
+# bun (matches packageManager in package.json); install globally if not on PATH
+npm install -g bun@1.4.2      # only if `which bun` is empty
 
 # Dependencies — MUST be installed on macOS. A node_modules copied from
 # Windows/Linux is missing the darwin @tauri-apps/cli binary and the build
 # dies with "Cannot find module './cli.darwin-arm64.node'". If that happens:
-CI=true pnpm install          # CI=true lets pnpm recreate node_modules without a TTY prompt
+rm -rf node_modules && bun install --frozen-lockfile   # recreate node_modules for macOS
 ```
 
 Sanity check the keg-only libs resolve before building:
@@ -41,7 +41,7 @@ PKG_CONFIG_PATH="$(brew --prefix icu4c@78)/lib/pkgconfig:$(brew --prefix openssl
 scripts/dev-desktop-macos.sh
 ```
 
-This exports the required flags and runs `pnpm dev:desktop`:
+This exports the required flags and runs `bun run dev:desktop`:
 
 - `PKG_CONFIG_PATH` → keg-only `icu4c@78` and `openssl@3` pkgconfig dirs.
 - `CXXFLAGS=-std=c++17` → ICU 78 headers require C++17 (the default `-std=c++14`
@@ -71,9 +71,9 @@ can't screenshot it directly. Verify via the dev-server log instead:
 
 ## Gotchas seen in practice
 
-- **`command not found: pnpm`** in a non-login shell → `npm install -g pnpm@10.28.2`.
+- **`command not found: bun`** in a non-login shell → `npm install -g bun@1.4.2`.
 - **`Cannot find native binding … cli.darwin-arm64.node`** → node_modules is from
-  another OS; `CI=true pnpm install` to rebuild for macOS.
+  another OS; `rm -rf node_modules && bun install --frozen-lockfile` to rebuild for macOS.
 - **`pkg-config command could not be found`** → `brew install pkgconf`.
 - **`'harfbuzz/hb.h' file not found`** → harfbuzz include dir not on the path; the
   wrapper's `-I$(brew --prefix harfbuzz)/include` fixes it.

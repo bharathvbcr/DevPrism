@@ -985,6 +985,7 @@ pub fn command_handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Se
         native_agent::inline_transform_text,
         native_agent::ai_complete,
         native_agent::ai_embed,
+        native_agent::ai_resolve_embed_model,
         native_agent::ai_complete_stream,
         native_agent::ai_cancel_request,
         native_agent::ai_caption,

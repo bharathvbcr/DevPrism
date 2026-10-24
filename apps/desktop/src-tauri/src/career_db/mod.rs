@@ -365,19 +365,46 @@ pub(crate) fn list_blocks_blocking(
     conn: &Connection,
     missing_embeddings_only: bool,
 ) -> Result<Vec<ExperienceBlock>, String> {
-    // EXISTS avoids duplicate rows when multiple (owner_id, model) embeddings exist.
-    let sql = if missing_embeddings_only {
-        "SELECT b.json FROM blocks b
-         WHERE NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.owner_id = b.id)
-         ORDER BY b.updated_at DESC"
+    list_blocks_blocking_for_model(conn, missing_embeddings_only, None)
+}
+
+/// `missing_embeddings_only` means "no vector from `model`" (the model about
+/// to embed), else from the active embed model — the schema PK is
+/// `(owner_id, model)`, so a block holding only a retired model's vector
+/// still needs embedding after a switch.
+pub(crate) fn list_blocks_blocking_for_model(
+    conn: &Connection,
+    missing_embeddings_only: bool,
+    model: Option<&str>,
+) -> Result<Vec<ExperienceBlock>, String> {
+    let fresh_model = if missing_embeddings_only {
+        vectors::freshness_model(conn, model)?
     } else {
-        "SELECT json FROM blocks ORDER BY updated_at DESC"
+        None
+    };
+    // EXISTS avoids duplicate rows when multiple (owner_id, model) embeddings exist.
+    let sql = match (missing_embeddings_only, fresh_model.is_some()) {
+        (true, true) => {
+            "SELECT b.json FROM blocks b
+             WHERE NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.owner_id = b.id AND e.model = ?1)
+             ORDER BY b.updated_at DESC"
+        }
+        (true, false) => {
+            "SELECT b.json FROM blocks b
+             WHERE NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.owner_id = b.id)
+             ORDER BY b.updated_at DESC"
+        }
+        (false, _) => "SELECT json FROM blocks ORDER BY updated_at DESC",
     };
     let mut stmt = conn
         .prepare(sql)
         .map_err(|e| format!("Failed to prepare list blocks: {e}"))?;
+    let bind: Vec<&dyn rusqlite::types::ToSql> = match fresh_model.as_ref() {
+        Some(m) => vec![m],
+        None => vec![],
+    };
     let rows = stmt
-        .query_map([], |row| row.get::<_, String>(0))
+        .query_map(bind.as_slice(), |row| row.get::<_, String>(0))
         .map_err(|e| format!("Failed to query blocks: {e}"))?;
     let mut out = Vec::new();
     for row in rows {
@@ -811,12 +838,15 @@ pub(crate) fn list_known_projects_blocking(conn: &Connection) -> Result<Vec<Know
 pub async fn career_list_blocks(
     state: tauri::State<'_, CareerDbState>,
     missing_embeddings_only: Option<bool>,
+    model: Option<String>,
 ) -> Result<Vec<ExperienceBlock>, String> {
     let state = state.inner().clone();
     let missing = missing_embeddings_only.unwrap_or(false);
-    tokio::task::spawn_blocking(move || state.with_conn(|c| list_blocks_blocking(c, missing)))
-        .await
-        .map_err(|e| format!("career_list_blocks task failed: {e}"))?
+    tokio::task::spawn_blocking(move || {
+        state.with_conn(|c| list_blocks_blocking_for_model(c, missing, model.as_deref()))
+    })
+    .await
+    .map_err(|e| format!("career_list_blocks task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -954,11 +984,14 @@ pub async fn career_list_kb_chunks(
     state: tauri::State<'_, CareerDbState>,
     source_id: Option<String>,
     missing_embeddings_only: Option<bool>,
+    model: Option<String>,
 ) -> Result<Vec<KbChunkRow>, String> {
     let state = state.inner().clone();
     let missing = missing_embeddings_only.unwrap_or(false);
     tokio::task::spawn_blocking(move || {
-        state.with_conn(|c| ingest::list_kb_chunks(c, source_id.as_deref(), missing))
+        state.with_conn(|c| {
+            ingest::list_kb_chunks_for_model(c, source_id.as_deref(), missing, model.as_deref())
+        })
     })
     .await
     .map_err(|e| format!("career_list_kb_chunks task failed: {e}"))?
@@ -1264,6 +1297,67 @@ mod tests {
             .with_conn(|c| list_blocks_blocking(c, false))
             .unwrap()
             .is_empty());
+    }
+
+    /// Block freshness is judged per embed model, as KB chunks are
+    /// (`switching_embed_models_flags_reused_chunks_for_reembedding`): a block
+    /// whose only vector came from a retired model still needs embedding.
+    #[test]
+    fn switching_embed_models_flags_blocks_for_reembedding() {
+        let state = test_state();
+        state
+            .with_conn(|c| {
+                c.execute(
+                    "INSERT INTO blocks (id, kind, json, updated_at) VALUES (?1, ?2, ?3, 0)",
+                    params![
+                        "exp_1",
+                        "experience",
+                        r#"{"id":"exp_1","kind":"experience","title":"Eng","org":"Acme","dateRange":{"start":"2020-01","end":null},"personas":[],"domains":[],"skills":[],"seniorityLevel":"senior","bullets":[],"updatedAt":"2020-01-01T00:00:00Z"}"#
+                    ],
+                )
+                .map_err(|e| e.to_string())
+            })
+            .unwrap();
+        let emb = |model: &str| EmbeddingItem {
+            owner_id: "exp_1".into(),
+            owner_kind: "block".into(),
+            model: model.into(),
+            vec: vec![1.0, 0.0],
+        };
+        let missing_ids = || -> Vec<String> {
+            state
+                .with_conn(|c| list_blocks_blocking(c, true))
+                .unwrap()
+                .into_iter()
+                .map(|b| b.id)
+                .collect()
+        };
+
+        state
+            .with_conn(|c| store_embeddings_blocking(c, &[emb("model-a")]))
+            .unwrap();
+        assert!(missing_ids().is_empty(), "current-model block flagged");
+
+        // A backfill for a model nothing has been written under yet still
+        // sees the block (the active model has not moved).
+        let for_b: Vec<String> = state
+            .with_conn(|c| list_blocks_blocking_for_model(c, true, Some("model-b")))
+            .unwrap()
+            .into_iter()
+            .map(|b| b.id)
+            .collect();
+        assert_eq!(for_b, vec!["exp_1".to_string()]);
+
+        // Switch models without re-embedding: the block's only vector is model-a's.
+        state
+            .with_conn(|c| vectors::set_active_embed_model(c, "model-b"))
+            .unwrap();
+        assert_eq!(missing_ids(), vec!["exp_1".to_string()]);
+
+        state
+            .with_conn(|c| store_embeddings_blocking(c, &[emb("model-b")]))
+            .unwrap();
+        assert!(missing_ids().is_empty(), "re-embedded block still flagged");
     }
 
     #[test]

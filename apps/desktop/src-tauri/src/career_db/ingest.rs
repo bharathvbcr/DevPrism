@@ -384,7 +384,7 @@ pub fn upsert_prepared_source(
         if existing_hash.as_deref() == Some(prepared.content_hash.as_str()) {
             let chunk_ids = list_chunk_ids(conn, &source_id)?;
             // Source unchanged — still report any chunks missing embeddings.
-            let needs = chunks_missing_embeddings(conn, Some(&source_id))?
+            let needs = chunks_missing_embeddings(conn, Some(&source_id), None)?
                 .into_iter()
                 .map(|c| c.id)
                 .collect();
@@ -680,8 +680,20 @@ pub fn list_kb_chunks(
     source_id: Option<&str>,
     missing_embeddings_only: bool,
 ) -> Result<Vec<KbChunkRow>, String> {
+    list_kb_chunks_for_model(conn, source_id, missing_embeddings_only, None)
+}
+
+/// `list_kb_chunks`, with `missing_embeddings_only` judged against `model` (the
+/// model about to embed) instead of the active one. See
+/// `chunks_missing_embeddings`.
+pub fn list_kb_chunks_for_model(
+    conn: &Connection,
+    source_id: Option<&str>,
+    missing_embeddings_only: bool,
+    model: Option<&str>,
+) -> Result<Vec<KbChunkRow>, String> {
     if missing_embeddings_only {
-        return chunks_missing_embeddings(conn, source_id);
+        return chunks_missing_embeddings(conn, source_id, model);
     }
     let mut sql = String::from(
         "SELECT c.id, c.source_id, c.text, c.meta_json,
@@ -736,10 +748,11 @@ pub fn list_kb_chunks(
 pub fn chunks_missing_embeddings(
     conn: &Connection,
     source_id: Option<&str>,
+    model: Option<&str>,
 ) -> Result<Vec<KbChunkRow>, String> {
-    // Qualify by the active embed model: a chunk holding only a retired
-    // model's embedding still needs re-embedding.
-    let active = super::vectors::active_embed_model(conn)?;
+    // Qualify by the embed model (the caller's, else the active one): a chunk
+    // holding only a retired model's embedding still needs re-embedding.
+    let active = super::vectors::freshness_model(conn, model)?;
     let mut sql = String::from(
         "SELECT c.id, c.source_id, c.text, c.meta_json, 0
          FROM kb_chunks c
@@ -923,7 +936,7 @@ mod tests {
             ],
         };
         upsert_prepared_source(&conn, &prepared).unwrap();
-        let listed = chunks_missing_embeddings(&conn, None).unwrap();
+        let listed = chunks_missing_embeddings(&conn, None, None).unwrap();
         let counted = count_kb_chunks_missing_embeddings(&conn, None).unwrap();
         assert_eq!(counted as usize, listed.len());
         assert!(counted >= 2);
@@ -1334,6 +1347,42 @@ mod tests {
             !r4.needs_embedding.contains(&chunk_id),
             "current-model embedding flagged after re-embed"
         );
+    }
+
+    /// Right after the embed model setting changes, nothing has been written
+    /// under the new model, so the active model is still the old one. A
+    /// backfill that asks "missing under the model I am about to use" must
+    /// still see every chunk — otherwise it embeds nothing, the active model
+    /// never moves, and the switch never re-embeds.
+    #[test]
+    fn backfill_for_a_new_model_lists_chunks_the_active_model_already_covers() {
+        let _ = super::super::vectors::ensure_sqlite_vec_registered();
+        let conn = mem_conn();
+        let prepared = PreparedSource {
+            uri: "/tmp/backfill-switch.md".into(),
+            source_type: "markdown".into(),
+            title: "switch".into(),
+            content_hash: "v1".into(),
+            chunks: vec![chunk_of("persistent body", "switch")],
+        };
+        let chunk_id = upsert_prepared_source(&conn, &prepared).unwrap().chunk_ids[0].clone();
+        super::super::store_embeddings_blocking(
+            &conn,
+            &[super::super::EmbeddingItem {
+                owner_id: chunk_id.clone(),
+                owner_kind: "chunk".into(),
+                model: "nomic-embed-text".into(),
+                vec: vec![1.0, 0.0],
+            }],
+        )
+        .unwrap();
+
+        let under_active = list_kb_chunks_for_model(&conn, None, true, None).unwrap();
+        assert!(under_active.is_empty(), "active-model chunk flagged");
+        let under_new =
+            list_kb_chunks_for_model(&conn, None, true, Some("embeddinggemma-2-tessl")).unwrap();
+        let ids: Vec<String> = under_new.into_iter().map(|c| c.id).collect();
+        assert_eq!(ids, vec![chunk_id]);
     }
 
     /// The storage layer enforces the MCP-side caps itself, so the direct

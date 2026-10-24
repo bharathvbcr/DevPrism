@@ -143,7 +143,7 @@ pub fn base_url_supports_embeddings(base_url: &str) -> bool {
         || (lower.contains("googleapis.com") && lower.contains("openai"))
 }
 
-fn default_embedding_model(base_url: &str) -> &'static str {
+pub(crate) fn default_embedding_model(base_url: &str) -> &'static str {
     let lower = base_url.to_ascii_lowercase();
     if lower.contains("aiplatform.googleapis.com")
         || lower.contains("generativelanguage.googleapis.com")

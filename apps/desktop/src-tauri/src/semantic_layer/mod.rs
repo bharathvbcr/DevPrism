@@ -2,7 +2,6 @@ mod cache;
 pub(crate) mod math;
 mod router;
 
-use crate::native_agent::ollama;
 use cache::{cache_key_for, CacheLookupResult, SemanticCache};
 use router::route_query;
 use serde::{Deserialize, Serialize};
@@ -25,6 +24,13 @@ pub struct SemanticLayerConfig {
     pub medium_model: Option<String>,
     pub heavy_model: Option<String>,
     pub ollama_base_url: String,
+    /// Embedding model setting (`embedModel`); `None` = auto-pick. Read by
+    /// `native_agent::resolve_embed_target` for callers that pass no model.
+    #[serde(default)]
+    pub embed_model: Option<String>,
+    /// Embedding server setting (`embedBaseUrl`); `None` = `ollama_base_url`.
+    #[serde(default)]
+    pub embed_base_url: Option<String>,
 }
 
 impl Default for SemanticLayerConfig {
@@ -38,6 +44,8 @@ impl Default for SemanticLayerConfig {
             medium_model: None,
             heavy_model: None,
             ollama_base_url: "http://localhost:11434".to_string(),
+            embed_model: None,
+            embed_base_url: None,
         }
     }
 }
@@ -179,7 +187,7 @@ pub async fn prepare_proxy_inference(
         _ => prompt.to_string(),
     };
 
-    let vectors = match embed_texts(&config, &[embed_text]).await {
+    let vectors = match embed_texts(&[embed_text]).await {
         Ok(v) => v,
         Err(_) => return apply_router(base, &config, prompt, system),
     };
@@ -224,7 +232,7 @@ pub async fn store_proxy_cache(system: Option<&str>, prompt: &str, response: &st
         _ => prompt.to_string(),
     };
 
-    let Ok(vectors) = embed_texts(&config, &[embed_text]).await else {
+    let Ok(vectors) = embed_texts(&[embed_text]).await else {
         return;
     };
     let Some(vec) = vectors.into_iter().next() else {
@@ -254,18 +262,11 @@ fn apply_router(
     base
 }
 
-async fn embed_texts(
-    config: &SemanticLayerConfig,
-    texts: &[String],
-) -> Result<Vec<Vec<f32>>, String> {
-    let model = match ollama::first_embedding_model(&config.ollama_base_url).await? {
-        Some(m) => m,
-        None => {
-            return Err("[E_NO_MODEL] No embedding model installed".into());
-        }
-    };
-    let client = ollama::OllamaClient::new(&config.ollama_base_url, &model, None, None);
-    client.embed(texts).await
+/// Embed with the same server and model as every other embed caller (the
+/// synced `embedModel` / `embedBaseUrl` settings, else auto-pick on the chat
+/// Ollama base). Never a cloud credential: the proxy path has none selected.
+async fn embed_texts(texts: &[String]) -> Result<Vec<Vec<f32>>, String> {
+    crate::native_agent::ai_embed(texts.to_vec(), None, None, None, None).await
 }
 
 /// Extract system prompt and the last user text from an Anthropic messages request.
@@ -315,6 +316,27 @@ fn flatten_anthropic_content(value: Option<&serde_json::Value>) -> Option<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The frontend sends `embedModel` / `embedBaseUrl`; a payload without
+    /// them (older frontend) still syncs, as unset.
+    #[test]
+    fn config_sync_payload_carries_embed_settings() {
+        let base = serde_json::json!({
+            "enabled": false, "cacheEnabled": true, "routerEnabled": true,
+            "compressorEnabled": true, "lightModel": null, "mediumModel": null,
+            "heavyModel": null, "ollamaBaseUrl": "http://localhost:11434"
+        });
+        let old: SemanticLayerConfig = serde_json::from_value(base.clone()).unwrap();
+        assert_eq!(old.embed_model, None);
+        assert_eq!(old.embed_base_url, None);
+
+        let mut with = base;
+        with["embedModel"] = "embeddinggemma-2-tessl".into();
+        with["embedBaseUrl"] = "http://127.0.0.1:11435".into();
+        let new: SemanticLayerConfig = serde_json::from_value(with).unwrap();
+        assert_eq!(new.embed_model.as_deref(), Some("embeddinggemma-2-tessl"));
+        assert_eq!(new.embed_base_url.as_deref(), Some("http://127.0.0.1:11435"));
+    }
 
     #[test]
     fn shared_cache_lookup_and_store_round_trip() {

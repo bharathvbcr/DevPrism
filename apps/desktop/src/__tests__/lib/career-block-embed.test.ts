@@ -5,6 +5,8 @@ import type { ExperienceBlock } from "@/lib/career/types";
 
 vi.mock("@/lib/ai-assist", () => ({
   aiEmbed: vi.fn(),
+  resolveEmbedModel: vi.fn(async () => "nomic-embed-text"),
+  resolveEmbedModelOrUndefined: vi.fn(async () => "nomic-embed-text"),
 }));
 
 import { aiEmbed } from "@/lib/ai-assist";
@@ -64,15 +66,17 @@ describe("fact embed helpers", () => {
       skipped: 0,
       deferred: false,
     });
-    expect(aiEmbedMock).toHaveBeenCalledWith([
-      "Cut latency 40%",
-      "Owned k8s rollout",
-    ]);
+    expect(aiEmbedMock).toHaveBeenCalledWith(
+      ["Cut latency 40%", "Owned k8s rollout"],
+      undefined,
+      "nomic-embed-text",
+    );
     expect(invokeMock).toHaveBeenCalledWith("career_store_embeddings", {
       items: [
         expect.objectContaining({
           ownerId: "fct_1",
           ownerKind: "fact",
+          model: "nomic-embed-text",
           vec: [0.1, 0.2, 0.3],
         }),
         expect.objectContaining({
@@ -109,9 +113,11 @@ describe("fact embed helpers", () => {
     const result = await backfillFactEmbeddings();
 
     expect(result.embedded).toBe(1);
-    expect(aiEmbedMock).toHaveBeenCalledWith([
-      "Operated a 50-node Kubernetes cluster",
-    ]);
+    expect(aiEmbedMock).toHaveBeenCalledWith(
+      ["Operated a 50-node Kubernetes cluster"],
+      undefined,
+      "nomic-embed-text",
+    );
     expect(invokeMock).toHaveBeenCalledWith(
       "career_list_blocks",
       expect.objectContaining({ missingEmbeddingsOnly: false }),

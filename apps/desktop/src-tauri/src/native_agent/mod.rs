@@ -1003,7 +1003,8 @@ pub fn ai_cancel_request(request_id: String) {
 
 /// Embed one or more texts. Prefers an OpenAI-compat credential that exposes
 /// `/embeddings` (Gemini, OpenAI) when `provider_credential_id` is set;
-/// otherwise uses a local Ollama embedding model (e.g. `nomic-embed-text`).
+/// otherwise an Ollama-compatible embed server. `resolve_embed_target` picks
+/// the server and model (`ai_resolve_embed_model` reports the same name).
 /// When `request_id` is set, `ai_cancel_request` aborts the in-flight HTTP call
 /// via the shared cancel registry (same pattern as `ai_complete`).
 #[tauri::command]
@@ -1037,6 +1038,108 @@ pub async fn ai_embed(
     result
 }
 
+/// The concrete model name `ai_embed` would use for these arguments. Callers
+/// that store vectors resolve once, pass the name to every `ai_embed` call,
+/// and record the same name, so a stored label is always the model that ran.
+#[tauri::command]
+pub async fn ai_resolve_embed_model(
+    model: Option<String>,
+    base_url: Option<String>,
+    provider_credential_id: Option<String>,
+) -> Result<String, String> {
+    Ok(resolve_embed_target(model, base_url, provider_credential_id)
+        .await?
+        .model()
+        .to_string())
+}
+
+/// Where one embedding request goes, with the model already resolved.
+pub(crate) enum EmbedTarget {
+    /// An OpenAI-compatible credential that serves `/embeddings`.
+    Cloud {
+        base_url: String,
+        api_key: String,
+        model: String,
+    },
+    /// An Ollama-compatible `/api/embed` server.
+    Ollama { base_url: String, model: String },
+}
+
+impl EmbedTarget {
+    pub(crate) fn model(&self) -> &str {
+        match self {
+            EmbedTarget::Cloud { model, .. } | EmbedTarget::Ollama { model, .. } => model,
+        }
+    }
+}
+
+fn non_blank(value: Option<String>) -> Option<String> {
+    value
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// Model and server for an Ollama-compatible embed request, before any
+/// network: explicit arguments win, then the synced `embedModel` /
+/// `embedBaseUrl` settings, then the chat Ollama base. `None` model means
+/// "auto-pick an installed embedding model".
+fn ollama_embed_settings(
+    model: Option<String>,
+    base_url: Option<String>,
+    config: &crate::semantic_layer::SemanticLayerConfig,
+) -> (Option<String>, String) {
+    let model = non_blank(model).or_else(|| non_blank(config.embed_model.clone()));
+    let base = non_blank(base_url)
+        .or_else(|| non_blank(config.embed_base_url.clone()))
+        .or_else(|| non_blank(Some(config.ollama_base_url.clone())))
+        .unwrap_or_else(|| "http://localhost:11434".to_string());
+    (model, base)
+}
+
+/// The one place an embed request's server and model are decided; both
+/// `ai_embed` and `ai_resolve_embed_model` go through it.
+pub(crate) async fn resolve_embed_target(
+    model: Option<String>,
+    base_url: Option<String>,
+    provider_credential_id: Option<String>,
+) -> Result<EmbedTarget, String> {
+    if let Some(cred_id) = non_blank(provider_credential_id) {
+        if let Ok(Some(cred)) = crate::claude::stored_openai_compatible_credential(Some(&cred_id))
+        {
+            if openai_compat::base_url_supports_embeddings(&cred.base_url) {
+                let model = non_blank(model.clone()).unwrap_or_else(|| {
+                    openai_compat::default_embedding_model(&cred.base_url).to_string()
+                });
+                return Ok(EmbedTarget::Cloud {
+                    base_url: cred.base_url,
+                    api_key: cred.api_key,
+                    model,
+                });
+            }
+        }
+    }
+
+    let (model, base) =
+        ollama_embed_settings(model, base_url, &crate::semantic_layer::current_config());
+    let model = match model {
+        Some(m) => m,
+        None => match ollama::first_embedding_model(&base).await? {
+            Some(m) => m,
+            None => {
+                return Err(format!(
+                    "[E_NO_MODEL] No embedding model is installed at {}. Pull one, e.g. \
+                     `ollama pull nomic-embed-text`.",
+                    ollama::native_base(&base)
+                ));
+            }
+        },
+    };
+    Ok(EmbedTarget::Ollama {
+        base_url: base,
+        model,
+    })
+}
+
 async fn ai_embed_inner(
     texts: Vec<String>,
     model: Option<String>,
@@ -1052,42 +1155,28 @@ async fn ai_embed_inner(
     }
 
     let work = async {
-        if let Some(cred_id) = provider_credential_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|id| !id.is_empty())
-        {
-            if let Ok(Some(cred)) =
-                crate::claude::stored_openai_compatible_credential(Some(cred_id))
-            {
-                if let Some(client) = openai_compat::embedding_client_for_credential(
-                    &cred.base_url,
-                    &cred.api_key,
-                    model.as_deref(),
-                ) {
-                    return client.embeddings(&texts).await;
-                }
+        match resolve_embed_target(model, base_url, provider_credential_id).await? {
+            EmbedTarget::Cloud {
+                base_url,
+                api_key,
+                model,
+            } => {
+                // `resolve_embed_target` only returns Cloud for a base URL that
+                // serves `/embeddings`, so the client is always built.
+                let client = openai_compat::embedding_client_for_credential(
+                    &base_url,
+                    &api_key,
+                    Some(&model),
+                )
+                .ok_or_else(|| format!("{base_url} does not serve /embeddings"))?;
+                client.embeddings(&texts).await
+            }
+            EmbedTarget::Ollama { base_url, model } => {
+                ollama::OllamaClient::new(&base_url, &model, None, None)
+                    .embed(&texts)
+                    .await
             }
         }
-
-        let base = base_url.unwrap_or_else(|| "http://localhost:11434".to_string());
-        let model = match model {
-            Some(m) if !m.trim().is_empty() => m,
-            _ => match ollama::first_embedding_model(&base).await {
-                Ok(Some(m)) => m,
-                Ok(None) => {
-                    return Err(format!(
-                        "[E_NO_MODEL] No embedding model is installed at {}. Pull one, e.g. \
-                         `ollama pull nomic-embed-text`.",
-                        ollama::native_base(&base)
-                    ));
-                }
-                Err(e) => return Err(e),
-            },
-        };
-
-        let client = ollama::OllamaClient::new(&base, &model, None, None);
-        client.embed(&texts).await
     };
 
     let vectors = if let Some((_, notify)) = cancel_parts.as_ref() {
@@ -1862,6 +1951,72 @@ mod tests {
         .unwrap_err();
         assert_eq!(err, "cancelled");
         take_ai_request_cancel(id);
+    }
+
+    /// Embed server/model precedence: explicit argument, then the synced
+    /// embed settings, then the chat Ollama base (model: auto-pick).
+    #[test]
+    fn ollama_embed_settings_precedence() {
+        use crate::semantic_layer::SemanticLayerConfig;
+        let mut config = SemanticLayerConfig {
+            ollama_base_url: "http://chat-ollama:11434".into(),
+            ..SemanticLayerConfig::default()
+        };
+
+        // Nothing configured: auto-pick on the chat Ollama base.
+        assert_eq!(
+            ollama_embed_settings(None, None, &config),
+            (None, "http://chat-ollama:11434".to_string())
+        );
+
+        // Settings apply when the caller passes nothing (MCP, proxy cache).
+        config.embed_model = Some("embeddinggemma-2-tessl".into());
+        config.embed_base_url = Some("http://127.0.0.1:11435".into());
+        assert_eq!(
+            ollama_embed_settings(None, None, &config),
+            (
+                Some("embeddinggemma-2-tessl".to_string()),
+                "http://127.0.0.1:11435".to_string()
+            )
+        );
+
+        // Explicit arguments beat settings; blank arguments do not count.
+        assert_eq!(
+            ollama_embed_settings(
+                Some("nomic-embed-text".into()),
+                Some("http://other:11434".into()),
+                &config
+            ),
+            (
+                Some("nomic-embed-text".to_string()),
+                "http://other:11434".to_string()
+            )
+        );
+        assert_eq!(
+            ollama_embed_settings(Some("  ".into()), Some("".into()), &config),
+            (
+                Some("embeddinggemma-2-tessl".to_string()),
+                "http://127.0.0.1:11435".to_string()
+            )
+        );
+    }
+
+    /// An explicit model is used verbatim: resolving it must not ask the
+    /// server which embedding models it has (unreachable port here).
+    #[tokio::test]
+    async fn resolve_embed_target_uses_an_explicit_model_without_listing() {
+        let target = resolve_embed_target(
+            Some("embeddinggemma-2-tessl".into()),
+            Some("http://127.0.0.1:9".into()),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(target.model(), "embeddinggemma-2-tessl");
+        match target {
+            EmbedTarget::Ollama { base_url, .. } => assert_eq!(base_url, "http://127.0.0.1:9"),
+            EmbedTarget::Cloud { .. } => panic!("no credential was given"),
+        }
     }
 
     #[tokio::test]

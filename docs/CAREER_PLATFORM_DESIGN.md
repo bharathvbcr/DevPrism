@@ -233,11 +233,12 @@ Pipeline: `ingest/pipeline.ts` — parse → chunk → hash → `career_upsert_k
 - **Table:** `embeddings` — composite PK `(owner_id, model)`, `owner_kind`, `dim`, `vec` (f32 LE BLOB).
 - **ANN index:** `vec_embeddings` (sqlite-vec vec0); populated alongside store writes; rebuilt lazily if dim/model changes.
 - **Search:** Prefer KNN `MATCH` with over-fetch + post-filter for persona/domain/kind; **brute-force cosine fallback** if the extension fails to load (`career_db/vectors.rs`).
-- **Write path:** TS `aiEmbed` → Tauri `ai_embed` → `career_store_embeddings`.
-- **Default local model:** Ollama `nomic-embed-text`.
-- **Cloud:** Gemini / OpenAI embeddings when the OpenAI-compat credential supports them (Groq does not embed).
+- **Write path:** TS `resolveEmbedModel()` → `aiEmbed(texts, signal, model)` → Tauri `ai_embed` → `career_store_embeddings`. One concrete model name per run is sent with every batch and stored as `embeddings.model` (and `career_meta.active_embed_model`), so the label is always the model that produced the vector. Rust `native_agent::resolve_embed_target` is the single place the server and model are decided; `ai_resolve_embed_model` reports its choice.
+- **Model / server:** settings `embedModel` (null = first embedding model the server lists; `nomic-embed-text` is the recommended pull) and `embedBaseUrl` (null = the chat Ollama base). Any Ollama-compatible `/api/embed` server works, e.g. `tessl-embed` at `http://127.0.0.1:11435` with `embeddinggemma-2-tessl`. The settings sync to Rust through `sync_semantic_layer_config`, so MCP `career_search_kb` embeds queries with the same model.
+- **Switching models:** backfills ask for items missing under the model about to embed (`model` on `career_list_blocks` / `career_list_kb_chunks`), so changing `embedModel` re-embeds everything on the next backfill.
+- **Cloud:** Gemini / OpenAI embeddings when the OpenAI-compat credential supports them (Groq does not embed) and neither embed setting is set.
 - **Filters:** `ownerKind`, plus `personas` / `domains` / `kinds` (applied when resolving block JSON for `owner_kind == "block"`).
-- Mixed-dimension / wrong-model rows are **skipped** at query time (search is scoped to one model; dim must match query).
+- Mixed-dimension / wrong-model rows are **skipped** at query time (search is scoped to one model; dim must match query). Without an explicit `filter.model`, search uses the active embed model when it has vectors of the query's dimension (equal dims cannot tell models apart), else the densest model at that dimension.
 
 ### 2.2 Owner kinds
 

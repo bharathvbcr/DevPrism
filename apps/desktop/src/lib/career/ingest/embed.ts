@@ -1,7 +1,11 @@
 /** Embedding pipeline: aiEmbed → career_store_embeddings, with graceful fallback. */
 
 import { invoke } from "@tauri-apps/api/core";
-import { aiEmbed } from "@/lib/ai-assist";
+import {
+  aiEmbed,
+  resolveEmbedModel,
+  resolveEmbedModelOrUndefined,
+} from "@/lib/ai-assist";
 import { RECOMMENDED_EMBED_MODEL } from "@/lib/ollama";
 import type {
   EmbedPipelineResult,
@@ -16,7 +20,7 @@ export const EMBED_BATCH_SIZE = 8;
 export interface EmbedChunksOptions {
   /** Chunk rows (id + text) to embed. */
   chunks: { id: string; text: string }[];
-  /** Embedding model label stored alongside vectors. */
+  /** Model to embed with; also the label stored. Default: `resolveEmbedModel()`. */
   model?: string;
   /** Legacy (done, total) callback — still supported. */
   onProgress?: (done: number, total: number) => void;
@@ -39,11 +43,13 @@ export async function embedChunks(
     return { embedded: 0, skipped: 0, deferred: false };
   }
 
-  const model = options.model ?? RECOMMENDED_EMBED_MODEL.id;
   let embedded = 0;
   const batchTotal = Math.ceil(chunks.length / EMBED_BATCH_SIZE);
 
   try {
+    // One concrete name for the whole run: it is sent with every batch and
+    // stored with every vector, so the label is the model that produced it.
+    const model = options.model ?? (await resolveEmbedModel());
     for (let i = 0; i < chunks.length; i += EMBED_BATCH_SIZE) {
       const batchIndex = Math.floor(i / EMBED_BATCH_SIZE) + 1;
       onProcessingProgress?.({
@@ -56,7 +62,11 @@ export async function embedChunks(
       });
 
       const batch = chunks.slice(i, i + EMBED_BATCH_SIZE);
-      const vectors = await aiEmbed(batch.map((c) => c.text));
+      const vectors = await aiEmbed(
+        batch.map((c) => c.text),
+        undefined,
+        model,
+      );
       if (vectors.length !== batch.length) {
         throw new Error(
           `aiEmbed returned ${vectors.length} vectors for ${batch.length} texts`,
@@ -115,13 +125,18 @@ export async function backfillKbEmbeddings(options?: {
   onProgress?: (done: number, total: number) => void;
   onProcessingProgress?: (progress: ProcessingProgress) => void;
 }): Promise<EmbedPipelineResult> {
+  // "Missing" means missing under the model about to embed, so a model switch
+  // re-embeds every chunk. Unresolvable (no embed server) leaves the backend's
+  // active model in charge; the embed step then defers with the reason.
+  const model = options?.model ?? (await resolveEmbedModelOrUndefined());
   const rows = await invoke<KbChunkRow[]>("career_list_kb_chunks", {
     sourceId: options?.sourceId ?? null,
     missingEmbeddingsOnly: true,
+    model: model ?? null,
   });
   return embedChunks({
     chunks: rows.map((r) => ({ id: r.id, text: r.text })),
-    model: options?.model,
+    model,
     onProgress: options?.onProgress,
     onProcessingProgress: options?.onProcessingProgress,
     itemLabel: options?.sourceId ? "Backfill source" : "Backfill all chunks",

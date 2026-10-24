@@ -63,8 +63,10 @@ pub struct SearchFilter {
     pub personas: Option<Vec<String>>,
     pub domains: Option<Vec<String>>,
     pub kinds: Option<Vec<String>>,
-    /// When set, search only this embed model. When omitted, the densest
-    /// model matching the query dimension is chosen (one model per query).
+    /// When set, search only this embed model — pass the model that embedded
+    /// the query. When omitted, the active embed model is searched if it has
+    /// vectors of the query's dimension, else the densest model at that
+    /// dimension (one model per query either way).
     pub model: Option<String>,
 }
 
@@ -131,6 +133,19 @@ pub(crate) fn active_embed_model(conn: &Connection) -> Result<Option<String>, St
 
 pub(crate) fn set_active_embed_model(conn: &Connection, model: &str) -> Result<(), String> {
     meta_set(conn, ACTIVE_EMBED_MODEL_KEY, model)
+}
+
+/// The model whose vectors count as current for "missing embedding" checks:
+/// the caller's (the model about to embed), else the active one. `None` means
+/// nothing has been embedded yet, so any vector counts.
+pub(crate) fn freshness_model(
+    conn: &Connection,
+    model: Option<&str>,
+) -> Result<Option<String>, String> {
+    match model.map(str::trim).filter(|m| !m.is_empty()) {
+        Some(m) => Ok(Some(m.to_string())),
+        None => active_embed_model(conn),
+    }
 }
 
 fn table_exists(conn: &Connection, name: &str) -> Result<bool, String> {
@@ -286,7 +301,12 @@ pub fn delete_owner_embeddings(conn: &Connection, owner_id: &str) -> Result<(), 
     Ok(())
 }
 
-/// Pick the embed model for this query: explicit filter, else densest matching dim.
+/// Pick the embed model for this query: explicit filter, else the active
+/// model when it has vectors of this dim, else the densest matching dim.
+///
+/// The dimension alone cannot tell models apart (nomic-embed-text and
+/// EmbeddingGemma 2 are both 768-d), so during a partial re-embed densest
+/// would pick the retired model for a query the active model produced.
 fn resolve_search_model(
     conn: &Connection,
     dim: usize,
@@ -295,6 +315,18 @@ fn resolve_search_model(
     if let Some(ref model) = filter.model {
         if !model.is_empty() {
             return Ok(Some(model.clone()));
+        }
+    }
+    if let Some(active) = active_embed_model(conn)? {
+        let has_dim: bool = conn
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM embeddings WHERE model = ?1 AND dim = ?2)",
+                params![active, dim as i64],
+                |r| r.get(0),
+            )
+            .map_err(|e| format!("Failed to check active embed model: {e}"))?;
+        if has_dim {
+            return Ok(Some(active));
         }
     }
     let model: Option<String> = conn
@@ -872,6 +904,58 @@ mod tests {
         )
         .unwrap();
         assert_eq!(hits_b.len(), 1);
+    }
+
+    /// Equal dimensions cannot tell embed models apart (nomic-embed-text and
+    /// EmbeddingGemma 2 are both 768-d). Midway through a re-embed the retired
+    /// model still owns most rows, and densest-by-dim would score a query from
+    /// the active model against them. Without an explicit model, search the
+    /// model the last write recorded.
+    #[test]
+    fn search_without_model_uses_active_embed_model_not_densest_same_dim() {
+        let _ = ensure_sqlite_vec_registered();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        for id in ["exp_a", "exp_b", "exp_c"] {
+            conn.execute(
+                "INSERT INTO blocks (id, kind, json, updated_at) VALUES (?1, ?2, ?3, 0)",
+                params![
+                    id,
+                    "experience",
+                    format!(
+                        r#"{{"id":"{id}","kind":"experience","title":"T","org":"O","dateRange":{{"start":"2020-01","end":null}},"personas":[],"domains":[],"skills":[],"seniorityLevel":"senior","bullets":[],"updatedAt":"2020-01-01T00:00:00Z"}}"#
+                    )
+                ],
+            )
+            .unwrap();
+        }
+        let item = |id: &str, model: &str| crate::career_db::EmbeddingItem {
+            owner_id: id.into(),
+            owner_kind: "block".into(),
+            model: model.into(),
+            vec: vec![1.0, 0.0],
+        };
+        crate::career_db::store_embeddings_blocking(
+            &conn,
+            &[item("exp_a", "old"), item("exp_b", "old"), item("exp_c", "old")],
+        )
+        .unwrap();
+        // The re-embed under the new model has only reached exp_a.
+        crate::career_db::store_embeddings_blocking(&conn, &[item("exp_a", "new")]).unwrap();
+        assert_eq!(active_embed_model(&conn).unwrap().as_deref(), Some("new"));
+
+        let hits = vector_search(
+            &conn,
+            &[1.0, 0.0],
+            5,
+            &SearchFilter {
+                owner_kind: Some("block".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let ids: Vec<&str> = hits.iter().map(|h| h.owner_id.as_str()).collect();
+        assert_eq!(ids, vec!["exp_a"], "searched the retired model's vectors");
     }
 
     /// An embedding whose source row is gone must degrade to a skipped hit,

@@ -27,6 +27,7 @@ export function syncSemanticLayerConfig(): void {
   const creds = useClaudeSetupStore.getState().openAiCredentials ?? [];
   const selectedId = useClaudeChatStore.getState().selectedProviderCredentialId;
   const ollama = resolveOllamaCredential(creds, selectedId);
+  const { embedModel, embedBaseUrl } = useSettingsStore.getState();
 
   void invoke("sync_semantic_layer_config", {
     config: {
@@ -38,6 +39,10 @@ export function syncSemanticLayerConfig(): void {
       mediumModel: config.mediumModel,
       heavyModel: config.heavyModel,
       ollamaBaseUrl: ollama?.base_url ?? "http://localhost:11434",
+      // Rust-side embed callers (MCP `career_search_kb`, the proxy cache)
+      // resolve the same model and server as `resolveEmbedRequest`.
+      embedModel,
+      embedBaseUrl,
     },
   }).catch(() => {
     // Best-effort sync — proxy falls back to passthrough when config is stale.
@@ -90,7 +95,9 @@ export function watchSemanticLayerConfigSync(): () => void {
         state.semanticCompressorEnabled !== prev.semanticCompressorEnabled ||
         state.semanticLightModel !== prev.semanticLightModel ||
         state.semanticMediumModel !== prev.semanticMediumModel ||
-        state.semanticHeavyModel !== prev.semanticHeavyModel
+        state.semanticHeavyModel !== prev.semanticHeavyModel ||
+        state.embedModel !== prev.embedModel ||
+        state.embedBaseUrl !== prev.embedBaseUrl
       ) {
         syncSemanticLayerConfig();
       }

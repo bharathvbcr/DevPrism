@@ -164,6 +164,10 @@ export function SettingsDialog({ open, appVersion }: SettingsDialogProps) {
   >(null);
   const nativeOllamaModel = useSettingsStore((s) => s.nativeOllamaModel);
   const setNativeOllamaModel = useSettingsStore((s) => s.setNativeOllamaModel);
+  const embedModel = useSettingsStore((s) => s.embedModel);
+  const setEmbedModel = useSettingsStore((s) => s.setEmbedModel);
+  const embedBaseUrl = useSettingsStore((s) => s.embedBaseUrl);
+  const setEmbedBaseUrl = useSettingsStore((s) => s.setEmbedBaseUrl);
   const openAiCredentials = useClaudeSetupStore((s) => s.openAiCredentials);
   const [settingsOllamaModels, setSettingsOllamaModels] = useState<
     OllamaModelInfo[]
@@ -504,6 +508,42 @@ export function SettingsDialog({ open, appVersion }: SettingsDialogProps) {
                 />
               </div>
             )}
+            <div className="flex flex-wrap items-end gap-4 border-border/60 border-b px-4 py-3">
+              <label className="flex min-w-[12rem] flex-1 flex-col gap-1">
+                <span className="text-muted-foreground text-xs">
+                  Embedding model
+                </span>
+                <input
+                  // Commit on blur and remount on the stored value, so the
+                  // field shows what the store kept after normalizing.
+                  key={embedModel ?? ""}
+                  type="text"
+                  defaultValue={embedModel ?? ""}
+                  placeholder="Auto (first embedding model on the server)"
+                  onBlur={(e) => setEmbedModel(e.target.value || null)}
+                  className="h-8 w-full min-w-0 rounded-md border border-input bg-background px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                />
+              </label>
+              <label className="flex min-w-[12rem] flex-1 flex-col gap-1">
+                <span className="text-muted-foreground text-xs">
+                  Embedding server
+                </span>
+                <input
+                  key={embedBaseUrl ?? ""}
+                  type="text"
+                  defaultValue={embedBaseUrl ?? ""}
+                  placeholder={settingsOllamaBaseUrl}
+                  onBlur={(e) => setEmbedBaseUrl(e.target.value || null)}
+                  className="h-8 w-full min-w-0 rounded-md border border-input bg-background px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                />
+              </label>
+              <p className="text-muted-foreground/70 text-xs">
+                Ollama-compatible /api/embed server and model for the career
+                knowledge base and semantic search. Each stored vector records
+                the model that made it; changing the model re-embeds on the next
+                backfill.
+              </p>
+            </div>
             {isNativeOllamaBackend(agentBackend) &&
               settingsDetailSection === "provider" &&
               (settingsOllamaModelsError ||

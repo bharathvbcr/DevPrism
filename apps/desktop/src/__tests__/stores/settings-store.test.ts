@@ -26,6 +26,37 @@ describe("useSettingsStore", () => {
     });
   });
 
+  describe("embedModel / embedBaseUrl", () => {
+    it("default to null (auto-pick on the chat Ollama base)", () => {
+      useSettingsStore.setState({ embedModel: null, embedBaseUrl: null });
+      const s = useSettingsStore.getState();
+      expect(s.embedModel).toBeNull();
+      expect(s.embedBaseUrl).toBeNull();
+    });
+
+    it("trim the model name and treat blank as unset", () => {
+      const s = useSettingsStore.getState();
+      s.setEmbedModel("  embeddinggemma-2-tessl ");
+      expect(useSettingsStore.getState().embedModel).toBe(
+        "embeddinggemma-2-tessl",
+      );
+      s.setEmbedModel("   ");
+      expect(useSettingsStore.getState().embedModel).toBeNull();
+    });
+
+    it("keep only http(s) server URLs, without a trailing slash", () => {
+      const s = useSettingsStore.getState();
+      s.setEmbedBaseUrl(" http://127.0.0.1:11435/ ");
+      expect(useSettingsStore.getState().embedBaseUrl).toBe(
+        "http://127.0.0.1:11435",
+      );
+      s.setEmbedBaseUrl("127.0.0.1:11435");
+      expect(useSettingsStore.getState().embedBaseUrl).toBeNull();
+      s.setEmbedBaseUrl(null);
+      expect(useSettingsStore.getState().embedBaseUrl).toBeNull();
+    });
+  });
+
   describe("pdfDarkMode", () => {
     it("defaults to off", () => {
       expect(useSettingsStore.getState().pdfDarkMode).toBe(false);

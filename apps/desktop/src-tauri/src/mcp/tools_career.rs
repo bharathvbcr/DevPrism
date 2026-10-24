@@ -506,7 +506,7 @@ pub async fn execute_career_tool(
             // either is set, which silently deleted all bullet/fact hits. The
             // parent-aware equivalent is applied to the returned hits below,
             // using the parent tags that `resolve_hit_text` puts in `meta`.
-            let filter = career_db::SearchFilter {
+            let mut filter = career_db::SearchFilter {
                 owner_kind: None,
                 personas: None,
                 domains: None,
@@ -519,9 +519,26 @@ pub async fn execute_career_tool(
             // real ANN/brute-force index (`career_db::vectors::vector_search`);
             // the previous implementation built a SearchFilter, discarded it,
             // and substring-matched instead.
-            let embed =
-                crate::native_agent::ai_embed(vec![query.to_string()], None, None, None, None)
-                    .await;
+            //
+            // Resolve the embed model once, embed the query with it, and search
+            // only that model's vectors: equal dimensions (768-d for both
+            // nomic-embed-text and EmbeddingGemma 2) cannot keep a query from
+            // being scored against another model's vectors.
+            let embed = match crate::native_agent::resolve_embed_target(None, None, None).await {
+                Ok(target) => {
+                    let model = target.model().to_string();
+                    filter.model = Some(model.clone());
+                    crate::native_agent::ai_embed(
+                        vec![query.to_string()],
+                        Some(model),
+                        None,
+                        None,
+                        None,
+                    )
+                    .await
+                }
+                Err(e) => Err(e),
+            };
 
             let mut semantic_hits: Vec<Value> = Vec::new();
             let mut semantic_error: Option<String> = None;

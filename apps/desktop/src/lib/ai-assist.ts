@@ -325,29 +325,36 @@ export async function aiCompleteStream(
   }
 }
 
-/** Embed texts with a local Ollama embedding model, or an OpenAI-compat
- * credential that exposes `/embeddings` (Gemini / OpenAI) when one is selected.
- * One vector per input. CLI chat backends never embed — always Ollama/cloud.
+/** Where an `ai_embed` request goes. `model: null` lets the backend pick. */
+export interface EmbedRequest {
+  model: string | null;
+  baseUrl: string;
+  providerCredentialId: string | null;
+}
+
+/**
+ * Resolve the embedding endpoint from the `embedModel` / `embedBaseUrl`
+ * settings. Embedding uses a dedicated embed model, never the chat model.
  *
- * AbortSignal cancels mid-call via `requestId` + Rust `ai_cancel_request`
- * (same registry as `ai_complete` / `ai_complete_stream`).
+ * When either setting is set, embeddings go to that Ollama-compatible server
+ * (`embedBaseUrl`, else the Ollama credential's base) and never to the chat
+ * provider. When neither is set, the previous behaviour stands: a selected
+ * Gemini / OpenAI credential embeds with its provider default, otherwise the
+ * Ollama base with the backend's auto-picked embedding model.
  */
-export async function aiEmbed(
-  texts: string[],
-  signal?: AbortSignal,
-): Promise<number[][]> {
-  if (texts.length === 0) return [];
-  throwIfAborted(signal);
+export function resolveEmbedRequest(): EmbedRequest {
   const creds = useClaudeSetupStore.getState().openAiCredentials ?? [];
   const selectedId = useClaudeChatStore.getState().selectedProviderCredentialId;
+  const { embedModel, embedBaseUrl } = useSettingsStore.getState();
   const ollama = resolveOllamaCredential(creds, selectedId);
+  const baseUrl = embedBaseUrl ?? ollama?.base_url ?? "http://localhost:11434";
+  if (embedModel || embedBaseUrl) {
+    return { model: embedModel ?? null, baseUrl, providerCredentialId: null };
+  }
   // Never treat Claude Code / Cursor sentinel ids as cloud embed credentials.
   const selected = isCliProviderId(selectedId)
     ? undefined
     : creds.find((c) => c.id === selectedId);
-  const baseUrl = ollama?.base_url ?? "http://localhost:11434";
-  // Prefer cloud embeddings when the selected credential supports them
-  // (Gemini / OpenAI); otherwise fall back to local Ollama.
   const cloudEmbedCred =
     selected &&
     !/:11434|localhost|127\.0\.0\.1/i.test(selected.base_url ?? "") &&
@@ -356,6 +363,62 @@ export async function aiEmbed(
     )
       ? selected
       : null;
+  return {
+    model: null,
+    baseUrl,
+    providerCredentialId: cloudEmbedCred?.id ?? null,
+  };
+}
+
+/**
+ * The concrete embedding model name `aiEmbed` will use right now: the
+ * `embedModel` setting, else the name the backend resolves for this endpoint
+ * (an installed Ollama embedding model or the cloud provider default).
+ *
+ * Callers that store vectors resolve once, embed with that exact name, and
+ * record the same name, so a stored label is always the model that ran.
+ */
+export async function resolveEmbedModel(): Promise<string> {
+  const request = resolveEmbedRequest();
+  if (request.model) return request.model;
+  return invoke<string>("ai_resolve_embed_model", {
+    model: null,
+    baseUrl: request.baseUrl,
+    providerCredentialId: request.providerCredentialId,
+  });
+}
+
+/**
+ * `resolveEmbedModel`, or undefined when no embedding model is reachable.
+ * For listing work before embedding: the embed step that follows resolves
+ * again and reports the failure, so nothing is swallowed.
+ */
+export async function resolveEmbedModelOrUndefined(): Promise<
+  string | undefined
+> {
+  try {
+    return await resolveEmbedModel();
+  } catch {
+    return undefined;
+  }
+}
+
+/** Embed texts with the configured embedding endpoint (see
+ * `resolveEmbedRequest`). One vector per input. CLI chat backends never
+ * embed — always Ollama/cloud. `model` overrides the configured model for
+ * this call; storage pipelines pass the name from `resolveEmbedModel`.
+ *
+ * AbortSignal cancels mid-call via `requestId` + Rust `ai_cancel_request`
+ * (same registry as `ai_complete` / `ai_complete_stream`).
+ */
+export async function aiEmbed(
+  texts: string[],
+  signal?: AbortSignal,
+  model?: string,
+): Promise<number[][]> {
+  if (texts.length === 0) return [];
+  throwIfAborted(signal);
+  const request = resolveEmbedRequest();
   const requestId = newAiRequestId();
   const unbind = bindAbortToRequest(signal, requestId);
   await acquireAiSlot();
@@ -363,12 +426,9 @@ export async function aiEmbed(
     throwIfAborted(signal);
     const vectors = await invoke<number[][]>("ai_embed", {
       texts,
-      // Embedding uses a dedicated embed model, not the chat model; let the
-      // backend pick an installed embedding model / provider default when none
-      // is configured.
-      model: null,
-      baseUrl,
-      providerCredentialId: cloudEmbedCred?.id ?? null,
+      model: model ?? request.model,
+      baseUrl: request.baseUrl,
+      providerCredentialId: request.providerCredentialId,
       requestId,
     });
     throwIfAborted(signal);

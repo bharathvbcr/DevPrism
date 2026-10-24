@@ -65,6 +65,19 @@ function normalizeResumeHeader(value: unknown): HeaderFields {
   };
 }
 
+function normalizeEmbedModel(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const v = value.trim();
+  return v ? v.slice(0, 200) : null;
+}
+
+/** An http(s) URL without a trailing slash, or null (fall back to the chat Ollama base). */
+function normalizeEmbedBaseUrl(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const v = value.trim().replace(/\/+$/, "");
+  return /^https?:\/\/[^\s/]+/i.test(v) ? v.slice(0, 500) : null;
+}
+
 interface SettingsState {
   compilerBackend: CompilerBackend;
   setCompilerBackend: (backend: CompilerBackend) => void;
@@ -191,6 +204,19 @@ interface SettingsState {
   /** Chat model used by the native Ollama agent (null = auto-pick first installed). */
   nativeOllamaModel: string | null;
   setNativeOllamaModel: (model: string | null) => void;
+  /**
+   * Embedding model for career-DB vectors and semantic search (null = the
+   * first embedding model the embed server lists). Stored vectors are
+   * labelled with this name, so changing it flags them for re-embedding.
+   */
+  embedModel: string | null;
+  setEmbedModel: (model: string | null) => void;
+  /**
+   * Ollama-compatible `/api/embed` server for embeddings (null = the Ollama
+   * base used for chat). Setting it keeps embeddings off the chat provider.
+   */
+  embedBaseUrl: string | null;
+  setEmbedBaseUrl: (url: string | null) => void;
   /** Whether homepage project cards show the created or last-edited date. */
   homepageDateField: HomepageDateField;
   setHomepageDateField: (field: HomepageDateField) => void;
@@ -356,6 +382,11 @@ export const useSettingsStore = create<SettingsState>()(
         set({
           nativeOllamaModel: model?.trim() ? model.trim() : null,
         }),
+      embedModel: null,
+      setEmbedModel: (model) => set({ embedModel: normalizeEmbedModel(model) }),
+      embedBaseUrl: null,
+      setEmbedBaseUrl: (url) =>
+        set({ embedBaseUrl: normalizeEmbedBaseUrl(url) }),
       homepageDateField: "modified",
       setHomepageDateField: (field) => set({ homepageDateField: field }),
       compileRootByProject: {},
@@ -386,7 +417,7 @@ export const useSettingsStore = create<SettingsState>()(
     }),
     {
       name: "claude-prism-settings",
-      version: 4,
+      version: 5,
       migrate: (persisted, version) => {
         const s = { ...(persisted as Record<string, unknown>) };
         // v2: replace nativeAgentEnabled boolean with agentBackend enum.
@@ -426,6 +457,9 @@ export const useSettingsStore = create<SettingsState>()(
         // v4: imported summary + skill groups for synthesis seed.
         s.resumeSummary = normalizeResumeSummary(s.resumeSummary);
         s.resumeSkillGroups = normalizeResumeSkillGroups(s.resumeSkillGroups);
+        // v5: embedding model + server, separate from the chat model.
+        s.embedModel = normalizeEmbedModel(s.embedModel);
+        s.embedBaseUrl = normalizeEmbedBaseUrl(s.embedBaseUrl);
         return s as unknown as SettingsState;
       },
     },

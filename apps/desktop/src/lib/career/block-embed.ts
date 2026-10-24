@@ -1,7 +1,11 @@
 /** Block + bullet + fact embedding pipeline: aiEmbed → career_store_embeddings. */
 
 import { invoke } from "@tauri-apps/api/core";
-import { aiEmbed } from "@/lib/ai-assist";
+import {
+  aiEmbed,
+  resolveEmbedModel,
+  resolveEmbedModelOrUndefined,
+} from "@/lib/ai-assist";
 import { RECOMMENDED_EMBED_MODEL } from "@/lib/ollama";
 import { computeEmbeddingText } from "./block-helpers";
 import type {
@@ -18,6 +22,7 @@ export const BLOCK_EMBED_BATCH_SIZE = 8;
 export interface EmbedOwnerTextsOptions {
   items: { id: string; text: string }[];
   ownerKind: EmbeddingOwnerKind;
+  /** Model to embed with; also the label stored. Default: `resolveEmbedModel()`. */
   model?: string;
   onProgress?: (done: number, total: number) => void;
   onProcessingProgress?: (progress: ProcessingProgress) => void;
@@ -62,11 +67,13 @@ export async function embedOwnerTexts(
     return { embedded: 0, skipped: 0, deferred: false };
   }
 
-  const model = options.model ?? RECOMMENDED_EMBED_MODEL.id;
   let embedded = 0;
   const batchTotal = Math.ceil(items.length / BLOCK_EMBED_BATCH_SIZE);
 
   try {
+    // One concrete name for the whole run: it is sent with every batch and
+    // stored with every vector, so the label is the model that produced it.
+    const model = options.model ?? (await resolveEmbedModel());
     for (let i = 0; i < items.length; i += BLOCK_EMBED_BATCH_SIZE) {
       const batchIndex = Math.floor(i / BLOCK_EMBED_BATCH_SIZE) + 1;
       onProcessingProgress?.({
@@ -78,7 +85,11 @@ export async function embedOwnerTexts(
         detail: `Embedding ${ownerKind} batch ${batchIndex}/${batchTotal} (${embedded}/${items.length})`,
       });
       const batch = items.slice(i, i + BLOCK_EMBED_BATCH_SIZE);
-      const vectors = await aiEmbed(batch.map((b) => b.text));
+      const vectors = await aiEmbed(
+        batch.map((b) => b.text),
+        undefined,
+        model,
+      );
       if (vectors.length !== batch.length) {
         throw new Error(
           `aiEmbed returned ${vectors.length} vectors for ${batch.length} texts`,
@@ -269,8 +280,13 @@ export async function backfillBlockEmbeddings(options?: {
   onProgress?: (done: number, total: number) => void;
   onProcessingProgress?: (progress: ProcessingProgress) => void;
 }): Promise<EmbedPipelineResult> {
+  // "Missing" means missing under the model about to embed, so a model switch
+  // re-embeds every block. Unresolvable (no embed server) leaves the backend's
+  // active model in charge; the embed step then defers with the reason.
+  const model = options?.model ?? (await resolveEmbedModelOrUndefined());
   const rows = await invoke<ExperienceBlock[]>("career_list_blocks", {
     missingEmbeddingsOnly: true,
+    model: model ?? null,
   });
   const blocks = rows
     .map((b) => ({
@@ -281,7 +297,7 @@ export async function backfillBlockEmbeddings(options?: {
   const emptySkipped = rows.length - blocks.length;
   const blockResult = await embedBlocks({
     blocks,
-    model: options?.model,
+    model,
     onProgress: options?.onProgress,
     onProcessingProgress: options?.onProcessingProgress,
     itemLabel: "Embed all blocks",
@@ -292,7 +308,7 @@ export async function backfillBlockEmbeddings(options?: {
       : blockResult;
 
   const bulletResult = await backfillBulletEmbeddings({
-    model: options?.model,
+    model,
     onProcessingProgress: options?.onProcessingProgress
       ? (p) =>
           options.onProcessingProgress?.({
@@ -302,7 +318,7 @@ export async function backfillBlockEmbeddings(options?: {
       : undefined,
   });
   const factResult = await backfillFactEmbeddings({
-    model: options?.model,
+    model,
     onProcessingProgress: options?.onProcessingProgress
       ? (p) =>
           options.onProcessingProgress?.({

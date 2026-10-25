@@ -13,7 +13,7 @@ Pre-edit check:
    - `## Repo Map`
    - Reference `.devcouncil/repo_map.json` and/or `docs/DEV_MAP.md`
    - `## Must Use Map` with `dev graph` / MCP tooling pointers
-5. Root `AGENTS.md` / `CLAUDE.md` are managed by `dev map` (marker-guarded). Do not hand-edit them; regenerate with `dev map`.
+5. Root `AGENTS.md` / `CLAUDE.md` are managed by `dev map` (marker-guarded) and gitignored (`/AGENTS.md`, `/CLAUDE.md`). Do not hand-edit them and do not commit them; regenerate with `dev map`. Scope copies under subdirectories stay tracked.
 6. Cursor agents: keep `.cursor/rules/devcouncil-map.mdc` (alwaysApply) and `.cursor/mcp.json` (DevCouncil MCP). Refresh MCP with `dev integrate cursor --apply`.
 
 Non-source scope rule:

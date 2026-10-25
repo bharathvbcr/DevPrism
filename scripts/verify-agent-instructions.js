@@ -166,12 +166,16 @@ function main() {
 
   for (const item of touchedInstructionFiles) {
     if (item.status.startsWith("D")) {
-      reportError(
-        errors,
-        item.path,
-        "deleted; instruction files cannot be removed",
-        [],
-      );
+      // Root guides are generated and gitignored. Scope guides are the
+      // tracked instructions and cannot leave the tree.
+      if (item.path !== "AGENTS.md" && item.path !== "CLAUDE.md") {
+        reportError(
+          errors,
+          item.path,
+          "deleted; instruction files cannot be removed",
+          [],
+        );
+      }
       continue;
     }
 

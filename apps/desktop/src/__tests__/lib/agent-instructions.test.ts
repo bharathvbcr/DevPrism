@@ -70,3 +70,33 @@ describe.each([
     expect(result.status, result.stderr).toBe(0);
   });
 });
+
+it("allows removing the generated root guides", () => {
+  const cwd = mkdtempSync(resolve(tmpdir(), "devprism-agent-instructions-"));
+  fixtures.push(cwd);
+  const git = (args: string[]) =>
+    execFileSync("git", args, { cwd, timeout: 5000, encoding: "utf8" });
+  git(["init", "--quiet", cwd]);
+  const content =
+    "<!-- Managed by devmap: keep this file in sync with the repo map. -->\nRepo map: .devcouncil/repo_map.json\n";
+  for (const name of ["AGENTS.md", "CLAUDE.md"]) {
+    writeFileSync(resolve(cwd, name), content);
+  }
+  git(["add", "AGENTS.md", "CLAUDE.md"]);
+  git([
+    "-c",
+    "user.email=test@example.com",
+    "-c",
+    "user.name=test",
+    "commit",
+    "-m",
+    "init",
+  ]);
+  git(["rm", "AGENTS.md", "CLAUDE.md"]);
+  const result = spawnSync(process.execPath, [verifier], {
+    cwd,
+    encoding: "utf8",
+    timeout: 5000,
+  });
+  expect(result.status, result.stderr).toBe(0);
+});

@@ -202,4 +202,4 @@ And the broader open-source ecosystem of libraries this project depends on — t
 
 ## License
 
-[MIT](./LICENSE) © 2026 delibae. Portions © 2025 [assistant-ui](https://github.com/assistant-ui) (Open Prism).
+[MIT](./LICENSE) © 2026 Bharath Chandra Vaddaram. Portions © 2026 delibae, © 2025 [assistant-ui](https://github.com/assistant-ui) (Open Prism).

@@ -180,3 +180,10 @@ Thumbs.db
 # The directory's README documents how they are produced and found.
 apps/desktop/src-tauri/binaries/*
 !apps/desktop/src-tauri/binaries/README.md
+
+# Claude Code cloud sessions with one repository read this file
+# and do not read ~/.claude/settings.json. Machine-local overrides
+# stay in .claude/settings.local.json.
+!.claude/
+.claude/*
+!.claude/settings.json

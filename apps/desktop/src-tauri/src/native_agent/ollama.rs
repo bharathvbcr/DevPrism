@@ -393,6 +393,74 @@ pub async fn first_embedding_model(base_url: &str) -> Result<Option<String>, Str
         .find(|n| looks_like_embedding(n.as_str())))
 }
 
+/// Where tessl's `tessl-embed` server listens (Ollama-compatible `/api/embed`).
+pub(crate) const TESSL_EMBED_BASE: &str = "http://127.0.0.1:11435";
+/// The untagged tessl EmbeddingGemma 2 name, used for stored vectors AND
+/// queries. Never share a label with Ollama's own `embeddinggemma-2`, a
+/// different build whose vectors only agree to ~0.98 cosine.
+pub(crate) const TESSL_EMBED_MODEL: &str = "embeddinggemma-2-tessl";
+const TESSL_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(300);
+const TESSL_PROBE_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn tessl_probe_cache(
+) -> &'static std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, bool)>> {
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, bool)>>,
+    > = std::sync::OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+/// True if the server at `base` lists the tessl EmbeddingGemma 2 model.
+///
+/// Bounded (300 ms) and cached for 30 s per base so a search-as-you-type loop
+/// does not probe per keystroke. Any failure (down, slow, bad JSON) is
+/// "not available": the caller falls back to Ollama rather than erroring.
+pub(crate) async fn tessl_embed_available(base: &str) -> bool {
+    if let Ok(cache) = tessl_probe_cache().lock() {
+        if let Some((at, found)) = cache.get(base) {
+            if at.elapsed() < TESSL_PROBE_TTL {
+                return *found;
+            }
+        }
+    }
+    let found = probe_tessl_embed(base).await;
+    if let Ok(mut cache) = tessl_probe_cache().lock() {
+        cache.insert(base.to_string(), (std::time::Instant::now(), found));
+    }
+    found
+}
+
+async fn probe_tessl_embed(base: &str) -> bool {
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(TESSL_PROBE_TIMEOUT)
+        .connect_timeout(TESSL_PROBE_TIMEOUT)
+        .build()
+    else {
+        return false;
+    };
+    let url = format!("{}/api/tags", native_base(base));
+    let Ok(res) = client.get(&url).send().await else {
+        return false;
+    };
+    if !res.status().is_success() {
+        return false;
+    }
+    let text = read_success_body(res).await;
+    let Ok(v) = serde_json::from_str::<Value>(&text) else {
+        return false;
+    };
+    v.get("models")
+        .and_then(|m| m.as_array())
+        .is_some_and(|items| {
+            items.iter().any(|it| {
+                it.get("name")
+                    .and_then(|n| n.as_str())
+                    .map(|n| n.trim().trim_end_matches(":latest"))
+                    == Some(TESSL_EMBED_MODEL)
+            })
+        })
+}
+
 /// Name fragments of vision-capable models, used to pick a captioning model when
 /// the configured chat model can't see images.
 const VISION_MARKERS: &[&str] = &[

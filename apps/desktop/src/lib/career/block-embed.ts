@@ -6,7 +6,7 @@ import {
   resolveEmbedModel,
   resolveEmbedModelOrUndefined,
 } from "@/lib/ai-assist";
-import { RECOMMENDED_EMBED_MODEL } from "@/lib/ollama";
+import { FALLBACK_EMBED_MODEL, RECOMMENDED_EMBED_MODEL } from "@/lib/ollama";
 import { computeEmbeddingText } from "./block-helpers";
 import type {
   EmbedPipelineResult,
@@ -116,9 +116,12 @@ export async function embedOwnerTexts(
     return { embedded, skipped: 0, deferred: false };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    // E_EMBED_SERVER_DOWN keeps its own message: it names the exact start
+    // command, and the generic "pull a model" hint would be the wrong fix.
     const noModel =
-      /E_NO_MODEL|no embedding model|embed/i.test(message) ||
-      /failed to embed/i.test(message);
+      !/E_EMBED_SERVER_DOWN/.test(message) &&
+      (/E_NO_MODEL|no embedding model|embed/i.test(message) ||
+        /failed to embed/i.test(message));
     const kindLabel = kindLabelFor(ownerKind);
     const backfillHint = backfillHintForKind(ownerKind);
     onProcessingProgress?.({
@@ -134,7 +137,7 @@ export async function embedOwnerTexts(
       skipped: items.length - embedded,
       deferred: true,
       error: noModel
-        ? `Embeddings unavailable (${RECOMMENDED_EMBED_MODEL.pull}). ${kindLabel} stored; call ${backfillHint} when a provider is ready.`
+        ? `Embeddings unavailable (run tessl-embed for ${RECOMMENDED_EMBED_MODEL.id}, or ${FALLBACK_EMBED_MODEL.pull}). ${kindLabel} stored; call ${backfillHint} when a provider is ready.`
         : message,
     };
   }
@@ -272,7 +275,7 @@ export async function persistBlockEmbedding(
 
 /**
  * Embed all experience blocks that lack vectors.
- * Safe to call after installing nomic-embed-text / enabling cloud embeddings.
+ * Safe to call after starting tessl-embed or installing nomic-embed-text / enabling cloud embeddings.
  * Also backfills bullet and fact embeddings for all blocks (idempotent upsert).
  */
 export async function backfillBlockEmbeddings(options?: {

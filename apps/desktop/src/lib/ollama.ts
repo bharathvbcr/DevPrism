@@ -36,6 +36,7 @@ export interface OllamaPullProgress {
 export type OllamaErrorKind =
   | "unreachable"
   | "no_model"
+  | "embed_server_down"
   | "no_tools"
   | "no_vision"
   | "already_running"
@@ -133,6 +134,7 @@ const ERROR_CODE_RE = /^\[(E_[A-Z_]+)\]\s*/;
 const ERROR_CODE_TO_KIND: Record<string, OllamaErrorKind> = {
   E_OLLAMA_UNREACHABLE: "unreachable",
   E_NO_MODEL: "no_model",
+  E_EMBED_SERVER_DOWN: "embed_server_down",
   E_NO_TOOLS: "no_tools",
   E_NO_VISION: "no_vision",
   E_ALREADY_RUNNING: "already_running",
@@ -271,10 +273,30 @@ export const RECOMMENDED_OLLAMA_MODELS = [
   },
 ] as const;
 
+/**
+ * Preferred embedding model: Google's EmbeddingGemma 2 served by tessl's
+ * `tessl-embed` (Ollama-compatible `/api/embed` on 127.0.0.1:11435; macOS /
+ * Metal only). DevPrism uses it automatically when it is running and no embed
+ * model or server is configured. It is not an Ollama model, so it cannot be
+ * pulled in-app; `pull` is the command that starts the server.
+ */
 export const RECOMMENDED_EMBED_MODEL = {
+  id: "embeddinggemma-2-tessl",
+  label: "EmbeddingGemma 2 (tessl-embed)",
+  description:
+    "Preferred local embeddings for career and semantic search (macOS, via tessl-embed)",
+  pull: "EMBEDGEMMA2_SNAPSHOT=<HF snapshot dir> make -C go serve  # in ~/Code/research/tessl",
+} as const;
+
+/**
+ * Fallback embedding model for other platforms or when tessl-embed is not
+ * running: pullable through Ollama. Vectors are labelled per model, so
+ * switching between the two re-embeds and never mixes them.
+ */
+export const FALLBACK_EMBED_MODEL = {
   id: "nomic-embed-text",
   label: "nomic-embed-text",
-  description: "Local embeddings for semantic PDF/editor search",
+  description: "Fallback local embeddings via Ollama",
   pull: "ollama pull nomic-embed-text",
 } as const;
 

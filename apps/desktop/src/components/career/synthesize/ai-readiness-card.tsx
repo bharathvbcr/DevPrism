@@ -18,7 +18,7 @@ import { cn } from "@/lib/utils";
 import { dispatchOpenSettings } from "@/lib/home-flow-events";
 import { backfillBlockEmbeddings, backfillKbEmbeddings } from "@/lib/career";
 import {
-  RECOMMENDED_EMBED_MODEL,
+  FALLBACK_EMBED_MODEL,
   getOllamaBaseUrl,
   resolveOllamaCredential,
 } from "@/lib/ollama";
@@ -76,8 +76,8 @@ export function AiReadinessCard({
     try {
       const creds = useClaudeSetupStore.getState().openAiCredentials ?? [];
       const baseUrl = getOllamaBaseUrl(resolveOllamaCredential(creds, null));
-      await pull(RECOMMENDED_EMBED_MODEL.id, baseUrl);
-      toast.success(`Pulling ${RECOMMENDED_EMBED_MODEL.id}`);
+      await pull(FALLBACK_EMBED_MODEL.id, baseUrl);
+      toast.success(`Pulling ${FALLBACK_EMBED_MODEL.id}`);
       void refreshReadiness({ forceEmbedProbe: true });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));
@@ -205,7 +205,7 @@ export function AiReadinessCard({
                     onClick={() => void handlePullEmbed()}
                   >
                     <DownloadIcon className="size-3" />
-                    Pull {RECOMMENDED_EMBED_MODEL.id}
+                    Pull {FALLBACK_EMBED_MODEL.id}
                   </Button>
                 )}
                 <Button

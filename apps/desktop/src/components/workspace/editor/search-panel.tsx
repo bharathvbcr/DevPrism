@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { canUseAiAssist, expandSearchTerms } from "@/lib/ai-assist";
 import { useSettingsStore } from "@/stores/settings-store";
-import { RECOMMENDED_EMBED_MODEL } from "@/lib/ollama";
+import { FALLBACK_EMBED_MODEL, RECOMMENDED_EMBED_MODEL } from "@/lib/ollama";
 import { cn } from "@/lib/utils";
 import { useEmbeddingReady } from "@/hooks/use-embedding-ready";
 
@@ -179,7 +179,7 @@ export function SearchPanel({
         matchCount === 0 && (
           <span
             className="max-w-[10rem] truncate text-[10px] text-amber-700 dark:text-amber-300"
-            title={`Install ${RECOMMENDED_EMBED_MODEL.id} in Settings for semantic suggestions`}
+            title={`Run tessl-embed (${RECOMMENDED_EMBED_MODEL.id}) or ${FALLBACK_EMBED_MODEL.pull} for semantic suggestions`}
           >
             No embed model
           </span>

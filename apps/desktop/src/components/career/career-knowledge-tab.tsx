@@ -31,7 +31,7 @@ import { debounce, onCareerDbChanged } from "@/lib/career/db-events";
 import { useCareerStore } from "@/stores/career-store";
 import { pickProjectFiles } from "@/lib/platform-dialog";
 import {
-  RECOMMENDED_EMBED_MODEL,
+  FALLBACK_EMBED_MODEL,
   getOllamaBaseUrl,
   resolveOllamaCredential,
 } from "@/lib/ollama";
@@ -312,11 +312,11 @@ export function CareerKnowledgeTab() {
         patchItem(id, { status: "deferred", error: out.error });
         setNotice(
           out.error ??
-            "Still no embedding provider. Pull nomic-embed-text or use a Gemini credential.",
+            "Still no embedding provider. Start tessl-embed, pull nomic-embed-text, or use a Gemini credential.",
         );
         toast.warning(
           out.error ??
-            "Embeddings still unavailable. Pull nomic-embed-text or open AI settings.",
+            "Embeddings still unavailable. Start tessl-embed, pull nomic-embed-text, or open AI settings.",
         );
       } else {
         patchItem(id, {
@@ -348,8 +348,8 @@ export function CareerKnowledgeTab() {
     try {
       const creds = useClaudeSetupStore.getState().openAiCredentials ?? [];
       const baseUrl = getOllamaBaseUrl(resolveOllamaCredential(creds, null));
-      await pull(RECOMMENDED_EMBED_MODEL.id, baseUrl);
-      toast.success(`Pulling ${RECOMMENDED_EMBED_MODEL.id}`);
+      await pull(FALLBACK_EMBED_MODEL.id, baseUrl);
+      toast.success(`Pulling ${FALLBACK_EMBED_MODEL.id}`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));
     }
@@ -405,7 +405,7 @@ export function CareerKnowledgeTab() {
             disabled={pulling || busy}
             onClick={() => void handlePullEmbed()}
           >
-            Pull {RECOMMENDED_EMBED_MODEL.id}
+            Pull {FALLBACK_EMBED_MODEL.id}
           </Button>
         </div>
 

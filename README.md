@@ -155,7 +155,7 @@ CodeMirror 6 with LaTeX/BibTeX syntax highlighting, real-time error linting, fin
   <img src="./assets/demo/zotero.webp" alt="Zotero Integration" width="300" />
 </p>
 
-- **Career database & resume synthesis** — import your résumé by drag-and-drop (`.tex` or Overleaf-style `.zip`), build a knowledge base from PDFs/Markdown/mind maps, and synthesize JD-tailored résumés with provenance-checked, metric-verified bullets. External agents can drive the same engine through the built-in MCP server (see [docs/PLUGINS.md](docs/PLUGINS.md)).
+- **Career database & resume synthesis** — import your résumé by drag-and-drop (`.tex` or Overleaf-style `.zip`), build a knowledge base from PDFs/Markdown/mind maps, and synthesize JD-tailored résumés with provenance-checked, metric-verified bullets. Career embeddings prefer Google's EmbeddingGemma 2 served by tessl's `tessl-embed` on a Mac (used automatically when it is running), with `nomic-embed-text` via Ollama as the fallback; switching models re-embeds. External agents can drive the same engine through the built-in MCP server (see [docs/PLUGINS.md](docs/PLUGINS.md)).
 - **In-app updates** — update status and one-click install from Settings → Environment.
 - **Slash Commands** — Built-in (`/review`, `/init`) + custom commands from `.claude/commands/`.
 - **External Editors** — Open projects in Cursor, VS Code, Zed, or Sublime Text.

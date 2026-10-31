@@ -241,6 +241,18 @@ fn db_path() -> Result<PathBuf, String> {
     Ok(base.join("DevPrism").join("career.db"))
 }
 
+/// The embed model recorded in `career.db` by the last embedding write, read
+/// on a short-lived read-only connection. `None` when the file does not exist,
+/// cannot be read, or no model was ever recorded: callers must treat that as
+/// "unknown", never as "no model".
+pub(crate) fn stored_active_embed_model() -> Option<String> {
+    let path = db_path().ok().filter(|p| p.exists())?;
+    let conn =
+        Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+    conn.busy_timeout(Duration::from_millis(250)).ok()?;
+    vectors::active_embed_model(&conn).ok().flatten()
+}
+
 fn open_connection() -> Result<Connection, String> {
     // Register sqlite-vec before opening so auto-extension attaches on this conn.
     let _ = vectors::ensure_sqlite_vec_registered();

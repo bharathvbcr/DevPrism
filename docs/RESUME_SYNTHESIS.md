@@ -191,7 +191,7 @@ Pipeline: `ingest/pipeline.ts` — parse → chunk → hash → upsert → embed
 ### Embeddings
 
 - Frontend: `aiEmbed` → Tauri `ai_embed`
-- Model and server: settings `embedModel` / `embedBaseUrl` (unset = first embedding model on the chat Ollama base; `nomic-embed-text` is the recommended pull). Stored vectors are labelled with the model that produced them.
+- Model and server: settings `embedModel` / `embedBaseUrl` (both unset = prefer EmbeddingGemma 2 via tessl's `tessl-embed` on `http://127.0.0.1:11435` as `embeddinggemma-2-tessl` when it is running on a Mac; otherwise the first embedding model on the chat Ollama base, with `nomic-embed-text` via `ollama pull nomic-embed-text` as the fallback). Stored vectors and search queries use the same model. Vectors are labelled with the model that produced them; switching models re-embeds and vectors of different models are never mixed.
 - Cloud: Gemini / OpenAI embeddings when the OpenAI-compat credential supports them (Groq does not) and no embed setting is set
 - Failures **defer gracefully** — chunks/blocks stay stored; synthesis continues in tag-only scoring
 - Retrieval: sqlite-vec ANN KNN with over-fetch/post-filter; brute-force cosine fallback; optional persona / domain / kind filters

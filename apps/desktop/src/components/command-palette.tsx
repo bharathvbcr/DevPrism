@@ -14,7 +14,7 @@ import { requestCompile } from "@/lib/compile-events";
 import { dispatchOpenSettings } from "@/lib/home-flow-events";
 import { useCareerStore } from "@/stores/career-store";
 import {
-  RECOMMENDED_EMBED_MODEL,
+  FALLBACK_EMBED_MODEL,
   getOllamaBaseUrl,
   resolveOllamaCredential,
 } from "@/lib/ollama";
@@ -160,14 +160,14 @@ function buildActions(): PaletteAction[] {
         "search",
         "pull",
       ],
-      hint: RECOMMENDED_EMBED_MODEL.id,
+      hint: FALLBACK_EMBED_MODEL.id,
       run: () => {
         if (!settings().nativeAgentEnabled) return;
         const creds = useClaudeSetupStore.getState().openAiCredentials ?? [];
         const baseUrl = getOllamaBaseUrl(resolveOllamaCredential(creds, null));
         void useOllamaPullStore
           .getState()
-          .pull(RECOMMENDED_EMBED_MODEL.id, baseUrl)
+          .pull(FALLBACK_EMBED_MODEL.id, baseUrl)
           .catch((err) =>
             log.warn("Embed model pull failed", { error: String(err) }),
           );

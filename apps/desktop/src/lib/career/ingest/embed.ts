@@ -6,7 +6,7 @@ import {
   resolveEmbedModel,
   resolveEmbedModelOrUndefined,
 } from "@/lib/ai-assist";
-import { RECOMMENDED_EMBED_MODEL } from "@/lib/ollama";
+import { FALLBACK_EMBED_MODEL, RECOMMENDED_EMBED_MODEL } from "@/lib/ollama";
 import type {
   EmbedPipelineResult,
   EmbeddingItem,
@@ -93,9 +93,12 @@ export async function embedChunks(
     return { embedded, skipped: 0, deferred: false };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    // E_EMBED_SERVER_DOWN keeps its own message: it names the exact start
+    // command, and the generic "pull a model" hint would be the wrong fix.
     const noModel =
-      /E_NO_MODEL|no embedding model|embed/i.test(message) ||
-      /failed to embed/i.test(message);
+      !/E_EMBED_SERVER_DOWN/.test(message) &&
+      (/E_NO_MODEL|no embedding model|embed/i.test(message) ||
+        /failed to embed/i.test(message));
     onProcessingProgress?.({
       phase: "error",
       current: embedded,
@@ -109,7 +112,7 @@ export async function embedChunks(
       skipped: chunks.length - embedded,
       deferred: true,
       error: noModel
-        ? `Embeddings unavailable (${RECOMMENDED_EMBED_MODEL.pull}). Chunks stored; call backfillKbEmbeddings() when a provider is ready.`
+        ? `Embeddings unavailable (run tessl-embed for ${RECOMMENDED_EMBED_MODEL.id}, or ${FALLBACK_EMBED_MODEL.pull}). Chunks stored; call backfillKbEmbeddings() when a provider is ready.`
         : message,
     };
   }
@@ -117,7 +120,7 @@ export async function embedChunks(
 
 /**
  * Embed all KB chunks that lack vectors (or only those for `sourceId`).
- * Safe to call after installing nomic-embed-text / enabling cloud embeddings.
+ * Safe to call after starting tessl-embed or installing nomic-embed-text / enabling cloud embeddings.
  */
 export async function backfillKbEmbeddings(options?: {
   sourceId?: string;

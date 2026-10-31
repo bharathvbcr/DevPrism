@@ -382,7 +382,16 @@ async function probeEmbeddings(force = false): Promise<EmbeddingReadiness> {
       status = "warn";
       userMessage =
         classified.message ||
-        "No embedding model installed. Pull nomic-embed-text or use a cloud embed provider.";
+        "No embedding model installed. Start tessl-embed, pull nomic-embed-text, or use a cloud embed provider.";
+    } else if (
+      classified.kind === "embed_server_down" ||
+      /E_EMBED_SERVER_DOWN/i.test(message)
+    ) {
+      // The store is on tessl and tessl-embed is down: the message carries the
+      // start command. Not "no-model": pulling an Ollama model would be the
+      // wrong fix (it would switch models).
+      status = "warn";
+      userMessage = classified.message || message;
     } else {
       userMessage = `Embeddings unavailable: ${message}`;
     }

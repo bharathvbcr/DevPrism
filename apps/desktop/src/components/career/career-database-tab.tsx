@@ -125,7 +125,7 @@ export function CareerDatabaseTab() {
         ]);
         toast.error(
           out.error ??
-            "Embeddings unavailable. Pull nomic-embed-text or configure a cloud embed provider.",
+            "Embeddings unavailable. Start tessl-embed, pull nomic-embed-text, or configure a cloud embed provider.",
         );
       } else if (out.embedded === 0) {
         setEmbedProgress([

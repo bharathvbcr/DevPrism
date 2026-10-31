@@ -340,7 +340,7 @@ export function SettingsAiFeatures({
             key: "semantic",
             title: "Semantic search",
             description:
-              "Local embeddings for related passages (needs nomic-embed-text).",
+              "Local embeddings for related passages (EmbeddingGemma 2 via tessl-embed, or nomic-embed-text via Ollama).",
             keywords: "semantic search embeddings pdf find",
             get: () => aiSemanticSearch,
             set: setAiSemanticSearch,

@@ -102,6 +102,19 @@ describe("fact embed helpers", () => {
     expect(result.error).toMatch(/Facts stored/i);
   });
 
+  it("embedFacts surfaces E_EMBED_SERVER_DOWN verbatim instead of the generic pull hint", async () => {
+    const down =
+      "[E_EMBED_SERVER_DOWN] career.db is on embeddinggemma-2-tessl but tessl-embed at http://127.0.0.1:11435 is not answering. Start it (EMBEDGEMMA2_SNAPSHOT=<dir> make -C <tessl>/go serve) or set embedModel explicitly to switch models.";
+    aiEmbedMock.mockRejectedValue(new Error(down));
+
+    const result = await embedFacts({
+      facts: [{ id: "fct_1", text: "Cut latency 40%" }],
+    });
+
+    expect(result.deferred).toBe(true);
+    expect(result.error).toBe(down);
+  });
+
   it("backfillFactEmbeddings lists blocks and embeds non-empty facts", async () => {
     invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "career_list_blocks") {

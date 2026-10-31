@@ -39,6 +39,17 @@ describe("classifyOllamaError", () => {
     ).toMatchObject({ kind: "unreachable" });
   });
 
+  it("classifies E_EMBED_SERVER_DOWN and keeps the start command", () => {
+    expect(
+      classifyOllamaError(
+        "[E_EMBED_SERVER_DOWN] career.db is on embeddinggemma-2-tessl but tessl-embed is not answering. Start it (make -C <tessl>/go serve).",
+      ),
+    ).toMatchObject({
+      kind: "embed_server_down",
+      message: expect.stringContaining("make -C <tessl>/go serve"),
+    });
+  });
+
   it("prefers the structured code prefix and strips it from the message", () => {
     const classified = classifyOllamaError(
       "[E_NO_TOOLS] The model 'gemma:2b' does not support tool-calling. Pick another.",

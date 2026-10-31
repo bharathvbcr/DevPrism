@@ -6,7 +6,7 @@ import {
   TerminalIcon,
 } from "lucide-react";
 import { toast } from "sonner";
-import { RECOMMENDED_EMBED_MODEL } from "@/lib/ollama";
+import { FALLBACK_EMBED_MODEL, RECOMMENDED_EMBED_MODEL } from "@/lib/ollama";
 import { useOllamaModelPull } from "@/hooks/use-ollama-model-pull";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { OllamaPullStatus } from "@/components/ollama-pull-status";
@@ -30,7 +30,7 @@ export const OllamaEmbedSetupHints: FC<{
     baseUrl,
     onModelPulled,
   );
-  const model = RECOMMENDED_EMBED_MODEL;
+  const model = FALLBACK_EMBED_MODEL;
   const [copyError, setCopyError] = useState<string | null>(null);
 
   const copyCommand = async (command: string) => {
@@ -60,6 +60,14 @@ export const OllamaEmbedSetupHints: FC<{
               {model.id}
             </code>
             . Pull it in-app or copy the terminal command.
+          </p>
+          <p className="mt-1 text-[10px] text-muted-foreground leading-relaxed">
+            On a Mac, {RECOMMENDED_EMBED_MODEL.label} is preferred and used
+            automatically when{" "}
+            <code className="rounded bg-muted px-1 font-mono text-[10px]">
+              {RECOMMENDED_EMBED_MODEL.pull}
+            </code>{" "}
+            is running. Switching models re-embeds; vectors are never mixed.
           </p>
         </div>
       </div>

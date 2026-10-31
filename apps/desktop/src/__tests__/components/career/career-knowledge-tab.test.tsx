@@ -26,7 +26,8 @@ vi.mock("@/lib/home-flow-events", () => ({
 }));
 
 vi.mock("@/lib/ollama", () => ({
-  RECOMMENDED_EMBED_MODEL: { id: "nomic-embed-text" },
+  RECOMMENDED_EMBED_MODEL: { id: "embeddinggemma-2-tessl" },
+  FALLBACK_EMBED_MODEL: { id: "nomic-embed-text" },
   getOllamaBaseUrl: vi.fn(() => "http://localhost:11434"),
   resolveOllamaCredential: vi.fn(() => null),
 }));

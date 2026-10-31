@@ -9,11 +9,11 @@ This repo is mapped by DevCouncil. Prefer the map over broad greps and guesswork
 
 ## Always Do
 
-- Before broad exploration or refactors: run `dev map --if-stale` (or `bun run map:if-stale`), then use `devcouncil_repo_map` (MCP) or read `.devcouncil/repo_map.json`.
+- Before broad exploration or refactors: run `dev map --if-stale` (or `bun run map:if-stale`), then read `.devcouncil/repo_map.json`.
 - Resolve ownership via `subsystems`, `entry_points`, `critical_files`, `neighbors`, and `docs/DEV_MAP.md`.
-- Before editing a symbol/file: `devcouncil_graph_query` / `devcouncil_code_explore`, or CLI `dev graph query <name>`.
-- Before risky edits: `devcouncil_impact` / `devcouncil_graph_impact`, or `dev graph impact <path>`. Report notable blast radius.
-- After large structural changes: `dev map` (or `devcouncil_graph_ingest`).
+- Before editing a symbol/file: use DevMap MCP (`devmap_explore`, `devmap_search`) or CLI `devmap explore <name>` / `dev graph explore <name>`.
+- Before risky edits: use DevMap MCP (`devmap_impact`) or CLI `devmap impact <path>` / `dev graph impact <path>`. Report notable blast radius.
+- After large structural changes: `devmap build --manifest` or `dev map`.
 
 ## Never Do
 
@@ -25,7 +25,7 @@ This repo is mapped by DevCouncil. Prefer the map over broad greps and guesswork
 
 ```bash
 dev map --if-stale
-dev graph query <symbol>
-dev graph impact <path>
-dev graph dead --confidence extracted
+devmap search <symbol>
+devmap impact <path>
+devmap dead --json
 ```

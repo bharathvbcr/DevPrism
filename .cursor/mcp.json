@@ -1,12 +1,28 @@
 {
   "mcpServers": {
     "devcouncil": {
-      "type": "stdio",
-      "command": "devcouncil",
-      "args": ["mcp-server"],
+      "args": [
+        "mcp"
+      ],
+      "command": "/Users/bharath/.local/bin/devcouncil",
       "env": {
         "DEVCOUNCIL_PROJECT_ROOT": "/Users/bharath/Code/devtools/DevPrism"
-      }
+      },
+      "type": "stdio"
+    },
+    "devmap": {
+      "args": [
+        "--root",
+        "/Users/bharath/Code/devtools/DevPrism",
+        "mcp"
+      ],
+      "command": "devmap",
+      "type": "stdio"
+    },
+    "gitpulse": {
+      "args": [],
+      "command": "gitpulse-mcp",
+      "type": "stdio"
     }
   }
 }

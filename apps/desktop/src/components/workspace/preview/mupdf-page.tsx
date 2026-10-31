@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState, useCallback, memo } from "react";
 import { XIcon, MessageSquareIcon } from "lucide-react";
 import { getMupdfClient } from "@/lib/mupdf/mupdf-client";
-import { getPageBitmap, putPageBitmap } from "@/lib/mupdf/page-bitmap-cache";
+import {
+  getOrRasterPageBitmap,
+  getPageBitmap,
+} from "@/lib/mupdf/page-bitmap-cache";
 import { createLogger } from "@/lib/debug/logger";
 import { APP_VISIBILITY_RESTORED } from "@/lib/debug/log-store";
 import type { StructuredTextData, LinkData, Rect } from "@/lib/mupdf/types";
@@ -210,19 +213,13 @@ export const MupdfPage = memo(function MupdfPage({
       return;
     }
 
-    getMupdfClient()
-      .drawPage(docId, pageIndex, dpi)
-      .then(async (imageData) => {
-        if (gen !== renderGenRef.current) return;
-        canvas.width = imageData.width;
-        canvas.height = imageData.height;
-        const bitmap = await createImageBitmap(imageData);
-        if (gen !== renderGenRef.current) {
-          bitmap.close();
-          return;
-        }
-        // The cache owns the bitmap from here on.
-        putPageBitmap(docId, pageIndex, dpi, bitmap);
+    // A stale generation still keeps the bitmap: closing it would drop the
+    // cache entry the next identical request is supposed to blit.
+    void getOrRasterPageBitmap(docId, pageIndex, dpi, async () => {
+      const imageData = await getMupdfClient().drawPage(docId, pageIndex, dpi);
+      return createImageBitmap(imageData);
+    })
+      .then((bitmap) => {
         blit(bitmap);
       })
       .catch((err) => {

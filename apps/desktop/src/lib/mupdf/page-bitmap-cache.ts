@@ -57,6 +57,29 @@ export function getPageBitmap(
   return entry.bitmap;
 }
 
+/**
+ * Return the cached bitmap for this page key, or call `raster` once and store
+ * the result. A second call with the same key does not call `raster` again.
+ * The cache owns the bitmap: callers blit it and must not close it.
+ */
+export async function getOrRasterPageBitmap(
+  docId: number,
+  pageIndex: number,
+  dpi: number,
+  raster: () => Promise<ImageBitmap>,
+): Promise<ImageBitmap> {
+  const cached = getPageBitmap(docId, pageIndex, dpi);
+  if (cached) return cached;
+  const bitmap = await raster();
+  const raced = getPageBitmap(docId, pageIndex, dpi);
+  if (raced) {
+    if (raced !== bitmap) bitmap.close();
+    return raced;
+  }
+  putPageBitmap(docId, pageIndex, dpi, bitmap);
+  return bitmap;
+}
+
 /** Takes ownership of `bitmap` — do not close it after putting. */
 export function putPageBitmap(
   docId: number,

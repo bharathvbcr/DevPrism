@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   clearPageBitmaps,
+  getOrRasterPageBitmap,
   getPageBitmap,
   pageBitmapCacheBytesForTest,
   putPageBitmap,
@@ -96,5 +97,20 @@ describe("page-bitmap-cache", () => {
 
     clearPageBitmaps();
     expect(closed).toBe(true);
+  });
+
+  it("rasterizes a page key once and returns the same bitmap on the second get", async () => {
+    clearPageBitmaps();
+    let calls = 0;
+    const bmp = fakeBitmap(32, 32);
+    const raster = async () => {
+      calls += 1;
+      return bmp;
+    };
+    const first = await getOrRasterPageBitmap(4, 2, 144, raster);
+    const second = await getOrRasterPageBitmap(4, 2, 144.2, raster);
+    expect(calls).toBe(1);
+    expect(second).toBe(first);
+    clearPageBitmaps();
   });
 });

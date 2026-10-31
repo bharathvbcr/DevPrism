@@ -14,25 +14,25 @@ export const AGENT_BACKENDS: readonly {
   {
     id: "native-ollama",
     label: "Native Ollama",
-    description:
-      "Built-in agent talking directly to a local Ollama model — fully offline.",
+    description: "Local Ollama through Manvi. Fully offline.",
   },
   {
     id: "native-api",
     label: "Native API",
     description:
-      "Built-in agent using any OpenAI-compatible API (Groq, OpenRouter, Gemini, …).",
+      "Any OpenAI-compatible API through Manvi (Groq, OpenRouter, Gemini, …).",
   },
   {
     id: "native-groq",
     label: "Native Groq",
     description:
-      "Alias for Native API pre-selected to Groq — fast cloud inference.",
+      "Groq through Manvi. Same path as Native API, with Groq pre-selected.",
   },
   {
     id: "claude-code",
     label: "Claude Code",
-    description: "Anthropic Claude Code CLI with stream-json output.",
+    description:
+      "Claude chat through Manvi's Anthropic harness. A selected OpenAI-compatible credential still uses that provider.",
   },
   {
     id: "cursor-cli",

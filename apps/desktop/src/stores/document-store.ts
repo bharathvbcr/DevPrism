@@ -22,7 +22,10 @@ import {
 } from "@/lib/tauri/fs";
 import { useHistoryStore } from "@/stores/history-store";
 import { useFileMarksStore, projectMarks } from "@/stores/file-marks-store";
-import { useClaudeChatStore } from "@/stores/claude-chat-store";
+import {
+  stopStreamingTab,
+  useClaudeChatStore,
+} from "@/stores/claude-chat-store";
 import {
   hasPinnedCompileRoot,
   resolvePreviewCompileRoot,
@@ -574,12 +577,8 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
         ? chatState.tabs.filter((tab) => tab.isStreaming)
         : [];
     if (streamingTabs.length > 0) {
-      // Stop both backends (each command is a harmless no-op for the other).
       await Promise.all(
-        streamingTabs.flatMap((tab) => [
-          invoke("cancel_claude_execution", { tabId: tab.id }).catch(() => {}),
-          invoke("stop_native_agent", { tabId: tab.id }).catch(() => {}),
-        ]),
+        streamingTabs.map((tab) => stopStreamingTab(tab.id).catch(() => {})),
       );
       await sleep(250);
     }

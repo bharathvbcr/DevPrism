@@ -24,8 +24,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { useClaudeChatStore } from "@/stores/claude-chat-store";
+import {
+  claudeCodeSessionListEnabled,
+  useClaudeChatStore,
+} from "@/stores/claude-chat-store";
 import { useDocumentStore } from "@/stores/document-store";
+import { useSettingsStore } from "@/stores/settings-store";
 import { createLogger } from "@/lib/debug/logger";
 
 const log = createLogger("session-selector");
@@ -80,6 +84,13 @@ export function SessionSelector({ hidden = false }: { hidden?: boolean }) {
 
   const loadSessions = useCallback(async () => {
     if (!projectRoot) return;
+    const backend = useSettingsStore.getState().agentBackend;
+    const credentialId =
+      useClaudeChatStore.getState().selectedProviderCredentialId;
+    if (!claudeCodeSessionListEnabled(backend, credentialId)) {
+      setSessions([]);
+      return;
+    }
     setIsLoading(true);
     log.debug(`loading sessions for projectRoot: ${projectRoot}`);
     try {

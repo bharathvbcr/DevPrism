@@ -21,7 +21,7 @@ mod history;
 pub mod latex;
 pub mod latexdiff;
 pub mod mcp;
-mod native_agent;
+pub(crate) mod native_agent;
 mod personalization;
 pub mod plugins;
 mod proc;
@@ -41,13 +41,6 @@ mod zotero;
 use std::path::Path;
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_fs::FsExt;
-
-/// Entry point for the `--tectonic-compile` subprocess mode.
-/// Runs tectonic compilation in an isolated process so that C-level global state
-/// (font cache, etc.) is cleaned up on exit, preventing assertion failures on retry.
-pub fn tectonic_compile_subprocess(work_dir: &Path, main_file: &str) -> Result<(), String> {
-    latex::compile_with_tectonic(work_dir, main_file)
-}
 
 // --- External editor detection & opening ---
 

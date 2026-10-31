@@ -713,6 +713,22 @@ fn known_proxy_mismatch_error(provider: &str, base_url: Option<&str>) -> Option<
     None
 }
 
+/// Key and optional base URL for a Manvi Anthropic turn.
+///
+/// The auth-token field is not returned. Callers must not log the key.
+pub(crate) struct ClaudeCredentialForManvi {
+    pub api_key: String,
+    pub base_url: Option<String>,
+}
+
+pub(crate) fn claude_credential_for_manvi() -> Option<ClaudeCredentialForManvi> {
+    let stored = stored_claude_credential()?;
+    Some(ClaudeCredentialForManvi {
+        api_key: stored.api_key,
+        base_url: stored.base_url,
+    })
+}
+
 fn stored_claude_credential() -> Option<StoredClaudeCredential> {
     let config = read_claude_prism_auth_config().ok()?;
     stored_claude_credential_from_config(&config)

@@ -608,17 +608,17 @@ const NativeAskUserWidget: FC<{
   const [answered, setAnswered] = useState(false);
   const [text, setText] = useState("");
   const [selectedOption, setSelectedOption] = useState<string | null>(null);
+  const [selectedMany, setSelectedMany] = useState<string[]>([]);
   const isStreaming = useClaudeChatStore((s) => s.isStreaming);
 
   const question: string =
     typeof toolUse.input?.question === "string" ? toolUse.input.question : "";
+  const multiSelect = toolUse.input?.multi_select === true;
   const options: string[] = Array.isArray(toolUse.input?.options)
-    ? toolUse.input.options
-        .filter(
-          (opt: unknown): opt is string =>
-            typeof opt === "string" && !!opt.trim(),
-        )
-        .slice(0, 4)
+    ? toolUse.input.options.filter(
+        (opt: unknown): opt is string =>
+          typeof opt === "string" && !!opt.trim(),
+      )
     : [];
   const requestId = toolUse.id;
   // Interactive only while the run is parked on this question: no result yet,
@@ -681,19 +681,31 @@ const NativeAskUserWidget: FC<{
         {options.length > 0 && (
           <div
             className="space-y-1"
-            role="radiogroup"
+            role={multiSelect ? "group" : "radiogroup"}
             aria-labelledby={`native-askuser-q-${requestId ?? "x"}`}
           >
             {options.map((opt, oIdx) => {
-              const selected = selectedOption === opt;
+              const selected = multiSelect
+                ? selectedMany.includes(opt)
+                : selectedOption === opt;
               return (
                 <button
                   type="button"
                   key={oIdx}
-                  role="radio"
+                  role={multiSelect ? "checkbox" : "radio"}
                   aria-checked={selected}
                   disabled={!canAnswer}
-                  onClick={() => void submit(opt)}
+                  onClick={() => {
+                    if (multiSelect) {
+                      setSelectedMany((current) =>
+                        current.includes(opt)
+                          ? current.filter((item) => item !== opt)
+                          : [...current, opt],
+                      );
+                      return;
+                    }
+                    void submit(opt);
+                  }}
                   className={`flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left transition-colors ${
                     canAnswer
                       ? "cursor-pointer hover:bg-blue-500/15"
@@ -724,6 +736,16 @@ const NativeAskUserWidget: FC<{
               );
             })}
           </div>
+        )}
+        {canAnswer && multiSelect && (
+          <Button
+            type="button"
+            size="sm"
+            disabled={selectedMany.length === 0}
+            onClick={() => void submit(JSON.stringify(selectedMany))}
+          >
+            Send selection
+          </Button>
         )}
         {canAnswer && (
           <form

@@ -1,5 +1,4 @@
 import { create } from "zustand";
-import { invoke } from "@tauri-apps/api/core";
 import {
   listVariants,
   createVariant,
@@ -9,7 +8,10 @@ import {
 } from "@/lib/tauri/variants";
 import { useDocumentStore } from "@/stores/document-store";
 import { useSpacesStore } from "@/stores/spaces-store";
-import { useClaudeChatStore } from "@/stores/claude-chat-store";
+import {
+  stopStreamingTab,
+  useClaudeChatStore,
+} from "@/stores/claude-chat-store";
 import { createLogger } from "@/lib/debug/logger";
 
 const log = createLogger("variants");
@@ -71,10 +73,7 @@ async function prepareForSwitch(): Promise<void> {
   const streamingTabs = tabs.filter((tab) => tab.isStreaming);
   if (streamingTabs.length > 0) {
     await Promise.all(
-      streamingTabs.flatMap((tab) => [
-        invoke("cancel_claude_execution", { tabId: tab.id }).catch(() => {}),
-        invoke("stop_native_agent", { tabId: tab.id }).catch(() => {}),
-      ]),
+      streamingTabs.map((tab) => stopStreamingTab(tab.id).catch(() => {})),
     );
   }
 }

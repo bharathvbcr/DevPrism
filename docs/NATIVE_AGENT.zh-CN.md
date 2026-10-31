@@ -2,8 +2,7 @@
 
 [English](NATIVE_AGENT.md) · [한국어](NATIVE_AGENT.ko.md) · [日本語](NATIVE_AGENT.ja.md) · 简体中文
 
-DevPrism 内置了一个**直接与本地 [Ollama](https://ollama.com) 模型通信**的代理运行时，
-完全不需要 Claude Code CLI，也不需要任何转换代理。它完全离线、自包含运行。
+每一轮聊天由 `manvi run` 执行。本地 Ollama、OpenAI 兼容 API 和 Claude 聊天都走这条路径。一次性补全、嵌入、图像说明和 Ollama 管理仍留在 DevPrism。当前说明以 [English](NATIVE_AGENT.md) 为准。
 
 ## 启用方式
 
@@ -20,8 +19,7 @@ DevPrism 内置了一个**直接与本地 [Ollama](https://ollama.com) 模型通
 
 ## 功能
 
-- 在 Rust 中运行一个代理循环：用内置工具读取和修改文件，并持续推进直到任务完成 ——
-  使用与之前相同的聊天界面、差异对比和“保留/撤销”流程。
+- 工具循环由 `manvi run` 执行。聊天界面、差异和“保留/撤销”保持不变。下面的工具列表是原先 Rust 循环的说明；当前工具来自 Manvi harness 和 DevPrism MCP。
 - **工具：** `Read`、`Write`、`Edit`（支持 `replace_all`）、`LS`、`Grep`（支持 `glob`/
   `case_sensitive` 范围限定）、`Glob`、`Bash`（在项目中运行并激活 `.venv`）。所有文件
   访问都限制在项目目录内。除这些内置工具外，代理还会公开插件注册表中精选的工具子集 —

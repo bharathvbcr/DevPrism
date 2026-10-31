@@ -30,6 +30,8 @@ vi.mock("@/stores/history-store", () => ({
 
 import {
   CLAUDE_CODE_PROVIDER_ID,
+  resetManviResumeForTests,
+  stopStreamingTab,
   STREAM_STALLED_ERROR,
   useClaudeChatStore,
 } from "@/stores/claude-chat-store";
@@ -141,18 +143,21 @@ describe("useClaudeChatStore.sendPrompt context assembly", () => {
     });
 
     expect(invoke).toHaveBeenCalledWith(
-      "execute_claude_code",
+      "run_native_agent",
       expect.objectContaining({
         projectPath: "/project",
         tabId: "tab-default",
-        prompt: expect.stringContaining("[Selection: @main.tex]"),
+        chatProvider: "anthropic",
+        activeFile: "main.tex",
+        selection: wholeFileText,
+        prompt: "Please revise this",
       }),
     );
 
-    const prompt = invokeArgs("execute_claude_code")?.prompt as string;
-    expect(prompt).toContain("[Currently open file: main.tex]");
-    expect(prompt).toContain("[Selection: @main.tex]");
-    expect(prompt).toContain(wholeFileText);
+    const prompt = invokeArgs("run_native_agent")?.prompt as string;
+    expect(prompt).not.toContain("[Currently open file:");
+    expect(prompt).not.toContain("[Selection: @main.tex]");
+    expect(prompt).not.toContain(wholeFileText);
 
     const userText =
       useClaudeChatStore.getState().messages[0].message?.content?.[0].text;
@@ -178,20 +183,23 @@ describe("useClaudeChatStore.sendPrompt context assembly", () => {
     await useClaudeChatStore.getState().sendPrompt("Please revise this");
 
     expect(invoke).toHaveBeenCalledWith(
-      "execute_claude_code",
+      "run_native_agent",
       expect.objectContaining({
         projectPath: "/project",
         tabId: "tab-default",
-        prompt: expect.stringContaining("[Selection: @main.tex:2:1-3:6]"),
+        chatProvider: "anthropic",
+        activeFile: "main.tex",
+        selection: "beta\ngamma",
+        selectionStartLine: 2,
+        selectionEndLine: 3,
+        prompt: "Please revise this",
       }),
     );
 
-    const prompt = invokeArgs("execute_claude_code")?.prompt as string;
-    expect(prompt).toContain("[Currently open file: main.tex]");
-    expect(prompt).toContain("[Selection: @main.tex:2:1-3:6]");
-    expect(prompt).toContain("[Selected text:\nbeta\ngamma\n]");
-    expect(prompt).not.toContain("alpha\na");
-    expect(prompt).not.toContain("\ndelta");
+    const prompt = invokeArgs("run_native_agent")?.prompt as string;
+    expect(prompt).not.toContain("[Currently open file:");
+    expect(prompt).not.toContain("alpha");
+    expect(prompt).not.toContain("delta");
 
     const userText =
       useClaudeChatStore.getState().messages[0].message?.content?.[0].text;
@@ -202,6 +210,22 @@ describe("useClaudeChatStore.sendPrompt context assembly", () => {
     expect(createSnapshotMock).toHaveBeenCalledWith(
       "/project",
       "[claude] Before Claude",
+    );
+  });
+
+  it("shows the open file chip on Claude chat when nothing is selected", async () => {
+    await useClaudeChatStore.getState().sendPrompt("hello");
+
+    const userText =
+      useClaudeChatStore.getState().messages[0].message?.content?.[0].text;
+    expect(userText).toBe("@main.tex\nhello");
+    expect(invokeArgs("run_native_agent")).toEqual(
+      expect.objectContaining({
+        chatProvider: "anthropic",
+        activeFile: "main.tex",
+        prompt: "hello",
+        selection: null,
+      }),
     );
   });
 
@@ -271,12 +295,12 @@ describe("useClaudeChatStore.sendPrompt context assembly", () => {
 
     await useClaudeChatStore.getState().sendPrompt("Use Claude now");
 
-    const prompt = invokeArgs("execute_claude_code").prompt;
+    const prompt = invokeArgs("run_native_agent").prompt;
     expect(prompt).toContain("Late DS answer");
     expect(prompt).toContain("Use Claude now");
   });
 
-  it("sends Claude Code when the Claude provider option is selected", async () => {
+  it("sends Claude through Manvi when the Claude provider option is selected", async () => {
     useClaudeChatStore.setState({
       selectedProviderCredentialId: CLAUDE_CODE_PROVIDER_ID,
     });
@@ -284,10 +308,11 @@ describe("useClaudeChatStore.sendPrompt context assembly", () => {
     await useClaudeChatStore.getState().sendPrompt("Use Claude");
 
     expect(invoke).toHaveBeenCalledWith(
-      "execute_claude_code",
+      "run_native_agent",
       expect.objectContaining({
+        chatProvider: "anthropic",
         providerCredentialId: null,
-        providerModelOverride: null,
+        model: "claude-opus-5-5",
       }),
     );
   });
@@ -325,14 +350,15 @@ describe("useClaudeChatStore.sendPrompt context assembly", () => {
     await useClaudeChatStore.getState().sendPrompt("Use Claude now");
 
     expect(invoke).toHaveBeenCalledWith(
-      "execute_claude_code",
+      "run_native_agent",
       expect.objectContaining({
+        chatProvider: "anthropic",
         providerCredentialId: null,
-        providerModelOverride: null,
+        sessionId: null,
         prompt: expect.stringContaining("[Provider switch context]"),
       }),
     );
-    const prompt = invokeArgs("execute_claude_code").prompt;
+    const prompt = invokeArgs("run_native_agent").prompt;
     expect(prompt).toContain("Old DS question");
     expect(prompt).toContain("Old DS answer");
     expect(prompt).toContain("Use Claude now");
@@ -584,7 +610,10 @@ describe("useClaudeChatStore resumeSession history loading", () => {
     expect(
       vi
         .mocked(invoke)
-        .mock.calls.some(([command]) => command === "execute_claude_code"),
+        .mock.calls.some(
+          ([command]) =>
+            command === "execute_claude_code" || command === "run_native_agent",
+        ),
     ).toBe(false);
 
     resolveHistory([]);
@@ -597,11 +626,13 @@ describe("useClaudeChatStore resumeSession history loading", () => {
 
     vi.mocked(invoke).mockClear();
     await useClaudeChatStore.getState().sendPrompt("now fine");
-    // Session id is set post-resume, so the prompt goes out as a resume.
+    // A loaded Claude CLI session id is not a Manvi resume.
     const sentCommands = vi
       .mocked(invoke)
       .mock.calls.map(([command]) => command);
-    expect(sentCommands).toContain("resume_claude_code");
+    expect(sentCommands).toContain("run_native_agent");
+    expect(sentCommands).not.toContain("resume_claude_code");
+    expect(invokeArgs("run_native_agent")?.sessionId).toBeNull();
   });
 
   it("clears historyLoading even when loading fails", async () => {
@@ -620,11 +651,13 @@ describe("useClaudeChatStore resumeSession history loading", () => {
 
     vi.mocked(invoke).mockClear();
     await useClaudeChatStore.getState().sendPrompt("after failure");
-    // Session id was already assigned before the failed load, so this resumes.
+    // The assigned id is a Claude CLI id, so the turn is a new Manvi run.
     const sentCommands = vi
       .mocked(invoke)
       .mock.calls.map(([command]) => command);
-    expect(sentCommands).toContain("resume_claude_code");
+    expect(sentCommands).toContain("run_native_agent");
+    expect(sentCommands).not.toContain("resume_claude_code");
+    expect(invokeArgs("run_native_agent")?.sessionId).toBeNull();
   });
 });
 
@@ -1023,6 +1056,8 @@ describe("useClaudeChatStore.sendPrompt backend routing", () => {
     vi.clearAllMocks();
     vi.mocked(invoke).mockImplementation(() => Promise.resolve(null));
     resetClaudeChatStore();
+    resetManviResumeForTests();
+    localStorage.clear();
     setMockDocumentState();
   });
 
@@ -1053,12 +1088,258 @@ describe("useClaudeChatStore.sendPrompt backend routing", () => {
     );
   });
 
-  it("routes claude-code to execute_claude_code", async () => {
+  it("routes claude-code to run_native_agent with the Anthropic catalogue id", async () => {
     useSettingsStore.getState().setAgentBackend("claude-code");
     await useClaudeChatStore.getState().sendPrompt("hello");
     expect(invoke).toHaveBeenCalledWith(
+      "run_native_agent",
+      expect.objectContaining({
+        chatProvider: "anthropic",
+        model: "claude-opus-5-5",
+        tabId: "tab-default",
+        activeFile: "main.tex",
+        prompt: "hello",
+      }),
+    );
+    expect(invoke).not.toHaveBeenCalledWith(
       "execute_claude_code",
+      expect.anything(),
+    );
+  });
+
+  it("keeps a non-Claude credential on execute_claude_code", async () => {
+    useSettingsStore.getState().setAgentBackend("claude-code");
+    useClaudeChatStore.setState({
+      selectedProviderCredentialId: "oa-1",
+      tabs: useClaudeChatStore.getState().tabs.map((tab) => ({
+        ...tab,
+        providerKey: null,
+      })),
+    });
+    await useClaudeChatStore.getState().sendPrompt("hello");
+    expect(invoke).toHaveBeenCalledWith(
+      "execute_claude_code",
+      expect.objectContaining({
+        tabId: "tab-default",
+        providerCredentialId: "oa-1",
+      }),
+    );
+  });
+
+  it("sends a stored manvi id on claude-code when the tab has none", async () => {
+    localStorage.setItem("devprism:manvi-resume:/project", "manvi:ab");
+    useSettingsStore.getState().setAgentBackend("claude-code");
+    await useClaudeChatStore.getState().sendPrompt("hello");
+    expect(invokeArgs("run_native_agent").sessionId).toBe("manvi:ab");
+    expect(useClaudeChatStore.getState().sessionId).toBeNull();
+  });
+
+  it("does not hand a stored manvi id to cursor", async () => {
+    localStorage.setItem("devprism:manvi-resume:/project", "manvi:ab");
+    useSettingsStore.getState().setAgentBackend("cursor-cli");
+    await useClaudeChatStore.getState().sendPrompt("hello");
+    expect(invoke).toHaveBeenCalledWith(
+      "execute_cursor_agent",
       expect.objectContaining({ tabId: "tab-default" }),
     );
+    expect(invoke).not.toHaveBeenCalledWith(
+      "resume_cursor_agent",
+      expect.anything(),
+    );
+  });
+
+  it("does not resurrect a stored manvi id when switching onto Claude", async () => {
+    useSettingsStore.getState().setAgentBackend("claude-code");
+    localStorage.setItem("devprism:manvi-resume:/project", "manvi:ab");
+    useClaudeChatStore.setState((state) => ({
+      sessionId: "qwen-session",
+      selectedProviderCredentialId: CLAUDE_CODE_PROVIDER_ID,
+      tabs: state.tabs.map((tab) =>
+        tab.id === "tab-default"
+          ? {
+              ...tab,
+              sessionId: "qwen-session",
+              providerKey: CLAUDE_CODE_PROVIDER_ID,
+              sessionProviderKey: "openai-compatible:qwen-cred",
+              messages: [
+                {
+                  type: "user",
+                  message: {
+                    content: [{ type: "text", text: "Old DS question" }],
+                  },
+                },
+                {
+                  type: "assistant",
+                  message: {
+                    content: [{ type: "text", text: "Old DS answer" }],
+                  },
+                },
+              ],
+            }
+          : tab,
+      ),
+    }));
+
+    await useClaudeChatStore.getState().sendPrompt("Use Claude now");
+
+    const first = invokeArgs("run_native_agent");
+    expect(first.sessionId).toBeNull();
+    expect(first.prompt).toContain("[Provider switch context]");
+    expect(first.prompt).toContain("Old DS question");
+    expect(localStorage.getItem("devprism:manvi-resume:/project")).toBe(
+      "manvi:ab",
+    );
+
+    useClaudeChatStore.setState((state) => ({
+      isStreaming: false,
+      tabs: state.tabs.map((tab) =>
+        tab.id === "tab-default"
+          ? { ...tab, isStreaming: false, error: null }
+          : tab,
+      ),
+    }));
+    vi.mocked(invoke).mockClear();
+
+    await useClaudeChatStore.getState().sendPrompt("second");
+    expect(invokeArgs("run_native_agent").sessionId).toBeNull();
+    expect(localStorage.getItem("devprism:manvi-resume:/project")).toBe(
+      "manvi:ab",
+    );
+  });
+
+  it("does not resume cursor from a manvi session id", async () => {
+    useSettingsStore.getState().setAgentBackend("cursor-cli");
+    localStorage.setItem("devprism:manvi-resume:/project", "manvi:ab");
+    useClaudeChatStore.setState((state) => ({
+      sessionId: "manvi:ab",
+      tabs: state.tabs.map((tab) =>
+        tab.id === "tab-default"
+          ? {
+              ...tab,
+              sessionId: "manvi:ab",
+              messages: [
+                {
+                  type: "user",
+                  message: {
+                    content: [{ type: "text", text: "earlier manvi turn" }],
+                  },
+                },
+              ],
+            }
+          : tab,
+      ),
+    }));
+
+    await useClaudeChatStore.getState().sendPrompt("continue in cursor");
+
+    expect(invoke).toHaveBeenCalledWith(
+      "execute_cursor_agent",
+      expect.objectContaining({ tabId: "tab-default" }),
+    );
+    expect(invoke).not.toHaveBeenCalledWith(
+      "resume_cursor_agent",
+      expect.anything(),
+    );
+    const prompt = invokeArgs("execute_cursor_agent").prompt as string;
+    expect(prompt).toContain("[Provider switch context]");
+    expect(prompt).toContain("earlier manvi turn");
+    expect(useClaudeChatStore.getState().sessionId).toBeNull();
+    expect(localStorage.getItem("devprism:manvi-resume:/project")).toBe(
+      "manvi:ab",
+    );
+  });
+
+  it("does not resume the claude cli from a manvi session id", async () => {
+    useSettingsStore.getState().setAgentBackend("claude-code");
+    useClaudeChatStore.setState((state) => ({
+      sessionId: "manvi:ab",
+      selectedProviderCredentialId: "qwen-cred",
+      tabs: state.tabs.map((tab) =>
+        tab.id === "tab-default"
+          ? {
+              ...tab,
+              sessionId: "manvi:ab",
+              providerKey: "openai-compatible:qwen-cred",
+              messages: [
+                {
+                  type: "user",
+                  message: {
+                    content: [{ type: "text", text: "earlier manvi turn" }],
+                  },
+                },
+              ],
+            }
+          : tab,
+      ),
+    }));
+
+    await useClaudeChatStore.getState().sendPrompt("continue with qwen");
+
+    expect(invoke).toHaveBeenCalledWith(
+      "execute_claude_code",
+      expect.objectContaining({
+        tabId: "tab-default",
+        providerCredentialId: "qwen-cred",
+      }),
+    );
+    expect(invoke).not.toHaveBeenCalledWith(
+      "resume_claude_code",
+      expect.anything(),
+    );
+    const prompt = invokeArgs("execute_claude_code").prompt as string;
+    expect(prompt).toContain("[Provider switch context]");
+    expect(prompt).toContain("earlier manvi turn");
+    expect(useClaudeChatStore.getState().sessionId).toBeNull();
+  });
+
+  it("does not resume a stored manvi id after newSession", async () => {
+    localStorage.setItem("devprism:manvi-resume:/project", "manvi:ab");
+    useSettingsStore.getState().setAgentBackend("claude-code");
+    useClaudeChatStore.getState().newSession();
+    await useClaudeChatStore.getState().sendPrompt("hello");
+    expect(invokeArgs("run_native_agent").sessionId).toBeNull();
+    expect(localStorage.getItem("devprism:manvi-resume:/project")).toBeNull();
+  });
+
+  it("sends opusplan as the cache key, not a catalogue id", async () => {
+    useSettingsStore.getState().setAgentBackend("claude-code");
+    useClaudeChatStore.setState({ selectedModel: "opusplan" });
+    await useClaudeChatStore.getState().sendPrompt("hello");
+    expect(invokeArgs("run_native_agent").model).toBe("opusplan");
+  });
+
+  it("stops a manvi claude tab with one native stop", async () => {
+    useSettingsStore.getState().setAgentBackend("claude-code");
+    await stopStreamingTab("tab-default");
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledWith("stop_native_agent", {
+      tabId: "tab-default",
+    });
+  });
+
+  it("stops an openai-compatible claude tab with the cli cancel", async () => {
+    useSettingsStore.getState().setAgentBackend("claude-code");
+    useClaudeChatStore.setState({
+      tabs: [
+        {
+          ...useClaudeChatStore.getState().tabs[0],
+          providerKey: "openai-compatible:oa-1",
+        },
+      ],
+    });
+    await stopStreamingTab("tab-default");
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledWith("cancel_claude_execution", {
+      tabId: "tab-default",
+    });
+  });
+
+  it("stops cursor with the cursor cancel only", async () => {
+    useSettingsStore.getState().setAgentBackend("cursor-cli");
+    await stopStreamingTab("tab-default");
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledWith("cancel_cursor_agent", {
+      tabId: "tab-default",
+    });
   });
 });

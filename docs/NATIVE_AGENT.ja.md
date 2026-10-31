@@ -2,9 +2,9 @@
 
 [English](NATIVE_AGENT.md) · [한국어](NATIVE_AGENT.ko.md) · 日本語 · [简体中文](NATIVE_AGENT.zh-CN.md)
 
-DevPrism には、ローカルの [Ollama](https://ollama.com) モデルと**直接通信する**組み込み
-エージェントランタイムが含まれています。Claude Code CLI も変換プロキシも一切不要で、
-完全にオフラインかつ自己完結で動作します。
+チャットの 1 ターンは `manvi run` が実行します。ローカル Ollama、OpenAI 互換 API、
+Claude チャットがこの経路です。一回きりの補完・埋め込み・キャプションと Ollama 管理だけが
+DevPrism に残ります。現行の説明は [English](NATIVE_AGENT.md) が基準です。
 
 ## 有効化の手順
 
@@ -25,9 +25,9 @@ DevPrism には、ローカルの [Ollama](https://ollama.com) モデルと**直
 
 ## できること
 
-- Rust 製のエージェントループを実行します。組み込みツールでファイルを読み書き・編集し、
-  タスクが完了するまで進めます — 同じチャット UI・差分・「保持／取り消し」フローを
-  そのまま使えます。
+- `manvi run` がツールループを実行します。チャット UI・差分・「保持／取り消し」は
+  そのままです。下のツール一覧は以前の Rust ループの説明で、現行のツールは Manvi
+  のハーネスと DevPrism MCP です。
 - **ツール:** `Read`、`Write`、`Edit`（`replace_all` 対応）、`LS`、`Grep`（`glob`/
   `case_sensitive` の絞り込み）、`Glob`、`Bash`（プロジェクト内で実行し `.venv` を有効化）。
   すべてのファイルアクセスはプロジェクトディレクトリ内に限定されます。これらの組み込み

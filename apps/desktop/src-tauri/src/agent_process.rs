@@ -357,6 +357,9 @@ pub async fn stop_agent_process(
     tab_id: String,
     mode: AgentStopMode,
 ) -> Result<bool, String> {
+    // Close Manvi's approve pipe before the signal. A missing pipe is a no-op,
+    // so Claude CLI and Cursor stops share this path.
+    crate::native_agent::manvi_turn::drop_approval_writer(&tab_id);
     let window_label = window.label().to_string();
     let process_key = process_key(&window_label, &tab_id);
     let agent_state = window.state::<AgentProcessState>();
@@ -373,14 +376,10 @@ pub async fn stop_agent_process(
         return Ok(stopped);
     }
     drop(processes);
-
-    let _ = window.emit(
-        "claude-complete",
-        AgentCompleteEvent {
-            tab_id,
-            success: false,
-        },
-    );
+    // The spawn waiter emits the one `claude-complete`, including when this
+    // stop already took the child. Emitting here as well marks a live turn
+    // failed: a second stop (rename, variant switch, Cursor ACP) finds the
+    // map empty and would complete before the waiter reports the real status.
     Ok(false)
 }
 

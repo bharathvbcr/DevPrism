@@ -25,7 +25,6 @@ import {
   ChevronDownIcon,
   SparklesIcon,
   RabbitIcon,
-  LayersIcon,
   PlusIcon,
   Trash2Icon,
   Loader2Icon,
@@ -270,7 +269,7 @@ function claudeModelDisplayName(model: string) {
     case "haiku":
       return "Haiku";
     case "opusplan":
-      return "OpusPlan";
+      return "Opus Plan";
     default:
       return model;
   }
@@ -1892,9 +1891,9 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
     },
     {
       id: "opusplan" as const,
-      name: "OpusPlan",
-      desc: "Opus for planning, Sonnet for execution",
-      icon: <LayersIcon className="size-3.5" />,
+      name: "Opus Plan",
+      desc: "Opus plans the turn. Sonnet writes.",
+      icon: <SparklesIcon className="size-3.5" />,
     },
   ];
   const activeProviderModelOptions = selectedProviderCredential

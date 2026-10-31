@@ -20,7 +20,7 @@ devprism/
 │       ├── src/agent_process.rs  # Agent CLI process groups and stop escalation
 │       ├── src/claude.rs         # Claude CLI integration, sessions, status probes
 │       ├── src/cursor_agent/     # Cursor CLI over ACP (stream adapter + fallback)
-│       ├── src/native_agent/     # In-process local/cloud agent loop (+ manvi sidecar client)
+│       ├── src/native_agent/     # Chat turns via `manvi run`; one-shot complete/embed/caption stay here
 │       ├── src/anthropic_proxy/  # Optional Anthropic-compatible proxy (providers, streaming)
 │       ├── src/mcp/              # MCP 2.0 server (stdio + HTTP) and career/resume tools
 │       ├── src/plugins/          # Capability-pack registry serving MCP + native agent
@@ -68,7 +68,7 @@ Every save snapshots into the project's history repo. After a snapshot crosses 8
 
 ## Agents, MCP and Plugins
 
-Agent backends are pluggable: Native Ollama / OpenAI-compatible (in-process loop in `native_agent/`, optionally advised by the manvi policy/context-planner sidecar), Claude Code CLI, Cursor CLI (ACP), and cloud providers through the Anthropic-compatible proxy. See [NATIVE_AGENT.md](./NATIVE_AGENT.md) and [CURSOR_CLI.md](./CURSOR_CLI.md).
+Agent backends are pluggable: Native Ollama / OpenAI-compatible and Claude chat all spawn `manvi run` (`native_agent/manvi_turn.rs` translates its events into the existing chat stream). A Claude-backend tab with a non-Claude credential still uses that OpenAI-compatible provider. Cursor CLI (ACP) is unchanged. One-shot completion still uses the Claude Code CLI. See [NATIVE_AGENT.md](./NATIVE_AGENT.md) and [CURSOR_CLI.md](./CURSOR_CLI.md).
 
 The same engine also serves external agents:
 

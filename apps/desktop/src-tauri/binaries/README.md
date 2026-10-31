@@ -4,21 +4,18 @@ This directory holds the `manvi` sidecar that Tauri bundles into the app. It is
 **generated, not committed** — `.gitignore` excludes everything here except this
 file — because each binary is ~8 MB and there is one per release target.
 
-## What the sidecar does
+## What the binary does
 
-`manvi serve` gives DevPrism two things the Rust side would otherwise have to
-reimplement:
+Chat turns spawn this binary as `manvi run --json`. DevPrism translates its
+event stream into the chat UI. A missing binary fails the turn. It is not
+optional for Ollama, OpenAI-compatible, or Claude chat.
 
-- **A policy gate.** Write and command rules pinned against DevCouncil's own
-  engine by a parity fixture. Without it, tool calls run past nothing but
-  `is_catastrophic()`.
-- **A context planner.** Reads a model's real context window off Ollama, vLLM
-  or llama.cpp instead of defaulting to 8192, plans prefix-stable compaction,
-  and recovers tool calls a local server failed to parse.
-
-The app degrades gracefully without it — see `native_agent/manvi_sidecar.rs`,
-where every call returns `Verdict::Unavailable` rather than a verdict — but a
-bundle without it is meaningfully less safe and slower on local models.
+`native_agent/manvi_sidecar.rs` can still talk to `manvi serve` for the older
+policy and context-planner calls. Those calls are not the chat turn. The
+resolver is the same: `DEVPRISM_MANVI_BIN`, then beside the executable, then
+the newer of this directory's `manvi-<triple>` and `manvi` on `PATH`. An
+override that is set and missing is an error. `bun run dev:desktop` rebuilds
+the sidecar when the Manvi checkout's Go sources are newer than that file.
 
 ## Building
 
@@ -33,8 +30,11 @@ whichever target is being built.
 The source is **not vendored here**. The script finds it by, in order:
 
 1. `MANVI_SRC` — an explicit path. If set and wrong, the build fails rather
-   than falling through, because someone set it on purpose.
-2. `../Dev_Harness/manvi` or `../manvi` beside this repository.
+   than falling through, because someone set it on purpose. A path to the
+   Manvi repository (module in `manvi/`) is accepted, as is a path to the
+   module itself.
+2. `../Dev_Harness/manvi`, `../manvi`, or `../Manvi` beside this repository,
+   including the nested `manvi/` module inside that checkout.
 
 manvi is pure Go with `CGO_ENABLED=0`, so every release target cross-compiles
 from any machine with a Go toolchain.
@@ -55,7 +55,9 @@ which turns "could not build the sidecar" into a hard failure.
 
 **CI does not currently build the sidecar.** `.github/workflows/build-desktop.yml`
 checks out only this repository, so released artifacts ship without it until a
-manvi checkout (or a vendored binary) is added to those jobs.
+manvi checkout (or a vendored binary) is added to those jobs. The app still
+launches. A chat turn then fails until `manvi` is on `PATH` or
+`DEVPRISM_MANVI_BIN` names a binary.
 
 ## How it is found at runtime
 
@@ -66,8 +68,12 @@ its own `relative_command_path` resolves against. `resolve_binary()` in
 
 1. `DEVPRISM_MANVI_BIN` — an explicit override, for running against a local
    build. Set and wrong is an error, not a fallthrough.
-2. Beside the current executable (where the bundle puts it).
-3. `manvi` on `PATH`.
+2. Beside the current executable (where the bundle puts it), and the parent of
+   that directory when the executable is under `deps`. A packaged app stops
+   here, so a leftover checkout binary cannot replace the one that shipped.
+3. The newer of `binaries/manvi-<target-triple>` (this directory, found from
+   the crate path baked in at compile time) and `manvi` on `PATH`. Equal
+   mtimes keep the checkout copy.
 
 ## macOS signing
 

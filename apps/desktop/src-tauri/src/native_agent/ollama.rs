@@ -275,7 +275,7 @@ fn think_param_for_model(model: &str, effort: &str) -> Value {
 /// Normalize a user-supplied keep_alive to a value Ollama accepts: a duration
 /// string ("10m", "1h", "30s"), a bare number of seconds, or "0"/"-1". Falls
 /// back to the default for blank/garbage input so a bad setting can't wedge chat.
-fn normalize_keep_alive(raw: Option<&str>) -> String {
+pub(crate) fn normalize_keep_alive(raw: Option<&str>) -> String {
     match raw.map(str::trim).filter(|s| !s.is_empty()) {
         Some(s) => s.to_string(),
         None => DEFAULT_KEEP_ALIVE.to_string(),

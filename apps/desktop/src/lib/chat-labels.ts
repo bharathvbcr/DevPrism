@@ -21,7 +21,7 @@ export function getChatLabels(backend: AgentBackend) {
       commentForAgent: "the Groq assistant",
       commentPlaceholder: "Type a question or note for Groq…",
       processFailedStart:
-        "Groq agent failed to start. Check your Groq API key in Settings → Provider.",
+        "Groq chat failed to start. Check the Groq API key in Settings, and that the Manvi chat binary is present.",
       processExited:
         "Groq agent stopped unexpectedly. Check your API key, rate limits, or try again.",
       emptyStateHint:
@@ -45,7 +45,7 @@ export function getChatLabels(backend: AgentBackend) {
       commentForAgent: "the AI assistant",
       commentPlaceholder: "Type a question or note for the AI assistant…",
       processFailedStart:
-        "Native API agent failed to start. Check your provider API key in Settings → Provider.",
+        "API chat failed to start. Check the provider API key in Settings, and that the Manvi chat binary is present.",
       processExited:
         "Native API agent stopped unexpectedly. Check your API key, rate limits, or try again.",
       emptyStateHint:
@@ -69,7 +69,7 @@ export function getChatLabels(backend: AgentBackend) {
       commentForAgent: "the AI assistant",
       commentPlaceholder: "Type a question or note for the AI assistant…",
       processFailedStart:
-        "Local agent failed to start. Check that Ollama is running with a chat model installed.",
+        "Local chat failed to start. Check that Ollama is running and the Manvi chat binary is present.",
       processExited:
         "Local agent stopped unexpectedly. Check Ollama, tool support, or try again.",
       emptyStateHint:
@@ -130,6 +130,15 @@ export function getChatLabels(backend: AgentBackend) {
     agentAuthorLabel: "Claude",
     agentAuthorInitial: "C",
   } as const;
+}
+
+/** Claude chat is a Manvi turn. These are not the Claude Code CLI strings. */
+export function manviChatStartFailure(): string {
+  return "Claude chat failed to start. Check that the Manvi chat binary is present and an Anthropic API key is available in Settings or ANTHROPIC_API_KEY.";
+}
+
+export function manviChatExitFailure(): string {
+  return "Claude chat stopped before it finished. Check the Anthropic key, model access, or rate limits.";
 }
 
 export function useChatLabels() {

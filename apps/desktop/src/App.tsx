@@ -6,7 +6,11 @@ import { useUpdater } from "@/hooks/use-updater";
 import { toast } from "sonner";
 
 import { useDocumentStore } from "@/stores/document-store";
-import { useClaudeChatStore } from "@/stores/claude-chat-store";
+import {
+  claudeCodeSessionListEnabled,
+  useClaudeChatStore,
+} from "@/stores/claude-chat-store";
+import { useSettingsStore } from "@/stores/settings-store";
 import {
   showWorkspaceInfo,
   useWorkspaceBannerStore,
@@ -206,6 +210,12 @@ function WorkspaceWithClaude() {
     if (chatState.pendingInitialPrompt) return;
 
     autoResumedProjectRef.current = projectRoot;
+    const backend = useSettingsStore.getState().agentBackend;
+    const credentialId =
+      useClaudeChatStore.getState().selectedProviderCredentialId;
+    if (!claudeCodeSessionListEnabled(backend, credentialId)) {
+      return;
+    }
     let cancelled = false;
 
     invoke<ClaudeSessionInfo[]>("list_claude_sessions", {

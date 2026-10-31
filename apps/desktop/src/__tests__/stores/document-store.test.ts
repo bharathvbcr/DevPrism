@@ -15,11 +15,13 @@ import {
   type ProjectFile,
 } from "@/stores/document-store";
 import { setCompileRootPreference } from "@/lib/compile-root-preference";
+import { useClaudeChatStore } from "@/stores/claude-chat-store";
 import { useProjectStore } from "@/stores/project-store";
 
 // Mock history store
-const { loadSnapshotsMock } = vi.hoisted(() => ({
+const { loadSnapshotsMock, stopStreamingTabMock } = vi.hoisted(() => ({
   loadSnapshotsMock: vi.fn((_rootPath: string) => Promise.resolve()),
+  stopStreamingTabMock: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock("@/stores/history-store", () => ({
@@ -40,6 +42,7 @@ vi.mock("@/stores/claude-chat-store", () => ({
       newSession: vi.fn(),
     })),
   },
+  stopStreamingTab: (...args: unknown[]) => stopStreamingTabMock(...args),
 }));
 
 function makeFile(overrides: Partial<ProjectFile> = {}): ProjectFile {
@@ -289,6 +292,32 @@ describe("useDocumentStore", () => {
 
       expect(writeTextFile).toHaveBeenCalledWith("/work/old/main.tex", "dirty");
       expect(rename).toHaveBeenCalledWith("/work/old", "/work/renamed");
+    });
+
+    it("stops a streaming chat once before renaming", async () => {
+      mockScanCommand();
+      vi.mocked(readTextFile).mockResolvedValue("\\documentclass{article}");
+      vi.mocked(useClaudeChatStore.getState).mockReturnValue({
+        newSession: vi.fn(),
+        tabs: [{ id: "tab-live", isStreaming: true }],
+      } as never);
+      useDocumentStore.setState({
+        projectRoot: "/work/old",
+        files: [makeFile({ absolutePath: "/work/old/main.tex" })],
+      });
+
+      await useDocumentStore.getState().renameProject("renamed");
+
+      expect(stopStreamingTabMock).toHaveBeenCalledTimes(1);
+      expect(stopStreamingTabMock).toHaveBeenCalledWith("tab-live");
+      expect(invoke).not.toHaveBeenCalledWith(
+        "cancel_claude_execution",
+        expect.anything(),
+      );
+      expect(invoke).not.toHaveBeenCalledWith(
+        "stop_native_agent",
+        expect.anything(),
+      );
     });
   });
 

@@ -1296,19 +1296,15 @@ pub async fn execute_resume_tool(
             }
 
             if latex_source.is_some() {
-                // Honest refusal. The in-process Tectonic driver cannot be
-                // called from the long-lived MCP server: its C `font_cache`
-                // static is not reset on failure, so a second failed compile
-                // aborts the whole process, and it has no timeout. The
-                // subprocess-isolated wrapper is private and the safe public
-                // entry point needs a project directory plus LatexCompilerState,
-                // neither of which the MCP transports have.
+                // The desktop app compiles LaTeX in-process, but this transport
+                // has no project directory to confine the build to and no way
+                // to interrupt the engine. A runaway TeX pass would block the
+                // long-lived server until the engine returned.
                 return Err(JsonRpcError::invalid_params(
-                    "LaTeX compilation is not available through the MCP server. The in-process \
-                     Tectonic engine is not safe to call here (no timeout; a failed run poisons a \
-                     process-wide font cache), and the subprocess path requires a project \
-                     directory this transport does not have. Compile LaTeX in the desktop app, or \
-                     pass 'typst_source' instead.",
+                    "LaTeX compilation is not available through the MCP server. This transport \
+                     has no project directory to confine the build to, and an in-process \
+                     Tectonic run cannot be interrupted without stopping the server. Compile \
+                     LaTeX in the desktop app, or pass 'typst_source' instead.",
                 ));
             }
 

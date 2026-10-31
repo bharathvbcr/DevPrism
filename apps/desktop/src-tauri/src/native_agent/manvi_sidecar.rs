@@ -24,7 +24,7 @@
 //! not here.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -201,12 +201,14 @@ impl RequestFailure {
 
 /// Resolve the sidecar binary.
 ///
-/// The order is an explicit override, then the directory holding this
-/// executable, then the PATH. The middle step is where a Tauri `externalBin`
-/// sidecar lands, so a bundled build finds its own copy without needing an
-/// `AppHandle` — which matters because the first caller is a tool dispatch
-/// deep in a turn, nowhere near app setup.
-fn resolve_binary() -> Result<PathBuf, String> {
+/// The order is an explicit override, then the copy Tauri installed beside
+/// this executable, then the newer of the checkout sidecar and `manvi` on
+/// `PATH`. A bundled app stops at the copy beside the executable, so a stale
+/// checkout left on a developer's machine cannot override the binary that
+/// shipped. `tauri dev` has no copy beside the executable; the checkout
+/// sidecar (`node scripts/build-manvi.mjs`) and a PATH install are both
+/// usable, and the newer file wins.
+pub(crate) fn resolve_binary() -> Result<PathBuf, String> {
     if let Ok(raw) = std::env::var(BIN_ENV) {
         let p = PathBuf::from(raw.trim());
         if p.is_file() {
@@ -220,35 +222,98 @@ fn resolve_binary() -> Result<PathBuf, String> {
         ));
     }
 
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            // Tauri names sidecars `<name>-<target-triple>` on disk but installs
-            // them beside the app executable under the plain name, which is what
-            // its own `relative_command_path` resolves against. Match that.
-            //
-            // The `deps` step mirrors the same function: under `cargo test` the
-            // executable lives in `target/debug/deps`, one level below where a
-            // locally-placed sidecar would sit.
-            let mut roots = vec![dir];
-            if dir.ends_with("deps") {
-                if let Some(parent) = dir.parent() {
-                    roots.push(parent);
-                }
-            }
-            for root in roots {
-                for candidate in ["manvi", "manvi.exe"] {
-                    let p = root.join(candidate);
-                    if p.is_file() {
-                        return Ok(p);
-                    }
-                }
+    if let Some(bundled) = beside_executable() {
+        return Ok(bundled);
+    }
+
+    let on_path = which::which("manvi").ok();
+    if let Some(path) = pick_dev_binary(checkout_sidecar(), on_path) {
+        return Ok(path);
+    }
+
+    Err(format!(
+        "no manvi binary found (set {BIN_ENV}, place one beside the app, \
+         build it with `node scripts/build-manvi.mjs`, or put `manvi` on PATH)"
+    ))
+}
+
+/// Rust target triple for the sidecar filename `build-manvi.mjs` writes.
+fn host_rust_triple() -> String {
+    let os = match std::env::consts::OS {
+        "macos" => "apple-darwin",
+        "linux" => "unknown-linux-gnu",
+        "windows" => "pc-windows-msvc",
+        other => other,
+    };
+    format!("{}-{os}", std::env::consts::ARCH)
+}
+
+/// `binaries/manvi-<triple>` next to this crate. Absent in a packaged app
+/// that was not built from this checkout, which is why the caller treats
+/// `None` as "keep looking" rather than a failure.
+fn checkout_sidecar() -> Option<PathBuf> {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries");
+    let triple = host_rust_triple();
+    for name in [format!("manvi-{triple}"), format!("manvi-{triple}.exe")] {
+        let path = dir.join(name);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    None
+}
+
+/// The plain `manvi` Tauri installs beside the app executable.
+fn beside_executable() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    // Tauri names sidecars `<name>-<target-triple>` on disk but installs
+    // them beside the app executable under the plain name, which is what
+    // its own `relative_command_path` resolves against. Match that.
+    //
+    // The `deps` step mirrors the same function: under `cargo test` the
+    // executable lives in `target/debug/deps`, one level below where a
+    // locally-placed sidecar would sit.
+    let mut roots = vec![dir.to_path_buf()];
+    if dir.ends_with("deps") {
+        if let Some(parent) = dir.parent() {
+            roots.push(parent.to_path_buf());
+        }
+    }
+    for root in roots {
+        for candidate in ["manvi", "manvi.exe"] {
+            let path = root.join(candidate);
+            if path.is_file() {
+                return Some(path);
             }
         }
     }
+    None
+}
 
-    which::which("manvi").map_err(|_| {
-        format!("no manvi binary found (set {BIN_ENV}, bundle one, or put `manvi` on PATH)")
-    })
+/// Checkout sidecar versus `manvi` on `PATH`. The newer file wins. Equal
+/// mtimes keep the checkout copy, which is the one this repo just built.
+pub(crate) fn pick_dev_binary(
+    checkout: Option<PathBuf>,
+    path_bin: Option<PathBuf>,
+) -> Option<PathBuf> {
+    match (checkout, path_bin) {
+        (Some(local), Some(on_path)) => Some(newer_file(local, on_path)),
+        (Some(local), None) => Some(local),
+        (None, Some(on_path)) => Some(on_path),
+        (None, None) => None,
+    }
+}
+
+fn newer_file(preferred_on_tie: PathBuf, other: PathBuf) -> PathBuf {
+    match (file_mtime(&preferred_on_tie), file_mtime(&other)) {
+        (Some(left), Some(right)) if right > left => other,
+        _ => preferred_on_tie,
+    }
+}
+
+fn file_mtime(path: &Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path).and_then(|meta| meta.modified()).ok()
 }
 
 // ─── The sidecar ───
@@ -888,6 +953,37 @@ mod tests {
         let raw = r#"{"action":"allow","rule":"","severity":"none","reason":"ok",
             "target":"a.tex","some_future_field":{"nested":true}}"#;
         assert!(serde_json::from_str::<Decision>(raw).is_ok());
+    }
+
+    #[test]
+    fn newer_path_binary_beats_an_older_checkout_sidecar() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let checkout = dir.path().join("checkout");
+        let on_path = dir.path().join("path");
+        std::fs::write(&checkout, b"old").expect("write checkout");
+        std::fs::write(&on_path, b"new").expect("write path");
+        let checkout_mtime = std::fs::metadata(&checkout)
+            .and_then(|meta| meta.modified())
+            .expect("checkout mtime");
+        let later = checkout_mtime + std::time::Duration::from_secs(5);
+        std::fs::File::options()
+            .write(true)
+            .open(&on_path)
+            .expect("open path")
+            .set_modified(later)
+            .expect("set mtime");
+        let picked = pick_dev_binary(Some(checkout.clone()), Some(on_path.clone()));
+        assert_eq!(picked.as_deref(), Some(on_path.as_path()));
+
+        std::fs::File::options()
+            .write(true)
+            .open(&on_path)
+            .expect("open path")
+            .set_modified(checkout_mtime)
+            .expect("set equal mtime");
+        let picked = pick_dev_binary(Some(checkout.clone()), Some(on_path));
+        assert_eq!(picked.as_deref(), Some(checkout.as_path()));
+        assert!(pick_dev_binary(None, None).is_none());
     }
 
     #[test]

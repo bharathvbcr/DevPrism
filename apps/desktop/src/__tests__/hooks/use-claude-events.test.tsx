@@ -36,12 +36,14 @@ vi.mock("@/lib/project-compile", async (importOriginal) => ({
 }));
 
 import { useClaudeEvents } from "@/hooks/use-claude-events";
+import { manviChatStartFailure } from "@/lib/chat-labels";
 import {
   useClaudeChatStore,
   type QueuedGuidance,
   type TabState,
 } from "@/stores/claude-chat-store";
 import { useDocumentStore } from "@/stores/document-store";
+import { useSettingsStore } from "@/stores/settings-store";
 
 function makeStreamingTab(id: string, queuedGuidance: QueuedGuidance[] = []) {
   const tab: TabState = {
@@ -182,5 +184,79 @@ describe("useClaudeEvents handleComplete refresh resilience", () => {
 
     await waitFor(() => expect(compileTargetToPdfMock).toHaveBeenCalled());
     expect(useDocumentStore.getState().isCompiling).toBe(false);
+  });
+
+  function fireOutput(tabId: string, message: unknown) {
+    const handler = handlers.get("claude-output");
+    expect(handler).toBeDefined();
+    handler!({
+      payload: { tab_id: tabId, data: JSON.stringify(message) },
+    });
+  }
+
+  it("does not cancel a manvi turn when AskUserQuestion arrives", () => {
+    useSettingsStore.getState().setAgentBackend("claude-code");
+    useClaudeChatStore.setState({
+      tabs: [makeStreamingTab("tab-ask")],
+      activeTabId: "tab-ask",
+    });
+    fireOutput("tab-ask", {
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            id: "t1",
+            name: "AskUserQuestion",
+            input: {},
+          },
+        ],
+      },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(
+      "cancel_claude_execution",
+      expect.anything(),
+    );
+  });
+
+  it("cancels the claude cli when AskUserQuestion arrives", () => {
+    useSettingsStore.getState().setAgentBackend("claude-code");
+    const tab = makeStreamingTab("tab-cli");
+    tab.providerKey = "openai-compatible:oa-1";
+    useClaudeChatStore.setState({
+      tabs: [tab],
+      activeTabId: "tab-cli",
+    });
+    fireOutput("tab-cli", {
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            id: "t1",
+            name: "AskUserQuestion",
+            input: {},
+          },
+        ],
+      },
+    });
+    expect(invoke).toHaveBeenCalledWith("cancel_claude_execution", {
+      tabId: "tab-cli",
+    });
+  });
+
+  it("names manvi when a claude turn ends before any output", async () => {
+    useSettingsStore.getState().setAgentBackend("claude-code");
+    useClaudeChatStore.setState({
+      tabs: [makeStreamingTab("tab-fail")],
+      activeTabId: "tab-fail",
+    });
+    fireComplete("tab-fail", false);
+    await waitFor(() =>
+      expect(
+        useClaudeChatStore.getState().tabs.find((tab) => tab.id === "tab-fail")
+          ?.error,
+      ).toBe(manviChatStartFailure()),
+    );
   });
 });

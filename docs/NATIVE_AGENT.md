@@ -2,10 +2,15 @@
 
 English · [한국어](NATIVE_AGENT.ko.md) · [日本語](NATIVE_AGENT.ja.md) · [简体中文](NATIVE_AGENT.zh-CN.md)
 
-DevPrism includes a built-in agent runtime that talks **directly to a local
-[Ollama](https://ollama.com) model** or any **OpenAI-compatible API** (Groq,
-OpenRouter, Gemini, …) — no Claude Code CLI and no translation proxy for the
-native path.
+Chat turns are a `manvi run` process. That covers a local
+[Ollama](https://ollama.com) model, an OpenAI-compatible API (Groq, OpenRouter,
+Gemini, …), and Claude chat through Manvi's Anthropic harness. The chat UI
+still receives the same `claude-output` and `claude-complete` events.
+
+One-shot completion, embeddings, captions, and Ollama model admin stay in
+DevPrism. Cursor CLI chat is unchanged. On the Claude backend, a selected
+OpenAI-compatible credential still uses that provider. A missing `manvi`
+binary fails the turn.
 
 ## Enabling Ollama
 
@@ -33,45 +38,65 @@ For cloud OpenAI-compatible providers without the Claude CLI:
 The optional [groq-code-cli](https://github.com/build-with-groq/groq-code-cli)
 can be installed for terminal use — it is **not** spawned for in-app chat.
 
-When a native backend is active, Claude Code and other cloud CLI providers are
-not used for chat. Embeddings prefer Gemini/OpenAI `/embeddings` when such a
-credential is selected; otherwise they use local Ollama.
+When a native backend is active, the Claude Code CLI is not used for chat.
+Embeddings prefer Gemini/OpenAI `/embeddings` when such a credential is
+selected; otherwise they use local Ollama.
+
+## Claude models
+
+The picker offers Opus, Sonnet, Haiku, and Opus Plan. Opus, Sonnet, and Haiku
+map to `claude-opus-5-5`, `claude-sonnet-5-5`, and `claude-haiku-5-5`. Opus
+Plan is not a catalogue id: the session model is Opus and the heavy tier is
+Sonnet, so Opus plans the turn and Sonnet writes. The advisor tier stays on
+Opus, and the cache key stays the picker string `opusplan`. The host pins a
+Manvi tier only when that tier's shipped input price is higher than the model
+you picked, so a Sonnet chat cannot start an Opus or Fable side call. Effort
+is `low`, `medium`, or `high`. The Anthropic key is the one stored in
+Settings. When that store has no key, the turn uses `ANTHROPIC_API_KEY` from
+the app's own environment. `bun run dev:desktop` rebuilds the Manvi sidecar
+when the sibling checkout's Go sources are newer than the binary on disk.
 
 ## What it does
 
-- Runs an agentic loop in Rust: it reads/edits your files with built-in tools and
-  keeps going until the task is done — same chat UI, diffs, and "Keep/Undo" flow.
-- **Tools:** `Read`, `Write`, `Edit` (with `replace_all`), `MultiEdit` (several
-  edits to one file applied atomically — handy for multi-spot `.tex`/`.bib` edits),
-  `LS`, `Grep` (with `glob`/`case_sensitive` scoping), `Glob`, `Bash` (runs in the
-  project, activates `.venv`). All file access is confined to the project directory.
-  On top of these built-ins the agent advertises a curated subset of the plugin
-  registry — knowledge-base search, resume synthesis / gap analysis / compile,
-  and guarded resume document editing (`resume_doc_*`, `resume_variant_*`);
-  packs opt in per tool, see [PLUGINS.md](PLUGINS.md).
-- **Project context:** auto-discovers your master/instruction files, a project
-  map, and installed skills (see [CONTEXT_FILES.md](CONTEXT_FILES.md)).
-- **Memory:** remembers the conversation per chat tab.
-- **Vision:** pasted images are sent to vision-capable models (e.g. `llava`,
-  `llama3.2-vision`).
-- **Streaming:** text/thinking deltas are coalesced in Rust (~40 ms or 1 KiB
-  windows) before crossing IPC, so chatty local models don't flood the chat UI.
+- Spawns `manvi run --json` and translates Manvi events into the chat stream.
+  The same chat UI, diffs, and Keep/Undo flow still apply.
+- **Tools** come from Manvi's harness plus DevPrism's MCP server, including
+  `latex_compile` for the open project. See [PLUGINS.md](PLUGINS.md).
+- **Host prefix:** the open file, the selection (text and 1-based lines), the
+  last compile status, and the on-device personalization profile when that
+  profile has something to say. Manvi keeps its own system prompt. The profile
+  is added once, in the user prefix.
+- **Approvals** answer on a pipe. There is no
+  `--dangerously-skip-permissions` flag.
+- **Sessions** are Manvi ids prefixed `manvi:`. They are remembered for the
+  running app, and after a restart when this project still has the session
+  file and the chat UI sends the stored `manvi:` id. New Chat drops that id.
+  They are not Claude Code session files.
+- **Vision:** up to four pasted images, 8 MiB each, png/jpeg/gif/webp.
+- **Streaming:** text and thinking deltas are coalesced before they cross IPC.
+  A heartbeat every 30 seconds keeps a quiet tool call from looking stalled.
 
-## Tuning (Settings → Provider, when native is on)
+Chat-only mode passes `--chat-only`. The composer sets it for an Ollama model
+that cannot call tools, and the host also sets it when Ollama's `/api/show`
+lists capabilities and omits `tools`. That case emits the same assistant
+notice as the previous engine. `keep_alive` is sent only to Ollama, and an
+unset value is `10m`. Temperature and context window are sent only for the
+local provider, and only when the caller set them. A cloud OpenAI-compatible
+host with an empty key fails the turn. A Vertex OpenAI-compatible base mints
+a bearer through the existing Google auth path and sends it as `LOCAL_API_KEY`.
 
-- **Context window (`num_ctx`)** — how much the model can "see" (default 8192).
-  Larger = more memory/VRAM. Lower it on small machines; raise it for long
-  documents/conversations.
-- **Temperature** — default 0.4 (low = more deterministic edits).
-- **`keep_alive`** — how long Ollama keeps the model resident between turns
-  (default `10m`); the runtime accepts an override so a warm model isn't reloaded
-  each round.
+## Tuning (Settings → Provider, when a local model is on)
+
+- **Context window (`num_ctx`)** and **temperature** are forwarded to the local
+  provider when you set them. They are not sent to Anthropic, and the host does
+  not invent the old defaults of 8192 and 0.4.
+- **`keep_alive`** is forwarded to Ollama. Unset means `10m`. It is not sent
+  to Anthropic or to another OpenAI-compatible host.
 
 ## Notes & limitations
 
-- Tool-calling quality depends on the model; prefer `llama3.1` / `qwen2.5` /
-  `mistral-nemo` over tiny non-tool models.
-- Conversation memory is in-process (cleared on "new chat"/closing a tab; not yet
-  persisted across app restarts).
-- Assistant text is streamed token-by-token to the chat as it is generated; tool
-  calls are reconciled per round.
+- Tool-calling quality depends on the model.
+- A Manvi session id survives an app restart when the project still has the
+  session file and the chat UI sends the stored id. New Chat omits `--resume`.
+- A paper whose `.devcouncil/config.yaml` sets `llm.tier` is refused. The host
+  does not let `manvi run` scaffold `.devcouncil` in the project.

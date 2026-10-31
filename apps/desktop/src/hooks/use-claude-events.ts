@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { remove } from "@tauri-apps/plugin-fs";
 import {
   CLAUDE_CODE_PROVIDER_ID,
+  claudeCliOwnsTurn,
   useClaudeChatStore,
   type ClaudeStreamMessage,
 } from "@/stores/claude-chat-store";
@@ -16,7 +17,11 @@ import { formatCompileError, isSupersededCompile } from "@/lib/latex-compiler";
 import { compileTargetToPdf } from "@/lib/project-compile";
 import { resolveActiveCompileTarget } from "@/lib/compile-root-preference";
 import { createLogger } from "@/lib/debug/logger";
-import { getChatLabels } from "@/lib/chat-labels";
+import {
+  getChatLabels,
+  manviChatExitFailure,
+  manviChatStartFailure,
+} from "@/lib/chat-labels";
 import {
   backendShowsSessionHistory,
   backendUsesNativeRuntime,
@@ -355,15 +360,16 @@ export function useClaudeEvents() {
 
       chatStore._appendMessage(tabId, msg);
 
-      // When a UI-pause tool is detected, cancel the process so the user
-      // can interact with the widget before Claude continues.
+      // The Claude CLI cannot ask in print mode, so that child is cancelled
+      // and the card is answered on the next resume. A Manvi turn stays up:
+      // the answer goes back on the approve pipe.
       if (msg.type === "assistant" && msg.message?.content) {
         const hasUiPauseTool = msg.message.content.some(
           (b: any) =>
             b.type === "tool_use" &&
             (b.name === "AskUserQuestion" || b.name === "ExitPlanMode"),
         );
-        if (hasUiPauseTool) {
+        if (hasUiPauseTool && claudeCliOwnsTurn(tabId)) {
           log.info(
             `[${tabId}] ${elapsed(tabId)} UI-pause tool detected - cancelling process for user input`,
           );
@@ -403,25 +409,31 @@ export function useClaudeEvents() {
         const isDirectProvider = directProviderTabRef.current.get(tabId);
         const agentBackend = useSettingsStore.getState().agentBackend;
         const chatLabels = getChatLabels(agentBackend);
+        const manviClaude =
+          agentBackend === "claude-code" && !claudeCliOwnsTurn(tabId);
         if (count === 0) {
           const isWindows = navigator.userAgent.includes("Windows");
           chatStore._setError(
             tabId,
             isDirectProvider
               ? "AI provider request failed to start. Check the provider API key, Base URL, model name, and model access."
-              : backendUsesNativeRuntime(agentBackend)
-                ? chatLabels.processFailedStart
-                : isWindows
-                  ? (chatLabels.processFailedStartWindows ??
-                    chatLabels.processFailedStart)
-                  : chatLabels.processFailedStart,
+              : manviClaude
+                ? manviChatStartFailure()
+                : backendUsesNativeRuntime(agentBackend)
+                  ? chatLabels.processFailedStart
+                  : isWindows
+                    ? (chatLabels.processFailedStartWindows ??
+                      chatLabels.processFailedStart)
+                    : chatLabels.processFailedStart,
           );
         } else {
           chatStore._setError(
             tabId,
             isDirectProvider
               ? "AI provider request stopped unexpectedly. Check the provider API key, model access, Base URL, tool-call support, or rate limits."
-              : chatLabels.processExited,
+              : manviClaude
+                ? manviChatExitFailure()
+                : chatLabels.processExited,
           );
         }
       }
@@ -474,6 +486,7 @@ export function useClaudeEvents() {
       if (
         projectPath &&
         completedSessionId &&
+        !completedSessionId.startsWith("manvi:") &&
         backendShowsSessionHistory(agentBackend)
       ) {
         void (async () => {

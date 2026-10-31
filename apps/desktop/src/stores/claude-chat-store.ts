@@ -39,6 +39,38 @@ import { usePersonalizationStore } from "./personalization-store";
 const log = createLogger("claude");
 export const CLAUDE_CODE_PROVIDER_ID = "__claude-code__";
 export { CURSOR_CLI_PROVIDER_ID };
+
+/** Picker alias or catalogue id → the id Manvi's price table knows. */
+export function claudeCatalogueId(model: string): string {
+  switch (model) {
+    case "opus":
+    case "claude-opus-5-5":
+      return "claude-opus-5-5";
+    case "sonnet":
+    case "claude-sonnet-5-5":
+      return "claude-sonnet-5-5";
+    case "haiku":
+    case "claude-haiku-5-5":
+      return "claude-haiku-5-5";
+    default:
+      return model;
+  }
+}
+
+/**
+ * Claude Code session files on disk belong to the OpenAI-compatible diversion.
+ * Manvi turns keep their id in memory and must not load those files.
+ */
+export function claudeCodeSessionListEnabled(
+  backend: string,
+  providerCredentialId: string | null | undefined,
+): boolean {
+  return (
+    backend === "claude-code" &&
+    !!providerCredentialId &&
+    providerCredentialId !== CLAUDE_CODE_PROVIDER_ID
+  );
+}
 export const SELECTED_PROVIDER_CREDENTIAL_STORAGE_KEY =
   "claude-prism:selected-provider-credential-id";
 
@@ -69,6 +101,74 @@ function persistSelectedProviderCredentialId(credentialId: string | null) {
   } else {
     storage.removeItem(SELECTED_PROVIDER_CREDENTIAL_STORAGE_KEY);
   }
+}
+
+const MANVI_RESUME_PREFIX = "devprism:manvi-resume:";
+
+/** Tabs created by New Chat must not pick up the project's last Manvi id. */
+const suppressManviResume = new Set<string>();
+
+function manviResumeStorage(): Storage | null {
+  try {
+    return globalThis.localStorage ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function manviResumeKey(projectPath: string): string {
+  return `${MANVI_RESUME_PREFIX}${projectPath}`;
+}
+
+export function loadManviResume(
+  projectPath: string | null | undefined,
+): string | null {
+  if (!projectPath) return null;
+  try {
+    const value = manviResumeStorage()?.getItem(manviResumeKey(projectPath));
+    const trimmed = value?.trim();
+    return trimmed?.startsWith("manvi:") ? trimmed : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistManviResume(
+  projectPath: string | null | undefined,
+  sessionId: string,
+) {
+  if (!projectPath || !sessionId.startsWith("manvi:")) return;
+  try {
+    manviResumeStorage()?.setItem(manviResumeKey(projectPath), sessionId);
+  } catch {
+    // Storage can be disabled. The in-memory id still drives this window.
+  }
+}
+
+export function clearManviResume(projectPath: string | null | undefined) {
+  if (!projectPath) return;
+  try {
+    manviResumeStorage()?.removeItem(manviResumeKey(projectPath));
+  } catch {
+    // Storage can be disabled. The suppress set still blocks this tab.
+  }
+}
+
+/** Clears the New Chat suppress set. Tests call this between cases. */
+export function resetManviResumeForTests() {
+  suppressManviResume.clear();
+}
+
+function manviSessionForTurn(
+  projectPath: string,
+  resumeSessionId: string | null,
+  tabId: string,
+  allowStored: boolean,
+): string | null {
+  if (resumeSessionId?.startsWith("manvi:")) return resumeSessionId;
+  if (resumeSessionId) return null;
+  if (!allowStored || suppressManviResume.has(tabId)) return null;
+  return loadManviResume(projectPath);
 }
 
 /** Convert a character offset to 1-based line:col */
@@ -768,9 +868,11 @@ interface ClaudeChatState {
   requestPinnedContextRemoval: (labels: string[]) => void;
   consumePendingPinnedContextRemovals: () => string[];
 
-  /** Currently selected model (passed per-prompt to Claude CLI) */
+  /** Currently selected model (passed per-prompt to the chat turn) */
   selectedModel: "sonnet" | "opus" | "haiku" | "opusplan";
-  setSelectedModel: (model: "sonnet" | "opus" | "haiku" | "opusplan") => void;
+  setSelectedModel: (
+    model: "sonnet" | "opus" | "haiku" | "opusplan",
+  ) => void;
   selectedProviderCredentialId: string | null;
   setSelectedProviderCredentialId: (credentialId: string | null) => void;
   selectedProviderModels: Record<string, string>;
@@ -944,14 +1046,36 @@ function findPendingToolUseIds(messages: ClaudeStreamMessage[]): string[] {
   return toolUseIds.filter((id) => !resultIds.has(id));
 }
 
+function tabUsesClaudeCli(tabId: string, backend: AgentBackend): boolean {
+  if (backend !== "claude-code") return false;
+  const tab = useClaudeChatStore.getState().tabs.find((t) => t.id === tabId);
+  return claudeCodeSessionListEnabled(
+    backend,
+    providerCredentialIdFromSessionKey(tab?.providerKey ?? null) ?? null,
+  );
+}
+
+/** Stop the one process that owns this tab. */
+export async function stopStreamingTab(tabId: string): Promise<void> {
+  await killStreamBackend(tabId, useSettingsStore.getState().agentBackend);
+}
+
+/**
+ * True when this tab's chat child is the Claude CLI (the OpenAI-compatible
+ * diversion). Manvi turns must keep running through an AskUser card.
+ */
+export function claudeCliOwnsTurn(tabId: string): boolean {
+  return tabUsesClaudeCli(tabId, useSettingsStore.getState().agentBackend);
+}
+
 async function killStreamBackend(tabId: string, backend: AgentBackend) {
   try {
-    if (backendUsesNativeRuntime(backend)) {
-      await invoke("stop_native_agent", { tabId });
-    } else if (backend === "cursor-cli") {
+    if (backend === "cursor-cli") {
       await invoke("cancel_cursor_agent", { tabId });
-    } else {
+    } else if (tabUsesClaudeCli(tabId, backend)) {
       await invoke("cancel_claude_execution", { tabId });
+    } else {
+      await invoke("stop_native_agent", { tabId });
     }
   } catch {
     // UI already moved to a stopped state; stale output is ignored.
@@ -1131,9 +1255,25 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       providerChanged &&
       requestProviderKey === CLAUDE_CODE_PROVIDER_ID &&
       previousProviderKey !== CLAUDE_CODE_PROVIDER_ID;
-    const resumeSessionId = switchingDirectProviderToClaudeCode
-      ? null
-      : (sessionId ?? null);
+    const agentBackend = useSettingsStore.getState().agentBackend;
+    const nativeMode = backendUsesNativeRuntime(agentBackend);
+    // Cursor and the Claude CLI cannot resume a Manvi session. Dropping the
+    // id here also keeps it off the tab, so the next send does not retry it.
+    const manviEngine =
+      nativeMode ||
+      (agentBackend === "claude-code" && !providerCredentialId);
+    const sessionIsManvi = !!sessionId?.startsWith("manvi:");
+    const handoffFromManvi = sessionIsManvi && !manviEngine;
+    const resumeSessionId =
+      switchingDirectProviderToClaudeCode || handoffFromManvi
+        ? null
+        : (sessionId ?? null);
+    if (switchingDirectProviderToClaudeCode) {
+      // This send starts a fresh Manvi process and inlines prior turns.
+      // Keep the stored id for a later return to Manvi, but do not let this
+      // tab load it again before the new process reports its own session.
+      suppressManviResume.add(activeTabId);
+    }
 
     const sendStart = performance.now();
     const streamingStartedAt = Date.now();
@@ -1152,9 +1292,6 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     const activeFile = docState.files.find(
       (f) => f.id === docState.activeFileId,
     );
-    const nativeMode = backendUsesNativeRuntime(
-      useSettingsStore.getState().agentBackend,
-    );
     let contextLabel: string | null = null;
 
     if (contextOverride) {
@@ -1169,10 +1306,9 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
           startLine === endLine
             ? `@${activeFile.relativePath}:${startLine}`
             : `@${activeFile.relativePath}:${startLine}-${endLine}`;
-      } else if (nativeMode) {
-        // The native runtime attaches the open file's context every turn (and
-        // inlines small files), so show which file is in play even with no
-        // selection — otherwise that attached context is invisible to the user.
+      } else if (manviEngine) {
+        // Manvi turns attach the open file as its own field, including Claude
+        // chat. The chip is the only place that attachment is visible.
         contextLabel = `@${activeFile.relativePath}`;
       }
     }
@@ -1295,7 +1431,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         prompt = `${ctx}\n\n${userPrompt}`;
       }
 
-      if (switchingDirectProviderToClaudeCode) {
+      if (switchingDirectProviderToClaudeCode || handoffFromManvi) {
         const priorContext = buildProviderSwitchContext(
           priorTurnMessages(get(), activeTabId, userMessage),
         );
@@ -1326,7 +1462,6 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
 
       syncSemanticLayerConfig();
 
-      const agentBackend = useSettingsStore.getState().agentBackend;
       const ns = useSettingsStore.getState();
 
       if (
@@ -1462,6 +1597,12 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
           providerCredentialId: useOpenAiCompat
             ? (openaiCred?.id ?? providerCredentialId)
             : (ollamaCred?.id ?? providerCredentialId),
+          sessionId: manviSessionForTurn(
+            projectPath,
+            resumeSessionId,
+            activeTabId,
+            !switchingDirectProviderToClaudeCode,
+          ),
         });
         nativeSeededTabs.add(activeTabId);
       } else if (agentBackend === "cursor-cli") {
@@ -1506,7 +1647,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         } else {
           await invoke("execute_cursor_agent", cursorArgs);
         }
-      } else {
+      } else if (providerCredentialId) {
         const prepared = await prepareChatSemanticInference(
           {
             prompt,
@@ -1535,30 +1676,130 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         prompt = prepared.prompt;
 
         if (resumeSessionId) {
-          // Resume existing session
-          await invoke("resume_claude_code", {
-            projectPath,
-            sessionId: resumeSessionId,
-            prompt,
-            tabId: activeTabId,
-            model: selectedModel,
-            effortLevel,
-            providerCredentialId,
-            providerModelOverride,
+            await invoke("resume_claude_code", {
+              projectPath,
+              sessionId: resumeSessionId,
+              prompt,
+              tabId: activeTabId,
+              model: selectedModel,
+              effortLevel,
+              providerCredentialId,
+              providerModelOverride,
+            });
+          } else {
+            await invoke("execute_claude_code", {
+              projectPath,
+              prompt,
+              tabId: activeTabId,
+              model: selectedModel,
+              effortLevel,
+              providerCredentialId,
+              providerModelOverride,
+            });
+          }
+      } else {
+          // Claude chat is a Manvi turn. File, selection, and compile state
+          // travel as their own fields so the host prefix is not applied twice.
+          let manviPrompt = userPrompt;
+          // A provider switch starts a new Manvi process, so prior turns have to
+          // ride in the prompt even when this tab already seeded a Manvi session.
+          if (
+            switchingDirectProviderToClaudeCode ||
+            !nativeSeededTabs.has(activeTabId)
+          ) {
+            const priorContext = buildProviderSwitchContext(
+              priorTurnMessages(get(), activeTabId, userMessage),
+            );
+            if (priorContext) manviPrompt = `${priorContext}\n\n${userPrompt}`;
+          }
+          const docStateManvi = useDocumentStore.getState();
+          const activeDocManvi = docStateManvi.files.find(
+            (f) => f.id === docStateManvi.activeFileId,
+          );
+          const activeFilePath = activeDocManvi?.relativePath ?? null;
+          const sel = docStateManvi.selectionRange;
+          const liveSelText =
+            activeDocManvi?.content && sel && sel.end > sel.start
+              ? activeDocManvi.content.slice(sel.start, sel.end)
+              : null;
+          const rawSelection = contextOverride?.selectedText ?? liveSelText;
+          const selection = rawSelection ? rawSelection.slice(0, 4000) : null;
+          let selectionStartLine: number | null = null;
+          let selectionEndLine: number | null = null;
+          const selContent = activeDocManvi?.content;
+          if (selContent && contextOverride?.selectedText) {
+            const at = selContent.indexOf(contextOverride.selectedText);
+            if (
+              at >= 0 &&
+              selContent.indexOf(contextOverride.selectedText, at + 1) === -1
+            ) {
+              selectionStartLine = offsetToLineCol(selContent, at).line;
+              selectionEndLine = offsetToLineCol(
+                selContent,
+                at + contextOverride.selectedText.length,
+              ).line;
+            }
+          } else if (selContent && sel && sel.end > sel.start) {
+            selectionStartLine = offsetToLineCol(selContent, sel.start).line;
+            selectionEndLine = offsetToLineCol(selContent, sel.end).line;
+          }
+          const catalogueModel = claudeCatalogueId(selectedModel);
+          const manviPrepared = await prepareChatSemanticInference(
+            {
+              prompt: manviPrompt,
+              defaultModel: catalogueModel,
+              contextChunks: chatContextChunks,
+              skipRouter: true,
+            },
+            aiEmbed,
+          );
+          if (manviPrepared.cachedResponse != null) {
+            await invoke("deliver_cached_native_reply", {
+              tabId: activeTabId,
+              response: manviPrepared.cachedResponse,
+            });
+            nativeSeededTabs.add(activeTabId);
+            log.info(
+              `sendPrompt complete (semantic cache) in ${(performance.now() - sendStart).toFixed(0)}ms`,
+            );
+            return;
+          }
+          trackSemanticTurn(activeTabId, {
+            prompt: manviPrepared.prompt,
+            system: manviPrepared.system,
           });
-        } else {
-          // New session
-          await invoke("execute_claude_code", {
+          await invoke("run_native_agent", {
             projectPath,
-            prompt,
+            prompt: manviPrepared.prompt,
             tabId: activeTabId,
-            model: selectedModel,
+            model: catalogueModel,
+            baseUrl: null,
+            images: nativeImages.length ? nativeImages : null,
+            numCtx: null,
+            temperature: null,
+            keepAlive: null,
             effortLevel,
-            providerCredentialId,
-            providerModelOverride,
+            activeFile: activeFilePath,
+            selection,
+            selectionStartLine,
+            selectionEndLine,
+            personalizationPrompt: null,
+            compileStatePrompt: compressorHandledContext
+              ? null
+              : compileStatePrompt,
+            chatOnly: false,
+            chatProvider: "anthropic",
+            apiKey: null,
+            providerCredentialId: null,
+            sessionId: manviSessionForTurn(
+              projectPath,
+              resumeSessionId,
+              activeTabId,
+              !switchingDirectProviderToClaudeCode,
+            ),
           });
+          nativeSeededTabs.add(activeTabId);
         }
-      }
       log.info(
         `sendPrompt complete in ${(performance.now() - sendStart).toFixed(0)}ms`,
       );
@@ -1717,17 +1958,12 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
 
     try {
       const backend = useSettingsStore.getState().agentBackend;
-      if (backendUsesNativeRuntime(backend)) {
-        await invoke("stop_native_agent", { tabId });
-        set((s) => ({
-          _cancelledTabs: cancelledWith(s._cancelledTabs, tabId),
-        }));
-      } else if (backend === "cursor-cli") {
+      if (backend === "cursor-cli") {
         await invoke("cancel_cursor_agent", { tabId });
         set((s) => ({
           _cancelledTabs: cancelledWith(s._cancelledTabs, tabId),
         }));
-      } else {
+      } else if (tabUsesClaudeCli(tabId, backend)) {
         const interrupted = await invoke<boolean>(
           "interrupt_claude_execution",
           {
@@ -1739,6 +1975,11 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
             _cancelledTabs: cancelledWith(s._cancelledTabs, tabId),
           }));
         }
+      } else {
+        await invoke("stop_native_agent", { tabId });
+        set((s) => ({
+          _cancelledTabs: cancelledWith(s._cancelledTabs, tabId),
+        }));
       }
     } catch (err: any) {
       set((state) => {
@@ -1917,6 +2158,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       null;
     if (activeTab?.isStreaming) {
       const id = nextTabId();
+      suppressManviResume.add(id);
       const newTab = {
         ...makeDefaultTab(id, projectPath),
         providerKey:
@@ -1946,6 +2188,8 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     // new conversation (mirrors clearMessages / closeTab).
     nativeSeededTabs.delete(activeTabId);
     aiTitleRefinedTabs.delete(activeTabId);
+    suppressManviResume.add(activeTabId);
+    clearManviResume(projectPath);
     get()._clearStreamWatchdog(activeTabId);
     void Promise.resolve(
       invoke("clear_native_session", { tabId: activeTabId }),
@@ -2310,6 +2554,11 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
   },
 
   _setSessionId: (tabId: string, id: string) => {
+    if (id.startsWith("manvi:")) {
+      const state = get();
+      const tab = state.tabs.find((item) => item.id === tabId);
+      persistManviResume(tab?.projectPath ?? state.activeProjectPath, id);
+    }
     set((state) => applyTabUpdate(state, tabId, { sessionId: id }));
   },
 

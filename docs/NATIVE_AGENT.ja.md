@@ -23,6 +23,19 @@ DevPrism に残ります。現行の説明は [English](NATIVE_AGENT.md) が基�
 トグルがオンのときチャットはネイティブランタイムを使用し、クラウドプロバイダーはオフの
 ときのみ使用されます。
 
+## Claude モデル
+
+モデル選択には Opus、Sonnet、Haiku、Opus Plan があります。Opus、Sonnet、Haiku は
+それぞれ `claude-opus-5-5`、`claude-sonnet-5-5`、`claude-haiku-5-5` に対応します。
+Opus Plan はカタログ ID ではありません。セッションモデルが Opus、heavy ティアが Sonnet
+なので、Opus がターンを計画し Sonnet が書きます。advisor ティアは Opus のままで、
+キャッシュキーは選択肢の文字列 `opusplan` のままです。ホストは、そのティアの既定の入力
+価格が選んだモデルより高い場合にだけ Manvi のティアを固定するため、Sonnet のチャットが
+Opus や Fable の補助呼び出しを始めることはありません。effort は `low`、`medium`、`high`
+のいずれかです。Anthropic キーは設定に保存されたものを使い、保存されていなければアプリ
+自身の環境の `ANTHROPIC_API_KEY` を使います。`bun run dev:desktop` は、隣のチェック
+アウトの Go ソースがディスク上のバイナリより新しいとき Manvi サイドカーを再ビルドします。
+
 ## できること
 
 - `manvi run` がツールループを実行します。チャット UI・差分・「保持／取り消し」は

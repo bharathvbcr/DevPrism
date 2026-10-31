@@ -168,7 +168,11 @@ export function buildManvi({
   const suffix = goTarget.GOOS === "windows" ? ".exe" : "";
   const out = join(outDir, `manvi-${triple}${suffix}`);
 
-  if (ifStale && existsSync(out) && !goSourcesNewerThan(source, statSync(out).mtimeMs)) {
+  if (
+    ifStale &&
+    existsSync(out) &&
+    !goSourcesNewerThan(source, statSync(out).mtimeMs)
+  ) {
     log(`sidecar is current (${out})`);
     return out;
   }

@@ -21,7 +21,7 @@ import { useProjectStore } from "@/stores/project-store";
 // Mock history store
 const { loadSnapshotsMock, stopStreamingTabMock } = vi.hoisted(() => ({
   loadSnapshotsMock: vi.fn((_rootPath: string) => Promise.resolve()),
-  stopStreamingTabMock: vi.fn(() => Promise.resolve()),
+  stopStreamingTabMock: vi.fn((_tabId: string) => Promise.resolve()),
 }));
 
 vi.mock("@/stores/history-store", () => ({
@@ -42,7 +42,7 @@ vi.mock("@/stores/claude-chat-store", () => ({
       newSession: vi.fn(),
     })),
   },
-  stopStreamingTab: (...args: unknown[]) => stopStreamingTabMock(...args),
+  stopStreamingTab: (tabId: string) => stopStreamingTabMock(tabId),
 }));
 
 function makeFile(overrides: Partial<ProjectFile> = {}): ProjectFile {

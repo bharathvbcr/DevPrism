@@ -870,9 +870,7 @@ interface ClaudeChatState {
 
   /** Currently selected model (passed per-prompt to the chat turn) */
   selectedModel: "sonnet" | "opus" | "haiku" | "opusplan";
-  setSelectedModel: (
-    model: "sonnet" | "opus" | "haiku" | "opusplan",
-  ) => void;
+  setSelectedModel: (model: "sonnet" | "opus" | "haiku" | "opusplan") => void;
   selectedProviderCredentialId: string | null;
   setSelectedProviderCredentialId: (credentialId: string | null) => void;
   selectedProviderModels: Record<string, string>;
@@ -1260,8 +1258,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
     // Cursor and the Claude CLI cannot resume a Manvi session. Dropping the
     // id here also keeps it off the tab, so the next send does not retry it.
     const manviEngine =
-      nativeMode ||
-      (agentBackend === "claude-code" && !providerCredentialId);
+      nativeMode || (agentBackend === "claude-code" && !providerCredentialId);
     const sessionIsManvi = !!sessionId?.startsWith("manvi:");
     const handoffFromManvi = sessionIsManvi && !manviEngine;
     const resumeSessionId =
@@ -1676,130 +1673,130 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         prompt = prepared.prompt;
 
         if (resumeSessionId) {
-            await invoke("resume_claude_code", {
-              projectPath,
-              sessionId: resumeSessionId,
-              prompt,
-              tabId: activeTabId,
-              model: selectedModel,
-              effortLevel,
-              providerCredentialId,
-              providerModelOverride,
-            });
-          } else {
-            await invoke("execute_claude_code", {
-              projectPath,
-              prompt,
-              tabId: activeTabId,
-              model: selectedModel,
-              effortLevel,
-              providerCredentialId,
-              providerModelOverride,
-            });
-          }
-      } else {
-          // Claude chat is a Manvi turn. File, selection, and compile state
-          // travel as their own fields so the host prefix is not applied twice.
-          let manviPrompt = userPrompt;
-          // A provider switch starts a new Manvi process, so prior turns have to
-          // ride in the prompt even when this tab already seeded a Manvi session.
-          if (
-            switchingDirectProviderToClaudeCode ||
-            !nativeSeededTabs.has(activeTabId)
-          ) {
-            const priorContext = buildProviderSwitchContext(
-              priorTurnMessages(get(), activeTabId, userMessage),
-            );
-            if (priorContext) manviPrompt = `${priorContext}\n\n${userPrompt}`;
-          }
-          const docStateManvi = useDocumentStore.getState();
-          const activeDocManvi = docStateManvi.files.find(
-            (f) => f.id === docStateManvi.activeFileId,
-          );
-          const activeFilePath = activeDocManvi?.relativePath ?? null;
-          const sel = docStateManvi.selectionRange;
-          const liveSelText =
-            activeDocManvi?.content && sel && sel.end > sel.start
-              ? activeDocManvi.content.slice(sel.start, sel.end)
-              : null;
-          const rawSelection = contextOverride?.selectedText ?? liveSelText;
-          const selection = rawSelection ? rawSelection.slice(0, 4000) : null;
-          let selectionStartLine: number | null = null;
-          let selectionEndLine: number | null = null;
-          const selContent = activeDocManvi?.content;
-          if (selContent && contextOverride?.selectedText) {
-            const at = selContent.indexOf(contextOverride.selectedText);
-            if (
-              at >= 0 &&
-              selContent.indexOf(contextOverride.selectedText, at + 1) === -1
-            ) {
-              selectionStartLine = offsetToLineCol(selContent, at).line;
-              selectionEndLine = offsetToLineCol(
-                selContent,
-                at + contextOverride.selectedText.length,
-              ).line;
-            }
-          } else if (selContent && sel && sel.end > sel.start) {
-            selectionStartLine = offsetToLineCol(selContent, sel.start).line;
-            selectionEndLine = offsetToLineCol(selContent, sel.end).line;
-          }
-          const catalogueModel = claudeCatalogueId(selectedModel);
-          const manviPrepared = await prepareChatSemanticInference(
-            {
-              prompt: manviPrompt,
-              defaultModel: catalogueModel,
-              contextChunks: chatContextChunks,
-              skipRouter: true,
-            },
-            aiEmbed,
-          );
-          if (manviPrepared.cachedResponse != null) {
-            await invoke("deliver_cached_native_reply", {
-              tabId: activeTabId,
-              response: manviPrepared.cachedResponse,
-            });
-            nativeSeededTabs.add(activeTabId);
-            log.info(
-              `sendPrompt complete (semantic cache) in ${(performance.now() - sendStart).toFixed(0)}ms`,
-            );
-            return;
-          }
-          trackSemanticTurn(activeTabId, {
-            prompt: manviPrepared.prompt,
-            system: manviPrepared.system,
-          });
-          await invoke("run_native_agent", {
+          await invoke("resume_claude_code", {
             projectPath,
-            prompt: manviPrepared.prompt,
+            sessionId: resumeSessionId,
+            prompt,
             tabId: activeTabId,
-            model: catalogueModel,
-            baseUrl: null,
-            images: nativeImages.length ? nativeImages : null,
-            numCtx: null,
-            temperature: null,
-            keepAlive: null,
+            model: selectedModel,
             effortLevel,
-            activeFile: activeFilePath,
-            selection,
-            selectionStartLine,
-            selectionEndLine,
-            personalizationPrompt: null,
-            compileStatePrompt: compressorHandledContext
-              ? null
-              : compileStatePrompt,
-            chatOnly: false,
-            chatProvider: "anthropic",
-            apiKey: null,
-            providerCredentialId: null,
-            sessionId: manviSessionForTurn(
-              projectPath,
-              resumeSessionId,
-              activeTabId,
-              !switchingDirectProviderToClaudeCode,
-            ),
+            providerCredentialId,
+            providerModelOverride,
+          });
+        } else {
+          await invoke("execute_claude_code", {
+            projectPath,
+            prompt,
+            tabId: activeTabId,
+            model: selectedModel,
+            effortLevel,
+            providerCredentialId,
+            providerModelOverride,
+          });
+        }
+      } else {
+        // Claude chat is a Manvi turn. File, selection, and compile state
+        // travel as their own fields so the host prefix is not applied twice.
+        let manviPrompt = userPrompt;
+        // A provider switch starts a new Manvi process, so prior turns have to
+        // ride in the prompt even when this tab already seeded a Manvi session.
+        if (
+          switchingDirectProviderToClaudeCode ||
+          !nativeSeededTabs.has(activeTabId)
+        ) {
+          const priorContext = buildProviderSwitchContext(
+            priorTurnMessages(get(), activeTabId, userMessage),
+          );
+          if (priorContext) manviPrompt = `${priorContext}\n\n${userPrompt}`;
+        }
+        const docStateManvi = useDocumentStore.getState();
+        const activeDocManvi = docStateManvi.files.find(
+          (f) => f.id === docStateManvi.activeFileId,
+        );
+        const activeFilePath = activeDocManvi?.relativePath ?? null;
+        const sel = docStateManvi.selectionRange;
+        const liveSelText =
+          activeDocManvi?.content && sel && sel.end > sel.start
+            ? activeDocManvi.content.slice(sel.start, sel.end)
+            : null;
+        const rawSelection = contextOverride?.selectedText ?? liveSelText;
+        const selection = rawSelection ? rawSelection.slice(0, 4000) : null;
+        let selectionStartLine: number | null = null;
+        let selectionEndLine: number | null = null;
+        const selContent = activeDocManvi?.content;
+        if (selContent && contextOverride?.selectedText) {
+          const at = selContent.indexOf(contextOverride.selectedText);
+          if (
+            at >= 0 &&
+            selContent.indexOf(contextOverride.selectedText, at + 1) === -1
+          ) {
+            selectionStartLine = offsetToLineCol(selContent, at).line;
+            selectionEndLine = offsetToLineCol(
+              selContent,
+              at + contextOverride.selectedText.length,
+            ).line;
+          }
+        } else if (selContent && sel && sel.end > sel.start) {
+          selectionStartLine = offsetToLineCol(selContent, sel.start).line;
+          selectionEndLine = offsetToLineCol(selContent, sel.end).line;
+        }
+        const catalogueModel = claudeCatalogueId(selectedModel);
+        const manviPrepared = await prepareChatSemanticInference(
+          {
+            prompt: manviPrompt,
+            defaultModel: catalogueModel,
+            contextChunks: chatContextChunks,
+            skipRouter: true,
+          },
+          aiEmbed,
+        );
+        if (manviPrepared.cachedResponse != null) {
+          await invoke("deliver_cached_native_reply", {
+            tabId: activeTabId,
+            response: manviPrepared.cachedResponse,
           });
           nativeSeededTabs.add(activeTabId);
+          log.info(
+            `sendPrompt complete (semantic cache) in ${(performance.now() - sendStart).toFixed(0)}ms`,
+          );
+          return;
         }
+        trackSemanticTurn(activeTabId, {
+          prompt: manviPrepared.prompt,
+          system: manviPrepared.system,
+        });
+        await invoke("run_native_agent", {
+          projectPath,
+          prompt: manviPrepared.prompt,
+          tabId: activeTabId,
+          model: catalogueModel,
+          baseUrl: null,
+          images: nativeImages.length ? nativeImages : null,
+          numCtx: null,
+          temperature: null,
+          keepAlive: null,
+          effortLevel,
+          activeFile: activeFilePath,
+          selection,
+          selectionStartLine,
+          selectionEndLine,
+          personalizationPrompt: null,
+          compileStatePrompt: compressorHandledContext
+            ? null
+            : compileStatePrompt,
+          chatOnly: false,
+          chatProvider: "anthropic",
+          apiKey: null,
+          providerCredentialId: null,
+          sessionId: manviSessionForTurn(
+            projectPath,
+            resumeSessionId,
+            activeTabId,
+            !switchingDirectProviderToClaudeCode,
+          ),
+        });
+        nativeSeededTabs.add(activeTabId);
+      }
       log.info(
         `sendPrompt complete in ${(performance.now() - sendStart).toFixed(0)}ms`,
       );

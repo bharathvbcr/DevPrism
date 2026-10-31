@@ -17,6 +17,17 @@
 
 开关打开时，聊天将使用原生运行时；仅在关闭时才使用云端提供方。
 
+## Claude 模型
+
+模型选择器提供 Opus、Sonnet、Haiku 和 Opus Plan。Opus、Sonnet、Haiku 分别对应
+`claude-opus-5-5`、`claude-sonnet-5-5` 和 `claude-haiku-5-5`。Opus Plan 不是目录 ID：
+会话模型是 Opus，heavy 层级是 Sonnet，因此由 Opus 规划本轮、Sonnet 负责写作。advisor
+层级保持为 Opus，缓存键仍是选择器字符串 `opusplan`。只有当某个层级的默认输入价格高于你
+所选模型时，宿主才会固定该 Manvi 层级，因此 Sonnet 聊天不会发起 Opus 或 Fable 的旁路调用。
+effort 为 `low`、`medium` 或 `high`。Anthropic 密钥使用设置中保存的密钥；若未保存，则使用
+应用自身环境中的 `ANTHROPIC_API_KEY`。当同级检出目录中的 Go 源码比磁盘上的二进制更新时，
+`bun run dev:desktop` 会重新构建 Manvi sidecar。
+
 ## 功能
 
 - 工具循环由 `manvi run` 执行。聊天界面、差异和“保留/撤销”保持不变。下面的工具列表是原先 Rust 循环的说明；当前工具来自 Manvi harness 和 DevPrism MCP。

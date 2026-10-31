@@ -679,6 +679,7 @@ const NativeAskUserWidget: FC<{
           {question}
         </p>
         {options.length > 0 && (
+          // biome-ignore lint/a11y/useAriaPropsSupportedByRole: the role is group or radiogroup, and both support aria-labelledby; biome cannot resolve a conditional role
           <div
             className="space-y-1"
             role={multiSelect ? "group" : "radiogroup"}
@@ -689,6 +690,7 @@ const NativeAskUserWidget: FC<{
                 ? selectedMany.includes(opt)
                 : selectedOption === opt;
               return (
+                // biome-ignore lint/a11y/useAriaPropsSupportedByRole: the role is checkbox or radio, and both support aria-checked; biome cannot resolve a conditional role
                 <button
                   type="button"
                   key={oIdx}

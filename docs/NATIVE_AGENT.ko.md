@@ -21,6 +21,19 @@
 토글이 켜져 있으면 채팅은 네이티브 런타임을 사용하며, 클라우드 공급자는 토글이 꺼져
 있을 때만 사용됩니다.
 
+## Claude 모델
+
+모델 선택기에는 Opus, Sonnet, Haiku, Opus Plan이 있습니다. Opus, Sonnet, Haiku는
+각각 `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`에 대응합니다. Opus
+Plan은 카탈로그 ID가 아닙니다. 세션 모델은 Opus, heavy 티어는 Sonnet이므로 Opus가
+턴을 계획하고 Sonnet이 작성합니다. advisor 티어는 Opus에 머물고, 캐시 키는 선택기
+문자열 `opusplan` 그대로입니다. 호스트는 해당 티어의 기본 입력 가격이 선택한 모델보다
+높을 때만 Manvi 티어를 고정하므로, Sonnet 채팅이 Opus나 Fable 보조 호출을 시작할 수
+없습니다. effort는 `low`, `medium`, `high` 중 하나입니다. Anthropic 키는 설정에 저장된
+키를 사용하며, 저장된 키가 없으면 앱 자체 환경의 `ANTHROPIC_API_KEY`를 사용합니다.
+`bun run dev:desktop`은 형제 체크아웃의 Go 소스가 디스크의 바이너리보다 새로우면 Manvi
+사이드카를 다시 빌드합니다.
+
 ## 기능
 
 - `manvi run`이 도구 루프를 실행합니다. 채팅 UI, diff, "유지/되돌리기"는 그대로입니다.

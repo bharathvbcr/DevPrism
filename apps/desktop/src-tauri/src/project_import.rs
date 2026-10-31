@@ -135,7 +135,11 @@ fn extract_zip(zip_path: &Path, dest: &Path) -> Result<(), String> {
         ));
     }
 
-    let names: Vec<String> = archive.file_names().map(|n| n.to_string()).collect();
+    let names: Vec<String> = archive
+        .file_names()
+        .map(|n| n.map(|n| n.into_owned()))
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("Failed to read zip entry name: {}", e))?;
     let strip = single_root_prefix(&names);
 
     let mut total_bytes: u64 = 0;

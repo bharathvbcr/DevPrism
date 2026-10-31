@@ -231,6 +231,45 @@ mod tests {
         assert!(r.pdf_bytes.expect("pdf").starts_with(b"%PDF-"));
     }
 
+    /// The acceptance source, byte for byte, through the compiler the app ships.
+    #[test]
+    fn compiles_the_shipped_one_page_typst_source() {
+        let f = Fixture::new();
+        f.write("main.typ", "#set page(paper: \"us-letter\")\n= Hello\n");
+        let r = compile_project_pdf(f.path(), "main.typ");
+        assert!(r.success, "{:?}", r.errors);
+        assert_eq!(r.page_count, 1);
+        let pdf = r.pdf_bytes.expect("pdf");
+        assert!(pdf.starts_with(b"%PDF-"), "pdf did not start with %PDF-");
+    }
+
+    #[test]
+    fn invalid_typst_returns_a_diagnostic() {
+        let f = Fixture::new();
+        f.write("main.typ", "#let x = (\n");
+        let r = compile_project_pdf(f.path(), "main.typ");
+        assert!(!r.success, "invalid Typst must not report success");
+        assert!(
+            r.errors.iter().any(|e| !e.message.is_empty()),
+            "expected a non-empty diagnostic, got {:?}",
+            r.errors
+        );
+        assert!(r.pdf_bytes.is_none());
+    }
+
+    #[test]
+    fn typst_main_file_outside_the_project_is_refused() {
+        let f = Fixture::new();
+        let r = compile_project_pdf(f.path(), "../outside.typ");
+        assert!(!r.success, "a main file outside the project must be refused");
+        assert!(
+            r.errors.iter().any(|e| !e.message.is_empty()),
+            "refusal must carry a diagnostic, got {:?}",
+            r.errors
+        );
+        assert!(r.pdf_bytes.is_none());
+    }
+
     #[test]
     fn resolves_sibling_imports() {
         let f = Fixture::new();

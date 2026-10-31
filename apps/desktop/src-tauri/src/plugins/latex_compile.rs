@@ -59,10 +59,8 @@ impl CapabilityPlugin for LatexCompilePlugin {
             }
             let project = std::env::var("DEVPRISM_PROJECT").ok();
             let args = args.clone();
-            match tokio::task::spawn_blocking(move || {
-                compile_latex_tool(project.as_deref(), &args)
-            })
-            .await
+            match tokio::task::spawn_blocking(move || compile_latex_tool(project.as_deref(), &args))
+                .await
             {
                 Ok(result) => result,
                 Err(err) => Err(JsonRpcError::internal_error(format!(
@@ -142,8 +140,7 @@ mod tests {
 
     #[test]
     fn dotdot_project_is_a_refusal() {
-        let err = compile_latex_tool(Some("/tmp/paper/../other"), &json!({}))
-            .expect_err("project");
+        let err = compile_latex_tool(Some("/tmp/paper/../other"), &json!({})).expect_err("project");
         assert!(err.message.contains(".."));
     }
 }

@@ -313,7 +313,9 @@ fn newer_file(preferred_on_tie: PathBuf, other: PathBuf) -> PathBuf {
 }
 
 fn file_mtime(path: &Path) -> Option<std::time::SystemTime> {
-    std::fs::metadata(path).and_then(|meta| meta.modified()).ok()
+    std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
 }
 
 // ─── The sidecar ───

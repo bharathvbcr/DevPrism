@@ -1599,4 +1599,75 @@ Minimum Qualifications
             .collect();
         assert!(names.contains(&"resume_ats_check".to_string()), "{names:?}");
     }
+
+    #[tokio::test]
+    async fn search_uses_active_model_when_unconfigured() {
+        let db = CareerDbState::open_in_memory().expect("in-memory career db");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO career_meta (key, value) VALUES ('active_embed_model', 'custom-embed-model')",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(())
+        })
+        .expect("set active embed model");
+        let server = StatelessMcpServer::new(db);
+        let out = tool_payload(&ok_result(
+            call_tool(&server, "career_search_kb", json!({ "query": "Rust" })).await,
+        ));
+        assert_eq!(
+            out["filtersApplied"]["model"], "custom-embed-model",
+            "search did not scope to career.db's active model: {out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_embeds_on_tessl_when_up_and_unconfigured() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = [0u8; 2048];
+                let n = sock.read(&mut buf).await.unwrap_or(0);
+                let req_str = String::from_utf8_lossy(&buf[..n]);
+                let resp = if req_str.contains("/api/tags") {
+                    let body = r#"{"models":[{"name":"embeddinggemma-2-tessl"}]}"#;
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                } else if req_str.contains("/api/embed") {
+                    let body = r#"{"embeddings":[[0.1, 0.2]]}"#;
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                } else {
+                    "HTTP/1.1 404 Not Found\r\n\r\n".to_string()
+                };
+                let _ = sock.write_all(resp.as_bytes()).await;
+            }
+        });
+        let tessl_url = format!("http://{addr}");
+        let mut config = crate::semantic_layer::SemanticLayerConfig::default();
+        config.embed_base_url = Some(tessl_url);
+        config.embed_model = Some("embeddinggemma-2-tessl".to_string());
+        crate::semantic_layer::sync_semantic_layer_config(config).unwrap();
+
+        let db = CareerDbState::open_in_memory().expect("in-memory career db");
+        let server = StatelessMcpServer::new(db);
+        let out = tool_payload(&ok_result(
+            call_tool(&server, "career_search_kb", json!({ "query": "Rust" })).await,
+        ));
+        assert_ne!(
+            out["semanticStatus"], "unavailable",
+            "semantic search failed: {out}"
+        );
+        crate::semantic_layer::sync_semantic_layer_config(
+            crate::semantic_layer::SemanticLayerConfig::default(),
+        )
+        .unwrap();
+    }
 }

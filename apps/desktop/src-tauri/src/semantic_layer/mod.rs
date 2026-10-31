@@ -109,6 +109,7 @@ pub fn sync_semantic_layer_config(config: SemanticLayerConfig) -> Result<(), Str
 pub fn semantic_cache_lookup(
     embedding: Vec<f32>,
     cache_key: String,
+    model: Option<String>,
 ) -> Result<SemanticCacheLookupResult, String> {
     let config = current_config();
     if !config.enabled || !config.cache_enabled {
@@ -119,10 +120,15 @@ pub fn semantic_cache_lookup(
         });
     }
 
+    let model_name = model
+        .as_deref()
+        .or(config.embed_model.as_deref())
+        .unwrap_or("default");
+
     let lookup = cache_lock()
         .write()
         .map_err(|_| "Semantic layer cache lock poisoned".to_string())?
-        .lookup(&embedding, &cache_key, &config);
+        .lookup(&embedding, &cache_key, model_name, &config);
 
     Ok(SemanticCacheLookupResult {
         hit: lookup.hit,
@@ -137,16 +143,22 @@ pub fn semantic_cache_store(
     cache_key: String,
     embedding: Vec<f32>,
     response: String,
+    model: Option<String>,
 ) -> Result<(), String> {
     let config = current_config();
     if !config.enabled || !config.cache_enabled {
         return Ok(());
     }
 
+    let model_name = model
+        .as_deref()
+        .or(config.embed_model.as_deref())
+        .unwrap_or("default");
+
     let mut cache = cache_lock()
         .write()
         .map_err(|_| "Semantic layer cache lock poisoned".to_string())?;
-    cache.store(&cache_key, embedding, &response, &config);
+    cache.store(&cache_key, model_name, embedding, &response, &config);
     Ok(())
 }
 
@@ -187,7 +199,7 @@ pub async fn prepare_proxy_inference(
         _ => prompt.to_string(),
     };
 
-    let vectors = match embed_texts(&[embed_text]).await {
+    let (embed_model, vectors) = match embed_texts(&[embed_text]).await {
         Ok(v) => v,
         Err(_) => return apply_router(base, &config, prompt, system),
     };
@@ -201,7 +213,7 @@ pub async fn prepare_proxy_inference(
         let lookup = cache_lock()
             .write()
             .ok()
-            .map(|mut cache| cache.lookup(query_vec, &key, &config))
+            .map(|mut cache| cache.lookup(query_vec, &key, &embed_model, &config))
             .unwrap_or(CacheLookupResult {
                 hit: false,
                 response: None,
@@ -232,7 +244,7 @@ pub async fn store_proxy_cache(system: Option<&str>, prompt: &str, response: &st
         _ => prompt.to_string(),
     };
 
-    let Ok(vectors) = embed_texts(&[embed_text]).await else {
+    let Ok((embed_model, vectors)) = embed_texts(&[embed_text]).await else {
         return;
     };
     let Some(vec) = vectors.into_iter().next() else {
@@ -241,7 +253,7 @@ pub async fn store_proxy_cache(system: Option<&str>, prompt: &str, response: &st
 
     let key = cache_key_for(system, prompt);
     if let Ok(mut cache) = cache_lock().write() {
-        cache.store(&key, vec, response, &config);
+        cache.store(&key, &embed_model, vec, response, &config);
     }
 }
 
@@ -265,8 +277,10 @@ fn apply_router(
 /// Embed with the same server and model as every other embed caller (the
 /// synced `embedModel` / `embedBaseUrl` settings, else auto-pick on the chat
 /// Ollama base). Never a cloud credential: the proxy path has none selected.
-async fn embed_texts(texts: &[String]) -> Result<Vec<Vec<f32>>, String> {
-    crate::native_agent::ai_embed(texts.to_vec(), None, None, None, None).await
+async fn embed_texts(texts: &[String]) -> Result<(String, Vec<Vec<f32>>), String> {
+    let target = crate::native_agent::resolve_embed_target(None, None, None).await?;
+    let vectors = crate::native_agent::embed_with_target(&target, texts).await?;
+    Ok((target.model().to_string(), vectors))
 }
 
 /// Extract system prompt and the last user text from an Anthropic messages request.
@@ -335,7 +349,10 @@ mod tests {
         with["embedBaseUrl"] = "http://127.0.0.1:11435".into();
         let new: SemanticLayerConfig = serde_json::from_value(with).unwrap();
         assert_eq!(new.embed_model.as_deref(), Some("embeddinggemma-2-tessl"));
-        assert_eq!(new.embed_base_url.as_deref(), Some("http://127.0.0.1:11435"));
+        assert_eq!(
+            new.embed_base_url.as_deref(),
+            Some("http://127.0.0.1:11435")
+        );
     }
 
     #[test]
@@ -345,14 +362,39 @@ mod tests {
         config.cache_enabled = true;
         sync_semantic_layer_config(config).unwrap();
 
-        semantic_cache_store("key".to_string(), vec![1.0, 0.0, 0.0], "stored".to_string()).unwrap();
+        semantic_cache_store(
+            "key".to_string(),
+            vec![1.0, 0.0, 0.0],
+            "stored".to_string(),
+            Some("test-model".to_string()),
+        )
+        .unwrap();
 
-        let hit = semantic_cache_lookup(vec![1.0, 0.0, 0.0], "key".to_string()).unwrap();
+        let hit = semantic_cache_lookup(
+            vec![1.0, 0.0, 0.0],
+            "key".to_string(),
+            Some("test-model".to_string()),
+        )
+        .unwrap();
         assert!(hit.hit);
         assert_eq!(hit.response.as_deref(), Some("stored"));
 
+        // Segregated by model: a different model misses
+        let diff_model = semantic_cache_lookup(
+            vec![1.0, 0.0, 0.0],
+            "key".to_string(),
+            Some("other-model".to_string()),
+        )
+        .unwrap();
+        assert!(!diff_model.hit);
+
         semantic_cache_clear().unwrap();
-        let miss = semantic_cache_lookup(vec![1.0, 0.0, 0.0], "key".to_string()).unwrap();
+        let miss = semantic_cache_lookup(
+            vec![1.0, 0.0, 0.0],
+            "key".to_string(),
+            Some("test-model".to_string()),
+        )
+        .unwrap();
         assert!(!miss.hit);
     }
 

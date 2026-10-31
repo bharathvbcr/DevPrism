@@ -74,6 +74,7 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
         );",
     )
     .map_err(|e| format!("Failed to ensure career_meta: {e}"))?;
+    migrate_canonical_embed_labels(conn)?;
     // known_projects may be missing on DBs created before the plugins layer
     // needed a cross-process project registry.
     conn.execute_batch(
@@ -148,6 +149,55 @@ fn migrate_embeddings_pk(conn: &Connection) -> Result<(), String> {
     .map_err(|e| format!("Failed to migrate embeddings PK to (owner_id, model): {e}"))?;
 
     // ANN index is stale after PK/layout change — drop so it rebuilds lazily.
+    let _ = conn.execute("DROP TABLE IF EXISTS vec_embeddings", []);
+    let _ = conn.execute("DELETE FROM career_meta WHERE key = 'vec_dim'", []);
+
+    Ok(())
+}
+
+/// Strip `:latest` suffixes from existing stored embeddings and active_embed_model.
+fn migrate_canonical_embed_labels(conn: &Connection) -> Result<(), String> {
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM embeddings WHERE model LIKE '%:latest'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+
+    let meta_has_latest: bool = conn
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM career_meta WHERE key = 'active_embed_model' AND value LIKE '%:latest')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+
+    if count == 0 && !meta_has_latest {
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        r#"
+        BEGIN IMMEDIATE;
+        UPDATE embeddings
+        SET model = SUBSTR(model, 1, LENGTH(model) - 7)
+        WHERE model LIKE '%:latest'
+          AND NOT EXISTS (
+            SELECT 1 FROM embeddings e2
+            WHERE e2.owner_id = embeddings.owner_id
+              AND e2.model = SUBSTR(embeddings.model, 1, LENGTH(embeddings.model) - 7)
+          );
+        DELETE FROM embeddings WHERE model LIKE '%:latest';
+
+        UPDATE career_meta
+        SET value = SUBSTR(value, 1, LENGTH(value) - 7)
+        WHERE key = 'active_embed_model' AND value LIKE '%:latest';
+        COMMIT;
+        "#,
+    )
+    .map_err(|e| format!("Failed to migrate canonical embed labels: {e}"))?;
+
     let _ = conn.execute("DROP TABLE IF EXISTS vec_embeddings", []);
     let _ = conn.execute("DELETE FROM career_meta WHERE key = 'vec_dim'", []);
 
@@ -265,6 +315,8 @@ pub fn seed_default_personas(conn: &Connection) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::career_db::vectors::pack_f32_le;
+    use rusqlite::params;
 
     #[test]
     fn seeded_personas_deserialize_with_section_order() {
@@ -428,5 +480,54 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM embeddings", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn test_migrate_canonical_embed_labels() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO embeddings (owner_id, owner_kind, model, dim, vec) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params!["blk_1", "block", "nomic-embed-text:latest", 2, pack_f32_le(&[1.0, 0.0])],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT OR REPLACE INTO career_meta (key, value) VALUES ('active_embed_model', 'nomic-embed-text:latest')",
+            [],
+        )
+        .unwrap();
+
+        migrate_canonical_embed_labels(&conn).unwrap();
+
+        let model: String = conn
+            .query_row(
+                "SELECT model FROM embeddings WHERE owner_id = 'blk_1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(model, "nomic-embed-text");
+
+        let active: String = conn
+            .query_row(
+                "SELECT value FROM career_meta WHERE key = 'active_embed_model'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(active, "nomic-embed-text");
+
+        // Idempotent
+        migrate_canonical_embed_labels(&conn).unwrap();
+        let model2: String = conn
+            .query_row(
+                "SELECT model FROM embeddings WHERE owner_id = 'blk_1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(model2, "nomic-embed-text");
     }
 }

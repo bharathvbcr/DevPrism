@@ -14,6 +14,13 @@ use std::sync::Once;
 const OVERFETCH_FACTOR: usize = 4;
 const OVERFETCH_MIN: usize = 32;
 
+/// Canonical model label: strips trailing `:latest` tag and whitespace so
+/// `model` and `model:latest` resolve, store, and match identically.
+pub fn canonical_embed_label(model: &str) -> &str {
+    let trimmed = model.trim();
+    trimmed.strip_suffix(":latest").unwrap_or(trimmed)
+}
+
 /// career_meta key recording the embed model the most recent successful
 /// `store_embeddings` wrote under. Chunk-reuse checks qualify embedding
 /// existence on it, so switching embed models flags affected chunks for
@@ -119,20 +126,22 @@ pub fn ensure_sqlite_vec_registered() -> bool {
 
 /// Stable positive rowid for `(owner_id, model)` in `vec_embeddings`.
 fn stable_rowid(owner_id: &str, model: &str) -> i64 {
+    let canonical = canonical_embed_label(model);
     let mut hasher = DefaultHasher::new();
     owner_id.hash(&mut hasher);
     0u8.hash(&mut hasher);
-    model.hash(&mut hasher);
+    canonical.hash(&mut hasher);
     (hasher.finish() as i64) & i64::MAX
 }
 
 /// The model recorded by the most recent embedding write, if any.
 pub(crate) fn active_embed_model(conn: &Connection) -> Result<Option<String>, String> {
     meta_get(conn, ACTIVE_EMBED_MODEL_KEY)
+        .map(|opt| opt.map(|s| canonical_embed_label(&s).to_string()))
 }
 
 pub(crate) fn set_active_embed_model(conn: &Connection, model: &str) -> Result<(), String> {
-    meta_set(conn, ACTIVE_EMBED_MODEL_KEY, model)
+    meta_set(conn, ACTIVE_EMBED_MODEL_KEY, canonical_embed_label(model))
 }
 
 /// The model whose vectors count as current for "missing embedding" checks:
@@ -143,7 +152,7 @@ pub(crate) fn freshness_model(
     model: Option<&str>,
 ) -> Result<Option<String>, String> {
     match model.map(str::trim).filter(|m| !m.is_empty()) {
-        Some(m) => Ok(Some(m.to_string())),
+        Some(m) => Ok(Some(canonical_embed_label(m).to_string())),
         None => active_embed_model(conn),
     }
 }
@@ -225,9 +234,10 @@ fn rebuild_vec_embeddings(conn: &Connection, dim: usize) -> Result<(), String> {
         if blob.len() != dim * 4 {
             continue;
         }
-        let rowid = stable_rowid(&owner_id, &model);
+        let canonical_model = canonical_embed_label(&model);
+        let rowid = stable_rowid(&owner_id, canonical_model);
         insert
-            .execute(params![rowid, blob, model, owner_kind, owner_id])
+            .execute(params![rowid, blob, canonical_model, owner_kind, owner_id])
             .map_err(|e| format!("Failed to insert vec row for {owner_id}: {e}"))?;
     }
 
@@ -255,7 +265,8 @@ pub fn upsert_ann_embedding(
         eprintln!("[career_db] ANN upsert skipped ({e})");
         return Ok(());
     }
-    let rowid = stable_rowid(owner_id, model);
+    let canonical = canonical_embed_label(model);
+    let rowid = stable_rowid(owner_id, canonical);
     let blob = pack_f32_le(vec);
     let _ = conn.execute(
         "DELETE FROM vec_embeddings WHERE rowid = ?1",
@@ -264,7 +275,7 @@ pub fn upsert_ann_embedding(
     match conn.execute(
         "INSERT INTO vec_embeddings(rowid, embedding, model, owner_kind, owner_id)
          VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![rowid, blob, model, owner_kind, owner_id],
+        params![rowid, blob, canonical, owner_kind, owner_id],
     ) {
         Ok(_) => Ok(()),
         Err(e) => {
@@ -313,15 +324,17 @@ fn resolve_search_model(
     filter: &SearchFilter,
 ) -> Result<Option<String>, String> {
     if let Some(ref model) = filter.model {
-        if !model.is_empty() {
-            return Ok(Some(model.clone()));
+        let canonical = canonical_embed_label(model);
+        if !canonical.is_empty() {
+            return Ok(Some(canonical.to_string()));
         }
     }
     if let Some(active) = active_embed_model(conn)? {
+        let active_latest = format!("{active}:latest");
         let has_dim: bool = conn
             .query_row(
-                "SELECT EXISTS (SELECT 1 FROM embeddings WHERE model = ?1 AND dim = ?2)",
-                params![active, dim as i64],
+                "SELECT EXISTS (SELECT 1 FROM embeddings WHERE (model = ?1 OR model = ?2) AND dim = ?3)",
+                params![active, active_latest, dim as i64],
                 |r| r.get(0),
             )
             .map_err(|e| format!("Failed to check active embed model: {e}"))?;
@@ -341,7 +354,7 @@ fn resolve_search_model(
         )
         .optional()
         .map_err(|e| format!("Failed to resolve search model: {e}"))?;
-    Ok(model)
+    Ok(model.map(|m| canonical_embed_label(&m).to_string()))
 }
 
 /// Vector search: sqlite-vec KNN when available, else brute-force cosine.
@@ -457,8 +470,15 @@ fn vector_search_brute(
     bind.push(Box::new(query_vec.len() as i64));
 
     if let Some(m) = model {
-        sql.push_str(&format!(" AND model = ?{}", bind.len() + 1));
-        bind.push(Box::new(m.to_string()));
+        let canonical = canonical_embed_label(m);
+        let latest = format!("{canonical}:latest");
+        sql.push_str(&format!(
+            " AND (model = ?{0} OR model = ?{1})",
+            bind.len() + 1,
+            bind.len() + 2
+        ));
+        bind.push(Box::new(canonical.to_string()));
+        bind.push(Box::new(latest));
     }
     if let Some(ref kind) = filter.owner_kind {
         sql.push_str(&format!(" AND owner_kind = ?{}", bind.len() + 1));
@@ -937,7 +957,11 @@ mod tests {
         };
         crate::career_db::store_embeddings_blocking(
             &conn,
-            &[item("exp_a", "old"), item("exp_b", "old"), item("exp_c", "old")],
+            &[
+                item("exp_a", "old"),
+                item("exp_b", "old"),
+                item("exp_c", "old"),
+            ],
         )
         .unwrap();
         // The re-embed under the new model has only reached exp_a.
@@ -1036,5 +1060,79 @@ mod tests {
             marker, ROWID_HASHER_VERSION,
             "mismatching marker was not rebuilt"
         );
+    }
+
+    #[test]
+    fn test_canonical_embed_label() {
+        assert_eq!(
+            canonical_embed_label("nomic-embed-text:latest"),
+            "nomic-embed-text"
+        );
+        assert_eq!(
+            canonical_embed_label("embeddinggemma-2-tessl:latest"),
+            "embeddinggemma-2-tessl"
+        );
+        assert_eq!(
+            canonical_embed_label("nomic-embed-text:v1.5"),
+            "nomic-embed-text:v1.5"
+        );
+        assert_eq!(
+            canonical_embed_label("nomic-embed-text"),
+            "nomic-embed-text"
+        );
+    }
+
+    #[test]
+    fn search_equivalence_with_latest_tag() {
+        let _ = ensure_sqlite_vec_registered();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO blocks (id, kind, json, updated_at) VALUES (?1, ?2, ?3, 0)",
+            params![
+                "exp_eq",
+                "experience",
+                r#"{"id":"exp_eq","kind":"experience","title":"T","org":"O","dateRange":{"start":"2020-01","end":null},"personas":[],"domains":[],"skills":[],"seniorityLevel":"senior","bullets":[],"updatedAt":"2020-01-01T00:00:00Z"}"#
+            ],
+        )
+        .unwrap();
+
+        // Store with canonical model name
+        conn.execute(
+            "INSERT INTO embeddings (owner_id, owner_kind, model, dim, vec) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params!["exp_eq", "block", "nomic-embed-text", 2, pack_f32_le(&[1.0, 0.0])],
+        )
+        .unwrap();
+
+        // Search with ':latest' model filter finds the canonical vector
+        let hits = vector_search(
+            &conn,
+            &[1.0, 0.0],
+            5,
+            &SearchFilter {
+                owner_kind: Some("block".into()),
+                model: Some("nomic-embed-text:latest".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].owner_id, "exp_eq");
+
+        // Search with canonical model filter also finds it
+        let hits_canonical = vector_search(
+            &conn,
+            &[1.0, 0.0],
+            5,
+            &SearchFilter {
+                owner_kind: Some("block".into()),
+                model: Some("nomic-embed-text".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(hits_canonical.len(), 1);
+        assert_eq!(hits_canonical[0].owner_id, "exp_eq");
     }
 }

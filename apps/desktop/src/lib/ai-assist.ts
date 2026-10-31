@@ -328,8 +328,13 @@ export async function aiCompleteStream(
 /** Where an `ai_embed` request goes. `model: null` lets the backend pick. */
 export interface EmbedRequest {
   model: string | null;
-  baseUrl: string;
+  baseUrl: string | null;
   providerCredentialId: string | null;
+}
+
+/** Canonicalize embedding model label by stripping a trailing `:latest` tag. */
+export function canonicalEmbedLabel(model: string): string {
+  return model.endsWith(":latest") ? model.slice(0, -":latest".length) : model;
 }
 
 /**
@@ -338,18 +343,23 @@ export interface EmbedRequest {
  *
  * When either setting is set, embeddings go to that Ollama-compatible server
  * (`embedBaseUrl`, else the Ollama credential's base) and never to the chat
- * provider. When neither is set, the previous behaviour stands: a selected
- * Gemini / OpenAI credential embeds with its provider default, otherwise the
- * Ollama base with the backend's auto-picked embedding model.
+ * provider. When neither is set, baseUrl is null (allowing the Rust backend
+ * to auto-discover tessl on port 11435 or fallback to Ollama), or a selected
+ * Gemini / OpenAI credential embeds with its provider default.
  */
 export function resolveEmbedRequest(): EmbedRequest {
   const creds = useClaudeSetupStore.getState().openAiCredentials ?? [];
   const selectedId = useClaudeChatStore.getState().selectedProviderCredentialId;
   const { embedModel, embedBaseUrl } = useSettingsStore.getState();
-  const ollama = resolveOllamaCredential(creds, selectedId);
-  const baseUrl = embedBaseUrl ?? ollama?.base_url ?? "http://localhost:11434";
   if (embedModel || embedBaseUrl) {
-    return { model: embedModel ?? null, baseUrl, providerCredentialId: null };
+    const ollama = resolveOllamaCredential(creds, selectedId);
+    const baseUrl =
+      embedBaseUrl ?? ollama?.base_url ?? "http://localhost:11434";
+    return {
+      model: embedModel ? canonicalEmbedLabel(embedModel) : null,
+      baseUrl,
+      providerCredentialId: null,
+    };
   }
   // Never treat Claude Code / Cursor sentinel ids as cloud embed credentials.
   const selected = isCliProviderId(selectedId)
@@ -365,7 +375,7 @@ export function resolveEmbedRequest(): EmbedRequest {
       : null;
   return {
     model: null,
-    baseUrl,
+    baseUrl: null,
     providerCredentialId: cloudEmbedCred?.id ?? null,
   };
 }
@@ -380,12 +390,13 @@ export function resolveEmbedRequest(): EmbedRequest {
  */
 export async function resolveEmbedModel(): Promise<string> {
   const request = resolveEmbedRequest();
-  if (request.model) return request.model;
-  return invoke<string>("ai_resolve_embed_model", {
+  if (request.model) return canonicalEmbedLabel(request.model);
+  const resolved = await invoke<string>("ai_resolve_embed_model", {
     model: null,
     baseUrl: request.baseUrl,
     providerCredentialId: request.providerCredentialId,
   });
+  return canonicalEmbedLabel(resolved);
 }
 
 /**
@@ -424,9 +435,14 @@ export async function aiEmbed(
   await acquireAiSlot();
   try {
     throwIfAborted(signal);
+    const targetModel = model
+      ? canonicalEmbedLabel(model)
+      : request.model
+        ? canonicalEmbedLabel(request.model)
+        : null;
     const vectors = await invoke<number[][]>("ai_embed", {
       texts,
-      model: model ?? request.model,
+      model: targetModel,
       baseUrl: request.baseUrl,
       providerCredentialId: request.providerCredentialId,
       requestId,

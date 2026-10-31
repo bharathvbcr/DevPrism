@@ -5,6 +5,7 @@ use std::time::Instant;
 
 #[derive(Clone)]
 struct CacheEntry {
+    model: String,
     embedding: Vec<f32>,
     response: String,
     created_at: Instant,
@@ -27,6 +28,7 @@ impl SemanticCache {
     pub fn lookup(
         &mut self,
         embedding: &[f32],
+        model: &str,
         cache_key: &str,
         config: &SemanticLayerConfig,
     ) -> CacheLookupResult {
@@ -35,7 +37,7 @@ impl SemanticCache {
         self.evict_expired(now, ttl);
 
         if let Some(exact) = self.entries.get_mut(cache_key) {
-            if now.duration_since(exact.created_at) <= ttl {
+            if exact.model == model && now.duration_since(exact.created_at) <= ttl {
                 exact.last_accessed = now;
                 return CacheLookupResult {
                     hit: true,
@@ -50,6 +52,9 @@ impl SemanticCache {
 
         for entry in self.entries.values() {
             if now.duration_since(entry.created_at) > ttl {
+                continue;
+            }
+            if entry.model != model {
                 continue;
             }
             let score = cosine_similarity(embedding, &entry.embedding);
@@ -92,6 +97,7 @@ impl SemanticCache {
     pub fn store(
         &mut self,
         cache_key: &str,
+        model: &str,
         embedding: Vec<f32>,
         response: &str,
         config: &SemanticLayerConfig,
@@ -101,6 +107,7 @@ impl SemanticCache {
         self.evict_expired(now, ttl);
 
         if let Some(existing) = self.entries.get_mut(cache_key) {
+            existing.model = model.to_string();
             existing.embedding = embedding;
             existing.response = response.to_string();
             existing.created_at = now;
@@ -115,6 +122,7 @@ impl SemanticCache {
         self.entries.insert(
             cache_key.to_string(),
             CacheEntry {
+                model: model.to_string(),
                 embedding,
                 response: response.to_string(),
                 created_at: now,

@@ -524,20 +524,28 @@ pub async fn execute_career_tool(
             // only that model's vectors: equal dimensions (768-d for both
             // nomic-embed-text and EmbeddingGemma 2) cannot keep a query from
             // being scored against another model's vectors.
-            let embed = match crate::native_agent::resolve_embed_target(None, None, None).await {
+            let active_db_model = db
+                .with_conn(|conn| career_db::active_embed_model(conn))
+                .ok()
+                .flatten();
+            let embed = match crate::native_agent::resolve_embed_target(
+                active_db_model.clone(),
+                None,
+                None,
+            )
+            .await
+            {
                 Ok(target) => {
-                    let model = target.model().to_string();
-                    filter.model = Some(model.clone());
-                    crate::native_agent::ai_embed(
-                        vec![query.to_string()],
-                        Some(model),
-                        None,
-                        None,
-                        None,
-                    )
-                    .await
+                    let model = crate::career_db::canonical_embed_label(target.model()).to_string();
+                    filter.model = Some(model);
+                    crate::native_agent::embed_with_target(&target, &[query.to_string()]).await
                 }
-                Err(e) => Err(e),
+                Err(e) => {
+                    if filter.model.is_none() {
+                        filter.model = active_db_model;
+                    }
+                    Err(e)
+                }
             };
 
             let mut semantic_hits: Vec<Value> = Vec::new();
@@ -814,6 +822,7 @@ pub async fn execute_career_tool(
                     "personaId": persona_id,
                     "domain": domain,
                     "ownerKinds": owner_kinds,
+                    "model": filter.model,
                 },
                 "_meta": {
                     "ttlMs": 30000,

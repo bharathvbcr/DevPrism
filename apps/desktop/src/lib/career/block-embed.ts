@@ -3,6 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import {
   aiEmbed,
+  canonicalEmbedLabel,
   resolveEmbedModel,
   resolveEmbedModelOrUndefined,
 } from "@/lib/ai-assist";
@@ -73,7 +74,8 @@ export async function embedOwnerTexts(
   try {
     // One concrete name for the whole run: it is sent with every batch and
     // stored with every vector, so the label is the model that produced it.
-    const model = options.model ?? (await resolveEmbedModel());
+    const rawModel = options.model ?? (await resolveEmbedModel());
+    const model = canonicalEmbedLabel(rawModel);
     for (let i = 0; i < items.length; i += BLOCK_EMBED_BATCH_SIZE) {
       const batchIndex = Math.floor(i / BLOCK_EMBED_BATCH_SIZE) + 1;
       onProcessingProgress?.({
@@ -286,7 +288,8 @@ export async function backfillBlockEmbeddings(options?: {
   // "Missing" means missing under the model about to embed, so a model switch
   // re-embeds every block. Unresolvable (no embed server) leaves the backend's
   // active model in charge; the embed step then defers with the reason.
-  const model = options?.model ?? (await resolveEmbedModelOrUndefined());
+  const rawModel = options?.model ?? (await resolveEmbedModelOrUndefined());
+  const model = rawModel ? canonicalEmbedLabel(rawModel) : undefined;
   const rows = await invoke<ExperienceBlock[]>("career_list_blocks", {
     missingEmbeddingsOnly: true,
     model: model ?? null,
@@ -349,9 +352,10 @@ export async function backfillBulletEmbeddings(options?: {
     missingEmbeddingsOnly: false,
   });
   const bullets = rows.flatMap(bulletEmbedItems);
+  const model = options?.model ? canonicalEmbedLabel(options.model) : undefined;
   return embedBullets({
     bullets,
-    model: options?.model,
+    model,
     onProgress: options?.onProgress,
     onProcessingProgress: options?.onProcessingProgress,
     itemLabel: "Embed bullets",
@@ -371,9 +375,10 @@ export async function backfillFactEmbeddings(options?: {
     missingEmbeddingsOnly: false,
   });
   const facts = rows.flatMap(factEmbedItems);
+  const model = options?.model ? canonicalEmbedLabel(options.model) : undefined;
   return embedFacts({
     facts,
-    model: options?.model,
+    model,
     onProgress: options?.onProgress,
     onProcessingProgress: options?.onProcessingProgress,
     itemLabel: "Embed facts",

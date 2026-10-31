@@ -13,7 +13,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::Emitter;
-pub(crate) use vectors::{ScoredHit, SearchFilter};
+pub use vectors::canonical_embed_label;
+pub(crate) use vectors::{active_embed_model, ScoredHit, SearchFilter};
 
 /// Tauri event emitted whenever another connection (in-app MCP server,
 /// `--mcp-stdio` process) commits to `career.db`. Career surfaces refetch on it.
@@ -398,7 +399,7 @@ pub(crate) fn list_blocks_blocking_for_model(
     let sql = match (missing_embeddings_only, fresh_model.is_some()) {
         (true, true) => {
             "SELECT b.json FROM blocks b
-             WHERE NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.owner_id = b.id AND e.model = ?1)
+             WHERE NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.owner_id = b.id AND (e.model = ?1 OR e.model = ?2))
              ORDER BY b.updated_at DESC"
         }
         (true, false) => {
@@ -411,9 +412,16 @@ pub(crate) fn list_blocks_blocking_for_model(
     let mut stmt = conn
         .prepare(sql)
         .map_err(|e| format!("Failed to prepare list blocks: {e}"))?;
-    let bind: Vec<&dyn rusqlite::types::ToSql> = match fresh_model.as_ref() {
-        Some(m) => vec![m],
-        None => vec![],
+    let (bind_canonical, bind_latest) = match fresh_model.as_ref() {
+        Some(m) => {
+            let c = vectors::canonical_embed_label(m);
+            (Some(c.to_string()), Some(format!("{c}:latest")))
+        }
+        None => (None, None),
+    };
+    let bind: Vec<&dyn rusqlite::types::ToSql> = match (&bind_canonical, &bind_latest) {
+        (Some(c), Some(l)) => vec![c, l],
+        _ => vec![],
     };
     let rows = stmt
         .query_map(bind.as_slice(), |row| row.get::<_, String>(0))
@@ -677,11 +685,12 @@ pub(crate) fn store_embeddings_blocking(
         }
         let blob = vectors::pack_f32_le(&item.vec);
         let dim = item.vec.len() as i64;
-        let model = if item.model.trim().is_empty() {
+        let raw_model = if item.model.trim().is_empty() {
             "unknown"
         } else {
             item.model.as_str()
         };
+        let model = vectors::canonical_embed_label(raw_model);
         conn.execute(
             "INSERT INTO embeddings (owner_id, owner_kind, model, dim, vec) VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(owner_id, model) DO UPDATE SET

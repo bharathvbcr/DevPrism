@@ -390,7 +390,8 @@ pub async fn first_embedding_model(base_url: &str) -> Result<Option<String>, Str
     Ok(installed_model_names(base_url)
         .await?
         .into_iter()
-        .find(|n| looks_like_embedding(n.as_str())))
+        .find(|n| looks_like_embedding(n.as_str()))
+        .map(|n| crate::career_db::canonical_embed_label(&n).to_string()))
 }
 
 /// Where tessl's `tessl-embed` server listens (Ollama-compatible `/api/embed`).
@@ -455,7 +456,7 @@ async fn probe_tessl_embed(base: &str) -> bool {
             items.iter().any(|it| {
                 it.get("name")
                     .and_then(|n| n.as_str())
-                    .map(|n| n.trim().trim_end_matches(":latest"))
+                    .map(crate::career_db::canonical_embed_label)
                     == Some(TESSL_EMBED_MODEL)
             })
         })

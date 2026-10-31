@@ -383,8 +383,9 @@ pub fn upsert_prepared_source(
     if let Some((source_id, existing_hash)) = find_source_by_uri(conn, &prepared.uri)? {
         if existing_hash.as_deref() == Some(prepared.content_hash.as_str()) {
             let chunk_ids = list_chunk_ids(conn, &source_id)?;
-            // Source unchanged — still report any chunks missing embeddings.
-            let needs = chunks_missing_embeddings(conn, Some(&source_id), None)?
+            // Source unchanged — still report any chunks missing embeddings under the active model.
+            let active_model = super::vectors::active_embed_model(conn)?;
+            let needs = chunks_missing_embeddings(conn, Some(&source_id), active_model.as_deref())?
                 .into_iter()
                 .map(|c| c.id)
                 .collect();
@@ -590,18 +591,25 @@ fn chunk_has_embedding(
     chunk_id: &str,
     active_model: Option<&str>,
 ) -> Result<bool, String> {
-    let sql = match active_model {
-        Some(_) => "SELECT 1 FROM embeddings WHERE owner_id = ?1 AND model = ?2",
-        None => "SELECT 1 FROM embeddings WHERE owner_id = ?1",
+    let (sql, bind_canonical, bind_latest) = match active_model {
+        Some(m) => {
+            let c = super::vectors::canonical_embed_label(m);
+            (
+                "SELECT 1 FROM embeddings WHERE owner_id = ?1 AND (model = ?2 OR model = ?3)",
+                Some(c.to_string()),
+                Some(format!("{c}:latest")),
+            )
+        }
+        None => ("SELECT 1 FROM embeddings WHERE owner_id = ?1", None, None),
     };
     let mut stmt = conn
         .prepare(sql)
         .map_err(|e| format!("Failed to check embedding: {e}"))?;
-    let found = match active_model {
-        Some(m) => stmt
-            .query_row(params![chunk_id, m], |_| Ok(true))
+    let found = match (&bind_canonical, &bind_latest) {
+        (Some(c), Some(l)) => stmt
+            .query_row(params![chunk_id, c, l], |_| Ok(true))
             .optional(),
-        None => stmt.query_row(params![chunk_id], |_| Ok(true)).optional(),
+        _ => stmt.query_row(params![chunk_id], |_| Ok(true)).optional(),
     }
     .map_err(|e| format!("Failed to check embedding: {e}"))?;
     Ok(found.unwrap_or(false))
@@ -761,8 +769,11 @@ pub fn chunks_missing_embeddings(
     );
     let mut bind: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
     if let Some(m) = active.as_deref() {
-        sql.push_str(" AND e.model = ?");
-        bind.push(Box::new(m.to_string()));
+        let canonical = super::vectors::canonical_embed_label(m);
+        let latest = format!("{canonical}:latest");
+        sql.push_str(" AND (e.model = ? OR e.model = ?)");
+        bind.push(Box::new(canonical.to_string()));
+        bind.push(Box::new(latest));
     }
     sql.push(')');
     if source_id.is_some() {

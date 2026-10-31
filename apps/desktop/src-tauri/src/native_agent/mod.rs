@@ -1047,10 +1047,12 @@ pub async fn ai_resolve_embed_model(
     base_url: Option<String>,
     provider_credential_id: Option<String>,
 ) -> Result<String, String> {
-    Ok(resolve_embed_target(model, base_url, provider_credential_id)
-        .await?
-        .model()
-        .to_string())
+    Ok(
+        resolve_embed_target(model, base_url, provider_credential_id)
+            .await?
+            .model()
+            .to_string(),
+    )
 }
 
 /// Where one embedding request goes, with the model already resolved.
@@ -1119,8 +1121,7 @@ pub(crate) async fn resolve_embed_target(
     provider_credential_id: Option<String>,
 ) -> Result<EmbedTarget, String> {
     if let Some(cred_id) = non_blank(provider_credential_id) {
-        if let Ok(Some(cred)) = crate::claude::stored_openai_compatible_credential(Some(&cred_id))
-        {
+        if let Ok(Some(cred)) = crate::claude::stored_openai_compatible_credential(Some(&cred_id)) {
             if openai_compat::base_url_supports_embeddings(&cred.base_url) {
                 let model = non_blank(model.clone()).unwrap_or_else(|| {
                     openai_compat::default_embedding_model(&cred.base_url).to_string()
@@ -1128,29 +1129,31 @@ pub(crate) async fn resolve_embed_target(
                 return Ok(EmbedTarget::Cloud {
                     base_url: cred.base_url,
                     api_key: cred.api_key,
-                    model,
+                    model: crate::career_db::canonical_embed_label(&model).to_string(),
                 });
             }
         }
     }
 
     let config = crate::semantic_layer::current_config();
-    // tessl-embed only exists on macOS (Metal), so other targets never probe.
-    let tessl_base = cfg!(target_os = "macos").then_some(ollama::TESSL_EMBED_BASE);
-    // The career store's active model decides whether a tessl outage may fall
-    // back to Ollama. It is read on a short-lived read-only connection
-    // (`CareerDbState` is Tauri-managed and not reachable from here; the
-    // change watcher already uses the same separate-connection pattern). If
-    // the database cannot be read, the active model is unknown and the
-    // fallback is kept; it is only looked up when a tessl probe will happen.
-    let active_model = if tessl_base.is_some() {
+    let unconfigured = non_blank(model.clone()).is_none()
+        && non_blank(base_url.clone()).is_none()
+        && non_blank(config.embed_model.clone()).is_none()
+        && non_blank(config.embed_base_url.clone()).is_none();
+
+    // R3-6: Only read stored_active_embed_model when unconfigured!
+    let active_model = if unconfigured {
         tokio::task::spawn_blocking(crate::career_db::stored_active_embed_model)
             .await
             .ok()
             .flatten()
+            .map(|m| crate::career_db::canonical_embed_label(&m).to_string())
     } else {
         None
     };
+
+    // tessl-embed only exists on macOS (Metal), so other targets never probe.
+    let tessl_base = cfg!(target_os = "macos").then_some(ollama::TESSL_EMBED_BASE);
     resolve_ollama_embed_target(model, base_url, &config, tessl_base, active_model).await
 }
 
@@ -1172,7 +1175,31 @@ async fn resolve_ollama_embed_target(
         && non_blank(base_url.clone()).is_none()
         && non_blank(config.embed_model.clone()).is_none()
         && non_blank(config.embed_base_url.clone()).is_none();
+
     if unconfigured {
+        if let Some(ref active) = active_model {
+            let active = crate::career_db::canonical_embed_label(active);
+            if active == ollama::TESSL_EMBED_MODEL {
+                if let Some(tessl) = tessl_base {
+                    if ollama::tessl_embed_available(tessl).await {
+                        return Ok(EmbedTarget::Ollama {
+                            base_url: tessl.to_string(),
+                            model: ollama::TESSL_EMBED_MODEL.to_string(),
+                            source: EmbedSource::Tessl,
+                        });
+                    }
+                    return Err(format!(
+                        "[E_EMBED_SERVER_DOWN] career.db is on {} but tessl-embed at {} is not \
+                         answering. Start it (EMBEDGEMMA2_SNAPSHOT=<dir> make -C <tessl>/go serve) \
+                         or set embedModel explicitly to switch models.",
+                        ollama::TESSL_EMBED_MODEL,
+                        tessl
+                    ));
+                }
+            }
+        }
+
+        // With no active model in the store, probe tessl-embed if on macOS.
         if let Some(tessl) = tessl_base {
             if ollama::tessl_embed_available(tessl).await {
                 return Ok(EmbedTarget::Ollama {
@@ -1181,17 +1208,9 @@ async fn resolve_ollama_embed_target(
                     source: EmbedSource::Tessl,
                 });
             }
-            if active_model.as_deref() == Some(ollama::TESSL_EMBED_MODEL) {
-                return Err(format!(
-                    "[E_EMBED_SERVER_DOWN] career.db is on {} but tessl-embed at {} is not \
-                     answering. Start it (EMBEDGEMMA2_SNAPSHOT=<dir> make -C <tessl>/go serve) \
-                     or set embedModel explicitly to switch models.",
-                    ollama::TESSL_EMBED_MODEL,
-                    tessl
-                ));
-            }
         }
     }
+
     let source = if unconfigured {
         EmbedSource::OllamaAuto
     } else {
@@ -1199,9 +1218,9 @@ async fn resolve_ollama_embed_target(
     };
     let (model, base) = ollama_embed_settings(model, base_url, config);
     let model = match model {
-        Some(m) => m,
+        Some(m) => crate::career_db::canonical_embed_label(&m).to_string(),
         None => match ollama::first_embedding_model(&base).await? {
-            Some(m) => m,
+            Some(m) => crate::career_db::canonical_embed_label(&m).to_string(),
             None => {
                 return Err(format!(
                     "[E_NO_MODEL] No embedding model is installed at {}. Pull one, e.g. \
@@ -1219,13 +1238,21 @@ async fn resolve_ollama_embed_target(
     })
 }
 
-async fn ai_embed_inner(
-    texts: Vec<String>,
-    model: Option<String>,
-    base_url: Option<String>,
-    provider_credential_id: Option<String>,
+pub(crate) async fn embed_with_target(
+    target: &EmbedTarget,
+    texts: &[String],
+) -> Result<Vec<Vec<f32>>, String> {
+    embed_with_target_cancel(target, texts, None).await
+}
+
+pub(crate) async fn embed_with_target_cancel(
+    target: &EmbedTarget,
+    texts: &[String],
     cancel_parts: Option<(Arc<AtomicBool>, Arc<Notify>)>,
 ) -> Result<Vec<Vec<f32>>, String> {
+    if texts.is_empty() {
+        return Ok(Vec::new());
+    }
     if cancel_parts
         .as_ref()
         .is_some_and(|(f, _)| f.load(Ordering::Relaxed))
@@ -1234,32 +1261,27 @@ async fn ai_embed_inner(
     }
 
     let work = async {
-        match resolve_embed_target(model, base_url, provider_credential_id).await? {
+        match target {
             EmbedTarget::Cloud {
                 base_url,
                 api_key,
                 model,
             } => {
-                // `resolve_embed_target` only returns Cloud for a base URL that
-                // serves `/embeddings`, so the client is always built.
-                let client = openai_compat::embedding_client_for_credential(
-                    &base_url,
-                    &api_key,
-                    Some(&model),
-                )
-                .ok_or_else(|| format!("{base_url} does not serve /embeddings"))?;
-                client.embeddings(&texts).await
+                let client =
+                    openai_compat::embedding_client_for_credential(base_url, api_key, Some(model))
+                        .ok_or_else(|| format!("{base_url} does not serve /embeddings"))?;
+                client.embeddings(texts).await
             }
             EmbedTarget::Ollama {
                 base_url,
                 model,
                 source,
             } => {
-                if source == EmbedSource::Tessl {
+                if *source == EmbedSource::Tessl {
                     eprintln!("[embed] using tessl-embed ({model}) at {base_url}");
                 }
-                ollama::OllamaClient::new(&base_url, &model, None, None)
-                    .embed(&texts)
+                ollama::OllamaClient::new(base_url, model, None, None)
+                    .embed(texts)
                     .await
             }
         }
@@ -1282,6 +1304,23 @@ async fn ai_embed_inner(
     }
 
     Ok(vectors)
+}
+
+async fn ai_embed_inner(
+    texts: Vec<String>,
+    model: Option<String>,
+    base_url: Option<String>,
+    provider_credential_id: Option<String>,
+    cancel_parts: Option<(Arc<AtomicBool>, Arc<Notify>)>,
+) -> Result<Vec<Vec<f32>>, String> {
+    if cancel_parts
+        .as_ref()
+        .is_some_and(|(f, _)| f.load(Ordering::Relaxed))
+    {
+        return Err("cancelled".into());
+    }
+    let target = resolve_embed_target(model, base_url, provider_credential_id).await?;
+    embed_with_target_cancel(&target, &texts, cancel_parts).await
 }
 
 /// Streaming variant of `ai_complete`: text fragments are forwarded over the
@@ -2155,7 +2194,11 @@ mod tests {
             .unwrap();
         assert_eq!(
             ollama_target(target),
-            (tessl, "embeddinggemma-2-tessl".to_string(), EmbedSource::Tessl)
+            (
+                tessl,
+                "embeddinggemma-2-tessl".to_string(),
+                EmbedSource::Tessl
+            )
         );
     }
 
@@ -2167,7 +2210,8 @@ mod tests {
             ollama_base_url: "http://127.0.0.1:9".into(),
             ..Default::default()
         };
-        let other = fake_tags_server(Some(r#"{"models":[{"name":"nomic-embed-text:latest"}]}"#)).await;
+        let other =
+            fake_tags_server(Some(r#"{"models":[{"name":"nomic-embed-text:latest"}]}"#)).await;
         let hung = fake_tags_server(None).await;
         for tessl in ["http://127.0.0.1:9".to_string(), other, hung] {
             let err = resolve_ollama_embed_target(
@@ -2189,21 +2233,31 @@ mod tests {
     /// Ollama fallback is unchanged when tessl is down.
     #[tokio::test]
     async fn store_not_on_tessl_keeps_the_ollama_fallback() {
-        let ollama = fake_tags_server(Some(r#"{"models":[{"name":"nomic-embed-text:latest"}]}"#)).await;
+        let ollama =
+            fake_tags_server(Some(r#"{"models":[{"name":"nomic-embed-text:latest"}]}"#)).await;
         let config = crate::semantic_layer::SemanticLayerConfig {
             ollama_base_url: ollama.clone(),
             ..Default::default()
         };
-        for active in [Some("nomic-embed-text".to_string()), Some("other".to_string()), None] {
-            let target =
-                resolve_ollama_embed_target(None, None, &config, Some("http://127.0.0.1:9"), active)
-                    .await
-                    .unwrap();
+        for active in [
+            Some("nomic-embed-text".to_string()),
+            Some("other".to_string()),
+            None,
+        ] {
+            let target = resolve_ollama_embed_target(
+                None,
+                None,
+                &config,
+                Some("http://127.0.0.1:9"),
+                active,
+            )
+            .await
+            .unwrap();
             assert_eq!(
                 ollama_target(target),
                 (
                     ollama.clone(),
-                    "nomic-embed-text:latest".to_string(),
+                    "nomic-embed-text".to_string(),
                     EmbedSource::OllamaAuto
                 )
             );
@@ -2225,7 +2279,10 @@ mod tests {
         .await
         .unwrap();
         let (_, model, source) = ollama_target(target);
-        assert_eq!((model.as_str(), source), ("nomic-embed-text", EmbedSource::Configured));
+        assert_eq!(
+            (model.as_str(), source),
+            ("nomic-embed-text", EmbedSource::Configured)
+        );
     }
 
     /// tessl down, hung, or not listing the model falls back to the Ollama
@@ -2237,7 +2294,8 @@ mod tests {
             ollama_base_url: "http://127.0.0.1:9".into(),
             ..Default::default()
         };
-        let other = fake_tags_server(Some(r#"{"models":[{"name":"nomic-embed-text:latest"}]}"#)).await;
+        let other =
+            fake_tags_server(Some(r#"{"models":[{"name":"nomic-embed-text:latest"}]}"#)).await;
         let hung = fake_tags_server(None).await;
         for tessl in ["http://127.0.0.1:9".to_string(), other.clone(), hung] {
             let started = std::time::Instant::now();
@@ -2258,7 +2316,11 @@ mod tests {
             .unwrap();
         assert_eq!(
             ollama_target(target),
-            (other, "nomic-embed-text:latest".to_string(), EmbedSource::OllamaAuto)
+            (
+                other,
+                "nomic-embed-text".to_string(),
+                EmbedSource::OllamaAuto
+            )
         );
     }
 
@@ -2266,14 +2328,24 @@ mod tests {
     /// even though tessl is up and lists the model.
     #[tokio::test]
     async fn explicit_embed_settings_beat_the_tessl_preference() {
-        let tessl = fake_tags_server(Some(r#"{"models":[{"name":"embeddinggemma-2-tessl"}]}"#)).await;
+        let tessl =
+            fake_tags_server(Some(r#"{"models":[{"name":"embeddinggemma-2-tessl"}]}"#)).await;
         let base = crate::semantic_layer::SemanticLayerConfig::default();
         let (b, m, s) = ollama_target(
-            resolve_ollama_embed_target(Some("nomic-embed-text".into()), None, &base, Some(&tessl), None)
-                .await
-                .unwrap(),
+            resolve_ollama_embed_target(
+                Some("nomic-embed-text".into()),
+                None,
+                &base,
+                Some(&tessl),
+                None,
+            )
+            .await
+            .unwrap(),
         );
-        assert_eq!((m.as_str(), s), ("nomic-embed-text", EmbedSource::Configured));
+        assert_eq!(
+            (m.as_str(), s),
+            ("nomic-embed-text", EmbedSource::Configured)
+        );
         assert_ne!(b, tessl);
 
         let with_url = crate::semantic_layer::SemanticLayerConfig {
@@ -2288,7 +2360,11 @@ mod tests {
         );
         assert_eq!(
             (b.as_str(), m.as_str(), s),
-            ("http://127.0.0.1:9", "custom-embed", EmbedSource::Configured)
+            (
+                "http://127.0.0.1:9",
+                "custom-embed",
+                EmbedSource::Configured
+            )
         );
     }
 

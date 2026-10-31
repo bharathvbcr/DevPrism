@@ -12,6 +12,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { embedBlocks, backfillBlockEmbeddings } from "@/lib/career/block-embed";
 import { backfillKbEmbeddings, embedChunks } from "@/lib/career/ingest/embed";
+import { canonicalEmbedLabel } from "@/lib/ai-assist";
 import type { EmbeddingItem, ExperienceBlock } from "@/lib/career/types";
 import { createEmptyBlock } from "@/lib/career";
 import { useSettingsStore } from "@/stores/settings-store";
@@ -144,13 +145,37 @@ describe("career embeddings record the model that produced them", () => {
     expectLabelsMatchUsedModel(fake);
   });
 
-  it("with no embed settings the request goes to the Ollama base, as before", async () => {
+  it("with no embed settings baseUrl is null so Rust can auto-discover tessl", async () => {
     const fake = installFakeBackend();
     await embedChunks({ chunks: [{ id: "chk_1", text: "alpha" }] });
     expect(fake.embedArgs[0]).toMatchObject({
-      baseUrl: "http://localhost:11434",
+      baseUrl: null,
       providerCredentialId: null,
     });
+  });
+
+  it("canonicalEmbedLabel strips trailing :latest tag", () => {
+    expect(canonicalEmbedLabel("nomic-embed-text:latest")).toBe(
+      "nomic-embed-text",
+    );
+    expect(canonicalEmbedLabel("embeddinggemma-2-tessl:latest")).toBe(
+      "embeddinggemma-2-tessl",
+    );
+    expect(canonicalEmbedLabel("nomic-embed-text")).toBe("nomic-embed-text");
+  });
+
+  it("a model with :latest is canonicalized when storing and embedding", async () => {
+    useSettingsStore.setState({
+      embedModel: "nomic-embed-text:latest",
+      embedBaseUrl: "http://localhost:11434",
+    });
+    const fake = installFakeBackend();
+    await embedChunks({ chunks: [{ id: "chk_1", text: "alpha" }] });
+    expect(fake.embedArgs[0]).toMatchObject({
+      model: "nomic-embed-text",
+      baseUrl: "http://localhost:11434",
+    });
+    expect(fake.stored[0]!.model).toBe("nomic-embed-text");
   });
 
   it("an explicit model option is both the model sent and the label stored", async () => {

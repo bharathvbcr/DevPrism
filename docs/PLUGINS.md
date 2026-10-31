@@ -38,8 +38,9 @@ pre-plugin server behaved.
 | Pack | Tools | Notes |
 | --- | --- | --- |
 | `career-knowledgebase` | `career_*` (9) + 3 resources | unchanged behaviour, now routed through the registry |
-| `resume-synthesis` | `resume_*` analysis/synthesis/compile (7) + 4 prompts | `resume_compile` now honours `include_pdf` (default **false**, reports `pdfOmitted` honestly) |
+| `resume-synthesis` | `resume_*` analysis/synthesis/compile (8) + 4 prompts | `resume_compile` now honours `include_pdf` (default **false**, reports `pdfOmitted` honestly) |
 | `resume-documents` | `resume_doc_*` / `resume_variant_*` (10) + `resume_compile_file`, `resume_save_synthesis`, `resume-docs://projects`, `edit-resume-with-engine` prompt (12 tools total) | new; see below |
+| `latex-compile` | `latex_compile` (1) | Compiles the open project's TeX root. The project comes from `DEVPRISM_PROJECT`, not from the model. `resume_compile` still refuses inline `latex_source`. |
 
 Adding a pack: implement the trait, register it in `plugins::default_registry`,
 and the compiler plus the registry tests do the rest (duplicate names,
@@ -113,4 +114,4 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
   | ./target/debug/claude-prism-desktop --mcp
 ```
 
-Expect 29 tools across the three packs and `_meta.plugins` naming them.
+Expect 30 tools across the four packs and `_meta.plugins` naming them.

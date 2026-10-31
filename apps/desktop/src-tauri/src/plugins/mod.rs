@@ -20,6 +20,7 @@
 //! in [`default_registry`].
 
 pub mod career_kb;
+pub mod latex_compile;
 pub mod path_guard;
 pub mod resume_documents;
 pub mod resume_synthesis;
@@ -330,6 +331,7 @@ pub fn default_registry() -> Result<PluginRegistry, String> {
     reg.register(Arc::new(career_kb::CareerKnowledgebasePlugin))?;
     reg.register(Arc::new(resume_synthesis::ResumeSynthesisPlugin))?;
     reg.register(Arc::new(resume_documents::ResumeDocumentsPlugin))?;
+    reg.register(Arc::new(latex_compile::LatexCompilePlugin))?;
     Ok(reg)
 }
 

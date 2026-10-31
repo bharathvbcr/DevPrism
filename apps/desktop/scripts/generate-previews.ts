@@ -4,7 +4,7 @@
  * Usage:  bun run --filter @devprism/desktop generate-previews
  *
  * Requires the `tectonic` CLI (`brew install tectonic`). Tectonic is the app's
- * default engine (`compile_with_tectonic_subprocess` in src-tauri/src/latex.rs),
+ * default engine (`compile_with_tectonic` in src-tauri/src/latex.rs),
  * so compiling with it here is what makes this generator a real gate: a template
  * that only builds under pdfLaTeX would ship green from a pdfLaTeX generator and
  * then fail for every user. That is how "cv-modern" shipped broken — it loaded

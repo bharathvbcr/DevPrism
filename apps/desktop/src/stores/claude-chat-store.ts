@@ -2387,6 +2387,9 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       state.activeProjectPath ??
       useDocumentStore.getState().projectRoot ??
       null;
+    // The stored Manvi id is the project's last conversation, which belongs
+    // to another tab; a new tab starts its own.
+    suppressManviResume.add(id);
     const newTab = {
       ...makeDefaultTab(id, projectPath),
       providerKey:

@@ -119,6 +119,57 @@ fn lock_map<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Stop flags for turns that have started but whose Manvi child is not yet in
+/// the process map, keyed like that map (`window:tab`). A Stop during the
+/// pre-spawn awaits (version probe, Vertex mint, Ollama capability probe)
+/// finds no child to signal, so it records the stop here instead.
+fn pending_turns() -> &'static Mutex<HashMap<String, std::sync::Arc<AtomicBool>>> {
+    static T: OnceLock<Mutex<HashMap<String, std::sync::Arc<AtomicBool>>>> = OnceLock::new();
+    T.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// One turn's registration in [`pending_turns`]. Dropping it removes the entry
+/// only if a newer turn on the same key has not replaced it.
+struct PendingTurn {
+    key: String,
+    stopped: std::sync::Arc<AtomicBool>,
+}
+
+impl PendingTurn {
+    fn begin(key: &str) -> Self {
+        let stopped = std::sync::Arc::new(AtomicBool::new(false));
+        lock_map(pending_turns()).insert(key.to_string(), stopped.clone());
+        Self {
+            key: key.to_string(),
+            stopped,
+        }
+    }
+
+    fn is_stopped(&self) -> bool {
+        self.stopped.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for PendingTurn {
+    fn drop(&mut self) {
+        let mut guard = lock_map(pending_turns());
+        if guard
+            .get(&self.key)
+            .is_some_and(|flag| std::sync::Arc::ptr_eq(flag, &self.stopped))
+        {
+            guard.remove(&self.key);
+        }
+    }
+}
+
+/// Mark the pending turn on `key` as stopped. A key with no pending turn is a
+/// no-op, so a Stop with nothing starting never blocks the next turn.
+fn request_stop(key: &str) {
+    if let Some(flag) = lock_map(pending_turns()).get(key) {
+        flag.store(true, Ordering::SeqCst);
+    }
+}
+
 pub(crate) fn forget_tab(tab_id: &str) {
     let removed = lock_map(sessions()).remove(tab_id);
     drop_approval_writer(tab_id);
@@ -138,9 +189,9 @@ pub(crate) fn catalogue_model(model: &str) -> Result<String, String> {
         "opus" | OPUS => Ok(OPUS.to_string()),
         "sonnet" | SONNET => Ok(SONNET.to_string()),
         "haiku" | HAIKU => Ok(HAIKU.to_string()),
-        "opusplan" => Err(
-            "OpusPlan has no Manvi catalogue id. Pick Opus, Sonnet, or Haiku.".into(),
-        ),
+        "opusplan" => {
+            Err("OpusPlan has no Manvi catalogue id. Pick Opus, Sonnet, or Haiku.".into())
+        }
         other if input_nano_usd(other).is_some() => Ok(other.to_string()),
         other => Err(format!(
             "Unknown Claude model `{other}`. Manvi accepts a catalogue id such as {OPUS}."
@@ -281,10 +332,7 @@ fn url_host(base: &str) -> String {
 }
 
 fn is_loopback(base: &str) -> bool {
-    matches!(
-        url_host(base).as_str(),
-        "localhost" | "127.0.0.1" | "::1"
-    )
+    matches!(url_host(base).as_str(), "localhost" | "127.0.0.1" | "::1")
 }
 
 struct ResumeDecision {
@@ -316,7 +364,9 @@ fn decide_resume(
     };
     if let Some(stored) = memory {
         return if stored.id == id && stored.project == project {
-            ResumeDecision { id: Some(id.to_string()) }
+            ResumeDecision {
+                id: Some(id.to_string()),
+            }
         } else {
             // This process already bound the tab. A disk row must not override it.
             ResumeDecision { id: None }
@@ -325,7 +375,9 @@ fn decide_resume(
     // The in-memory map is empty after a restart. The id still has to be one
     // this host stored for this paper, and Manvi has to have the session file.
     if resume_record_has(state_dir, id) && session_on_disk(state_dir, id) {
-        ResumeDecision { id: Some(id.to_string()) }
+        ResumeDecision {
+            id: Some(id.to_string()),
+        }
     } else {
         ResumeDecision { id: None }
     }
@@ -487,13 +539,15 @@ pub(crate) fn build_plan(input: &PlanInput<'_>) -> Result<TurnPlan, String> {
             }
             if !is_loopback(&base) {
                 let key = input.local_api_key.unwrap_or("").trim();
-                if key.is_empty() {
+                if !key.is_empty() {
+                    set(&mut env, "LOCAL_API_KEY", key.to_string());
+                } else if !ollama {
+                    // Ollama has no authentication, so a LAN or container host
+                    // needs no key; Manvi's local key is optional too.
                     return Err(
-                        "[E_AUTH] API key is required for a non-loopback local provider."
-                            .into(),
+                        "[E_AUTH] API key is required for a non-loopback local provider.".into(),
                     );
                 }
-                set(&mut env, "LOCAL_API_KEY", key.to_string());
             }
         }
     }
@@ -625,7 +679,9 @@ fn forget_resume_record(state_dir: &Path, tab_id: &str, id: &str) {
 fn session_on_disk(state_dir: &Path, id: &str) -> bool {
     if id.is_empty()
         || id.len() > 64
-        || !id.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        || !id
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
     {
         return false;
     }
@@ -832,7 +888,10 @@ fn translate(st: &mut Translator, ev: &Value) -> Vec<Value> {
         }
         "tool.result" => {
             let text = ev.get("text").and_then(|v| v.as_str()).unwrap_or("");
-            let is_error = ev.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
+            let is_error = ev
+                .get("is_error")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             let mut ids = Vec::new();
             if let Some(tool) = st.open.pop_front() {
                 if tool.emitted {
@@ -868,7 +927,10 @@ fn translate(st: &mut Translator, ev: &Value) -> Vec<Value> {
         }
         "error" => {
             st.saw_error = true;
-            let text = ev.get("text").and_then(|v| v.as_str()).unwrap_or("Manvi reported an error.");
+            let text = ev
+                .get("text")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Manvi reported an error.");
             vec![result_message(false, text)]
         }
         "step.usage" | "verify.report" | "diagnostic" | "approval.decided" | "turn.start"
@@ -961,6 +1023,8 @@ fn emit_complete(window: &WebviewWindow, tab_id: &str, success: bool) {
     );
 }
 
+const STOPPED_BEFORE_START: &str = "Stopped before Manvi started.";
+
 fn fail_turn(window: &WebviewWindow, tab_id: &str, message: &str) -> Result<(), String> {
     emit_msg(window, tab_id, &result_message(false, message));
     emit_complete(window, tab_id, false);
@@ -979,10 +1043,7 @@ fn decode_images(raw: &[String]) -> Result<Vec<Vec<u8>>, String> {
             .decode(item.trim())
             .map_err(|_| format!("Image {} is not valid base64.", idx + 1))?;
         if bytes.len() > MAX_IMAGE_BYTES {
-            return Err(format!(
-                "Image {} is larger than 8 MiB.",
-                idx + 1
-            ));
+            return Err(format!("Image {} is larger than 8 MiB.", idx + 1));
         }
         if bytes.is_empty() {
             return Err(format!("Image {} is empty.", idx + 1));
@@ -1011,7 +1072,9 @@ async fn binary_withholds_anthropic_key(binary: &Path) -> Result<(), String> {
         .ok_or_else(|| {
             "This manvi build does not advertise withheld_provider_env, so the Anthropic key was not injected.".to_string()
         })?;
-    let listed = names.iter().any(|v| v.as_str() == Some("ANTHROPIC_API_KEY"));
+    let listed = names
+        .iter()
+        .any(|v| v.as_str() == Some("ANTHROPIC_API_KEY"));
     if !listed {
         return Err(
             "This manvi build does not withhold ANTHROPIC_API_KEY from its children, so the key was not injected.".into(),
@@ -1077,7 +1140,13 @@ pub(crate) fn answer(request_id: &str, answer: &str) -> Result<(), String> {
 fn decision_line(pending: &PendingApproval, answer: &str) -> Result<String, String> {
     let trimmed = answer.trim();
     if trimmed.is_empty() {
-        return Ok(decision_json(&pending.id, false, Vec::new(), None, Some("empty answer")));
+        return Ok(decision_json(
+            &pending.id,
+            false,
+            Vec::new(),
+            None,
+            Some("empty answer"),
+        ));
     }
     if pending.multi_select {
         let parsed: Result<Vec<String>, _> = serde_json::from_str(trimmed);
@@ -1214,6 +1283,7 @@ async fn run_unix(req: RunRequest) -> Result<(), String> {
         provider_credential_id,
         session_id,
     } = req;
+    let pending = PendingTurn::begin(&format!("{}:{}", window.label(), tab_id));
 
     let binary = match manvi_sidecar::resolve_binary() {
         Ok(path) => path,
@@ -1332,7 +1402,11 @@ async fn run_unix(req: RunRequest) -> Result<(), String> {
         let path = image_dir.join(format!("{idx}.img"));
         if let Err(err) = std::fs::write(&path, bytes) {
             staged_images.0.push(path);
-            return fail_turn(&window, &tab_id, &format!("Could not store an image: {err}"));
+            return fail_turn(
+                &window,
+                &tab_id,
+                &format!("Could not store an image: {err}"),
+            );
         }
         staged_images.0.push(path);
     }
@@ -1340,7 +1414,11 @@ async fn run_unix(req: RunRequest) -> Result<(), String> {
     let exe = match std::env::current_exe() {
         Ok(path) => path,
         Err(err) => {
-            return fail_turn(&window, &tab_id, &format!("Could not resolve this app binary: {err}"));
+            return fail_turn(
+                &window,
+                &tab_id,
+                &format!("Could not resolve this app binary: {err}"),
+            );
         }
     };
     let project_string = project.display().to_string();
@@ -1395,12 +1473,7 @@ async fn run_unix(req: RunRequest) -> Result<(), String> {
         compile_state_prompt.as_deref(),
         (!merged.is_empty()).then_some(merged.as_str()),
     );
-    let resume = decide_resume(
-        &tab_id,
-        &project_string,
-        session_id.as_deref(),
-        &state_dir,
-    );
+    let resume = decide_resume(&tab_id, &project_string, session_id.as_deref(), &state_dir);
     let plan = match build_plan(&PlanInput {
         prompt: &composed,
         resume_id: resume.id.as_deref(),
@@ -1436,7 +1509,11 @@ async fn run_unix(req: RunRequest) -> Result<(), String> {
     let (read_pipe, write_pipe) = match std::io::pipe() {
         Ok(pair) => pair,
         Err(err) => {
-            return fail_turn(&window, &tab_id, &format!("Could not open the approve pipe: {err}"));
+            return fail_turn(
+                &window,
+                &tab_id,
+                &format!("Could not open the approve pipe: {err}"),
+            );
         }
     };
     let read_fd = std::os::fd::AsRawFd::as_raw_fd(&read_pipe);
@@ -1475,14 +1552,13 @@ async fn run_unix(req: RunRequest) -> Result<(), String> {
         });
     }
 
+    if pending.is_stopped() {
+        return fail_turn(&window, &tab_id, STOPPED_BEFORE_START);
+    }
     let mut child = match cmd.spawn() {
         Ok(child) => child,
         Err(err) => {
-            return fail_turn(
-                &window,
-                &tab_id,
-                &format!("Failed to spawn manvi: {err}"),
-            );
+            return fail_turn(&window, &tab_id, &format!("Failed to spawn manvi: {err}"));
         }
     };
     drop(read_pipe);
@@ -1497,11 +1573,19 @@ async fn run_unix(req: RunRequest) -> Result<(), String> {
         };
         if let Err(err) = stdin.write_all(payload.as_bytes()).await {
             let _ = child.kill().await;
-            return fail_turn(&window, &tab_id, &format!("Failed to write the prompt: {err}"));
+            return fail_turn(
+                &window,
+                &tab_id,
+                &format!("Failed to write the prompt: {err}"),
+            );
         }
         if let Err(err) = stdin.shutdown().await {
             let _ = child.kill().await;
-            return fail_turn(&window, &tab_id, &format!("Failed to close manvi stdin: {err}"));
+            return fail_turn(
+                &window,
+                &tab_id,
+                &format!("Failed to close manvi stdin: {err}"),
+            );
         }
     }
 
@@ -1529,6 +1613,18 @@ async fn run_unix(req: RunRequest) -> Result<(), String> {
         }
         guard.insert(process_key.clone(), child);
     }
+    if pending.is_stopped() {
+        // The Stop landed after the check above but before the child was in
+        // the map, so it had nothing to signal. A Stop that did find the child
+        // has already taken it out of the map.
+        let child = processes.processes.lock().await.remove(&process_key);
+        if let Some(mut child) = child {
+            let _ = child.kill().await;
+        }
+        return fail_turn(&window, &tab_id, STOPPED_BEFORE_START);
+    }
+    // From here a Stop finds the child in the process map.
+    drop(pending);
     {
         let mut guard = lock_map(pipes());
         guard.insert(
@@ -1650,11 +1746,7 @@ async fn run_unix(req: RunRequest) -> Result<(), String> {
                     let tail = lock_map(&stderr_tail_wait).clone();
                     if code != 0 && !errored {
                         if let Some(message) = exit_status_error(code, &tail) {
-                            emit_msg(
-                                &win_wait,
-                                &tab_wait,
-                                &result_message(false, &message),
-                            );
+                            emit_msg(&win_wait, &tab_wait, &result_message(false, &message));
                         }
                     }
                     code == 0 && !errored
@@ -1697,7 +1789,9 @@ impl Drop for StagedImages {
 
 /// `app_data/manvi-state/<sha256 of the canonical project path>`.
 fn project_state_dir(app_data: &Path, project: &Path) -> PathBuf {
-    app_data.join("manvi-state").join(project_state_key(project))
+    app_data
+        .join("manvi-state")
+        .join(project_state_key(project))
 }
 
 fn project_state_key(project: &Path) -> String {
@@ -1715,11 +1809,14 @@ fn sanitize_tab(tab_id: &str) -> String {
 }
 
 pub async fn stop(window: WebviewWindow, tab_id: String) {
+    request_stop(&format!("{}:{}", window.label(), tab_id));
     drop_approval_writer(&tab_id);
+    // SIGINT first: Manvi saves the session in a deferred call that SIGKILL
+    // would skip, losing the stopped turn and its edits from the next resume.
     let _ = crate::agent_process::stop_agent_process(
         window,
         tab_id,
-        crate::agent_process::AgentStopMode::Terminate,
+        crate::agent_process::AgentStopMode::Interrupt,
     )
     .await;
 }
@@ -1770,10 +1867,7 @@ mod tests {
     fn opus_alias_pins_advisor_and_leaves_lite_unset() {
         let plan = plan_for(ProviderKind::Anthropic, "opus", "hello");
         assert_eq!(env_value(&plan, "MANVI_MODEL"), Some(OPUS));
-        assert_eq!(
-            env_value(&plan, "MANVI_LLM_TIER_ADVISOR"),
-            Some(OPUS)
-        );
+        assert_eq!(env_value(&plan, "MANVI_LLM_TIER_ADVISOR"), Some(OPUS));
         assert!(env_value(&plan, "MANVI_LLM_TIER_LITE").is_none());
         assert!(env_value(&plan, "MANVI_LLM_TIER_HEAVY").is_none());
         assert!(env_value(&plan, "MANVI_LLM_TIER_BASIC").is_none());
@@ -1781,7 +1875,10 @@ mod tests {
         assert!(env_value(&plan, "MANVI_LLM_LOCAL_TEMPERATURE").is_none());
         assert!(env_value(&plan, "MANVI_LLM_LOCAL_KEEP_ALIVE").is_none());
         assert!(env_value(&plan, "ANTHROPIC_AUTH_TOKEN").is_none());
-        assert!(!plan.argv.iter().any(|a| a == "opus" || a == "sonnet" || a == "haiku"));
+        assert!(!plan
+            .argv
+            .iter()
+            .any(|a| a == "opus" || a == "sonnet" || a == "haiku"));
         assert!(!plan.argv.iter().any(|a| a.contains("sk-ant-test-secret")));
         assert!(!plan.argv.iter().any(|a| a == "--chat-only"));
     }
@@ -1856,7 +1953,9 @@ mod tests {
     #[test]
     fn chat_only_notice_names_the_old_tool_models() {
         let notice = chat_only_notice("tiny");
-        let text = notice["message"]["content"][0]["text"].as_str().unwrap_or("");
+        let text = notice["message"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or("");
         assert_eq!(notice["type"], "assistant");
         assert!(text.contains("the model 'tiny'"));
         assert!(text.contains("llama3.2, qwen2.5, mistral-nemo"));
@@ -1865,7 +1964,10 @@ mod tests {
     #[test]
     fn short_prompt_uses_p_and_long_prompt_uses_stdin() {
         let short = plan_for(ProviderKind::Anthropic, "opus", "hello");
-        assert!(short.argv.windows(2).any(|w| w[0] == "-p" && w[1] == "hello"));
+        assert!(short
+            .argv
+            .windows(2)
+            .any(|w| w[0] == "-p" && w[1] == "hello"));
         assert!(short.stdin_prompt.is_none());
         let long = "x".repeat(PROMPT_ARG_MAX);
         let big = plan_for(ProviderKind::Anthropic, "opus", &long);
@@ -1955,7 +2057,10 @@ mod tests {
 
     #[test]
     fn ollama_base_gains_v1_once() {
-        assert_eq!(ollama_v1("http://127.0.0.1:11434"), "http://127.0.0.1:11434/v1");
+        assert_eq!(
+            ollama_v1("http://127.0.0.1:11434"),
+            "http://127.0.0.1:11434/v1"
+        );
         assert_eq!(
             ollama_v1("http://127.0.0.1:11434/v1"),
             "http://127.0.0.1:11434/v1"
@@ -1989,7 +2094,10 @@ mod tests {
         assert!(env_value(&plan, "LOCAL_API_KEY").is_none());
         assert!(env_value(&plan, "OPENAI_API_KEY").is_none());
         assert_eq!(env_value(&plan, "MANVI_PROJECT_ROOT"), Some("/paper"));
-        assert_eq!(env_value(&plan, "MANVI_HARNESS_INIT_ENABLED"), Some("false"));
+        assert_eq!(
+            env_value(&plan, "MANVI_HARNESS_INIT_ENABLED"),
+            Some("false")
+        );
         assert!(!plan.argv.iter().any(|arg| arg == "--chat-only"));
 
         let held = build_plan(&PlanInput {
@@ -2065,12 +2173,73 @@ mod tests {
             num_ctx: None,
             keep_alive: None,
             chat_only: false,
-        })
-        {
+        }) {
             Err(err) => err,
             Ok(_) => panic!("empty cloud key was accepted"),
         };
         assert!(err.contains("[E_AUTH]"));
+    }
+
+    #[test]
+    fn a_stop_before_spawn_marks_the_pending_turn() {
+        let turn = PendingTurn::begin("w:pending-stop");
+        assert!(!turn.is_stopped());
+        request_stop("w:pending-stop");
+        assert!(turn.is_stopped(), "the Stop was lost before Manvi spawned");
+    }
+
+    #[test]
+    fn a_stop_with_nothing_pending_does_not_block_the_next_turn() {
+        request_stop("w:idle-stop");
+        let turn = PendingTurn::begin("w:idle-stop");
+        assert!(!turn.is_stopped());
+    }
+
+    #[test]
+    fn an_old_turn_finishing_leaves_the_newer_turns_flag() {
+        let old = PendingTurn::begin("w:replaced");
+        let new = PendingTurn::begin("w:replaced");
+        drop(old);
+        request_stop("w:replaced");
+        assert!(
+            new.is_stopped(),
+            "dropping the old turn removed the new flag"
+        );
+        drop(new);
+        assert!(!lock_map(pending_turns()).contains_key("w:replaced"));
+    }
+
+    /// Ollama has no authentication; a LAN or container host must not need a key.
+    #[test]
+    fn lan_ollama_without_a_key_is_accepted() {
+        for base in [
+            "http://192.168.1.10:11434",
+            "http://0.0.0.0:11434",
+            "http://host.docker.internal:11434",
+        ] {
+            let plan = build_plan(&PlanInput {
+                prompt: "hi",
+                resume_id: None,
+                image_paths: &[],
+                provider: ProviderKind::Ollama,
+                catalogue_or_local_model: "llama3.1",
+                effort: None,
+                base_url: Some(base),
+                local_api_key: None,
+                anthropic_key: None,
+                anthropic_base: None,
+                project: Path::new("/paper"),
+                state_dir: Path::new("/state"),
+                mcp_config: Path::new("/state/mcp.json"),
+                mcp_trust: "sha256:abc",
+                temperature: None,
+                num_ctx: None,
+                keep_alive: None,
+                chat_only: false,
+            })
+            .unwrap_or_else(|err| panic!("{base}: {err}"));
+            assert_eq!(env_value(&plan, "LOCAL_API_KEY"), None, "{base}");
+        }
     }
 
     #[test]
@@ -2079,7 +2248,8 @@ mod tests {
             crate::google_auth::is_vertex_openai_compat_base_url(base)
                 && crate::google_auth::should_mint_google_access_token(key)
         };
-        let vertex = "https://aiplatform.googleapis.com/v1/projects/p/locations/global/endpoints/openapi";
+        let vertex =
+            "https://aiplatform.googleapis.com/v1/projects/p/locations/global/endpoints/openapi";
         let groq = "https://api.groq.com/openai/v1";
         assert!(mint(vertex, ""));
         assert!(mint(vertex, "AIza-example"));
@@ -2159,7 +2329,9 @@ mod tests {
             &mut st,
             &json!({"kind": "tool.start", "tool": "bash", "arguments": {"command": "ls"}}),
         );
-        let id = start[0]["message"]["content"][0]["id"].as_str().unwrap_or("");
+        let id = start[0]["message"]["content"][0]["id"]
+            .as_str()
+            .unwrap_or("");
         assert_eq!(id, "tool-1");
         let done = translate(
             &mut st,
@@ -2176,7 +2348,12 @@ mod tests {
             side_approvals: Vec::new(),
             saw_error: false,
         };
-        for kind in ["step.usage", "verify.report", "diagnostic", "approval.decided"] {
+        for kind in [
+            "step.usage",
+            "verify.report",
+            "diagnostic",
+            "approval.decided",
+        ] {
             let msgs = translate(&mut st, &json!({"kind": kind, "text": "hidden"}));
             assert!(msgs.is_empty(), "{kind}");
         }
@@ -2185,10 +2362,18 @@ mod tests {
     #[test]
     fn exit_codes_name_the_failure() {
         assert!(exit_status_error(0, "").is_none());
-        assert!(exit_status_error(2, "").unwrap_or_default().contains("step ceiling"));
-        assert!(exit_status_error(3, "").unwrap_or_default().contains("output cap"));
-        assert!(exit_status_error(4, "").unwrap_or_default().contains("without an answer"));
-        assert!(exit_status_error(5, "").unwrap_or_default().contains("unfinished"));
+        assert!(exit_status_error(2, "")
+            .unwrap_or_default()
+            .contains("step ceiling"));
+        assert!(exit_status_error(3, "")
+            .unwrap_or_default()
+            .contains("output cap"));
+        assert!(exit_status_error(4, "")
+            .unwrap_or_default()
+            .contains("without an answer"));
+        assert!(exit_status_error(5, "")
+            .unwrap_or_default()
+            .contains("unfinished"));
         let named = exit_status_error(1, "config.yaml sets llm.tier.main").unwrap_or_default();
         assert!(named.contains("status 1"));
         assert!(named.contains("llm.tier.main"));
@@ -2266,11 +2451,7 @@ mod tests {
         assert!(!project_pins_llm_tier(&project).unwrap_or_else(|e| panic!("{e}")));
         assert!(!project.join(".devcouncil").exists());
         assert!(!project.join(".gitignore").exists());
-        std::fs::write(
-            project.join(".devcouncil").join("nope"),
-            "x",
-        )
-        .ok();
+        std::fs::write(project.join(".devcouncil").join("nope"), "x").ok();
         std::fs::create_dir_all(project.join(".devcouncil")).unwrap_or_else(|e| panic!("{e}"));
         std::fs::write(
             project.join(".devcouncil").join("config.yaml"),
@@ -2326,7 +2507,10 @@ mod tests {
         std::fs::write(&path, b"png").unwrap_or_else(|e| panic!("{e}"));
         let staged = StagedImages(vec![path.clone()]);
         let owned = staged.into_paths();
-        assert!(path.exists(), "taking ownership must leave the file for the child");
+        assert!(
+            path.exists(),
+            "taking ownership must leave the file for the child"
+        );
         assert_eq!(owned.len(), 1);
         let _ = std::fs::remove_file(&path);
     }

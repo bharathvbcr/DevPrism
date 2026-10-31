@@ -1134,6 +1134,16 @@ describe("useClaudeChatStore.sendPrompt backend routing", () => {
     expect(useClaudeChatStore.getState().sessionId).toBeNull();
   });
 
+  it("starts a tab opened with + on a fresh manvi session", async () => {
+    localStorage.setItem("devprism:manvi-resume:/project", "manvi:ab");
+    useSettingsStore.getState().setAgentBackend("claude-code");
+    const id = useClaudeChatStore.getState().createTab();
+    await useClaudeChatStore.getState().sendPrompt("hello");
+    const args = invokeArgs("run_native_agent");
+    expect(args.tabId).toBe(id);
+    expect(args.sessionId).toBeNull();
+  });
+
   it("does not hand a stored manvi id to cursor", async () => {
     localStorage.setItem("devprism:manvi-resume:/project", "manvi:ab");
     useSettingsStore.getState().setAgentBackend("cursor-cli");

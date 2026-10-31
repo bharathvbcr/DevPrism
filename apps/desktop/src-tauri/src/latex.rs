@@ -14,15 +14,12 @@ const MAX_CONCURRENT: usize = 3;
 pub const SUPERSEDED_COMPILE_MESSAGE: &str =
     "Compilation superseded by a newer edit — this build was skipped.";
 
-/// Deadline for one TeX Live engine pass.
+/// Deadline for one TeX engine pass (or the whole Tectonic run).
 ///
 /// TeX can loop forever on a recursive macro, and an unbounded wait would hold
 /// a `MAX_CONCURRENT` permit plus the per-project lock for the rest of the
-/// session. TeX Live passes are killed at this deadline. An in-process
-/// Tectonic session cannot be killed without taking the process with it, so a
-/// superseded Tectonic build is skipped before the engine starts and before
-/// the empty-body retry, and a runaway Tectonic pass holds its permit until
-/// the engine returns.
+/// session. Generous enough for a large real document, short enough that a
+/// runaway is recoverable.
 const ENGINE_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// Deadline for the bibliography helpers, which are far quicker than a pass.
@@ -71,10 +68,8 @@ pub struct LatexCompilerState {
     project_locks: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
     semaphore: Arc<Semaphore>,
     /// Per-project cancel flags. A new compile request flips the previous
-    /// flag so a stale run is skipped before Tectonic starts, and a TeX Live
-    /// pass still in progress is killed. A Tectonic session that has already
-    /// entered the engine runs to completion: that C state cannot be
-    /// interrupted without killing the process.
+    /// flag so a stale in-flight engine run is killed instead of burning its
+    /// full 180s deadline (and the permit + project lock with it).
     cancel_flags: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
 }
 
@@ -588,13 +583,13 @@ pub fn agent_compile_project(
             &AtomicBool::new(false),
         )
     } else {
-        compile_tectonic_unless_cancelled(&work_dir, &main_rel, &AtomicBool::new(false))
+        compile_with_tectonic_subprocess(&work_dir, &main_rel, &AtomicBool::new(false))
     };
     // Same safety net as the UI path: never let honouring the magic comment turn
     // a building document into a failing one.
     let compile_result = if resolved.use_texlive && !use_texlive && !pdf_path.exists() {
         let _ = std::fs::remove_file(&log_path);
-        compile_tectonic_unless_cancelled(&work_dir, &main_rel, &AtomicBool::new(false))
+        compile_with_tectonic_subprocess(&work_dir, &main_rel, &AtomicBool::new(false))
     } else {
         compile_result
     };
@@ -1371,32 +1366,10 @@ fn strip_xetex_compat_input(content: &str) -> String {
     content.replacen(XETEX_COMPAT_INPUT, "", 1)
 }
 
-/// One Tectonic session at a time. xdvipdfmx's font cache is process-global,
-/// and the per-project lock does not cover two different projects.
-static TECTONIC_ENGINE: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-extern "C" {
-    /// `tectonic_pdf_io` `pdf_close_fonts`. Idempotent on a zeroed or
-    /// already-closed cache. An xdvipdfmx abort skips `pdf_close_document`
-    /// and leaves `font_cache.fonts` set; the next `pdf_init_fonts` asserts
-    /// on that and aborts the process.
-    fn pdf_close_fonts();
-}
-
 pub(crate) fn compile_with_tectonic(work_dir: &Path, main_file: &str) -> Result<(), String> {
     use tectonic::config::PersistentConfig;
     use tectonic::driver::{OutputFormat, PassSetting, ProcessingSessionBuilder};
     use tectonic::status::NoopStatusBackend;
-
-    let _engine = TECTONIC_ENGINE
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    // SAFETY: this is the same close `pdf_close_document` runs on the success
-    // path. On a zeroed or already-closed cache the font loop is empty,
-    // `free(NULL)` is a no-op, and the CMap, encoding, and AGL closes each
-    // check their own pointers. `TECTONIC_ENGINE` keeps another session out
-    // of this reset and out of `session.run`.
-    unsafe { pdf_close_fonts() };
 
     install_glyphtounicode_stub(work_dir);
     install_xetex_compat_stub(work_dir);
@@ -1442,19 +1415,78 @@ pub(crate) fn compile_with_tectonic(work_dir: &Path, main_file: &str) -> Result<
     Ok(())
 }
 
-/// Run one in-process Tectonic session unless this build was already superseded.
+/// Run tectonic compilation in an isolated subprocess.
 ///
-/// The engine cannot be interrupted once it has started: its C state is
-/// process-global, so killing the worker would take the GUI with it.
-fn compile_tectonic_unless_cancelled(
+/// This avoids the font cache assertion failure (`font_cache.fonts == NULL`)
+/// that occurs when tectonic is called multiple times in the same process.
+/// The C-level static `font_cache` in `dpx-pdffont.c` is not cleaned up
+/// on compilation failure, causing subsequent calls to abort.
+///
+/// By spawning a subprocess, each compilation gets a fresh process with
+/// clean global state, and cleanup happens automatically on process exit.
+fn compile_with_tectonic_subprocess(
     work_dir: &Path,
     main_file: &str,
     cancelled: &AtomicBool,
 ) -> Result<(), String> {
-    if cancelled.load(Ordering::Relaxed) {
-        return Err(SUPERSEDED_COMPILE_MESSAGE.to_string());
+    let exe = std::env::current_exe()
+        .map_err(|e| format!("Failed to get current executable path: {}", e))?;
+
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.args(["--tectonic-compile", &work_dir.to_string_lossy(), main_file]);
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    run_tectonic_child(cmd, ENGINE_TIMEOUT, cancelled)
+}
+
+/// Run one Tectonic child under a deadline and the build's cancel flag, and
+/// turn a silent failure into a readable message. The engine must stay in a
+/// child: a runaway TeX loop can only be stopped by killing the process, and a
+/// C-level abort or assert in xetex/xdvipdfmx must not take the GUI with it.
+fn run_tectonic_child(
+    cmd: std::process::Command,
+    deadline: Duration,
+    cancelled: &AtomicBool,
+) -> Result<(), String> {
+    let output = crate::proc::run_with_timeout_and_cancel(cmd, deadline, || {
+        cancelled.load(Ordering::Relaxed)
+    })
+    .map_err(|e| e.to_message("Compilation"))?;
+
+    if output.status.success() {
+        return Ok(());
     }
-    compile_with_tectonic(work_dir, main_file)
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !stderr.is_empty() {
+        return Err(stderr);
+    }
+
+    // A signalled engine writes neither a log nor a message, so without this the
+    // user sees a bare "no PDF generated". The overwhelmingly common cause is a
+    // font the document asks for that the engine cannot load — XeTeX aborts
+    // rather than reporting it.
+    Err(describe_engine_death(&output.status))
+}
+
+/// Human-readable cause for a TeX engine that exited without saying anything.
+fn describe_engine_death(status: &std::process::ExitStatus) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return format!(
+                "The TeX engine was terminated by signal {signal} without writing a log. \
+                 This is usually a font the document requests but the engine cannot load — \
+                 check any `\\setmainfont`/`fontspec` fonts are installed, or that packages \
+                 needing system fonts (e.g. `fontawesome5`) have theirs.",
+            );
+        }
+    }
+    match status.code() {
+        Some(code) => format!("The TeX engine exited with status {code} without writing a log."),
+        None => "The TeX engine exited abnormally without writing a log.".to_string(),
+    }
 }
 
 // --- TeXLive Compilation ---
@@ -1540,6 +1572,95 @@ fn run_resolve_and_stabilize(
     } else {
         eprintln!("[texlive] .aux stable after pass 2 — skipping stabilization pass");
         Ok(1)
+    }
+}
+
+#[cfg(test)]
+mod tectonic_child_tests {
+    use super::run_tectonic_child;
+    use std::process::Command;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    #[cfg(unix)]
+    fn sh(script: &str) -> Command {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", script]);
+        cmd
+    }
+
+    /// `\def\a{\a}\a` never returns. The engine child must die at the deadline
+    /// so it releases its compile permit and the project lock.
+    #[cfg(unix)]
+    #[test]
+    fn a_runaway_engine_is_killed_at_the_deadline() {
+        let started = Instant::now();
+        let err = run_tectonic_child(
+            sh("sleep 30"),
+            Duration::from_millis(300),
+            &AtomicBool::new(false),
+        )
+        .expect_err("a hung engine must not report success");
+        assert!(err.contains("Compilation"), "unexpected error: {err}");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "took {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// A newer edit flips the flag while the engine runs; the stale child must
+    /// be killed rather than run to its deadline.
+    #[cfg(unix)]
+    #[test]
+    fn a_superseded_engine_is_killed_mid_run() {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let flag = cancelled.clone();
+        let flipper = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            flag.store(true, Ordering::Relaxed);
+        });
+        let started = Instant::now();
+        let err = run_tectonic_child(sh("sleep 30"), Duration::from_secs(60), &cancelled)
+            .expect_err("a cancelled engine must not report success");
+        flipper.join().expect("flipper thread");
+        assert!(err.contains("cancelled"), "unexpected error: {err}");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "took {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// An engine that aborts on a signal is reported, and the caller survives.
+    #[cfg(unix)]
+    #[test]
+    fn a_signalled_engine_is_reported_not_fatal() {
+        let err = run_tectonic_child(
+            sh("kill -ABRT $$"),
+            Duration::from_secs(10),
+            &AtomicBool::new(false),
+        )
+        .expect_err("a signalled engine must not report success");
+        assert!(
+            err.contains("terminated by signal"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// The only in-process engine call is the `--tectonic-compile` child's
+    /// entry point in lib.rs. Every compile path in this file goes through
+    /// `run_tectonic_child`. The needle is split so this test does not match
+    /// its own source.
+    #[test]
+    fn tectonic_runs_only_in_a_child_process() {
+        let call = concat!("compile_with_", "tectonic(");
+        let calls = include_str!("latex.rs").matches(call).count();
+        assert_eq!(
+            calls, 1,
+            "latex.rs must only define the in-process engine entry, not call it"
+        );
     }
 }
 
@@ -2564,13 +2685,14 @@ async fn compile_latex_inner(
         );
         result
     } else {
+        // Run Tectonic in a subprocess to isolate C-level global state (font cache, etc.).
         let work_dir_clone = work_dir.clone();
         let main_file_clone = main_file.clone();
         let backend = backend_label.clone();
         let flag = my_flag.clone();
         let result = tokio::task::spawn_blocking(move || {
             lower_thread_priority();
-            compile_tectonic_unless_cancelled(&work_dir_clone, &main_file_clone, &flag)
+            compile_with_tectonic_subprocess(&work_dir_clone, &main_file_clone, &flag)
         })
         .await
         .map_err(|e| CompileFail::new(&backend, format!("Compilation task panicked: {e}")))?;
@@ -2602,7 +2724,7 @@ async fn compile_latex_inner(
         let flag = my_flag.clone();
         compile_result = tokio::task::spawn_blocking(move || {
             lower_thread_priority();
-            compile_tectonic_unless_cancelled(&work_dir_clone, &main_file_clone, &flag)
+            compile_with_tectonic_subprocess(&work_dir_clone, &main_file_clone, &flag)
         })
         .await
         .map_err(|e| CompileFail::new(&backend, format!("Compilation task panicked: {e}")))?;
@@ -2651,7 +2773,7 @@ async fn compile_latex_inner(
 
         if needs_retry {
             let retry_result = tokio::task::spawn_blocking(move || {
-                compile_tectonic_unless_cancelled(
+                compile_with_tectonic_subprocess(
                     &work_dir_clone,
                     &main_file_clone,
                     &cancelled_for_retry,
@@ -2958,63 +3080,6 @@ mod tests {
                 "'{bad}' must be refused at the validation seam, got: {message}"
             );
         }
-    }
-
-    /// Two successful in-process Tectonic runs must each emit a PDF. The UI
-    /// used to re-exec the whole app between runs because a poisoned C font
-    /// cache aborts the process; this calls the engine the app ships.
-    #[test]
-    fn two_sequential_in_process_tectonic_compiles_each_emit_pdf() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let main = "main.tex";
-        std::fs::write(
-            dir.path().join(main),
-            "\\documentclass{article}\n\\begin{document}Hello\\end{document}\n",
-        )
-        .expect("write main");
-
-        for pass in 1..=2 {
-            let pdf = dir.path().join("main.pdf");
-            let _ = std::fs::remove_file(&pdf);
-            compile_with_tectonic(dir.path(), main).unwrap_or_else(|e| {
-                let listing = std::fs::read_dir(dir.path())
-                    .map(|rd| {
-                        rd.filter_map(|ent| ent.ok())
-                            .map(|ent| ent.file_name().to_string_lossy().into_owned())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    })
-                    .unwrap_or_else(|err| format!("unreadable ({err})"));
-                panic!("pass {pass} failed: {e}\nwork dir: {listing}");
-            });
-            let bytes = std::fs::read(&pdf).unwrap_or_else(|e| {
-                panic!("pass {pass} did not write {}: {e}", pdf.display())
-            });
-            assert!(
-                bytes.starts_with(b"%PDF-"),
-                "pass {pass} output is not a PDF ({} bytes)",
-                bytes.len()
-            );
-        }
-    }
-
-    /// The compile sources must not re-exec this binary. The needles are split
-    /// so the test does not match its own source.
-    #[test]
-    fn user_compile_sources_do_not_reexec_for_tectonic() {
-        let flag = concat!("--tectonic-", "compile");
-        let relaunch = concat!("current_", "exe");
-        for (name, src) in [
-            ("latex.rs", include_str!("latex.rs")),
-            ("main.rs", include_str!("main.rs")),
-            ("lib.rs", include_str!("lib.rs")),
-        ] {
-            assert!(!src.contains(flag), "{name} still contains the app-relaunch flag");
-        }
-        assert!(
-            !include_str!("latex.rs").contains(relaunch),
-            "latex.rs still resolves the running executable to relaunch itself"
-        );
     }
 
     /// The log tail was byte-sliced at `len - 500` with no boundary check.

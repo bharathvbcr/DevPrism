@@ -4,6 +4,21 @@
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
+    // Hidden CLI mode: when invoked with `--tectonic-compile <work_dir> <main_file>`,
+    // run tectonic in this subprocess and exit. This isolates tectonic's global C state
+    // so that a failed compilation doesn't poison the font cache for subsequent runs.
+    if args.len() >= 4 && args[1] == "--tectonic-compile" {
+        let work_dir = std::path::Path::new(&args[2]);
+        let main_file = &args[3];
+        match claude_prism_desktop_lib::tectonic_compile_subprocess(work_dir, main_file) {
+            Ok(()) => std::process::exit(0),
+            Err(e) => {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            }
+        }
+    }
+
     // Stateless MCP 2.0 Stdio mode: `--mcp` or `mcp-server` or `--mcp-stdio`
     if args
         .iter()

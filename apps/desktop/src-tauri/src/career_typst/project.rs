@@ -260,8 +260,15 @@ mod tests {
     #[test]
     fn typst_main_file_outside_the_project_is_refused() {
         let f = Fixture::new();
-        let r = compile_project_pdf(f.path(), "../outside.typ");
-        assert!(!r.success, "a main file outside the project must be refused");
+        // A valid document sits just outside the project root, so only the
+        // confinement check (not a missing file) can make this fail.
+        f.write("outside.typ", "= Outside\n");
+        f.write("project/main.typ", "= Inside\n");
+        let r = compile_project_pdf(&f.path().join("project"), "../outside.typ");
+        assert!(
+            !r.success,
+            "a main file outside the project must be refused"
+        );
         assert!(
             r.errors.iter().any(|e| !e.message.is_empty()),
             "refusal must carry a diagnostic, got {:?}",

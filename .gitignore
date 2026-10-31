@@ -111,6 +111,8 @@ devprism-main/
 .devcouncil/*
 !.devcouncil/
 !.devcouncil/config.yaml
+# Hash manifest of the skills installed under .agents/ (itself ignored)
+.devcouncil-skills.json
 
 # Local AI coding agents
 .agents/

@@ -89,8 +89,7 @@ describe("Hardening & Ref Composition Suite", () => {
     });
     expect(exportTrigger).toBeInTheDocument();
 
-    // Trigger open
-    fireEvent.pointerDown(exportTrigger);
+    // Trigger open via keyboard Enter (in jsdom 30 with native PointerEvent, firing both pointerDown and keyDown toggles open then immediately closed)
     fireEvent.keyDown(exportTrigger, { key: "Enter" });
 
     await waitFor(() => {

@@ -111,11 +111,14 @@ devprism-main/
 .devcouncil/*
 !.devcouncil/
 !.devcouncil/config.yaml
+.devcouncil/state/
+.devmap/
 # Hash manifest of the skills installed under .agents/ (itself ignored)
 .devcouncil-skills.json
 
 # Local AI coding agents
 .agents/
+.agent/
 .codex/
 .aider*
 .gemini/
@@ -130,6 +133,19 @@ devprism-main/
 .conducor/
 .antigravity/
 .warp/
+.grok/
+.gitpulse/
+.windsurf/
+.continue/
+.cline/
+.roo/
+.chatbox/
+.trae/
+.zed/
+.devin/
+.copilot/
+.claude-account
+.manvi/
 
 # Generated root workspace guides. `devmap manifest --guides` rewrites these
 # locally; they are not part of the published tree. Scope guides in
@@ -142,6 +158,20 @@ devprism-main/
 *.sqlite-wal
 *.sqlite-shm
 *.db
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+*.gpg
+.aws/
+.ssh/
+.netrc
+credentials.json
+service-account*.json
+secrets.*
+*.secret
 
 # Temporary, log, and dump artifacts
 logs/
@@ -153,30 +183,114 @@ temp/
 scratch/
 dumps/
 dump/
+/render/
 *.tmp
 *.temp
 *.dmp
 *.dump
 *.swp
+*.swo
+*~
+*.orig
+*.rej
 *_results.txt
 *_log.txt
 *_output.txt
+perf.data
+perf.data.*
+*.cpuprofile
+/core
+/core.*
+core.[0-9]*
+
+# Coverage reports
+coverage.out
+coverage.xml
+coverage.html
+coverage.tmp
+*.cov
+*.profraw
+*.profdata
+lcov.info
+htmlcov/
+.coverage
+.coverage.*
 
 # Environment, dependency, and cache directories
 venv/
 node_modules/
+.pnpm-store/
 .env.*
 !.env.example
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.uv/
+.uv_cache/
+.hypothesis/
+.gocache/
+.gopath/
+._*
+.Spotlight-V100
+.Trashes
 Thumbs.db
+.directory
+.idea/
+.vscode/
+.terraform/
+.pulumi/
+.wandb/
+wandb/
+.huggingface/
 
-# Local AI coding agents
-.grok/
+# Rust build directories
+target/
+*.rs.bk
 
-# Local AI coding agents
-.cursor/
+# Private / agent-process & orchestration scratch files
+/PROJECT.md
+/TEST_INFRA.md
+/TEST_READY.md
+*_HANDOFF_*.md
+LAMBDA_HANDOFF*
+SESSION_NOTES*
+*.session.md
+*.local.md
+*.plan.md
+*_Implementation_Plan.md
+/*_REPORT.md
+/*_REPORT*.md
+BUILD_REPORT*
+build_report*
+build-report*
+buildreports*
+BUILD_REPORTS*
+build_reports*
+build-reports*
+*build_report*
+*build_reports*
+*build-report*
+*build-reports*
+*buildreports*
+*BUILD_REPORT*
+*BUILD_REPORTS*
+WAVE_REPORT*
+wave_report*
+wave-report*
+wavereports*
+WAVE_REPORTS*
+wave_reports*
+wave-reports*
+*wave_report*
+*wave_reports*
+*wave-report*
+*wave-reports*
+*wavereports*
+*WAVE_REPORT*
+*WAVE_REPORTS*
+plans/
+.plans/
+/tasks/
 
 # manvi sidecar binaries, built by scripts/build-manvi.mjs (~8 MB per target).
 # The directory's README documents how they are produced and found.
@@ -189,3 +303,14 @@ apps/desktop/src-tauri/binaries/*
 !.claude/
 .claude/*
 !.claude/settings.json
+.claude/worktrees/
+**/.claude/worktrees/
+**/.claude/scheduled_tasks.lock
+**/.claude/scheduled_tasks.json
+**/.claude/routines/.state/
+**/.claude/checkpoints/
+**/.claude/mailbox/
+**/.claude/agent-registry.json
+**/.claude/agent-memory-local
+**/.claude/first-run
+**/.claude/assistant-daemon-state.json

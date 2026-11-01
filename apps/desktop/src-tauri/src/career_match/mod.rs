@@ -45,6 +45,7 @@ pub mod metrics;
 pub mod render;
 pub mod scoring;
 pub mod selection;
+pub mod tailor;
 pub mod text;
 pub mod typst_escape;
 

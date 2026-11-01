@@ -154,7 +154,7 @@ pub(crate) fn today_utc(offset: Option<Duration>) -> Option<Datetime> {
 fn civil_from_days(z: i64) -> (i32, u8, u8) {
     let z = z + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as i64;
+    let doe = z - era * 146_097;
     let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
     let y = yoe + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
@@ -166,7 +166,7 @@ fn civil_from_days(z: i64) -> (i32, u8, u8) {
 }
 
 /// A compile diagnostic mapped back to 1-based line/column in the source.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TypstDiagnostic {
     pub severity: String,
     pub message: String,
@@ -178,6 +178,24 @@ pub struct TypstDiagnostic {
     pub column: Option<u32>,
     pub hints: Vec<String>,
 }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TypstCompileErrorResponse {
+    pub message: String,
+    pub errors: Vec<TypstDiagnostic>,
+    pub warnings: Vec<TypstDiagnostic>,
+    pub duration_ms: u64,
+}
+
+pub type TypstCompileError = TypstCompileErrorResponse;
+
+impl std::fmt::Display for TypstCompileErrorResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for TypstCompileErrorResponse {}
 
 #[derive(Debug, serde::Serialize)]
 pub struct TypstCompileResult {
@@ -215,7 +233,10 @@ impl TypstCompileResult {
 ///
 /// Works for any `World`, so single-file synthesis and multi-file workspace
 /// projects share one diagnostic path.
-fn locate(world: &dyn World, span: DiagSpan) -> (Option<String>, Option<u32>, Option<u32>) {
+pub(crate) fn locate(
+    world: &dyn World,
+    span: DiagSpan,
+) -> (Option<String>, Option<u32>, Option<u32>) {
     let file_id = match span.get() {
         DiagSpanKind::Detached => return (None, None, None),
         DiagSpanKind::Number { id, .. } | DiagSpanKind::Range { id, .. } => id,

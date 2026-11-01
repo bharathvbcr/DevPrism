@@ -7,6 +7,9 @@ vi.mock("@/lib/ai-assist", () => ({
   aiEmbed: vi.fn(),
   resolveEmbedModel: vi.fn(async () => "nomic-embed-text"),
   resolveEmbedModelOrUndefined: vi.fn(async () => "nomic-embed-text"),
+  canonicalEmbedLabel: vi.fn((model: string) =>
+    model.endsWith(":latest") ? model.slice(0, -":latest".length) : model,
+  ),
 }));
 
 import { aiEmbed } from "@/lib/ai-assist";

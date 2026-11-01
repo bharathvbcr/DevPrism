@@ -21,11 +21,24 @@ use typst::text::{Font, FontBook};
 use typst::utils::LazyHash;
 use typst::{Library, LibraryExt, World};
 
-use super::engine::{compile_world, today_utc, TypstCompileResult, FONTS, MAX_SOURCE_BYTES};
+use super::engine::{
+    compile_world, today_utc, TypstCompileErrorResponse, TypstCompileResult, TypstDiagnostic,
+    FONTS, MAX_SOURCE_BYTES,
+};
 
 /// Cap on total bytes read from the project during one compile. Bounds a
 /// document that tries to pull in the whole tree via `read()`.
 const MAX_PROJECT_READ_BYTES: usize = 32 * 1024 * 1024;
+
+/// Normalize a path key for the in-memory overlay.
+pub fn normalize_overlay_path(path: &str) -> Option<String> {
+    let normalized = path.replace('\\', "/");
+    let trimmed = normalized.trim_start_matches("./").trim_start_matches('/');
+    if trimmed.split('/').any(|seg| seg == "..") {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
 
 pub struct ProjectWorld {
     library: LazyHash<Library>,
@@ -36,6 +49,7 @@ pub struct ProjectWorld {
     files: RwLock<HashMap<FileId, Bytes>>,
     /// Running total of bytes read, for `MAX_PROJECT_READ_BYTES`.
     read_budget: Mutex<usize>,
+    overlay: HashMap<String, String>,
 }
 
 impl ProjectWorld {
@@ -43,12 +57,32 @@ impl ProjectWorld {
     ///
     /// `main_rel` is project-relative (e.g. `resume.typ`, `src/main.typ`).
     pub fn new(root: &Path, main_rel: &str) -> Result<Self, String> {
+        Self::with_overlay(root, main_rel, HashMap::new())
+    }
+
+    /// Build a world rooted at `root` with `main_rel` as entry document and an
+    /// in-memory buffer overlay for unsaved editor buffers.
+    pub fn with_overlay(
+        root: &Path,
+        main_rel: &str,
+        overlay: HashMap<String, String>,
+    ) -> Result<Self, String> {
         let root = root
             .canonicalize()
             .map_err(|e| format!("Project root {}: {e}", root.display()))?;
-        let vpath =
-            VirtualPath::new(main_rel).map_err(|e| format!("Invalid main file {main_rel}: {e}"))?;
+        let clean_main = normalize_overlay_path(main_rel)
+            .ok_or_else(|| format!("Invalid main file path: {main_rel}"))?;
+        let vpath = VirtualPath::new(&clean_main)
+            .map_err(|e| format!("Invalid main file {main_rel}: {e}"))?;
         let main = FileId::new(RootedPath::new(VirtualRoot::Project, vpath));
+
+        let mut normalized_overlay = HashMap::new();
+        for (k, v) in overlay {
+            if let Some(norm_k) = normalize_overlay_path(&k) {
+                normalized_overlay.insert(norm_k, v);
+            }
+        }
+
         Ok(Self {
             library: LazyHash::new(Library::default()),
             root,
@@ -56,6 +90,7 @@ impl ProjectWorld {
             sources: RwLock::new(HashMap::new()),
             files: RwLock::new(HashMap::new()),
             read_budget: Mutex::new(0),
+            overlay: normalized_overlay,
         })
     }
 
@@ -87,6 +122,33 @@ impl ProjectWorld {
     }
 
     fn read_bytes(&self, id: FileId) -> FileResult<Vec<u8>> {
+        if !matches!(id.root(), VirtualRoot::Project) {
+            return Err(FileError::AccessDenied);
+        }
+        let rel = id.vpath().get_without_slash();
+        if let Some(text) = self.overlay.get(rel) {
+            let len = text.len();
+            if len > MAX_SOURCE_BYTES {
+                return Err(FileError::Other(Some(
+                    format!("{rel} is {len} bytes, over the {MAX_SOURCE_BYTES} byte limit").into(),
+                )));
+            }
+            {
+                let mut budget = self
+                    .read_budget
+                    .lock()
+                    .map_err(|_| FileError::Other(Some("read budget poisoned".into())))?;
+                *budget += len;
+                if *budget > MAX_PROJECT_READ_BYTES {
+                    return Err(FileError::Other(Some(
+                        format!("project read budget of {MAX_PROJECT_READ_BYTES} bytes exceeded")
+                            .into(),
+                    )));
+                }
+            }
+            return Ok(text.as_bytes().to_vec());
+        }
+
         let path = self.realize(id)?;
         let meta = std::fs::metadata(&path).map_err(|e| FileError::from_io(e, &path))?;
         if meta.is_dir() {
@@ -138,8 +200,41 @@ impl World for ProjectWorld {
                 return Ok(hit.clone());
             }
         }
-        let bytes = self.read_bytes(id)?;
-        let text = String::from_utf8(bytes).map_err(|_| FileError::InvalidUtf8)?;
+        let text = if matches!(id.root(), VirtualRoot::Project) {
+            let rel = id.vpath().get_without_slash();
+            if let Some(overlay_text) = self.overlay.get(rel) {
+                let len = overlay_text.len();
+                if len > MAX_SOURCE_BYTES {
+                    return Err(FileError::Other(Some(
+                        format!("{rel} is {len} bytes, over the {MAX_SOURCE_BYTES} byte limit")
+                            .into(),
+                    )));
+                }
+                {
+                    let mut budget = self
+                        .read_budget
+                        .lock()
+                        .map_err(|_| FileError::Other(Some("read budget poisoned".into())))?;
+                    *budget += len;
+                    if *budget > MAX_PROJECT_READ_BYTES {
+                        return Err(FileError::Other(Some(
+                            format!(
+                                "project read budget of {MAX_PROJECT_READ_BYTES} bytes exceeded"
+                            )
+                            .into(),
+                        )));
+                    }
+                }
+                overlay_text.clone()
+            } else {
+                let bytes = self.read_bytes(id)?;
+                String::from_utf8(bytes).map_err(|_| FileError::InvalidUtf8)?
+            }
+        } else {
+            let bytes = self.read_bytes(id)?;
+            String::from_utf8(bytes).map_err(|_| FileError::InvalidUtf8)?
+        };
+
         let source = Source::new(id, text);
         if let Ok(mut cache) = self.sources.write() {
             cache.insert(id, source.clone());
@@ -169,6 +264,60 @@ impl World for ProjectWorld {
     }
 }
 
+/// Compile a Typst document for `main_rel` inside `project_dir` with an optional in-memory overlay.
+pub fn compile_project_document(
+    project_dir: &Path,
+    main_rel: &str,
+    overlay: Option<HashMap<String, String>>,
+) -> Result<Vec<u8>, TypstCompileErrorResponse> {
+    let root = project_dir.to_path_buf();
+    let main = main_rel.to_string();
+    let ident = format!("devprism-project:{main_rel}");
+
+    let world = match ProjectWorld::with_overlay(&root, &main, overlay.unwrap_or_default()) {
+        Ok(world) => world,
+        Err(msg) => {
+            return Err(TypstCompileErrorResponse {
+                message: format!("Failed to initialize project: {msg}"),
+                errors: vec![TypstDiagnostic {
+                    severity: "error".to_string(),
+                    message: msg,
+                    file: Some(main_rel.to_string()),
+                    line: None,
+                    column: None,
+                    hints: Vec::new(),
+                }],
+                warnings: Vec::new(),
+                duration_ms: 0,
+            });
+        }
+    };
+
+    let result = compile_world(move || world, &ident);
+    if result.success {
+        if let Some(bytes) = result.pdf_bytes {
+            return Ok(bytes);
+        }
+    }
+
+    let message = if let Some(first) = result.errors.first() {
+        if let (Some(file), Some(line)) = (&first.file, first.line) {
+            format!("{file}:{line}: {}", first.message)
+        } else {
+            first.message.clone()
+        }
+    } else {
+        "Typst compilation failed".to_string()
+    };
+
+    Err(TypstCompileErrorResponse {
+        message,
+        errors: result.errors,
+        warnings: result.warnings,
+        duration_ms: result.duration_ms,
+    })
+}
+
 /// Compile `main_rel` inside `project_dir` to PDF.
 pub fn compile_project_pdf(project_dir: &Path, main_rel: &str) -> TypstCompileResult {
     let root = project_dir.to_path_buf();
@@ -176,14 +325,6 @@ pub fn compile_project_pdf(project_dir: &Path, main_rel: &str) -> TypstCompileRe
     let ident = format!("devprism-project:{main_rel}");
 
     // Build the world once and move it into the driver.
-    //
-    // This used to construct it, discard it purely as a validity check, then
-    // construct it a *second* time inside the closure and `expect` that the
-    // second attempt matched the first. Besides the denied `expect`, that was a
-    // genuine check-then-use race: `ProjectWorld::new` canonicalizes the root
-    // and resolves the main file, so a directory removed or replaced between
-    // the two calls turned a clear error message into a panic inside the
-    // compile driver.
     let world = match ProjectWorld::new(&root, &main) {
         Ok(world) => world,
         Err(message) => return TypstCompileResult::failure(message, 0),

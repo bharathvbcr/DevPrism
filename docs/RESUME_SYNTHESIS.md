@@ -74,11 +74,16 @@ literals in code mode — in markup `#` still opens code mode. See
 **Workspace editing.** `.typ` is a first-class `ProjectFileType` (not `tex` —
 SyncTeX, latexdiff and the rich editor are LaTeX-only and must not receive
 Typst). `lib/compile-targets.ts` is the single owner of "which document builds,
-with which engine"; `compileTargetToPdf` in `lib/project-compile.ts` is the
-single dispatch point. Typst roots come from an import graph
-(`lib/typst-project.ts`) since Typst has no `\documentclass` marker. Editor
-highlighting is a hand-written `StreamLanguage` in `lib/editor/typst-language.ts`
-(no CodeMirror 6 Typst grammar exists on npm).
+with which engine"; `compileTargetToPdf` in `lib/project-compile.ts` and
+`lib/compile-orchestrator.ts` coordinate compilation with zero-copy binary IPC
+(`Response::new`), in-memory `BufferWorld` overlays, and stale PDF preservation
+on syntax errors. Typst roots come from an import graph (`lib/typst-project.ts`)
+since Typst has no `\documentclass` marker. Editor highlighting is a
+hand-written `StreamLanguage` in `lib/editor/typst-language.ts`, paired with
+inline diagnostic linting (`components/workspace/editor/typst-linter.ts`),
+context-aware symbol/snippet completion (`typst-autocomplete.ts`), and
+bidirectional AST source-to-PDF sync (`career_typst/sync.rs`:
+`typst_sync_forward`, `typst_sync_inverse`).
 
 Still LaTeX-only, by nature: SyncTeX forward/inverse sync, latexdiff
 track-changes export, the rich (Word-like) editor, compile profiles, and the
@@ -359,6 +364,8 @@ Completions honor the selected chat provider (Ollama / OpenAI-compat / Claude Co
 |------|------|
 | Career UI | `apps/desktop/src/components/career/` |
 | Synthesize UX | `apps/desktop/src/components/career/synthesize/` |
+| Workspace Resume Organizer | `apps/desktop/src/components/workspace/resume-organizer/` |
+| Interactive Tailoring Studio | `apps/desktop/src/components/workspace/tailoring-studio/` |
 | Career client + types | `apps/desktop/src/lib/career/` |
 | Fact distill (ingest) | `apps/desktop/src/lib/career/distill-facts.ts` |
 | KB ingest | `apps/desktop/src/lib/career/ingest/` |
@@ -366,8 +373,11 @@ Completions honor the selected chat provider (Ollama / OpenAI-compat / Claude Co
 | Synthesis pipeline | `apps/desktop/src/lib/resume-synthesis/` |
 | Gap analysis | `apps/desktop/src/lib/resume-synthesis/gap-analysis.ts` |
 | Templates | `apps/desktop/src/lib/resume-templates/` |
-| Career SQLite host | `apps/desktop/src-tauri/src/career_db/` |
-| Typst compile commands | `apps/desktop/src-tauri/src/career_typst/mod.rs` (`career_typst_compile`, `career_typst_compile_project`) |
+| Career SQLite host | `apps/desktop/src-tauri/src/career_db/` (`mod.rs`, `schema.rs`, `vectors.rs`, `ingest.rs`, `variants.rs`) |
+| Vani tailoring & matching | `apps/desktop/src-tauri/src/career_match/` (`mod.rs`, `tailor.rs`, `metrics.rs`) |
+| Manvi resume bridge | `apps/desktop/src-tauri/src/native_agent/manvi_resume_bridge.rs` |
+| Variants manifest & DAG | `apps/desktop/src-tauri/src/variants.rs` & `apps/desktop/src/stores/resume-variants-store.ts` |
+| Typst compile & AST sync | `apps/desktop/src-tauri/src/career_typst/` (`career_typst_compile`, `career_typst_compile_project`, `typst_sync_forward`, `typst_sync_inverse`) |
 | Progress UI store | `apps/desktop/src/stores/synthesis-store.ts` |
 
 ## Out of scope (by design)

@@ -21,6 +21,7 @@ vi.mock("@/stores/history-store", () => ({
       init: vi.fn(() => Promise.resolve()),
       loadSnapshots: vi.fn(() => Promise.resolve()),
       createSnapshot: createSnapshotMock,
+      stopReview: vi.fn(),
     }),
   },
 }));
@@ -183,7 +184,9 @@ describe("useClaudeEvents handleComplete refresh resilience", () => {
     fireComplete("tab-recompile");
 
     await waitFor(() => expect(compileTargetToPdfMock).toHaveBeenCalled());
-    expect(useDocumentStore.getState().isCompiling).toBe(false);
+    await waitFor(() =>
+      expect(useDocumentStore.getState().isCompiling).toBe(false),
+    );
   });
 
   function fireOutput(tabId: string, message: unknown) {

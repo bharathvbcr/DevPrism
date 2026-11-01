@@ -520,6 +520,8 @@ Covered in §§1.5, 2.2–2.4, 3.1–3.2, 3.5, 3.7 above. Tests include distill 
 |------|------|
 | Career UI | `apps/desktop/src/components/career/` |
 | Synthesize UX | `apps/desktop/src/components/career/synthesize/` (`PipelineBoard`, `AiReadinessCard`, `AddKnowledgeDialog`, results / gap panel) |
+| Workspace Resume Organizer | `apps/desktop/src/components/workspace/resume-organizer/` (`ResumeOrganizerPanel`, `VariantCard`, `CreateVariantDialog`, `EditVariantDialog`, `BindJdDialog`) |
+| Interactive Tailoring Studio | `apps/desktop/src/components/workspace/tailoring-studio/` (`TailoringStudioModal`, `PhaseProgressRail`, `TailoringDiffReview`, `ApprovalModal`) |
 | Career client + types | `apps/desktop/src/lib/career/` |
 | Fact distill (ingest) | `apps/desktop/src/lib/career/distill-facts.ts` |
 | KB ingest | `apps/desktop/src/lib/career/ingest/` |
@@ -527,8 +529,11 @@ Covered in §§1.5, 2.2–2.4, 3.1–3.2, 3.5, 3.7 above. Tests include distill 
 | Synthesis pipeline | `apps/desktop/src/lib/resume-synthesis/` |
 | Gap analysis | `apps/desktop/src/lib/resume-synthesis/gap-analysis.ts` |
 | Templates | `apps/desktop/src/lib/resume-templates/` |
-| Career SQLite host | `apps/desktop/src-tauri/src/career_db/` |
-| Typst compile | `apps/desktop/src-tauri/src/career_typst/mod.rs` (`career_typst_compile`, `career_typst_compile_project`) |
+| Career SQLite host | `apps/desktop/src-tauri/src/career_db/` (`mod.rs`, `schema.rs`, `vectors.rs`, `ingest.rs`, `variants.rs`) |
+| Vani tailoring & matching | `apps/desktop/src-tauri/src/career_match/` (`mod.rs`, `tailor.rs`, `metrics.rs`) |
+| Manvi resume bridge | `apps/desktop/src-tauri/src/native_agent/manvi_resume_bridge.rs` (`--approve-fd 3` POSIX pipe & NDJSON supervisor) |
+| Variants manifest & DAG | `apps/desktop/src-tauri/src/variants.rs` & `apps/desktop/src/stores/resume-variants-store.ts` |
+| Typst compile & AST sync | `apps/desktop/src-tauri/src/career_typst/` (`mod.rs`, `engine.rs`, `project.rs`, `sync.rs`) |
 | Progress UI store | `apps/desktop/src/stores/synthesis-store.ts` |
 | Career tab memory | `apps/desktop/src/stores/career-store.ts` (`openCareer`) |
 | AI assist routing | `apps/desktop/src/lib/ai-assist.ts` |

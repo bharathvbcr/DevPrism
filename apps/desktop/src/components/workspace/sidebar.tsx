@@ -21,7 +21,6 @@ import {
   RefreshCwIcon,
   ListIcon,
   BookOpenIcon,
-  HashIcon,
   GithubIcon,
   SettingsIcon,
   PanelLeftIcon,
@@ -81,6 +80,8 @@ import {
   BibliographyHeader,
 } from "@/components/workspace/bibliography-panel";
 import { SpaceFeaturesBar } from "@/components/workspace/space-features-bar";
+import { OutlinePanel } from "./outline-panel";
+import { ResumeOrganizerPanel } from "./resume-organizer";
 import {
   CommentsPanel,
   CommentsHeader,
@@ -149,9 +150,10 @@ const FILES_REFRESH_MIN_SPIN_MS = 400;
 
 // ─── Sidebar sections (one visible at a time, picked from the tab rail) ───
 
-type SidebarSection =
+export type SidebarSection =
   | "files"
   | "outline"
+  | "resume-organizer"
   | "bibliography"
   | "zotero"
   | "research"
@@ -165,6 +167,7 @@ const SIDEBAR_SECTIONS: {
 }[] = [
   { id: "files", label: "Files", icon: FolderIcon },
   { id: "outline", label: "Outline", icon: ListIcon },
+  { id: "resume-organizer", label: "Resume Organizer", icon: BriefcaseIcon },
   { id: "bibliography", label: "BibTeX", icon: BookOpenIcon },
   { id: "zotero", label: "Zotero", icon: FileTextIcon },
   { id: "research", label: "ScholarLM", icon: FlaskConicalIcon },
@@ -563,6 +566,8 @@ interface SidebarProps {
   collapsed?: boolean;
   onToggleCollapsed?: () => void;
   layoutControls?: LayoutControls;
+  section?: SidebarSection;
+  onSectionChange?: (section: SidebarSection) => void;
 }
 
 interface LayoutControls {
@@ -578,6 +583,8 @@ export function Sidebar({
   collapsed = false,
   onToggleCollapsed,
   layoutControls,
+  section,
+  onSectionChange,
 }: SidebarProps) {
   const appVersion = useAppVersion();
   const files = useDocumentStore((s) => s.files);
@@ -713,15 +720,23 @@ export function Sidebar({
 
   // ─── Active sidebar section (tab rail shows one at a time) ───
   const [activeSection, setActiveSection] = useState<SidebarSection>(
-    readStoredSidebarSection,
+    section ?? readStoredSidebarSection,
   );
+
+  useEffect(() => {
+    if (section && section !== activeSection) {
+      setActiveSection(section);
+    }
+  }, [section, activeSection]);
+
   useEffect(() => {
     try {
       localStorage.setItem(SIDEBAR_SECTION_STORAGE_KEY, activeSection);
+      onSectionChange?.(activeSection);
     } catch {
       // ignore persistence failures
     }
-  }, [activeSection]);
+  }, [activeSection, onSectionChange]);
   const openCommentCount = useCommentsStore(
     (s) => s.comments.filter((c) => c.status === "open").length,
   );
@@ -1506,7 +1521,7 @@ export function Sidebar({
     return active;
   }, [toc, lineStartOffsets, cursorPosition]);
 
-  const handleTocClick = useCallback(
+  const _handleTocClick = useCallback(
     (line: number) => {
       const position = lineStartOffsets[line - 1] ?? 0;
       requestJumpToPosition(position);
@@ -2103,55 +2118,20 @@ export function Sidebar({
                 activeSection !== "outline" && "hidden",
               )}
             >
-              <div className="flex h-8 shrink-0 items-center gap-1.5 border-sidebar-border border-b px-3 text-muted-foreground text-xs uppercase tracking-wider">
-                <ListIcon className="size-3 shrink-0" />
-                <span className="font-medium">Outline</span>
-                {toc.length > 0 && (
-                  <span className="rounded bg-sidebar-accent px-1.5 py-0.5 font-mono text-[10px] tracking-normal">
-                    {toc.length}
-                  </span>
-                )}
-              </div>
-              <div className="min-h-0 flex-1 overflow-y-auto p-1">
-                {toc.length > 0 ? (
-                  toc.map((item, index) => {
-                    const isActive = index === activeTocIndex;
-                    return (
-                      <button
-                        key={index}
-                        ref={isActive ? activeTocRef : undefined}
-                        aria-current={isActive ? "location" : undefined}
-                        className={cn(
-                          "relative flex h-7 w-full items-center gap-1.5 rounded-md pr-2 text-left text-sm transition-colors",
-                          isActive
-                            ? "bg-sidebar-accent/60 text-sidebar-accent-foreground before:absolute before:inset-y-1 before:left-0 before:w-0.5 before:rounded-full before:bg-primary"
-                            : "hover:bg-sidebar-accent/50",
-                        )}
-                        style={{
-                          paddingLeft: `${(item.level - 1) * 12 + 8}px`,
-                        }}
-                        onClick={() => handleTocClick(item.line)}
-                      >
-                        <HashIcon
-                          className={cn(
-                            "size-3 shrink-0",
-                            isActive ? "text-primary" : "text-muted-foreground",
-                          )}
-                        />
-                        <span className="truncate">{item.title}</span>
-                      </button>
-                    );
-                  })
-                ) : (
-                  <div className="flex flex-col items-center gap-1 px-3 py-6 text-center text-muted-foreground text-xs">
-                    <ListIcon className="size-4 opacity-60" />
-                    <span>No sections yet</span>
-                    <span className="opacity-70">
-                      {"Add \\section{…} headings to outline your document"}
-                    </span>
-                  </div>
-                )}
-              </div>
+              <OutlinePanel />
+            </div>
+
+            {/* Resume Organizer */}
+            <div
+              id="sidebar-panel-resume-organizer"
+              role="tabpanel"
+              aria-labelledby="sidebar-tab-resume-organizer"
+              className={cn(
+                "flex min-h-0 flex-1 flex-col",
+                activeSection !== "resume-organizer" && "hidden",
+              )}
+            >
+              <ResumeOrganizerPanel />
             </div>
 
             {/* Bibliography */}

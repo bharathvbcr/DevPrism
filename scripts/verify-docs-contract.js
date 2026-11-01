@@ -37,6 +37,18 @@ function read(rel) {
   return fs.readFileSync(path.join(ROOT, rel), "utf8");
 }
 
+function isGitIgnored(rel) {
+  try {
+    execFileSync("git", ["check-ignore", "-q", "--", rel], {
+      cwd: ROOT,
+      stdio: "ignore",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Every markdown document this contract governs. */
 function allDocs() {
   const out = [];
@@ -45,7 +57,9 @@ function allDocs() {
     for (const name of fs.readdirSync(abs)) {
       if (!name.endsWith(".md")) continue;
       const rel = dir ? `${dir}/${name}` : name;
-      if (fs.statSync(path.join(ROOT, rel)).isFile()) out.push(rel);
+      if (fs.statSync(path.join(ROOT, rel)).isFile() && !isGitIgnored(rel)) {
+        out.push(rel);
+      }
     }
   }
   out.sort();

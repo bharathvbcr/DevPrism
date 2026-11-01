@@ -28,8 +28,8 @@ impl SemanticCache {
     pub fn lookup(
         &mut self,
         embedding: &[f32],
-        model: &str,
         cache_key: &str,
+        model: &str,
         config: &SemanticLayerConfig,
     ) -> CacheLookupResult {
         let now = Instant::now();

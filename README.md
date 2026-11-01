@@ -7,8 +7,8 @@
 [![Website](https://img.shields.io/badge/website-devprism.vbcr.dev-B91C1C?style=flat&logo=safari&logoColor=white)](https://devprism.vbcr.dev/)
 
 <p align="center">
-  An offline-first scientific writing workspace powered by your local LLM (Ollama).<br/>
-  LaTeX + Python + scientific & custom skills + project spaces — runs entirely on your desktop.
+  An offline-first scientific & technical writing workspace powered by Manvi and your local LLM (Ollama).<br/>
+  Typst 0.15 + LaTeX + Vani Resume Engine + Python + 100+ scientific skills — runs natively on your desktop.
 </p>
 
 <p align="center">
@@ -55,10 +55,11 @@ DevPrism is a **fully local** alternative — your files are stored on your disk
 
 | | OpenAI Prism | DevPrism |
 |---|:---:|:---:|
-| AI Model | GPT-5.2 (cloud) | **Local Ollama, Groq, Claude Code, or Cursor CLI** |
+| AI Model | GPT-5.2 (cloud) | **Manvi Harness + Local Ollama, Groq, Claude Code, or Cursor CLI** |
 | Privacy | Files uploaded to cloud | **Runs offline; no data leaves your machine by default** |
 | Runtime | Browser (cloud) | **Native desktop (Tauri 2 + Rust)** |
-| LaTeX | Cloud compilation | **Tectonic (embedded, offline)** |
+| Document Engines | Cloud LaTeX compilation | **In-process Typst 0.15 (<1 ms warm compile) + Embedded Tectonic LaTeX** |
+| Resume & Career Engine | — | **Vani 4-Phase Tailoring Engine + Sidebar Resume Organizer (`.prism/variants/`)** |
 | Python Environment | — | **Built-in uv + venv — one-click scientific Python setup** |
 | Skills | — | **Scientific skills + bundled offline DevPrism skills + custom skills on the go** |
 | Project Spaces | — | **Group projects with a shared default model & skills** |
@@ -132,8 +133,9 @@ Every save creates a snapshot in a local Git repository (`.claudeprism/history.g
   <img src="./assets/demo/history.webp" alt="History & Proposed Changes" width="700" />
 </p>
 
-### Offline LaTeX Compilation
-Tectonic is embedded directly in the app. Packages are downloaded once on first use and cached locally. After that, compilation works fully offline with no TeX Live installation required. Before your first compile the app checks whether the bundle is already cached and warns during onboarding if a one-time download is still needed — offline readiness is never a surprise.
+### Dual-Engine Compilation: In-Process Typst 0.15 & Offline LaTeX
+- **In-Process Typst 0.15 (`career_typst`)**: Compiles `.typ` documents directly in Rust with an in-memory `BufferWorld` overlay and zero-copy binary IPC (`Response::new`), delivering sub-second live preview updates without disk I/O or subprocess overhead. Includes bidirectional AST source-to-PDF navigation (`typst_sync_forward` / `typst_sync_inverse`) and preserves the last valid PDF view with a non-blocking banner during syntax errors.
+- **Offline LaTeX (Tectonic & TeX Live)**: Tectonic is embedded directly in the app. Packages are downloaded once on first use and cached locally. After that, compilation works fully offline with no TeX Live installation required. Before your first compile the app checks whether the bundle is already cached and warns during onboarding if a one-time download is still needed — offline readiness is never a surprise.
 
 ### Capture & Ask
 Press `⌘X` to enter capture mode, drag to select any region in the PDF — the captured image is pinned to the chat composer so you can immediately ask Claude about it. Great for asking about equations, figures, tables, or reviewer comments.
@@ -143,10 +145,13 @@ Press `⌘X` to enter capture mode, drag to select any region in the PDF — the
 </p>
 
 ### Live PDF Preview
-Native MuPDF rendering with SyncTeX support — click a position in the PDF to jump to the corresponding source line. Supports high-precision text selection/quad extraction (using the MuPDF client) to ensure visual highlights align perfectly on the page, interactive zoom controls, and capture.
+Native MuPDF rendering with SyncTeX and Typst AST sync support — click or double-click a position in the PDF to jump to the corresponding source line, or jump forward from the editor cursor to the rendered PDF page. Supports high-precision text selection/quad extraction (using the MuPDF client), byte-budgeted bitmap caching, interactive zoom controls, and region capture.
 
-### Editor
-CodeMirror 6 with LaTeX/BibTeX syntax highlighting, real-time error linting, find & replace (regex), and multi-file project support with auto-save.
+### Modernized Editor & Workspace
+CodeMirror 6 with LaTeX, BibTeX, and Typst syntax highlighting, real-time inline diagnostic linting (`typst-linter.ts`), context-aware symbol/snippet autocompletion (`typst-autocomplete.ts`), find & replace (regex), and auto-save:
+- **Multi-File Tab Strip**: Pin tabs, track dirty state indicators, middle-click close, drag-reorder within pinned/unpinned zones, and navigate via MRU tab history.
+- **Activity Bar & Collapsible Docks**: 48px fixed Activity Bar rail paired with a collapsible bottom **Problems Dock** (clamped `[60px, 500px]`, severity filtering, pagination, and one-click line jump), an engine-neutral **Outline Panel** (Typst `=`, LaTeX `\section`, Markdown `#`), and a side-by-side docked **Claude Chat Drawer** that never occludes the PDF preview.
+- **Dynamic 3-Way Theme Switcher**: Reactive Light, Dark, and System themes synchronized across CodeMirror 6, workspace chrome, and the PDF preview backdrop.
 
 ### More
 - **Zotero Integration** — OAuth-based bibliography management and citation insertion.
@@ -155,7 +160,11 @@ CodeMirror 6 with LaTeX/BibTeX syntax highlighting, real-time error linting, fin
   <img src="./assets/demo/zotero.webp" alt="Zotero Integration" width="300" />
 </p>
 
-- **Career database & resume synthesis** — import your résumé by drag-and-drop (`.tex` or Overleaf-style `.zip`), build a knowledge base from PDFs/Markdown/mind maps, and synthesize JD-tailored résumés with provenance-checked, metric-verified bullets. Career embeddings prefer Google's EmbeddingGemma 2 served by tessl's `tessl-embed` on a Mac (used automatically when it is running), with `nomic-embed-text` via Ollama as the fallback; switching models re-embeds. External agents can drive the same engine through the built-in MCP server (see [docs/PLUGINS.md](docs/PLUGINS.md)).
+- **Career database, Vani tailoring engine & Resume Organizer** — import your résumé by drag-and-drop (`.tex`, `.typ`, or Overleaf-style `.zip`), build a knowledge base from PDFs/Markdown/mind maps, and synthesize JD-tailored résumés with provenance-checked, metric-verified bullets:
+  - **Manvi Subprocess Bridge (`manvi_resume_bridge`)**: Runs `manvi run --json --approve-fd 3` with POSIX process-group isolation and dedicated file-descriptor-3 human-in-the-loop approval piping.
+  - **Vani 4-Phase Tailoring Engine (`career_match::tailor`)**: Executes JD profile extraction, knapsack experience/skill packing, metric-preserving bullet rewriting, and critic verification compiled into real PDF bytes via `career_typst` with authentic `0–100` ATS coverage scoring.
+  - **Sidebar Resume Organizer & Tailoring Studio**: Manage structured `.prism/variants/` manifests and version DAGs directly from the Activity Bar (`#sidebar-panel-resume-organizer`), bind target JDs, and review side-by-side Typst diffs with live ATS gauges and interactive approval modals in `<TailoringStudioModal />`.
+  - **Embeddings**: Career embeddings prefer Google's EmbeddingGemma 2 served by tessl's `tessl-embed` on a Mac (used automatically when it is running on `127.0.0.1:11435`), with `nomic-embed-text` via Ollama as the fallback; canonical model labels strip `:latest` so stored vectors and MCP queries always match. External agents can drive the same engine through the built-in MCP server (see [docs/PLUGINS.md](docs/PLUGINS.md)).
 - **In-app updates** — update status and one-click install from Settings → Environment.
 - **Slash Commands** — Built-in (`/review`, `/init`) + custom commands from `.claude/commands/`.
 - **External Editors** — Open projects in Cursor, VS Code, Zed, or Sublime Text.

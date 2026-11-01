@@ -13,9 +13,7 @@ import { useHistoryStore } from "@/stores/history-store";
 import { useProposedChangesStore } from "@/stores/proposed-changes-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { readTexFileContent } from "@/lib/tauri/fs";
-import { formatCompileError, isSupersededCompile } from "@/lib/latex-compiler";
-import { compileTargetToPdf } from "@/lib/project-compile";
-import { resolveActiveCompileTarget } from "@/lib/compile-root-preference";
+import { runCompile } from "@/lib/compile-orchestrator";
 import { createLogger } from "@/lib/debug/logger";
 import {
   getChatLabels,
@@ -79,7 +77,6 @@ export function useClaudeEvents() {
   const pendingToolUsesRef = useRef(
     new Map<string, Map<string, { name: string; input: any }>>(),
   );
-  const hasTexChangesRef = useRef(new Map<string, boolean>());
   const cancelledForAskRef = useRef(new Map<string, boolean>());
   const lastErrorRef = useRef(new Map<string, string>());
   const directProviderTabRef = useRef(new Map<string, boolean>());
@@ -95,7 +92,6 @@ export function useClaudeEvents() {
       if (tab.isStreaming && !msgCountRef.current.has(tab.id)) {
         // New stream detected for this tab — initialize state
         pendingToolUsesRef.current.set(tab.id, new Map());
-        hasTexChangesRef.current.set(tab.id, false);
         cancelledForAskRef.current.set(tab.id, false);
         lastErrorRef.current.delete(tab.id);
         const providerKey = tab.sessionProviderKey ?? tab.providerKey;
@@ -340,9 +336,6 @@ export function useClaudeEvents() {
               const fp = toolUse.input?.file_path || toolUse.input?.path;
               if (fp) {
                 registerProposedChange(fp, block.tool_use_id!, toolUse.name);
-                if (/\.(tex|bib|sty|cls|dtx)$/i.test(fp)) {
-                  hasTexChangesRef.current.set(tabId, true);
-                }
               }
             }
           }
@@ -440,7 +433,6 @@ export function useClaudeEvents() {
 
       // Clean up per-tab state
       pendingToolUsesRef.current.delete(tabId);
-      hasTexChangesRef.current.delete(tabId);
       cancelledForAskRef.current.delete(tabId);
       lastErrorRef.current.delete(tabId);
       directProviderTabRef.current.delete(tabId);
@@ -549,48 +541,23 @@ export function useClaudeEvents() {
         return;
       }
 
-      // Auto-recompile after Claude finishes
-      const {
-        projectRoot,
-        files,
-        activeFileId,
-        isCompiling: alreadyCompiling,
-      } = useDocumentStore.getState();
-      if (projectRoot && !alreadyCompiling) {
-        const resolved = resolveActiveCompileTarget(
-          projectRoot,
-          activeFileId,
-          files,
-        );
-        if (resolved) {
-          const { rootId, targetPath, engine } = resolved;
-          useDocumentStore.getState().setIsCompiling(true);
-          useDocumentStore.getState().setPendingRecompile(false);
-          try {
-            await useDocumentStore.getState().saveAllFiles();
-            const texlive =
-              useSettingsStore.getState().compilerBackend === "texlive";
-            const pdfData = await compileTargetToPdf(
-              projectRoot,
-              targetPath,
-              engine,
-              texlive,
-            );
-            useDocumentStore.getState().setPdfData(pdfData, rootId);
-          } catch (err) {
-            if (!isSupersededCompile(err)) {
-              useDocumentStore
-                .getState()
-                .setCompileError(formatCompileError(err), rootId);
-            }
-          } finally {
-            useDocumentStore.getState().setIsCompiling(false);
-          }
+      // Auto-recompile after Claude finishes.
+      //
+      // Gated on the document generation rather than on which tools the turn
+      // called: a pure Q&A turn leaves the generation untouched and needs no
+      // build, while Manvi's own file-edit tools (devcouncil_write_file and
+      // friends) are not matched by the chat tool-name classifier and would
+      // otherwise skip the build their edits need.
+      const { projectRoot, isCompiling: alreadyCompiling } =
+        useDocumentStore.getState();
+      if (projectRoot) {
+        if (alreadyCompiling) {
+          // The running build re-dispatches itself when it finishes.
+          useDocumentStore.getState().setPendingRecompile(true);
+          log.info("queued post-Claude recompile — already compiling");
+        } else {
+          await runCompile({ reason: "agent" });
         }
-      } else if (alreadyCompiling) {
-        // Queue recompile — it will run when the current compile finishes
-        useDocumentStore.getState().setPendingRecompile(true);
-        log.info("queued post-Claude recompile — already compiling");
       }
     }
 

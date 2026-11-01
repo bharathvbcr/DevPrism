@@ -30,7 +30,15 @@ const MIN_HEIGHT = 260;
 const DEFAULT_HEIGHT = 360;
 const DOCKED_BORDER_RADIUS = "12px 12px 0 0";
 
-export function ClaudeChatDrawer() {
+export interface ClaudeChatDrawerProps {
+  isDocked?: boolean;
+  onClose?: () => void;
+}
+
+export function ClaudeChatDrawer({
+  isDocked = false,
+  onClose,
+}: ClaudeChatDrawerProps = {}) {
   // Initialize event listeners for Claude streaming
   useClaudeEvents();
 
@@ -270,24 +278,28 @@ export function ClaudeChatDrawer() {
     });
   }, [clearMessages]);
 
+  const clearButton = (
+    <button
+      type="button"
+      onClick={handleClearChat}
+      disabled={!hasMessages || anyStreaming}
+      className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40"
+      aria-label="Clear chat"
+      title={
+        anyStreaming
+          ? "Stop the response before clearing"
+          : !hasMessages
+            ? "Nothing to clear yet"
+            : "Clear chat"
+      }
+    >
+      <Trash2Icon className="size-4" />
+    </button>
+  );
+
   const headerActions = (
     <div className="flex items-center gap-1">
-      <button
-        type="button"
-        onClick={handleClearChat}
-        disabled={!hasMessages || anyStreaming}
-        className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40"
-        aria-label="Clear chat"
-        title={
-          anyStreaming
-            ? "Stop the response before clearing"
-            : !hasMessages
-              ? "Nothing to clear yet"
-              : "Clear chat"
-        }
-      >
-        <Trash2Icon className="size-4" />
-      </button>
+      {clearButton}
       <button
         type="button"
         onClick={handleClose}
@@ -299,6 +311,48 @@ export function ClaudeChatDrawer() {
       </button>
     </div>
   );
+
+  if (isDocked) {
+    return (
+      <div className="flex h-full w-full select-none flex-col overflow-hidden border-border border-l bg-background">
+        <div className="flex h-9 shrink-0 items-center justify-between border-border border-b bg-muted/40 px-3">
+          <div className="flex items-center gap-2">
+            <MessageCircleIcon className="size-4 text-foreground" />
+            <span className="font-medium text-foreground text-xs">
+              AI Assistant
+            </span>
+          </div>
+          <div className="flex items-center gap-1">
+            {clearButton}
+            <button
+              type="button"
+              onClick={onClose ?? handleClose}
+              className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              aria-label="Close Assistant"
+            >
+              <XIcon className="size-4" />
+            </button>
+          </div>
+        </div>
+
+        <ChatTabBar />
+
+        {error && (
+          <div className="mx-3 mt-2 mb-1 flex items-start gap-2 rounded-lg border border-destructive/50 bg-destructive/10 px-3 py-2 text-destructive text-xs">
+            <div className="min-w-0 flex-1">
+              <OllamaErrorHelp error={error} onRetry={handleErrorRetry} />
+            </div>
+          </div>
+        )}
+
+        <div className="relative min-h-0 flex-1 overflow-hidden">
+          <ChatMessages />
+        </div>
+
+        <ChatComposer isOpen={true} />
+      </div>
+    );
+  }
 
   return (
     <div

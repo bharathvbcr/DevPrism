@@ -17,11 +17,29 @@
 //! project is always derivable from a variant's path, which keeps switching
 //! stateless.
 
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+fn compute_sha256(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
+}
+
+/// Target seniority levels recognized by Vani and the Resume Organizer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SeniorityLevel {
+    Ic,
+    Senior,
+    Lead,
+    Manager,
+    Director,
+}
 
 /// One tailored version, as surfaced to the frontend.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
@@ -37,8 +55,24 @@ pub struct VariantInfo {
     pub jd: String,
     /// Creation time, epoch milliseconds.
     pub created_at: i64,
+    /// Update time, epoch milliseconds.
+    #[serde(default)]
+    pub updated_at: i64,
     /// Absolute path to the variant's project folder.
     pub path: String,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub company: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seniority: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persona: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ats_score: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_resume_source_path: Option<String>,
 }
 
 /// Machine metadata stored at `<variant>/.prism/variant.json` (hidden). The
@@ -47,12 +81,32 @@ pub struct VariantInfo {
 /// `JOB_DESCRIPTION.md` so the AI agent (which reads project files) and the user
 /// can both see it. Older manifests embedded `jd`; that field is now ignored on
 /// read and recovered into the file via `legacy_jd`.
-#[derive(serde::Serialize, serde::Deserialize, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Default, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
-struct VariantManifest {
-    name: String,
-    status: String,
-    created_at: i64,
+pub struct VariantManifest {
+    pub name: String,
+    pub status: String,
+    pub created_at: i64,
+    #[serde(default)]
+    pub updated_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_company: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seniority_level: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ats_match_score: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_resume_source_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persona_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_jd_hash: Option<String>,
 }
 
 fn now_ms() -> i64 {
@@ -247,12 +301,24 @@ fn write_jd(variant_dir: &Path, jd: &str) -> Result<(), String> {
 
 fn info_from_dir(slug: &str, variant_dir: &Path) -> VariantInfo {
     let m = read_manifest(variant_dir);
+    let created_at = if m.created_at == 0 {
+        now_ms()
+    } else {
+        m.created_at
+    };
+    let updated_at = if m.updated_at == 0 {
+        created_at
+    } else {
+        m.updated_at
+    };
     VariantInfo {
         id: slug.to_string(),
-        name: if m.name.is_empty() {
-            slug.to_string()
-        } else {
+        name: if !m.name.is_empty() {
             m.name
+        } else if let Some(title) = m.title {
+            title
+        } else {
+            slug.to_string()
         },
         status: if m.status.is_empty() {
             "draft".to_string()
@@ -260,8 +326,15 @@ fn info_from_dir(slug: &str, variant_dir: &Path) -> VariantInfo {
             m.status
         },
         jd: read_jd(variant_dir),
-        created_at: m.created_at,
+        created_at,
+        updated_at,
         path: variant_dir.to_string_lossy().to_string(),
+        company: m.target_company,
+        role: m.target_role,
+        seniority: m.seniority_level,
+        persona: m.persona_id,
+        ats_score: m.ats_match_score,
+        base_resume_source_path: m.base_resume_source_path,
     }
 }
 
@@ -292,15 +365,61 @@ pub(crate) fn list_variants_blocking(project_root: &str) -> Result<Vec<VariantIn
     Ok(out)
 }
 
+pub(crate) fn get_variant_blocking(
+    project_root: &str,
+    variant_id: &str,
+) -> Result<VariantInfo, String> {
+    if !is_safe_id(variant_id) {
+        return Err("Invalid version id.".to_string());
+    }
+    let owner = derive_owner_root(project_root);
+    let variant_dir = variants_dir(&owner).join(variant_id);
+    if !variant_dir.is_dir() {
+        return Err("That version no longer exists.".to_string());
+    }
+    Ok(info_from_dir(variant_id, &variant_dir))
+}
+
 pub(crate) fn create_variant_blocking(
     project_root: &str,
     name: &str,
     jd: &str,
     status: &str,
 ) -> Result<VariantInfo, String> {
+    create_variant_extended_blocking(
+        project_root,
+        name,
+        jd,
+        status,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+}
+
+pub(crate) fn create_variant_extended_blocking(
+    project_root: &str,
+    name: &str,
+    jd: &str,
+    status: &str,
+    company: Option<String>,
+    role: Option<String>,
+    seniority: Option<String>,
+    persona: Option<String>,
+    ats_score: Option<i64>,
+    base_resume_source_path: Option<String>,
+) -> Result<VariantInfo, String> {
     let name = name.trim();
     if name.is_empty() {
         return Err("Version name cannot be empty.".to_string());
+    }
+    if let Some(score) = ats_score {
+        if score < 0 || score > 100 {
+            return Err("ATS score must be between 0 and 100.".to_string());
+        }
     }
     let owner = derive_owner_root(project_root);
     if !owner.is_dir() {
@@ -317,6 +436,13 @@ pub(crate) fn create_variant_blocking(
         return Err(format!("Failed to copy the master document: {}", err));
     }
 
+    let now = now_ms();
+    let jd_hash = if jd.trim().is_empty() {
+        None
+    } else {
+        Some(compute_sha256(jd.as_bytes()))
+    };
+
     let manifest = VariantManifest {
         name: name.to_string(),
         status: if status.trim().is_empty() {
@@ -324,12 +450,63 @@ pub(crate) fn create_variant_blocking(
         } else {
             status.trim().to_string()
         },
-        created_at: now_ms(),
+        created_at: now,
+        updated_at: now,
+        slug: Some(slug.clone()),
+        title: Some(name.to_string()),
+        target_company: company,
+        target_role: role,
+        seniority_level: seniority,
+        ats_match_score: ats_score.map(|s| s as u8),
+        base_resume_source_path,
+        persona_id: persona,
+        target_jd_hash: jd_hash,
     };
     let written = write_manifest(&variant_dir, &manifest).and_then(|_| write_jd(&variant_dir, jd));
     if let Err(err) = written {
         let _ = fs::remove_dir_all(&variant_dir);
         return Err(err);
+    }
+
+    // Write audit trail and ATS readiness stubs in variant directory
+    let log_path = variant_dir.join("tailoring_log.json");
+    if !log_path.exists() {
+        let default_log = serde_json::json!({
+            "variantSlug": &slug,
+            "runs": []
+        });
+        let _ = fs::write(
+            log_path,
+            serde_json::to_string_pretty(&default_log).unwrap_or_default(),
+        );
+    }
+
+    let ats_path = variant_dir.join("ats_readiness.json");
+    if !ats_path.exists() {
+        let default_ats = serde_json::json!({
+            "variantSlug": &slug,
+            "overallScore": ats_score.unwrap_or(0),
+            "lastAuditedAt": now,
+            "keywordCoverage": {
+                "matched": [],
+                "missing": [],
+                "score": 0
+            },
+            "metricsQuantification": {
+                "bulletsTotal": 0,
+                "quantifiedBullets": 0,
+                "score": 0
+            },
+            "lengthCompliance": {
+                "pageCount": 1,
+                "targetPageBudget": 1,
+                "score": 100
+            }
+        });
+        let _ = fs::write(
+            ats_path,
+            serde_json::to_string_pretty(&default_ats).unwrap_or_default(),
+        );
     }
 
     Ok(info_from_dir(&slug, &variant_dir))
@@ -342,17 +519,45 @@ pub(crate) fn update_variant_blocking(
     status: Option<String>,
     jd: Option<String>,
 ) -> Result<VariantInfo, String> {
+    update_variant_extended_blocking(
+        project_root,
+        variant_id,
+        name,
+        status,
+        jd,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+}
+
+pub(crate) fn update_variant_extended_blocking(
+    project_root: &str,
+    variant_id: &str,
+    name: Option<String>,
+    status: Option<String>,
+    jd: Option<String>,
+    company: Option<String>,
+    role: Option<String>,
+    seniority: Option<String>,
+    persona: Option<String>,
+    ats_score: Option<i64>,
+) -> Result<VariantInfo, String> {
     if !is_safe_id(variant_id) {
         return Err("Invalid version id.".to_string());
+    }
+    if let Some(score) = ats_score {
+        if score < 0 || score > 100 {
+            return Err("ATS score must be between 0 and 100.".to_string());
+        }
     }
     let owner = derive_owner_root(project_root);
     let variant_dir = variants_dir(&owner).join(variant_id);
     if !variant_dir.is_dir() {
         return Err("That version no longer exists.".to_string());
     }
-    // Capture the effective JD up front (new value, or the existing one — which
-    // may still be embedded in a legacy manifest) before `write_manifest`
-    // migrates and removes that legacy file.
     let effective_jd = jd.unwrap_or_else(|| read_jd(&variant_dir));
 
     let mut manifest = read_manifest(&variant_dir);
@@ -360,6 +565,7 @@ pub(crate) fn update_variant_blocking(
         let trimmed = name.trim();
         if !trimmed.is_empty() {
             manifest.name = trimmed.to_string();
+            manifest.title = Some(trimmed.to_string());
         }
     }
     if let Some(status) = status {
@@ -368,9 +574,50 @@ pub(crate) fn update_variant_blocking(
             manifest.status = trimmed.to_string();
         }
     }
+    if company.is_some() {
+        manifest.target_company = company;
+    }
+    if role.is_some() {
+        manifest.target_role = role;
+    }
+    if seniority.is_some() {
+        manifest.seniority_level = seniority;
+    }
+    if persona.is_some() {
+        manifest.persona_id = persona;
+    }
+    if let Some(score) = ats_score {
+        manifest.ats_match_score = Some(score as u8);
+    }
+    if !effective_jd.trim().is_empty() {
+        manifest.target_jd_hash = Some(compute_sha256(effective_jd.as_bytes()));
+    }
+    manifest.updated_at = now_ms();
+
     write_jd(&variant_dir, &effective_jd)?;
     write_manifest(&variant_dir, &manifest)?;
     Ok(info_from_dir(variant_id, &variant_dir))
+}
+
+pub(crate) fn bind_jd_blocking(
+    project_root: &str,
+    variant_id: &str,
+    jd_text: &str,
+    company: Option<String>,
+    role: Option<String>,
+) -> Result<VariantInfo, String> {
+    update_variant_extended_blocking(
+        project_root,
+        variant_id,
+        None,
+        None,
+        Some(jd_text.to_string()),
+        company,
+        role,
+        None,
+        None,
+        None,
+    )
 }
 
 pub(crate) fn delete_variant_blocking(project_root: &str, variant_id: &str) -> Result<(), String> {
@@ -423,8 +670,11 @@ fn collect_text_files_inner(root: &Path, dir: &Path, out: &mut BTreeMap<String, 
             collect_text_files_inner(root, &path, out);
         } else if let Ok(rel) = path.strip_prefix(root) {
             let rel_str = rel.to_string_lossy().replace('\\', "/");
-            // The target file is variant-only metadata, not a document change.
-            if rel_str == JD_FILENAME {
+            // The target file and audit logs are variant-only metadata, not a document change.
+            if rel_str == JD_FILENAME
+                || rel_str == "tailoring_log.json"
+                || rel_str == "ats_readiness.json"
+            {
                 continue;
             }
             if let Ok(content) = fs::read_to_string(&path) {
@@ -485,31 +735,123 @@ pub(crate) fn diff_variant_blocking(
 }
 
 /// List all tailored versions for the project that owns `project_root`.
-/// Accepts either an owner path or a variant path (the owner is derived).
 #[tauri::command]
-pub async fn list_variants(project_root: String) -> Result<Vec<VariantInfo>, String> {
+pub async fn variant_list(project_root: String) -> Result<Vec<VariantInfo>, String> {
     tokio::task::spawn_blocking(move || list_variants_blocking(&project_root))
         .await
         .map_err(|e| format!("List versions task failed: {}", e))?
 }
 
+/// Legacy alias for `variant_list`.
+#[tauri::command]
+pub async fn list_variants(project_root: String) -> Result<Vec<VariantInfo>, String> {
+    variant_list(project_root).await
+}
+
+/// Get a single variant by id.
+#[tauri::command]
+pub async fn variant_get(project_root: String, variant_id: String) -> Result<VariantInfo, String> {
+    tokio::task::spawn_blocking(move || get_variant_blocking(&project_root, &variant_id))
+        .await
+        .map_err(|e| format!("Get version task failed: {}", e))?
+}
+
 /// Create a new tailored version by snapshotting the master's source into
 /// `<owner>/.prism/variants/<slug>/` and return it.
+#[tauri::command]
+pub async fn variant_create(
+    project_root: String,
+    name: String,
+    jd: Option<String>,
+    status: Option<String>,
+    company: Option<String>,
+    role: Option<String>,
+    seniority: Option<String>,
+    persona: Option<String>,
+    ats_score: Option<i64>,
+    base_resume_source_path: Option<String>,
+) -> Result<VariantInfo, String> {
+    tokio::task::spawn_blocking(move || {
+        create_variant_extended_blocking(
+            &project_root,
+            &name,
+            jd.as_deref().unwrap_or(""),
+            status.as_deref().unwrap_or("draft"),
+            company,
+            role,
+            seniority,
+            persona,
+            ats_score,
+            base_resume_source_path,
+        )
+    })
+    .await
+    .map_err(|e| format!("Create version task failed: {}", e))?
+}
+
+/// Compatibility alias for `variant_create`.
 #[tauri::command]
 pub async fn create_variant(
     project_root: String,
     name: String,
-    jd: String,
-    status: String,
+    jd: Option<String>,
+    status: Option<String>,
+    company: Option<String>,
+    role: Option<String>,
+    seniority: Option<String>,
+    persona: Option<String>,
+    ats_score: Option<i64>,
+    base_resume_source_path: Option<String>,
 ) -> Result<VariantInfo, String> {
-    tokio::task::spawn_blocking(move || create_variant_blocking(&project_root, &name, &jd, &status))
-        .await
-        .map_err(|e| format!("Create version task failed: {}", e))?
+    variant_create(
+        project_root,
+        name,
+        jd,
+        status,
+        company,
+        role,
+        seniority,
+        persona,
+        ats_score,
+        base_resume_source_path,
+    )
+    .await
 }
 
 /// Patch a version's metadata (name / status / target text). Any `None` field
-/// is left unchanged. The slug (folder) is intentionally never renamed so open
-/// variant paths stay valid.
+/// is left unchanged.
+#[tauri::command]
+pub async fn variant_update(
+    project_root: String,
+    variant_id: String,
+    name: Option<String>,
+    status: Option<String>,
+    jd: Option<String>,
+    company: Option<String>,
+    role: Option<String>,
+    seniority: Option<String>,
+    persona: Option<String>,
+    ats_score: Option<i64>,
+) -> Result<VariantInfo, String> {
+    tokio::task::spawn_blocking(move || {
+        update_variant_extended_blocking(
+            &project_root,
+            &variant_id,
+            name,
+            status,
+            jd,
+            company,
+            role,
+            seniority,
+            persona,
+            ats_score,
+        )
+    })
+    .await
+    .map_err(|e| format!("Update version task failed: {}", e))?
+}
+
+/// Compatibility alias for `variant_update`.
 #[tauri::command]
 pub async fn update_variant(
     project_root: String,
@@ -517,20 +859,55 @@ pub async fn update_variant(
     name: Option<String>,
     status: Option<String>,
     jd: Option<String>,
+    company: Option<String>,
+    role: Option<String>,
+    seniority: Option<String>,
+    persona: Option<String>,
+    ats_score: Option<i64>,
 ) -> Result<VariantInfo, String> {
-    tokio::task::spawn_blocking(move || {
-        update_variant_blocking(&project_root, &variant_id, name, status, jd)
-    })
+    variant_update(
+        project_root,
+        variant_id,
+        name,
+        status,
+        jd,
+        company,
+        role,
+        seniority,
+        persona,
+        ats_score,
+    )
     .await
-    .map_err(|e| format!("Update version task failed: {}", e))?
 }
 
 /// Permanently delete a tailored version and its folder.
 #[tauri::command]
-pub async fn delete_variant(project_root: String, variant_id: String) -> Result<(), String> {
+pub async fn variant_delete(project_root: String, variant_id: String) -> Result<(), String> {
     tokio::task::spawn_blocking(move || delete_variant_blocking(&project_root, &variant_id))
         .await
         .map_err(|e| format!("Delete version task failed: {}", e))?
+}
+
+/// Compatibility alias for `variant_delete`.
+#[tauri::command]
+pub async fn delete_variant(project_root: String, variant_id: String) -> Result<(), String> {
+    variant_delete(project_root, variant_id).await
+}
+
+/// Bind a job description to a variant.
+#[tauri::command]
+pub async fn variant_bind_jd(
+    project_root: String,
+    variant_id: String,
+    jd_text: String,
+    company: Option<String>,
+    role: Option<String>,
+) -> Result<VariantInfo, String> {
+    tokio::task::spawn_blocking(move || {
+        bind_jd_blocking(&project_root, &variant_id, &jd_text, company, role)
+    })
+    .await
+    .map_err(|e| format!("Bind JD task failed: {}", e))?
 }
 
 /// Compare a tailored version against its master, returning one entry per
@@ -636,6 +1013,116 @@ mod tests {
     }
 
     #[test]
+    fn extended_metadata_crud_and_validation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let owner = tmp.path().join("Resume");
+        fs::create_dir_all(&owner).unwrap();
+        fs::write(owner.join("resume.typ"), b"= Resume").unwrap();
+
+        let owner_str = owner.to_string_lossy().to_string();
+
+        // Invalid ATS score (> 100 or < 0) rejected
+        let err_high = create_variant_extended_blocking(
+            &owner_str,
+            "High Score",
+            "JD",
+            "draft",
+            None,
+            None,
+            None,
+            None,
+            Some(105),
+            None,
+        );
+        assert!(err_high.is_err());
+        assert_eq!(
+            err_high.unwrap_err(),
+            "ATS score must be between 0 and 100."
+        );
+
+        let err_low = create_variant_extended_blocking(
+            &owner_str,
+            "Low Score",
+            "JD",
+            "draft",
+            None,
+            None,
+            None,
+            None,
+            Some(-5),
+            None,
+        );
+        assert!(err_low.is_err());
+        assert_eq!(err_low.unwrap_err(), "ATS score must be between 0 and 100.");
+
+        // Create with extended metadata
+        let v = create_variant_extended_blocking(
+            &owner_str,
+            "Netflix Senior Platform",
+            "JD Netflix",
+            "draft",
+            Some("Netflix".to_string()),
+            Some("Senior Platform Engineer".to_string()),
+            Some("Senior".to_string()),
+            Some("infra-platform".to_string()),
+            Some(88),
+            Some("resume.typ".to_string()),
+        )
+        .unwrap();
+
+        assert_eq!(v.company.as_deref(), Some("Netflix"));
+        assert_eq!(v.role.as_deref(), Some("Senior Platform Engineer"));
+        assert_eq!(v.seniority.as_deref(), Some("Senior"));
+        assert_eq!(v.persona.as_deref(), Some("infra-platform"));
+        assert_eq!(v.ats_score, Some(88));
+
+        // Partial update preserves untouched fields
+        let patched = update_variant_extended_blocking(
+            &owner_str,
+            &v.id,
+            None,
+            Some("interview".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(95),
+        )
+        .unwrap();
+
+        assert_eq!(patched.status, "interview");
+        assert_eq!(patched.ats_score, Some(95));
+        assert_eq!(patched.company.as_deref(), Some("Netflix"));
+        assert_eq!(patched.role.as_deref(), Some("Senior Platform Engineer"));
+        assert_eq!(patched.seniority.as_deref(), Some("Senior"));
+        assert_eq!(patched.persona.as_deref(), Some("infra-platform"));
+        assert_eq!(patched.jd, "JD Netflix");
+
+        // get_variant_blocking returns matching info
+        let fetched = get_variant_blocking(&owner_str, &v.id).unwrap();
+        assert_eq!(fetched, patched);
+
+        // Bind JD updates content and hash
+        let bound = bind_jd_blocking(
+            &owner_str,
+            &v.id,
+            "Updated JD content",
+            Some("Netflix Streaming".to_string()),
+            Some("Staff Platform Engineer".to_string()),
+        )
+        .unwrap();
+        assert_eq!(bound.jd, "Updated JD content");
+        assert_eq!(bound.company.as_deref(), Some("Netflix Streaming"));
+        assert_eq!(bound.role.as_deref(), Some("Staff Platform Engineer"));
+
+        // Idempotent delete
+        delete_variant_blocking(&owner_str, &v.id).unwrap();
+        let second_delete = delete_variant_blocking(&owner_str, &v.id);
+        assert!(second_delete.is_ok());
+    }
+
+    #[test]
     fn diffs_variant_against_master() {
         let tmp = tempfile::tempdir().unwrap();
         let owner = tmp.path().join("Resume");
@@ -670,8 +1157,10 @@ mod tests {
         );
         assert_eq!(by_path["cover.tex"].status, "added");
         assert_eq!(by_path["skills.tex"].status, "deleted");
-        // The target file is never reported as a change.
+        // The target file and logs are never reported as changes.
         assert!(!by_path.contains_key("JOB_DESCRIPTION.md"));
+        assert!(!by_path.contains_key("tailoring_log.json"));
+        assert!(!by_path.contains_key("ats_readiness.json"));
     }
 
     #[test]

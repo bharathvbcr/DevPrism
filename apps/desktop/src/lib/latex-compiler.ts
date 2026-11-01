@@ -25,8 +25,11 @@ export function formatCompileError(error: unknown): string {
  */
 export function isSupersededCompile(error: unknown): boolean {
   const message = formatCompileError(error);
+  // The backend wraps the marker in `Compilation failed (<backend>)\n\n…`
+  // before it crosses IPC, so this has to match anywhere in the string. A
+  // `startsWith` here let every superseded build surface as a hard failure.
   return (
-    message.startsWith("Compilation superseded") ||
+    message.includes("Compilation superseded") ||
     message.includes("was cancelled")
   );
 }
@@ -126,8 +129,13 @@ export function buildCompileStateContext(): string | null {
   const cachedError = doc.compileErrorCache.get(rootId) ?? doc.compileError;
   const hasPdf = Boolean(getPdfBytes(rootId));
   const lastGen = doc.lastCompiledGenerations.get(rootId);
+  // A PDF with no recorded generation is not known-fresh: it was built before
+  // generations were tracked for this root, or from a build that could not be
+  // attributed to one. Treating that as current is how an agent gets told a
+  // stale PDF succeeded.
+  const unattributed = hasPdf && lastGen === undefined;
   const stale =
-    hasPdf && lastGen !== undefined && doc.contentGeneration !== lastGen;
+    hasPdf && (lastGen === undefined || doc.contentGeneration !== lastGen);
 
   if (cachedError) {
     const parsed = parseCompileErrors(cachedError, targetPath);
@@ -143,6 +151,10 @@ export function buildCompileStateContext(): string | null {
     const pages = doc.compiledPageCounts.get(rootId);
     const pageNote = pages ? ` (${pages} pages)` : "";
     return `## COMPILE STATUS\nLast compile of \`${targetPath}\` **succeeded**${pageNote}.`;
+  }
+
+  if (unattributed) {
+    return `## COMPILE STATUS\n\`${targetPath}\` has a PDF from an earlier build, but it **cannot be matched to the current source**. Run Compile before relying on it.`;
   }
 
   if (hasPdf && stale) {

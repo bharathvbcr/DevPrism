@@ -36,7 +36,6 @@ import {
   getCurrentPdfRootId,
   resolveTexRoot,
 } from "@/stores/document-store";
-import { useHistoryStore } from "@/stores/history-store";
 import { useClaudeChatStore } from "@/stores/claude-chat-store";
 import {
   inlineEditChatPrompt,
@@ -97,10 +96,8 @@ import {
 import { aiCaption } from "@/lib/ai-extras";
 import {
   clearCompileRootPreference,
-  fileAffectsCompileRoot,
   FOLLOW_EDITOR_COMPILE_ROOT,
   hasPinnedCompileRoot,
-  resolveActiveCompileTarget,
   resolvePreviewCompileRoot,
   setCompileRootPreference,
 } from "@/lib/compile-root-preference";
@@ -130,8 +127,6 @@ import {
 import { HistoryPanel } from "@/components/workspace/history-panel";
 import {
   synctexEdit,
-  formatCompileError,
-  isSupersededCompile,
   buildCompileFixPrompt,
   getLatexBuildReport,
   type LatexBuildReport,
@@ -140,7 +135,7 @@ import {
   listCompileRoots,
   type CompileRootOption,
 } from "@/lib/compile-targets";
-import { compileTargetToPdf } from "@/lib/project-compile";
+import { runCompile } from "@/lib/compile-orchestrator";
 import {
   createAutoCompileScheduler,
   type AutoCompileScheduler,
@@ -475,6 +470,7 @@ export function PdfPreview() {
   );
   const previewTargetPinned = hasPinnedCompileRoot(projectRoot, files);
   const [aliveOrder, setAliveOrder] = useState<string[]>([]);
+  const [showStaleErrorDetails, setShowStaleErrorDetails] = useState(false);
   const prevRootRef = useRef(currentRootFileId);
 
   // Save/restore zoom state per root file on switch
@@ -1008,41 +1004,10 @@ export function PdfPreview() {
 
     hasInitialCompile.current = true;
 
-    const compile = async () => {
-      setIsCompiling(true);
-      try {
-        await saveAllFiles();
-        const { files: allFiles, activeFileId } = useDocumentStore.getState();
-        const resolved = resolveActiveCompileTarget(
-          projectRoot,
-          activeFileId,
-          allFiles,
-        );
-        if (!resolved) {
-          setCompileError(
-            "No .tex or .typ file found in this project. Create a main.tex or main.typ file to compile.",
-          );
-          return;
-        }
-        const { rootId, targetPath, engine } = resolved;
-        const texlive =
-          useSettingsStore.getState().compilerBackend === "texlive";
-        const data = await compileTargetToPdf(
-          projectRoot,
-          targetPath,
-          engine,
-          texlive,
-        );
-        setPdfData(data, rootId);
-      } catch (error) {
-        if (!isSupersededCompile(error)) {
-          setCompileError(formatCompileError(error));
-        }
-      } finally {
-        setIsCompiling(false);
-      }
-    };
-    compile();
+    // Forced: there is no PDF yet, and the orchestrator's up-to-date guard
+    // would otherwise skip a project whose generation happens to match a stamp
+    // carried over from a previous root.
+    void runCompile({ force: true, reason: "initial" });
   }, [
     initialized,
     projectRoot,
@@ -1286,86 +1251,21 @@ export function PdfPreview() {
   );
 
   const handleCompile = async (force = false) => {
-    // Read all guard values from the store to avoid stale closures
-    const state = useDocumentStore.getState();
-    if (!state.projectRoot) return;
-    if (state.isCompiling) {
-      // Queue a recompile after the current one finishes
-      state.setPendingRecompile(true);
-      return;
-    }
-    const allFiles = state.files;
-    const resolved = resolveActiveCompileTarget(
-      state.projectRoot,
-      state.activeFileId,
-      allFiles,
-    );
-    if (!resolved) {
-      setCompileError(
-        "No .tex file found in this project. Create a main.tex file to compile.",
-      );
-      return;
-    }
-    const { rootId, targetPath: targetFile, engine: targetEngine } = resolved;
-    // Skip recompile if no edits since last successful compile of this root
-    // (unless force=true, e.g. user clicked Recompile button)
-    if (!force) {
-      const lastGen = state.lastCompiledGenerations.get(rootId);
-      if (
-        getPdfBytes(rootId) &&
-        lastGen !== undefined &&
-        state.contentGeneration === lastGen
-      ) {
-        return;
-      }
-      if (
-        hasPinnedCompileRoot(state.projectRoot, allFiles) &&
-        state.lastEditedFileId &&
-        !fileAffectsCompileRoot(state.lastEditedFileId, rootId, allFiles)
-      ) {
-        return;
-      }
-    }
-    useHistoryStore.getState().stopReview();
-    setIsCompiling(true);
-    state.setPendingRecompile(false);
     setPdfError(null);
-    const compileStart = Date.now();
-    try {
-      await saveAllFiles();
-      const texlive = useSettingsStore.getState().compilerBackend === "texlive";
-      const data = await compileTargetToPdf(
-        state.projectRoot,
-        targetFile,
-        targetEngine,
-        texlive,
-      );
-      setPdfData(data, rootId);
-      // Why this build may not paginate like Overleaf. Best-effort: a missing
-      // report must never turn a successful compile into a failed one. Typst
-      // has no such report, and reusing a stale LaTeX one would misattribute it.
-      setBuildReport(
-        targetEngine === "latex"
-          ? await getLatexBuildReport(state.projectRoot)
-          : null,
-      );
-    } catch (error) {
-      if (!isSupersededCompile(error)) {
-        setCompileError(formatCompileError(error), rootId);
-      }
-    } finally {
-      // Ensure the spinner is visible for at least 500ms for visual feedback
-      const elapsed = Date.now() - compileStart;
-      if (elapsed < 500) {
-        await new Promise((r) => setTimeout(r, 500 - elapsed));
-      }
-      setIsCompiling(false);
-      // If a recompile was requested while we were compiling, trigger it now
-      // Use setTimeout to avoid unbounded recursion on the call stack
-      if (useDocumentStore.getState().pendingRecompile) {
-        setTimeout(() => handleCompile(), 0);
-      }
-    }
+    await runCompile({
+      force,
+      reason: force ? "manual" : "auto",
+      // Why this build may not paginate like Overleaf. Typst has no such
+      // report, and reusing a stale LaTeX one would misattribute it.
+      afterSuccess: async ({ engine }) => {
+        const projectRoot = useDocumentStore.getState().projectRoot;
+        setBuildReport(
+          engine === "latex" && projectRoot
+            ? await getLatexBuildReport(projectRoot)
+            : null,
+        );
+      },
+    });
   };
 
   // Keep a fresh reference so the debounced auto-compile timer always invokes
@@ -1523,59 +1423,62 @@ export function PdfPreview() {
   }, [pdfSelection, highlightCurrentSelection]);
 
   const renderContent = () => {
-    if (compileError) {
-      const errors = [
-        ...new Set(
-          compileError
-            .split(/\s*!\s*/)
-            .map((s) => s.trim())
-            .filter((s) => s.length > 0 && s !== "Compilation failed"),
-        ),
-      ];
+    const errors = compileError
+      ? [
+          ...new Set(
+            compileError
+              .split(/\s*[!\n]\s*/)
+              .map((s) => s.trim())
+              .filter((s) => s.length > 0 && s !== "Compilation failed"),
+          ),
+        ]
+      : [];
 
-      const handleFixWithAi = () => {
-        const prompt = buildCompileFixPrompt();
-        if (prompt) useClaudeChatStore.getState().sendPrompt(prompt);
-      };
+    const handleFixWithAi = () => {
+      const prompt = buildCompileFixPrompt();
+      if (prompt) useClaudeChatStore.getState().sendPrompt(prompt);
+    };
 
-      const handleExplainErrors = async () => {
-        if (!canUseAiAssist() || errors.length === 0) return;
-        const id = ++explainRequestRef.current;
-        setExplainingCompile(true);
-        setCompileExplanation("");
-        try {
-          const explanation = await explainCompileErrorsStream(
-            errors,
-            (fragment) => {
-              if (id !== explainRequestRef.current) return; // cancelled
-              setCompileExplanation((prev) => (prev ?? "") + fragment);
-            },
-          );
-          if (id !== explainRequestRef.current) return; // cancelled
-          setCompileExplanation(explanation);
-        } catch (err) {
-          showWorkspaceError(
-            "Explain failed",
-            err instanceof Error
-              ? err.message
-              : "Could not explain compile errors.",
-            { dedupeKey: "pdf-explain-compile" },
-          );
-        } finally {
-          setExplainingCompile(false);
-        }
-      };
+    const handleExplainErrors = async () => {
+      if (!canUseAiAssist() || errors.length === 0) return;
+      const id = ++explainRequestRef.current;
+      setExplainingCompile(true);
+      setCompileExplanation("");
+      try {
+        const explanation = await explainCompileErrorsStream(
+          errors,
+          (fragment) => {
+            if (id !== explainRequestRef.current) return; // cancelled
+            setCompileExplanation((prev) => (prev ?? "") + fragment);
+          },
+        );
+        if (id !== explainRequestRef.current) return; // cancelled
+        setCompileExplanation(explanation);
+      } catch (err) {
+        showWorkspaceError(
+          "Explain failed",
+          err instanceof Error
+            ? err.message
+            : "Could not explain compile errors.",
+          { dedupeKey: "pdf-explain-compile" },
+        );
+      } finally {
+        setExplainingCompile(false);
+      }
+    };
 
-      const handleCopyErrors = async () => {
-        try {
-          await navigator.clipboard.writeText(compileError);
-          setCopiedError(true);
-          setTimeout(() => setCopiedError(false), 2000);
-        } catch (err) {
-          log.error("Failed to copy errors", { error: String(err) });
-        }
-      };
+    const handleCopyErrors = async () => {
+      if (!compileError) return;
+      try {
+        await navigator.clipboard.writeText(compileError);
+        setCopiedError(true);
+        setTimeout(() => setCopiedError(false), 2000);
+      } catch (err) {
+        log.error("Failed to copy errors", { error: String(err) });
+      }
+    };
 
+    if (compileError && !pdfData) {
       return (
         <div className="flex flex-1 flex-col items-center justify-center bg-muted/30 p-6">
           <div className="w-full max-w-lg">
@@ -1705,6 +1608,124 @@ export function PdfPreview() {
     // so that the browser preserves scrollTop on the overflow container.
     return (
       <div className="relative flex min-h-0 flex-1">
+        {compileError && pdfData && (
+          <div
+            data-testid="stale-pdf-compile-error-overlay"
+            className="pointer-events-auto absolute top-3 right-3 left-3 z-30 mx-auto max-w-xl rounded-lg border border-destructive/40 bg-background/95 p-3 shadow-lg backdrop-blur transition-all supports-[backdrop-filter]:bg-background/85"
+          >
+            <div className="flex items-center gap-2 text-destructive">
+              <AlertCircleIcon className="size-4 shrink-0" />
+              <span className="font-semibold text-xs tracking-tight">
+                Compilation Failed (Showing Previous PDF)
+              </span>
+              <span className="ml-auto rounded-full bg-destructive/15 px-2 py-0.5 font-medium text-[11px] text-destructive">
+                {errors.length} {errors.length === 1 ? "error" : "errors"}
+              </span>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6 text-muted-foreground hover:text-foreground"
+                onClick={() => setShowStaleErrorDetails((prev) => !prev)}
+                title={
+                  showStaleErrorDetails
+                    ? "Collapse error details"
+                    : "Expand error details"
+                }
+              >
+                {showStaleErrorDetails ? (
+                  <ChevronUpIcon className="size-3.5" />
+                ) : (
+                  <ChevronDownIcon className="size-3.5" />
+                )}
+              </Button>
+            </div>
+
+            <div className="mt-1 line-clamp-1 text-foreground/90 text-xs">
+              {errors[0] ?? "Unknown compilation error"}
+            </div>
+
+            {showStaleErrorDetails && (
+              <div className="mt-2.5 space-y-2">
+                <div className="max-h-40 divide-y divide-border overflow-y-auto rounded border border-destructive/20 bg-muted/20 text-xs">
+                  {errors.map((error, i) => (
+                    <div key={i} className="flex items-start gap-2 p-2">
+                      <AlertCircleIcon className="mt-0.5 size-3 shrink-0 text-destructive/70" />
+                      <span className="font-mono text-[11px] text-foreground">
+                        {error}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                {compileExplanation && (
+                  <div className="rounded border border-border bg-muted/30 p-2 text-xs">
+                    <div className="mb-1 flex items-center gap-1 font-medium text-[11px] text-muted-foreground uppercase tracking-wider">
+                      <SparklesIcon className="size-3" />
+                      AI Explanation
+                    </div>
+                    <div className="whitespace-pre-wrap text-[11px]">
+                      {compileExplanation}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="mt-2.5 flex flex-wrap items-center gap-1.5 border-border/50 border-t pt-1">
+              {(aiCompileAssist || nativeAgentEnabled) && canUseAiAssist() && (
+                <Button
+                  variant="default"
+                  size="sm"
+                  className="h-7 gap-1 px-2.5 text-xs"
+                  onClick={handleFixWithAi}
+                >
+                  <SparklesIcon className="size-3" />
+                  Fix with AI
+                </Button>
+              )}
+              {(aiCompileAssist || nativeAgentEnabled) && canUseAiAssist() && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 gap-1 px-2 text-xs"
+                  disabled={explainingCompile}
+                  onClick={() => void handleExplainErrors()}
+                >
+                  {explainingCompile ? (
+                    <Loader2Icon className="size-3 animate-spin" />
+                  ) : (
+                    <SparklesIcon className="size-3" />
+                  )}
+                  {nativeAgentEnabled ? "Explain" : "Explain AI"}
+                </Button>
+              )}
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 gap-1 px-2.5 text-xs"
+                onClick={() => handleCompile(true)}
+              >
+                <RefreshCwIcon className="size-3" />
+                Retry
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 gap-1 px-2 text-xs"
+                title="Copy errors to clipboard"
+                aria-label="Copy errors to clipboard"
+                onClick={handleCopyErrors}
+              >
+                {copiedError ? (
+                  <CheckIcon className="size-3 text-primary" />
+                ) : (
+                  <CopyIcon className="size-3" />
+                )}
+                {copiedError ? "Copied" : "Copy"}
+              </Button>
+            </div>
+          </div>
+        )}
         {aliveOrder.map((rootId) => {
           const data = getPdfBytes(rootId);
           if (!data) return null;

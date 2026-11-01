@@ -3,6 +3,7 @@
 //! and `claude-complete`.
 
 pub mod delta_coalesce;
+pub mod manvi_resume_bridge;
 pub mod manvi_sidecar;
 pub mod manvi_turn;
 pub(crate) mod ollama;

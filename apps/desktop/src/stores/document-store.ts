@@ -41,6 +41,7 @@ import {
 } from "@/lib/highlight-persistence";
 import { clearEditorStateCache } from "@/components/workspace/editor/latex-editor";
 import { useProjectStore } from "@/stores/project-store";
+import { useEditorTabsStore } from "@/stores/editor-tabs-store";
 import { createLogger } from "@/lib/debug/logger";
 
 const log = createLogger("document");
@@ -66,6 +67,7 @@ export interface ProjectFile {
 const _pdfBytesCache = new Map<string, Uint8Array>();
 /** Current active PDF root file id (mirrors what Zustand tracks via pdfRevision). */
 let _currentPdfRootId: string | null = null;
+let _isSyncingTabs = false;
 
 /** Get PDF bytes for a specific root file id. */
 export function getPdfBytes(rootFileId: string): Uint8Array | undefined {
@@ -89,7 +91,7 @@ export function clearPdfBytesCache() {
   _currentPdfRootId = null;
 }
 
-interface DocumentState {
+export interface DocumentState {
   projectRoot: string | null;
   files: ProjectFile[];
   folders: string[];
@@ -152,7 +154,21 @@ interface DocumentState {
   requestRevealInTree: (path: string, type: "file" | "folder") => void;
   clearRevealRequest: () => void;
   setThreadOpen: (open: boolean) => void;
-  setPdfData: (data: Uint8Array | null, rootFileId?: string) => void;
+  /**
+   * Store compiled PDF bytes for a root.
+   *
+   * `compiledGeneration` is the `contentGeneration` the bytes were built from,
+   * captured before the source was written. Pass `null` when the build cannot
+   * be attributed to one generation (a partial save, or the document moved
+   * while writing): no stamp is recorded, so the next build is not skipped.
+   * Omitting it is the same as `null` — only a caller that knows what it built
+   * may claim a generation.
+   */
+  setPdfData: (
+    data: Uint8Array | null,
+    rootFileId?: string,
+    compiledGeneration?: number | null,
+  ) => void;
   setCompiledPageCount: (rootFileId: string, pageCount: number) => void;
   setForwardSyncPulse: (pulse: DocumentState["forwardSyncPulse"]) => void;
   setCompileError: (error: string | null, rootFileId?: string) => void;
@@ -391,7 +407,7 @@ export function registerEditorContentFlush(flush: (() => void) | null): void {
   editorContentFlushHook = flush;
 }
 
-function flushPendingEditorEdits(): void {
+export function flushPendingEditorEdits(): void {
   editorContentFlushHook?.();
 }
 
@@ -656,6 +672,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
       forwardSyncPulse: null,
       initialized: false,
     });
+    useEditorTabsStore.getState().resetTabs();
     // Reset chat session so stale messages don't leak into the next project
     useClaudeChatStore.getState().newSession();
   },
@@ -663,6 +680,24 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
   setActiveFile: (id) => {
     const state = get();
     const file = state.files.find((f) => f.id === id);
+    if (file && !_isSyncingTabs) {
+      const tabsStore = useEditorTabsStore.getState();
+      const isAlreadyActive =
+        tabsStore.activeTabId === file.id ||
+        tabsStore.activeTabId === file.relativePath;
+      if (!isAlreadyActive) {
+        _isSyncingTabs = true;
+        try {
+          tabsStore.openTab({
+            id: file.id,
+            path: file.relativePath,
+            title: file.name,
+          });
+        } finally {
+          _isSyncingTabs = false;
+        }
+      }
+    }
     if (!file || file.type !== "tex") {
       set({
         activeFileId: id,
@@ -776,6 +811,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
           }
         : {}),
     }));
+    useEditorTabsStore.getState().removeTabOnDelete(id);
   },
 
   deleteFolder: async (folderPath) => {
@@ -899,6 +935,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
         compiledPageCounts,
       };
     });
+    useEditorTabsStore.getState().renameTab(id, newRelativePath, name);
   },
 
   updateFileContent: (id, content) => {
@@ -910,6 +947,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
       contentGeneration: state.contentGeneration + 1,
       lastEditedFileId: id,
     }));
+    useEditorTabsStore.getState().setDirty(id, true);
     scheduleAutoSave();
   },
 
@@ -921,7 +959,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
 
   setThreadOpen: (open) => set({ isThreadOpen: open }),
 
-  setPdfData: (data, rootFileId?) => {
+  setPdfData: (data, rootFileId?, compiledGeneration?) => {
     if (data) {
       const key = rootFileId ?? "__default__";
       _pdfBytesCache.set(key, data);
@@ -938,7 +976,15 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
         const compileErrorCache = new Map(s.compileErrorCache);
         const lastCompiledGenerations = new Map(s.lastCompiledGenerations);
         compileErrorCache.delete(rootFileId);
-        lastCompiledGenerations.set(rootFileId, s.contentGeneration);
+        // Record only the generation the caller actually built. Stamping
+        // `s.contentGeneration` here would claim every edit made while the
+        // build was running, which both skips the rebuild those edits need and
+        // reports a stale PDF as current.
+        if (typeof compiledGeneration === "number") {
+          lastCompiledGenerations.set(rootFileId, compiledGeneration);
+        } else {
+          lastCompiledGenerations.delete(rootFileId);
+        }
         set((prev) => ({
           pdfRevision: prev.pdfRevision + 1,
           compileError: null,
@@ -1065,6 +1111,7 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
         f.id === id && f.content === snapshot ? { ...f, isDirty: false } : f,
       ),
     }));
+    useEditorTabsStore.getState().setDirty(id, false);
   },
 
   saveAllFiles: async () => {
@@ -1092,6 +1139,9 @@ export const useDocumentStore = create<DocumentState>()((set, get) => ({
             : f,
         ),
       }));
+      savedIds.forEach((savedId) => {
+        useEditorTabsStore.getState().setDirty(savedId, false);
+      });
     }
   },
 

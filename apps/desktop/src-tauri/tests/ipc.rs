@@ -35,6 +35,9 @@ const IPC_TESTED_COMMANDS: &[&str] = &[
     "career_typst_compile",
     "career_typst_compile_project",
     "career_typst_fonts",
+    "typst_compile_document",
+    "typst_sync_forward",
+    "typst_sync_inverse",
     "export_document",
     "compile_latex",
     "detect_latexdiff",
@@ -48,6 +51,9 @@ fn app() -> App<MockRuntime> {
             claude_prism_desktop_lib::career_typst::career_typst_compile,
             claude_prism_desktop_lib::career_typst::career_typst_compile_project,
             claude_prism_desktop_lib::career_typst::career_typst_fonts,
+            claude_prism_desktop_lib::career_typst::typst_compile_document,
+            claude_prism_desktop_lib::career_typst::typst_sync_forward,
+            claude_prism_desktop_lib::career_typst::typst_sync_inverse,
             claude_prism_desktop_lib::export::export_document,
             claude_prism_desktop_lib::latex::compile_latex,
             claude_prism_desktop_lib::latexdiff::detect_latexdiff,
@@ -81,6 +87,30 @@ fn invoke(webview: &WebviewWindow<MockRuntime>, cmd: &str, args: Value) -> Resul
     };
     tauri::test::get_ipc_response(webview, request)
         .map(|b| b.deserialize::<Value>().unwrap_or(Value::Null))
+}
+
+/// Dispatch a command returning the raw invoke response body (for binary IPC).
+fn invoke_raw(
+    webview: &WebviewWindow<MockRuntime>,
+    cmd: &str,
+    args: Value,
+) -> Result<tauri::ipc::InvokeResponseBody, Value> {
+    let request = InvokeRequest {
+        cmd: cmd.into(),
+        callback: CallbackFn(0),
+        error: CallbackFn(1),
+        url: if cfg!(any(windows, target_os = "android")) {
+            "http://tauri.localhost"
+        } else {
+            "tauri://localhost"
+        }
+        .parse()
+        .unwrap(),
+        body: tauri::ipc::InvokeBody::Json(args),
+        headers: Default::default(),
+        invoke_key: INVOKE_KEY.to_string(),
+    };
+    tauri::test::get_ipc_response(webview, request)
 }
 
 // --- Typst resume engine -------------------------------------------------
@@ -217,6 +247,113 @@ fn career_typst_fonts_returns_the_embedded_families() {
             "missing embedded family {want}"
         );
     }
+}
+
+#[test]
+fn typst_compile_document_returns_raw_pdf_bytes_over_ipc() {
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        dir.path().join("main.typ"),
+        "#set page(paper: \"us-letter\")\n= Hello Binary IPC\n",
+    )
+    .unwrap();
+
+    let app = app();
+    let wv = webview(&app);
+    let res = invoke_raw(
+        &wv,
+        "typst_compile_document",
+        json!({
+            "projectDir": dir.path().to_string_lossy(),
+            "mainFile": "main.typ",
+        }),
+    )
+    .expect("command should return raw response");
+
+    match res {
+        tauri::ipc::InvokeResponseBody::Raw(bytes) => {
+            assert!(
+                bytes.starts_with(b"%PDF-"),
+                "response must start with %PDF-"
+            );
+            assert!(bytes.len() > 1000);
+        }
+        _ => panic!("expected raw binary response"),
+    }
+}
+
+#[test]
+fn typst_compile_document_with_overlay_compiles_unsaved_buffer_over_ipc() {
+    let dir = tempfile::TempDir::new().unwrap();
+
+    let app = app();
+    let wv = webview(&app);
+    let res = invoke_raw(
+        &wv,
+        "typst_compile_document",
+        json!({
+            "projectDir": dir.path().to_string_lossy(),
+            "mainFile": "main.typ",
+            "overlay": {
+                "main.typ": "#set page(paper: \"us-letter\")\n= Live In-Memory Edits\n"
+            }
+        }),
+    )
+    .expect("overlay compilation should succeed");
+
+    match res {
+        tauri::ipc::InvokeResponseBody::Raw(bytes) => {
+            assert!(bytes.starts_with(b"%PDF-"));
+        }
+        _ => panic!("expected raw binary response"),
+    }
+}
+
+#[test]
+fn typst_sync_forward_and_inverse_round_trip_over_ipc() {
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        dir.path().join("main.typ"),
+        "#set page(paper: \"us-letter\", margin: 1in)\n= Heading\nLine 3 Content.\n",
+    )
+    .unwrap();
+
+    let app = app();
+    let wv = webview(&app);
+
+    // Forward sync
+    let fwd = invoke(
+        &wv,
+        "typst_sync_forward",
+        json!({
+            "projectDir": dir.path().to_string_lossy(),
+            "mainFile": "main.typ",
+            "file": "main.typ",
+            "line": 2,
+        }),
+    )
+    .expect("typst_sync_forward should succeed");
+
+    assert_eq!(fwd["page"], json!(1));
+    assert!(fwd["x"].as_f64().unwrap() > 0.0);
+    assert!(fwd["y"].as_f64().unwrap() > 0.0);
+
+    // Inverse sync
+    let inv = invoke(
+        &wv,
+        "typst_sync_inverse",
+        json!({
+            "projectDir": dir.path().to_string_lossy(),
+            "mainFile": "main.typ",
+            "page": 1,
+            "x": 100.0,
+            "y": 90.0,
+        }),
+    )
+    .expect("typst_sync_inverse should succeed");
+
+    assert_eq!(inv["file"], json!("main.typ"));
+    assert!(inv["line"].as_u64().unwrap() >= 1);
 }
 
 // --- Export --------------------------------------------------------------

@@ -40,6 +40,8 @@ import {
 import { latex, latexLinter } from "codemirror-lang-latex";
 import { bibtex } from "./lang-bibtex";
 import { latexAutocomplete } from "./latex-autocomplete";
+import { typstLinter } from "./typst-linter";
+import { typstAutocomplete } from "./typst-autocomplete";
 import {
   linter,
   lintGutter,
@@ -61,12 +63,8 @@ import {
   type PromptContextOverride,
 } from "@/stores/claude-chat-store";
 import { useHistoryStore, type FileDiff } from "@/stores/history-store";
-import { formatCompileError, isSupersededCompile } from "@/lib/latex-compiler";
 import { triggerForwardSync } from "@/lib/forward-sync";
-import {
-  resolveActiveCompileTarget,
-  resolvePreviewCompileRoot,
-} from "@/lib/compile-root-preference";
+import { resolvePreviewCompileRoot } from "@/lib/compile-root-preference";
 import { getChatLabels } from "@/lib/chat-labels";
 import { useSettingsStore } from "@/stores/settings-store";
 import { showWorkspaceError } from "@/stores/workspace-banner-store";
@@ -75,7 +73,7 @@ import { SelectionToolbar, type ToolbarAction } from "./selection-toolbar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { isTextContent } from "@/lib/tauri/fs";
-import { compileTargetToPdf } from "@/lib/project-compile";
+import { compileActiveProject } from "@/lib/compile-orchestrator";
 import {
   Dialog,
   DialogContent,
@@ -220,10 +218,10 @@ export function LatexEditor() {
   const jumpToPosition = useDocumentStore((s) => s.jumpToPosition);
   const clearJumpRequest = useDocumentStore((s) => s.clearJumpRequest);
 
-  const setIsCompiling = useDocumentStore((s) => s.setIsCompiling);
-  const setPdfData = useDocumentStore((s) => s.setPdfData);
-  const setCompileError = useDocumentStore((s) => s.setCompileError);
-  const saveAllFiles = useDocumentStore((s) => s.saveAllFiles);
+  const _setIsCompiling = useDocumentStore((s) => s.setIsCompiling);
+  const _setPdfData = useDocumentStore((s) => s.setPdfData);
+  const _setCompileError = useDocumentStore((s) => s.setCompileError);
+  const _saveAllFiles = useDocumentStore((s) => s.saveAllFiles);
 
   const activeFile = files.find((f) => f.id === activeFileId);
   const jobDescription = useDocumentStore((s) => {
@@ -581,67 +579,15 @@ export function LatexEditor() {
     }
   };
 
-  // Compile: save all files first, then compile via Tauri command
+  // Compile (Mod-Enter from the editor).
+  //
+  // The engine is a property of the resolved compile root, not of the file the
+  // cursor happens to sit in: gating on `activeFile.type === "tex"` here made
+  // Mod-Enter silently do nothing in a Typst project.
   compileRef.current = async () => {
     contentPushRef.current?.flush();
-    const state = useDocumentStore.getState();
-    if (!projectRoot || activeFile?.type !== "tex") return;
-    if (state.isCompiling) {
-      // Queue a recompile after the current one finishes
-      state.setPendingRecompile(true);
-      return;
-    }
-    const { files: allFiles } = state;
-    const resolved = resolveActiveCompileTarget(
-      state.projectRoot,
-      activeFile.id,
-      allFiles,
-    );
-    if (!resolved) {
-      setCompileError(
-        "No .tex file found in this project. Create a main.tex file to compile.",
-        activeFile.id,
-      );
-      return;
-    }
-    const { rootId, targetPath, engine } = resolved;
-    useHistoryStore.getState().stopReview();
-    setIsCompiling(true);
-    state.setPendingRecompile(false);
-    const compileStart = Date.now();
-    try {
-      await saveAllFiles();
-      // Pre-compile snapshot (fire-and-forget to avoid blocking compilation start)
-      useHistoryStore
-        .getState()
-        .createSnapshot(projectRoot, "[compile] Pre-compile")
-        .catch(() => {});
-      const useTexlive =
-        useSettingsStore.getState().compilerBackend === "texlive";
-      const data = await compileTargetToPdf(
-        projectRoot,
-        targetPath,
-        engine,
-        useTexlive,
-      );
-      setPdfData(data, rootId);
-    } catch (error) {
-      if (!isSupersededCompile(error)) {
-        setCompileError(formatCompileError(error), rootId);
-      }
-    } finally {
-      // Ensure the spinner is visible for at least 500ms for visual feedback
-      const elapsed = Date.now() - compileStart;
-      if (elapsed < 500) {
-        await new Promise((r) => setTimeout(r, 500 - elapsed));
-      }
-      setIsCompiling(false);
-      // If a recompile was requested while we were compiling, trigger it now
-      // Use setTimeout to avoid unbounded recursion on the call stack
-      if (useDocumentStore.getState().pendingRecompile) {
-        setTimeout(() => compileRef.current?.(), 0);
-      }
-    }
+    if (!projectRoot || !activeFile || !isTextFile) return;
+    await compileActiveProject(true);
   };
 
   useEffect(() => {
@@ -905,6 +851,9 @@ export function LatexEditor() {
             ? typst()
             : latex({ enableLinting: false, enableAutocomplete: false }),
         ...(activeFile?.type === "tex" ? [latexAutocomplete()] : []),
+        ...(activeFile?.type === "typst"
+          ? [typstAutocomplete(), typstLinter()]
+          : []),
         ...(activeFile?.type === "tex"
           ? [
               linter((view) => {

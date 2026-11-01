@@ -22,8 +22,11 @@ import {
   FileTextIcon,
   MonitorIcon,
   ChevronRightIcon,
+  SunIcon,
+  MoonIcon,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import { useTheme } from "next-themes";
 import { PersonalizationSettings } from "./personalization-settings";
 import { SettingsAiFeatures } from "./settings-ai-features";
 import { SettingsToggleRow } from "@/components/settings-toggle-row";
@@ -140,6 +143,7 @@ interface SettingsDialogProps {
  * when this state lived in ProjectPicker itself.
  */
 export function SettingsDialog({ open, appVersion }: SettingsDialogProps) {
+  const { theme, setTheme } = useTheme();
   const [settingsDetailSection, setSettingsDetailSection] =
     useState<SettingsDetailSection>("provider");
   const [settingsSearchQuery, setSettingsSearchQuery] = useState("");
@@ -653,9 +657,36 @@ export function SettingsDialog({ open, appVersion }: SettingsDialogProps) {
             <div className="border-border/60 border-b px-4 py-4">
               <p className="font-medium text-sm">Interface theme</p>
               <p className="mt-1 text-muted-foreground text-xs leading-relaxed">
-                DevPrism currently uses a dark interface optimized for long
-                writing sessions. Light theme support is planned.
+                Select your preferred interface appearance: Light, Dark, or
+                System.
               </p>
+              <div
+                className="mt-3 inline-flex rounded-lg border border-input p-0.5"
+                role="group"
+                aria-label="Interface theme"
+              >
+                {[
+                  { value: "light", label: "Light", icon: SunIcon },
+                  { value: "dark", label: "Dark", icon: MoonIcon },
+                  { value: "system", label: "System", icon: MonitorIcon },
+                ].map((option) => (
+                  <Toggle
+                    key={option.value}
+                    size="sm"
+                    pressed={theme === option.value}
+                    onPressedChange={() => setTheme(option.value)}
+                    className={cn(
+                      "h-8 min-w-0 gap-1.5 rounded-md px-3 text-xs shadow-none",
+                      theme === option.value
+                        ? "bg-accent font-medium text-accent-foreground"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    <option.icon className="size-3.5" />
+                    {option.label}
+                  </Toggle>
+                ))}
+              </div>
             </div>
             <SettingsToggleRow
               checked={pdfDarkMode}

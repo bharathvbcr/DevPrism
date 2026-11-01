@@ -4,6 +4,7 @@
 
 pub(crate) mod ingest;
 pub(crate) mod schema;
+pub mod variants;
 pub(crate) mod vectors;
 
 use ingest::{IngestReport, KbChunkRow, KbSourceRow, PreparedSource};

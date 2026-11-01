@@ -1534,18 +1534,16 @@ async fn run_unix(req: RunRequest) -> Result<(), String> {
     }
     unsafe {
         cmd.pre_exec(move || {
-            extern "C" {
-                fn setpgid(pid: i32, pgid: i32) -> i32;
-                fn dup2(oldfd: i32, newfd: i32) -> i32;
-                fn close(fd: i32) -> i32;
-            }
-            if setpgid(0, 0) != 0 {
+            if libc::setpgid(0, 0) != 0 {
                 return Err(std::io::Error::last_os_error());
             }
-            if dup2(read_fd, APPROVE_FD) < 0 {
+            if libc::dup2(read_fd, APPROVE_FD) < 0 {
                 return Err(std::io::Error::last_os_error());
             }
-            if read_fd != APPROVE_FD && close(read_fd) != 0 {
+            if libc::fcntl(APPROVE_FD, libc::F_SETFD, 0) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if read_fd != APPROVE_FD && libc::close(read_fd) != 0 {
                 return Err(std::io::Error::last_os_error());
             }
             Ok(())

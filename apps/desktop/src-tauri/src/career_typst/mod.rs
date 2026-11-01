@@ -5,8 +5,13 @@
 
 pub mod engine;
 pub mod project;
+pub mod sync;
 
-pub use engine::TypstCompileResult;
+pub use engine::{
+    TypstCompileError, TypstCompileErrorResponse, TypstCompileResult, TypstDiagnostic,
+};
+pub use project::ProjectWorld;
+pub use sync::*;
 
 /// Compile Typst resume source to PDF bytes.
 ///
@@ -38,6 +43,39 @@ pub async fn career_typst_compile_project(
     })
     .await
     .map_err(|e| format!("career_typst_compile_project task failed: {e}"))
+}
+
+/// Compile a Typst document returning raw binary PDF bytes with in-memory buffer overlay.
+///
+/// Provides zero-copy binary streaming via `tauri::ipc::Response` matching `compile_latex`.
+#[tauri::command]
+pub async fn typst_compile_document(
+    project_dir: String,
+    main_file: String,
+    overlay: Option<std::collections::HashMap<String, String>>,
+) -> Result<tauri::ipc::Response, engine::TypstCompileErrorResponse> {
+    tokio::task::spawn_blocking(move || {
+        let pdf_bytes = project::compile_project_document(
+            std::path::Path::new(&project_dir),
+            &main_file,
+            overlay,
+        )?;
+        Ok(tauri::ipc::Response::new(pdf_bytes))
+    })
+    .await
+    .map_err(|e| engine::TypstCompileErrorResponse {
+        message: format!("typst_compile_document worker panicked: {e}"),
+        errors: vec![engine::TypstDiagnostic {
+            severity: "error".to_string(),
+            message: format!("Worker thread panicked: {e}"),
+            file: None,
+            line: None,
+            column: None,
+            hints: Vec::new(),
+        }],
+        warnings: Vec::new(),
+        duration_ms: 0,
+    })?
 }
 
 /// Font families the Typst engine can resolve on this machine.

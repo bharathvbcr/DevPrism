@@ -423,18 +423,33 @@ fn get_claude_prism_auth_path() -> Result<PathBuf, String> {
     Ok(config_dir.join("DevPrism").join("anthropic-auth.json"))
 }
 
+/// Auth JSON is capped so a huge or hostile file cannot be loaded whole.
+const MAX_AUTH_FILE_BYTES: u64 = 1024 * 1024;
+
 fn read_claude_prism_auth_config() -> Result<DevPrismAuthConfig, String> {
-    let path = get_claude_prism_auth_path()?;
+    read_auth_config_file(&get_claude_prism_auth_path()?)
+}
+
+fn read_auth_config_file(path: &Path) -> Result<DevPrismAuthConfig, String> {
     if !path.exists() {
         return Ok(DevPrismAuthConfig::default());
     }
 
-    let content = std::fs::read_to_string(&path)
+    let meta = std::fs::metadata(path)
+        .map_err(|e| format!("Failed to read auth settings: {}", e))?;
+    if meta.len() > MAX_AUTH_FILE_BYTES {
+        return Err(format!(
+            "Failed to parse auth settings: file exceeds {} bytes",
+            MAX_AUTH_FILE_BYTES
+        ));
+    }
+
+    let content = std::fs::read_to_string(path)
         .map_err(|e| format!("Failed to read auth settings: {}", e))?;
     let content = content.trim_start_matches('\u{feff}');
     let config = serde_json::from_str(content)
         .map_err(|e| format!("Failed to parse auth settings: {}", e))?;
-    restrict_auth_file_permissions(&path)?;
+    restrict_auth_file_permissions(path)?;
     Ok(config)
 }
 
@@ -444,29 +459,168 @@ fn restrict_auth_file_permissions(path: &Path) -> Result<(), String> {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
             .map_err(|e| format!("Failed to lock down auth settings permissions: {}", e))?;
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        restrict_auth_file_to_owner_windows(path)?;
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = path;
     }
     Ok(())
 }
 
-fn backup_corrupt_auth_config(path: &Path, reason: &str) -> Result<PathBuf, String> {
-    let file_name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "anthropic-auth.json".to_string());
-    let timestamp = chrono::Utc::now().format("%Y%m%d%H%M%S");
-    let backup = path.with_file_name(format!("{}.corrupt-{}.bak", file_name, timestamp));
-    std::fs::rename(path, &backup)
-        .map_err(|e| format!("Failed to back up corrupt auth settings: {}", e))?;
-    let _ = restrict_auth_file_permissions(&backup);
-    eprintln!(
-        "[auth] backed up corrupt auth settings to {}: {}",
-        backup.display(),
-        reason
-    );
-    Ok(backup)
+/// Owner-only DACL. JSON in this file still holds secrets; this is not a keychain.
+#[cfg(windows)]
+fn restrict_auth_file_to_owner_windows(path: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    #[repr(C)]
+    struct SidAndAttributes {
+        sid: *mut core::ffi::c_void,
+        attributes: u32,
+    }
+    #[repr(C)]
+    struct TokenUser {
+        user: SidAndAttributes,
+    }
+    #[repr(C)]
+    struct TrusteeW {
+        multiple_trustee: *mut u16,
+        multiple_trustee_operation: u32,
+        trustee_form: u32,
+        trustee_type: u32,
+        name: *mut u16,
+    }
+    #[repr(C)]
+    struct ExplicitAccessW {
+        permissions: u32,
+        access_mode: u32,
+        inheritance: u32,
+        trustee: TrusteeW,
+    }
+
+    const TOKEN_QUERY: u32 = 0x0008;
+    const TOKEN_USER: u32 = 1;
+    const GENERIC_ALL: u32 = 0x1000_0000;
+    const SET_ACCESS: u32 = 2;
+    const TRUSTEE_IS_USER: u32 = 1;
+    const SE_FILE_OBJECT: u32 = 1;
+    const DACL_SECURITY_INFORMATION: u32 = 0x4;
+    const PROTECTED_DACL_SECURITY_INFORMATION: u32 = 0x8000_0000;
+
+    #[link(name = "advapi32")]
+    extern "system" {
+        fn OpenProcessToken(
+            process: *mut core::ffi::c_void,
+            access: u32,
+            token: *mut *mut core::ffi::c_void,
+        ) -> i32;
+        fn GetTokenInformation(
+            token: *mut core::ffi::c_void,
+            class: u32,
+            info: *mut core::ffi::c_void,
+            length: u32,
+            returned: *mut u32,
+        ) -> i32;
+        fn SetEntriesInAclW(
+            count: u32,
+            entries: *mut ExplicitAccessW,
+            old: *mut core::ffi::c_void,
+            new_acl: *mut *mut core::ffi::c_void,
+        ) -> u32;
+        fn SetNamedSecurityInfoW(
+            name: *mut u16,
+            object_type: u32,
+            security_info: u32,
+            owner: *mut core::ffi::c_void,
+            group: *mut core::ffi::c_void,
+            dacl: *mut core::ffi::c_void,
+            sacl: *mut core::ffi::c_void,
+        ) -> u32;
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetCurrentProcess() -> *mut core::ffi::c_void;
+        fn CloseHandle(handle: *mut core::ffi::c_void) -> i32;
+        fn LocalFree(memory: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
+        fn GetLastError() -> u32;
+    }
+
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    unsafe {
+        let mut token: *mut core::ffi::c_void = core::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return Err(format!(
+                "Failed to lock down auth settings permissions: OpenProcessToken {}",
+                GetLastError()
+            ));
+        }
+        let mut needed = 0u32;
+        let _ = GetTokenInformation(token, TOKEN_USER, core::ptr::null_mut(), 0, &mut needed);
+        if needed < std::mem::size_of::<TokenUser>() as u32 || needed > 64 * 1024 {
+            CloseHandle(token);
+            return Err(
+                "Failed to lock down auth settings permissions: token user unavailable".to_string(),
+            );
+        }
+        // u64 alignment matches the SID pointer inside TOKEN_USER.
+        let mut buf = vec![0u64; (needed as usize).div_ceil(std::mem::size_of::<u64>())];
+        if GetTokenInformation(
+            token,
+            TOKEN_USER,
+            buf.as_mut_ptr().cast(),
+            needed,
+            &mut needed,
+        ) == 0
+        {
+            let err = GetLastError();
+            CloseHandle(token);
+            return Err(format!(
+                "Failed to lock down auth settings permissions: GetTokenInformation {err}"
+            ));
+        }
+        CloseHandle(token);
+        let sid = buf.as_ptr().cast::<TokenUser>().read().user.sid;
+        let mut entry = ExplicitAccessW {
+            permissions: GENERIC_ALL,
+            access_mode: SET_ACCESS,
+            inheritance: 0,
+            trustee: TrusteeW {
+                multiple_trustee: core::ptr::null_mut(),
+                multiple_trustee_operation: 0,
+                trustee_form: 0,
+                trustee_type: TRUSTEE_IS_USER,
+                name: sid.cast(),
+            },
+        };
+        let mut acl: *mut core::ffi::c_void = core::ptr::null_mut();
+        let acl_status = SetEntriesInAclW(1, &mut entry, core::ptr::null_mut(), &mut acl);
+        if acl_status != 0 || acl.is_null() {
+            if !acl.is_null() {
+                LocalFree(acl);
+            }
+            return Err(format!(
+                "Failed to lock down auth settings permissions: SetEntriesInAcl {acl_status}"
+            ));
+        }
+        let status = SetNamedSecurityInfoW(
+            wide.as_ptr().cast_mut(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
+            acl,
+            core::ptr::null_mut(),
+        );
+        LocalFree(acl);
+        if status != 0 {
+            return Err(format!(
+                "Failed to lock down auth settings permissions: SetNamedSecurityInfo {status}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Serializes every auth-config read-modify-write sequence below. Without it,
@@ -487,43 +641,155 @@ fn lock_auth_config() -> std::sync::MutexGuard<'static, ()> {
 }
 
 fn read_claude_prism_auth_config_for_update() -> Result<DevPrismAuthConfig, String> {
-    match read_claude_prism_auth_config() {
-        Ok(config) => Ok(config),
-        Err(err) => {
-            let path = get_claude_prism_auth_path()?;
-            if path.exists() {
-                backup_corrupt_auth_config(&path, &err)?;
-                Ok(DevPrismAuthConfig::default())
-            } else {
-                Err(err)
-            }
-        }
-    }
+    read_auth_config_file_for_update(&get_claude_prism_auth_path()?)
+}
+
+/// A corrupt auth file is reported to the caller. It is not renamed away and
+/// replaced with an empty config — that silently discarded stored secrets.
+fn read_auth_config_file_for_update(path: &Path) -> Result<DevPrismAuthConfig, String> {
+    read_auth_config_file(path)
 }
 
 fn write_claude_prism_auth_config(config: &DevPrismAuthConfig) -> Result<(), String> {
     let path = get_claude_prism_auth_path()?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create auth settings dir: {}", e))?;
-    }
-
+    // JSON may still hold API keys and other secrets. F-13 keychain storage
+    // was not chosen (no keychain crate). The temp file, fsync, and rename
+    // only make the replace atomic and the permissions owner-only.
+    // API key versus Claude CLI login (R1-6 / full A-10) was not chosen:
+    // there is no CLI-login fallback and no Settings change in this path.
     let content = serde_json::to_string_pretty(config)
         .map_err(|e| format!("Failed to serialize auth settings: {}", e))?;
+    atomic_write_private_file(&path, content.as_bytes())
+}
+
+/// Opens the sibling temp file used by [`atomic_write_private_file`].
+///
+/// The destination is not modified. Dropping the file before a write and
+/// rename (a kill between open and write) leaves the previous file intact.
+fn create_auth_temp_file(dest: &Path) -> Result<(std::fs::File, PathBuf), String> {
+    if let Some(parent) = dest.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create auth settings dir: {}", e))?;
+        }
+    }
+    let file_name = dest
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("anthropic-auth.json");
+    let tmp_path = dest.with_file_name(format!(".{file_name}.{}.tmp", uuid::Uuid::new_v4()));
     let mut options = OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         options.mode(0o600);
     }
-    let mut file = options
-        .open(&path)
-        .map_err(|e| format!("Failed to write auth settings: {}", e))?;
-    file.write_all(content.as_bytes())
-        .map_err(|e| format!("Failed to write auth settings: {}", e))?;
-    file.flush()
-        .map_err(|e| format!("Failed to flush auth settings: {}", e))?;
-    restrict_auth_file_permissions(&path)
+    let file = options.open(&tmp_path).map_err(|e| {
+        format!(
+            "Failed to create auth settings temp file: {}",
+            e
+        )
+    })?;
+    if let Err(err) = restrict_auth_file_permissions(&tmp_path) {
+        drop(file);
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(err);
+    }
+    Ok((file, tmp_path))
+}
+
+fn atomic_write_private_file(path: &Path, content: &[u8]) -> Result<(), String> {
+    let (mut file, tmp_path) = create_auth_temp_file(path)?;
+    let write_result = (|| -> Result<(), String> {
+        file.write_all(content)
+            .map_err(|e| format!("Failed to write auth settings: {}", e))?;
+        file.flush()
+            .map_err(|e| format!("Failed to flush auth settings: {}", e))?;
+        file.sync_all()
+            .map_err(|e| format!("Failed to fsync auth settings: {}", e))?;
+        drop(file);
+        replace_auth_file(&tmp_path, path)?;
+        restrict_auth_file_permissions(path)?;
+        sync_auth_parent_dir(path)?;
+        Ok(())
+    })();
+    if write_result.is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+    write_result
+}
+
+fn replace_auth_file(tmp: &Path, dest: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        if dest.exists() {
+            return replace_existing_file_windows(tmp, dest);
+        }
+    }
+    std::fs::rename(tmp, dest).map_err(|e| format!("Failed to replace auth settings: {}", e))
+}
+
+#[cfg(windows)]
+fn replace_existing_file_windows(tmp: &Path, dest: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    const REPLACEFILE_WRITE_THROUGH: u32 = 0x1;
+    const REPLACEFILE_IGNORE_MERGE_ERRORS: u32 = 0x2;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn ReplaceFileW(
+            replaced: *const u16,
+            replacement: *const u16,
+            backup: *const u16,
+            flags: u32,
+            exclude: *mut core::ffi::c_void,
+            reserved: *mut core::ffi::c_void,
+        ) -> i32;
+        fn GetLastError() -> u32;
+    }
+
+    let to_wide = |path: &Path| -> Vec<u16> {
+        path.as_os_str().encode_wide().chain(Some(0)).collect()
+    };
+    let replaced = to_wide(dest);
+    let replacement = to_wide(tmp);
+    let status = unsafe {
+        ReplaceFileW(
+            replaced.as_ptr(),
+            replacement.as_ptr(),
+            core::ptr::null(),
+            REPLACEFILE_WRITE_THROUGH | REPLACEFILE_IGNORE_MERGE_ERRORS,
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
+        )
+    };
+    if status == 0 {
+        let err = unsafe { GetLastError() };
+        return Err(format!("Failed to replace auth settings: ReplaceFile {err}"));
+    }
+    Ok(())
+}
+
+fn sync_auth_parent_dir(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        let Some(parent) = path.parent() else {
+            return Ok(());
+        };
+        if parent.as_os_str().is_empty() {
+            return Ok(());
+        }
+        let dir = std::fs::File::open(parent)
+            .map_err(|e| format!("Failed to open auth settings directory: {}", e))?;
+        dir.sync_all()
+            .map_err(|e| format!("Failed to fsync auth settings directory: {}", e))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(())
 }
 
 fn normalize_api_key(value: &str) -> Result<String, String> {
@@ -722,16 +988,27 @@ pub(crate) struct ClaudeCredentialForManvi {
 }
 
 pub(crate) fn claude_credential_for_manvi() -> Option<ClaudeCredentialForManvi> {
-    let stored = stored_claude_credential()?;
+    // Chat stays unwired: manvi_turn.rs is out of scope, so this Option cannot
+    // report a parse error. That is why full A-10 is not met. A parse error is
+    // not a configured key. API key versus Claude CLI login (R1-6) was not chosen.
+    let Ok(Some(stored)) = stored_claude_credential() else {
+        return None;
+    };
     Some(ClaudeCredentialForManvi {
         api_key: stored.api_key,
         base_url: stored.base_url,
     })
 }
 
-fn stored_claude_credential() -> Option<StoredClaudeCredential> {
-    let config = read_claude_prism_auth_config().ok()?;
-    stored_claude_credential_from_config(&config)
+/// `Ok(None)` is a readable file with no Claude key. A JSON parse or read
+/// failure is `Err` and must not be treated as "no key".
+fn stored_claude_credential() -> Result<Option<StoredClaudeCredential>, String> {
+    stored_claude_credential_at(&get_claude_prism_auth_path()?)
+}
+
+fn stored_claude_credential_at(path: &Path) -> Result<Option<StoredClaudeCredential>, String> {
+    let config = read_auth_config_file(path)?;
+    Ok(stored_claude_credential_from_config(&config))
 }
 
 fn stored_claude_credential_from_config(
@@ -947,7 +1224,7 @@ fn openai_compatible_credential_by_id_from_config(
         .ok_or_else(|| "Configured provider credential not found".to_string())
 }
 
-fn claude_credential_label() -> Option<&'static str> {
+fn claude_credential_label() -> Result<Option<&'static str>, String> {
     if std::env::var("ANTHROPIC_API_KEY")
         .map(|value| !value.trim().is_empty())
         .unwrap_or(false)
@@ -956,27 +1233,26 @@ fn claude_credential_label() -> Option<&'static str> {
             .map(|value| !value.trim().is_empty())
             .unwrap_or(false)
         {
-            return Some("External API key");
+            return Ok(Some("External API key"));
         }
-        return Some("Anthropic API key");
+        return Ok(Some("Anthropic API key"));
     }
 
     if std::env::var("ANTHROPIC_AUTH_TOKEN")
         .map(|value| !value.trim().is_empty())
         .unwrap_or(false)
     {
-        return Some("Anthropic auth token");
+        return Ok(Some("Anthropic auth token"));
     }
 
-    if let Some(credential) = stored_claude_credential() {
-        return Some(if credential.base_url.is_some() {
+    match stored_claude_credential()? {
+        Some(credential) => Ok(Some(if credential.base_url.is_some() {
             "External API key"
         } else {
             "Anthropic API key"
-        });
+        })),
+        None => Ok(None),
     }
-
-    None
 }
 
 fn claude_credential_env_values(
@@ -1011,8 +1287,7 @@ pub async fn save_anthropic_api_key(
         return Err(message);
     }
 
-    // Saving a new key should repair an empty/corrupt legacy auth file after
-    // backing it up, never silently discard parseable credentials.
+    // A corrupt auth file is returned to the caller. It is not reset.
     let _auth_guard = lock_auth_config();
     let mut config = read_claude_prism_auth_config_for_update()?;
     config.provider = Some(provider.clone());
@@ -1263,8 +1538,7 @@ async fn fetch_openai_compatible_models(
 
 #[tauri::command]
 pub async fn clear_anthropic_api_key() -> Result<(), String> {
-    // Clearing should also recover from an empty/corrupt legacy auth file after
-    // preserving the bad file for manual recovery.
+    // A corrupt auth file is returned to the caller. It is not reset.
     let _auth_guard = lock_auth_config();
     let mut config = read_claude_prism_auth_config_for_update()?;
     config.provider = Some(PROVIDER_CLAUDE_CODE.to_string());
@@ -2014,7 +2288,7 @@ fn create_command(
     args: Vec<String>,
     cwd: &str,
     effort_level: Option<&str>,
-) -> Command {
+) -> Result<Command, String> {
     let clean_program = strip_nul(program);
     let clean_args: Vec<Cow<str>> = args.iter().map(|a| strip_nul(a)).collect();
     let clean_cwd = strip_nul(cwd);
@@ -2062,7 +2336,7 @@ fn create_command(
     // Set effort level (default: low for fast responses)
     cmd.env("CLAUDE_CODE_EFFORT_LEVEL", effort_level.unwrap_or("low"));
 
-    if let Some(credential) = stored_claude_credential() {
+    if let Some(credential) = stored_claude_credential()? {
         for (key, value) in claude_credential_env_values(&credential) {
             if std::env::var(key)
                 .map(|value| value.trim().is_empty())
@@ -2159,7 +2433,7 @@ fn create_command(
 
     cmd.env("PATH", current_path);
 
-    cmd
+    Ok(cmd)
 }
 
 fn clear_anthropic_provider_env(cmd: &mut Command) {
@@ -2377,7 +2651,7 @@ fn check_claude_status_blocking() -> Result<ClaudeStatus, String> {
             });
             (true, email)
         }
-        _ => match claude_credential_label() {
+        _ => match claude_credential_label()? {
             Some(label) => (true, Some(label.to_string())),
             None => (false, None),
         },
@@ -2830,14 +3104,37 @@ fn common_claude_args(cwd: &str) -> Vec<String> {
         std::path::Path::new(cwd),
     ));
     system_prompt.push_str(&crate::personalization::build_personalization_prompt());
+    // `--dangerously-skip-permissions` is intentionally not passed (A-4).
+    // Tool use for this shared agent argv is unchanged. The one-shot path
+    // disables tools on its own. API key versus Claude CLI login was not chosen.
     vec![
         "--output-format".to_string(),
         "stream-json".to_string(),
         "--verbose".to_string(),
-        "--dangerously-skip-permissions".to_string(),
         "--append-system-prompt".to_string(),
         system_prompt,
     ]
+}
+
+/// Args for one-shot `claude -p` completion, before prompt transport.
+///
+/// `--tools ""` disables every built-in tool. Confirmed on Claude Code 2.1.316
+/// `--help`: `--tools` "Use \"\" to disable all tools". No other no-tools flag
+/// was added. This does not switch the call to the Messages API or `manvi
+/// --chat-only`, and it does not add a CLI-login fallback.
+fn claude_print_args(system: Option<&str>) -> Vec<String> {
+    let mut args = vec![
+        "-p".to_string(),
+        "--output-format".to_string(),
+        "json".to_string(),
+        "--tools".to_string(),
+        String::new(),
+    ];
+    if let Some(sys) = system.map(str::trim).filter(|s| !s.is_empty()) {
+        args.push("--append-system-prompt".to_string());
+        args.push(sys.to_string());
+    }
+    args
 }
 
 // 鈹€鈹€鈹€ Tauri Commands 鈹€鈹€鈹€
@@ -3380,108 +3677,112 @@ pub async fn complete_claude_print(
     let cwd = std::env::temp_dir();
     let cwd_str = cwd.to_string_lossy().to_string();
 
-    let mut args = vec![
-        "-p".to_string(),
-        "--output-format".to_string(),
-        "json".to_string(),
-        "--dangerously-skip-permissions".to_string(),
-    ];
-    if let Some(sys) = system.map(str::trim).filter(|s| !s.is_empty()) {
-        args.push("--append-system-prompt".to_string());
-        args.push(sys.to_string());
-    }
+    let args = claude_print_args(system);
     let (args, stdin_payload) = with_prompt_transport(args, user.to_string());
 
-    let mut cmd = create_command(&claude_path, args, &cwd_str, None);
+    let mut cmd = create_command(&claude_path, args, &cwd_str, None)?;
     if stdin_payload.is_some() {
         cmd.stdin(std::process::Stdio::piped());
     }
+    cmd.kill_on_drop(true);
 
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to spawn Claude Code: {e}"))?;
 
-    if let Some(payload) = stdin_payload {
-        if let Some(mut stdin) = child.stdin.take() {
-            use tokio::io::AsyncWriteExt;
-            let _ = stdin.write_all(payload.as_bytes()).await;
-            let _ = stdin.shutdown().await;
-        }
-    }
+    finish_claude_print_child(
+        &mut child,
+        stdin_payload,
+        std::time::Duration::from_secs(PRINT_TIMEOUT_SECS),
+        cancel_flag.as_deref(),
+        cancel_notify.as_deref(),
+        MAX_PRINT_OUTPUT_BYTES,
+    )
+    .await
+}
 
+/// Writes the prompt, reads stdout, and waits, all inside one timeout/cancel
+/// select. Stdin write and shutdown errors propagate. A child that never
+/// reads stdin blocks the write, and the select then times out and kills it.
+async fn finish_claude_print_child(
+    child: &mut tokio::process::Child,
+    stdin_payload: Option<String>,
+    timeout: std::time::Duration,
+    cancel_flag: Option<&std::sync::atomic::AtomicBool>,
+    cancel_notify: Option<&tokio::sync::Notify>,
+    max_output: u64,
+) -> Result<String, String> {
+    use tokio::io::AsyncWriteExt;
+
+    let mut stdin = child.stdin.take();
     let stdout = child
         .stdout
         .take()
         .ok_or_else(|| "Claude Code stdout missing".to_string())?;
     let reader = BufReader::new(stdout);
-    let mut buf = Vec::new();
 
-    let read_stdout = async { read_bounded_output(reader, MAX_PRINT_OUTPUT_BYTES, &mut buf).await };
-
-    let deadline = tokio::time::sleep(std::time::Duration::from_secs(PRINT_TIMEOUT_SECS));
-    tokio::pin!(deadline);
-
-    let outcome = if let Some(notify) = cancel_notify {
-        tokio::select! {
-            _ = notify.notified() => {
-                let _ = child.kill().await;
-                let _ = child.wait().await;
-                Err("cancelled".into())
-            }
-            _ = &mut deadline => {
-                let _ = child.kill().await;
-                let _ = child.wait().await;
-                Err(format!(
-                    "[E_CLI_TIMEOUT] Claude Code print mode timed out after {PRINT_TIMEOUT_SECS}s."
-                ))
-            }
-            read = read_stdout => {
-                read?;
-                let status = child
-                    .wait()
-                    .await
-                    .map_err(|e| format!("Claude Code wait failed: {e}"))?;
-                if !status.success() {
-                    let preview = String::from_utf8_lossy(&buf);
-                    return Err(format!(
-                        "Claude Code exited with status {status}. Output: {}",
-                        preview.chars().take(400).collect::<String>()
-                    ));
-                }
-                extract_claude_print_result(&String::from_utf8_lossy(&buf))
-            }
+    let write_and_read = async move {
+        let mut buf = Vec::new();
+        if let Some(payload) = stdin_payload {
+            let mut stdin = stdin
+                .take()
+                .ok_or_else(|| "Claude Code stdin missing".to_string())?;
+            stdin
+                .write_all(payload.as_bytes())
+                .await
+                .map_err(|e| format!("Failed to write Claude Code prompt: {e}"))?;
+            stdin
+                .shutdown()
+                .await
+                .map_err(|e| format!("Failed to close Claude Code prompt stream: {e}"))?;
         }
-    } else {
-        tokio::select! {
-            _ = &mut deadline => {
-                let _ = child.kill().await;
-                let _ = child.wait().await;
-                Err(format!(
-                    "[E_CLI_TIMEOUT] Claude Code print mode timed out after {PRINT_TIMEOUT_SECS}s."
-                ))
+        read_bounded_output(reader, max_output, &mut buf).await?;
+        Ok::<Vec<u8>, String>(buf)
+    };
+
+    let deadline = tokio::time::sleep(timeout);
+    tokio::pin!(deadline);
+    tokio::pin!(write_and_read);
+    let cancelled = async {
+        match cancel_notify {
+            Some(notify) => notify.notified().await,
+            None => std::future::pending::<()>().await,
+        }
+    };
+    tokio::pin!(cancelled);
+
+    let outcome = tokio::select! {
+        _ = &mut cancelled => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            Err("cancelled".to_string())
+        }
+        _ = &mut deadline => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            Err(format!(
+                "[E_CLI_TIMEOUT] Claude Code print mode timed out after {}s.",
+                timeout.as_secs()
+            ))
+        }
+        read = &mut write_and_read => {
+            let buf = read?;
+            let status = child
+                .wait()
+                .await
+                .map_err(|e| format!("Claude Code wait failed: {e}"))?;
+            if !status.success() {
+                let preview = String::from_utf8_lossy(&buf);
+                return Err(format!(
+                    "Claude Code exited with status {status}. Output: {}",
+                    preview.chars().take(400).collect::<String>()
+                ));
             }
-            read = read_stdout => {
-                read?;
-                let status = child
-                    .wait()
-                    .await
-                    .map_err(|e| format!("Claude Code wait failed: {e}"))?;
-                if !status.success() {
-                    let preview = String::from_utf8_lossy(&buf);
-                    return Err(format!(
-                        "Claude Code exited with status {status}. Output: {}",
-                        preview.chars().take(400).collect::<String>()
-                    ));
-                }
-                extract_claude_print_result(&String::from_utf8_lossy(&buf))
-            }
+            extract_claude_print_result(&String::from_utf8_lossy(&buf))
         }
     };
 
-    if cancel_flag
-        .as_ref()
-        .is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed))
-    {
+    if cancel_flag.is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed)) {
         return Err("cancelled".into());
     }
     outcome
@@ -3582,7 +3883,7 @@ async fn execute_openai_compatible_via_claude_proxy(
     args.push("sonnet".to_string());
     args.extend(common_claude_args(&project_path));
 
-    let mut cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref());
+    let mut cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref())?;
     clear_anthropic_provider_env(&mut cmd);
     // The CLI presents this as `x-api-key`; the proxy checks it before forwarding
     // with the real provider key (which never leaves the proxy).
@@ -3656,7 +3957,7 @@ async fn execute_openai_compatible_via_native_anthropic(
     let (mut args, stdin_payload) = with_prompt_transport(args_prefix, prompt);
     args.extend(common_claude_args(&project_path));
 
-    let mut cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref());
+    let mut cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref())?;
     apply_native_anthropic_provider_env(&mut cmd, &credential, &anthropic_base_url);
 
     spawn_claude_process(
@@ -3845,7 +4146,7 @@ pub async fn execute_claude_code(
     }
     args.extend(common_claude_args(&project_path));
 
-    let cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref());
+    let cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref())?;
     spawn_claude_process(window, cmd, tab_id, stdin_payload, None).await
 }
 
@@ -3888,7 +4189,7 @@ pub async fn continue_claude_code(
     }
     args.extend(common_claude_args(&project_path));
 
-    let cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref());
+    let cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref())?;
     spawn_claude_process(window, cmd, tab_id, stdin_payload, None).await
 }
 
@@ -3933,7 +4234,7 @@ pub async fn resume_claude_code(
     }
     args.extend(common_claude_args(&project_path));
 
-    let cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref());
+    let cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref())?;
     spawn_claude_process(window, cmd, tab_id, stdin_payload, None).await
 }
 
@@ -4605,10 +4906,8 @@ pub async fn generate_claude_session_title(
     let Some(excerpt) = session_excerpt_for_model_title(&session_path) else {
         return Ok(None);
     };
-    let Some(credential) = read_claude_prism_auth_config()
-        .ok()
-        .and_then(|config| session_title_credential_from_config(&config))
-    else {
+    let config = read_claude_prism_auth_config()?;
+    let Some(credential) = session_title_credential_from_config(&config) else {
         return Ok(None);
     };
     let Ok(client) = reqwest::Client::builder()
@@ -4802,7 +5101,7 @@ pub async fn run_shell_command(command: String, cwd: String) -> Result<ShellComm
     let (shell, args) = ("sh", vec!["-c".to_string(), command]);
     #[cfg(target_os = "windows")]
     let (shell, args) = ("cmd", vec!["/C".to_string(), command]);
-    let mut cmd = create_command(shell, args, &cwd, None);
+    let mut cmd = create_command(shell, args, &cwd, None)?;
     cmd.kill_on_drop(true);
 
     let child = cmd
@@ -5273,8 +5572,34 @@ mod tests {
         assert!(args.contains(&"--output-format".to_string()));
         assert!(args.contains(&"stream-json".to_string()));
         assert!(args.contains(&"--verbose".to_string()));
-        assert!(args.contains(&"--dangerously-skip-permissions".to_string()));
+        assert!(!args.contains(&"--dangerously-skip-permissions".to_string()));
         assert!(args.contains(&"--append-system-prompt".to_string()));
+    }
+
+    #[test]
+    fn test_one_shot_print_args_disable_tools_without_skipping_permissions() {
+        let args = claude_print_args(Some("stay on the page"));
+        assert!(
+            !args
+                .iter()
+                .any(|arg| arg == "--dangerously-skip-permissions")
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair[0] == "--tools" && pair[1].is_empty()),
+            "claude --help documents --tools \"\" as disabling all tools"
+        );
+        let (transported, _) = with_prompt_transport(args, "prompt".to_string());
+        assert!(
+            !transported
+                .iter()
+                .any(|arg| arg == "--dangerously-skip-permissions")
+        );
+        assert!(
+            transported
+                .windows(2)
+                .any(|pair| pair[0] == "--tools" && pair[1].is_empty())
+        );
     }
 
     #[test]
@@ -5811,7 +6136,8 @@ mod tests {
     #[test]
     fn test_create_command_sets_args_and_cwd() {
         let args = vec!["--version".to_string()];
-        let cmd = create_command("/usr/bin/claude", args, "/tmp/project", None);
+        let cmd = create_command("/usr/bin/claude", args, "/tmp/project", None)
+            .expect("create command");
         // Command is created 鈥?we can verify via its Debug representation
         let debug_str = format!("{:?}", cmd);
         assert!(debug_str.contains("--version"));
@@ -5819,7 +6145,7 @@ mod tests {
 
     #[test]
     fn test_create_command_default_effort_level() {
-        let cmd = create_command("/usr/bin/claude", vec![], "/tmp", None);
+        let cmd = create_command("/usr/bin/claude", vec![], "/tmp", None).expect("create command");
         let debug_str = format!("{:?}", cmd);
         // The env setup is internal; just verify the command is created
         assert!(debug_str.contains("claude"));
@@ -5827,7 +6153,8 @@ mod tests {
 
     #[test]
     fn test_create_command_custom_effort_level() {
-        let cmd = create_command("/usr/bin/claude", vec![], "/tmp", Some("high"));
+        let cmd =
+            create_command("/usr/bin/claude", vec![], "/tmp", Some("high")).expect("create command");
         let debug_str = format!("{:?}", cmd);
         assert!(debug_str.contains("claude"));
     }
@@ -6182,5 +6509,190 @@ mod tests {
         // Paths are single-quoted to handle spaces
         assert!(script.contains("'/Users/my user/.local/bin'"));
         assert!(script.contains("'/Users/my user/.local'"));
+    }
+
+    #[test]
+    fn corrupt_auth_file_is_reported_and_not_reset() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("anthropic-auth.json");
+        let garbage = b"{not-json";
+        std::fs::write(&path, garbage).expect("seed corrupt file");
+
+        let err = match read_auth_config_file(&path) {
+            Err(err) => err,
+            Ok(_) => panic!("parse error expected"),
+        };
+        assert!(
+            err.to_ascii_lowercase().contains("parse"),
+            "parse error must surface, got {err}"
+        );
+        assert_eq!(std::fs::read(&path).expect("read"), garbage);
+
+        let update_err = match read_auth_config_file_for_update(&path) {
+            Err(err) => err,
+            Ok(_) => panic!("update must not reset a corrupt file"),
+        };
+        assert!(
+            update_err.to_ascii_lowercase().contains("parse"),
+            "update must report the parse error, got {update_err}"
+        );
+        assert_eq!(
+            std::fs::read(&path).expect("previous bytes"),
+            garbage,
+            "a corrupt file must stay in place"
+        );
+    }
+
+    #[test]
+    fn auth_file_kill_between_open_and_write_keeps_previous() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("anthropic-auth.json");
+        let previous = br#"{"anthropic_api_key":"test-key-not-a-secret","anthropic_base_url":"https://example.test/v1"}"#;
+        atomic_write_private_file(&path, previous).expect("seed");
+
+        let (file, tmp) = create_auth_temp_file(&path).expect("open temp");
+        drop(file);
+        assert_eq!(
+            std::fs::read(&path).expect("destination"),
+            previous,
+            "killing after open and before write must not replace the previous file"
+        );
+        assert_ne!(tmp, path);
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn atomic_auth_write_round_trips_and_is_owner_only() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("anthropic-auth.json");
+        let body = br#"{"anthropic_api_key":"test-key-not-a-secret","anthropic_base_url":"https://example.test/v1"}"#;
+        atomic_write_private_file(&path, body).expect("write");
+        assert_eq!(std::fs::read(&path).expect("read"), body);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path)
+                .expect("meta")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        let cred = match stored_claude_credential_at(&path) {
+            Ok(Some(cred)) => cred,
+            Ok(None) => panic!("stored key missing"),
+            Err(err) => panic!("auth file should parse: {err}"),
+        };
+        assert_eq!(cred.api_key, "test-key-not-a-secret");
+    }
+
+    #[test]
+    fn stored_credential_parse_error_is_not_a_missing_key() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("anthropic-auth.json");
+        std::fs::write(&path, b"{").expect("corrupt");
+        let err = match stored_claude_credential_at(&path) {
+            Err(err) => err,
+            Ok(_) => panic!("parse error must not look like a missing key"),
+        };
+        assert!(
+            err.to_ascii_lowercase().contains("parse"),
+            "got {err}"
+        );
+
+        std::fs::write(&path, b"{}").expect("empty object");
+        match stored_claude_credential_at(&path) {
+            Ok(None) => {}
+            Ok(Some(_)) => panic!("empty config must not invent a key"),
+            Err(err) => panic!("valid file must not be a parse error: {err}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn print_child_that_never_reads_stdin_times_out() {
+        let mut cmd = tokio::process::Command::new("sh");
+        // Stdout is closed so a finished stdin write cannot look like success.
+        // Stdin stays open and unread, so the prompt write blocks until timeout.
+        cmd.args(["-c", "exec 1>&-; sleep 30"]);
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().expect("sleep");
+        let started = std::time::Instant::now();
+        let err = finish_claude_print_child(
+            &mut child,
+            Some("x".repeat(8 * 1024 * 1024)),
+            std::time::Duration::from_secs(2),
+            None,
+            None,
+            1024 * 1024,
+        )
+        .await
+        .expect_err("blocked stdin write must time out");
+        assert!(
+            err.contains("E_CLI_TIMEOUT"),
+            "expected timeout, got {err}"
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn print_child_stdin_write_error_is_not_discarded() {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", "exec 0<&-; sleep 30"]);
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().expect("sh");
+        let started = std::time::Instant::now();
+        let err = finish_claude_print_child(
+            &mut child,
+            Some("x".repeat(8 * 1024 * 1024)),
+            std::time::Duration::from_secs(5),
+            None,
+            None,
+            1024 * 1024,
+        )
+        .await
+        .expect_err("broken pipe");
+        assert!(
+            err.contains("Failed to write Claude Code prompt")
+                || err.contains("Failed to close Claude Code prompt stream"),
+            "stdin errors must propagate, got {err}"
+        );
+        assert!(
+            !err.contains("E_CLI_TIMEOUT"),
+            "a write failure must not be ignored until timeout: {err}"
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn print_child_shutdown_lets_the_fake_child_finish() {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args([
+            "-c",
+            r#"cat >/dev/null; printf '%s' '{"result":"ok-from-fake"}'"#,
+        ]);
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().expect("sh");
+        let text = finish_claude_print_child(
+            &mut child,
+            Some("prompt-from-test".to_string()),
+            std::time::Duration::from_secs(5),
+            None,
+            None,
+            1024 * 1024,
+        )
+        .await
+        .expect("fake child result");
+        assert_eq!(text, "ok-from-fake");
     }
 }

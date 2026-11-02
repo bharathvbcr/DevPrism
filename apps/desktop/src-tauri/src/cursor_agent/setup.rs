@@ -60,15 +60,19 @@ fn cursor_authenticated() -> bool {
 pub async fn check_cursor_cli_status() -> Result<CursorCliStatus, String> {
     match find_agent_binary() {
         Ok(binary_path) => {
-            let version = SyncCommand::new(&binary_path)
-                .arg("--version")
+            let mut version_cmd = SyncCommand::new(&binary_path);
+            version_cmd.arg("--version");
+            apply_stored_cursor_api_key(&mut version_cmd);
+            let version = version_cmd
                 .output()
                 .ok()
                 .filter(|o| o.status.success())
                 .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+            let mut whoami = SyncCommand::new(&binary_path);
+            whoami.args(["whoami"]);
+            apply_stored_cursor_api_key(&mut whoami);
             let authenticated = cursor_authenticated()
-                || SyncCommand::new(&binary_path)
-                    .args(["whoami"])
+                || whoami
                     .output()
                     .map(|o| o.status.success())
                     .unwrap_or(false);
@@ -152,8 +156,10 @@ pub async fn install_cursor_cli(window: WebviewWindow) -> Result<bool, String> {
 pub async fn login_cursor_cli(window: WebviewWindow) -> Result<bool, String> {
     let binary = find_agent_binary()?;
     let _ = window.emit("install-output", "Opening Cursor login flow…");
-    let status = SyncCommand::new(&binary)
-        .arg("login")
+    let mut cmd = SyncCommand::new(&binary);
+    cmd.arg("login");
+    apply_stored_cursor_api_key(&mut cmd);
+    let status = cmd
         .status()
         .map_err(|e| format!("Failed to run agent login: {e}"))?;
     Ok(status.success())
@@ -165,6 +171,42 @@ pub async fn save_cursor_api_key(api_key: String) -> Result<bool, String> {
         return Err("API key is required".into());
     }
     crate::claude::persist_cursor_api_key(api_key.trim())?;
-    std::env::set_var("CURSOR_API_KEY", api_key.trim());
+    // Do not set process-global env. Agent commands receive CURSOR_API_KEY
+    // via Command::env. The JSON auth file may still hold the secret (F-13
+    // keychain storage was not chosen).
     Ok(true)
+}
+
+fn apply_cursor_api_key_env(cmd: &mut SyncCommand, api_key: &str) {
+    let key = api_key.trim();
+    if !key.is_empty() {
+        cmd.env("CURSOR_API_KEY", key);
+    }
+}
+
+fn apply_stored_cursor_api_key(cmd: &mut SyncCommand) {
+    if let Some(key) = stored_cursor_api_key() {
+        apply_cursor_api_key_env(cmd, &key);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn cursor_api_key_goes_to_the_child_not_the_process() {
+        let before = std::env::var("CURSOR_API_KEY").ok();
+        let mut cmd = SyncCommand::new("sh");
+        cmd.args(["-c", "printf %s \"$CURSOR_API_KEY\""]);
+        apply_cursor_api_key_env(&mut cmd, "test-key-not-a-secret");
+        let output = cmd.output().expect("sh");
+        assert!(output.status.success(), "sh failed");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "test-key-not-a-secret"
+        );
+        assert_eq!(std::env::var("CURSOR_API_KEY").ok(), before);
+    }
 }

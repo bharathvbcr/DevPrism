@@ -17,7 +17,6 @@
 //! packs so both surfaces enforce identical rules.
 
 use std::borrow::Cow;
-use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
 /// Strip a Windows verbatim prefix (`\\?\`, including `\\?\UNC\`) so confinement
@@ -197,28 +196,35 @@ fn normalized_components(path: &Path) -> Option<Vec<NormComp>> {
 }
 
 /// Lexically strip `root` from `candidate` when candidate is inside it.
-/// Tolerates separator/case drift on Windows.
+///
+/// `Path::strip_prefix` is byte-exact, so a same-inode child whose project
+/// component differs only by case (`proj` vs `PROJ`) would miss. The fallback
+/// compares components with [`component_eq`] — case-insensitive per component
+/// where [`path_is_within`] is, never a case-folded string prefix.
 fn strip_root_prefix(root: &Path, candidate: &Path) -> Option<PathBuf> {
     if let Ok(rest) = candidate.strip_prefix(root) {
         return Some(rest.to_path_buf());
     }
-    #[cfg(target_os = "windows")]
-    {
-        let norm = |p: &Path| {
-            p.to_string_lossy()
-                .replace('\\', "/")
-                .trim_end_matches('/')
-                .to_lowercase()
-        };
-        let r = norm(root);
-        let c = norm(candidate);
-        if c.starts_with(&r) && c.as_bytes().get(r.len()) == Some(&b'/') {
-            return Some(PathBuf::from(&candidate.to_string_lossy()[r.len() + 1..]));
-        }
-        None
+    let root_c = normalized_components(root)?;
+    let cand_c = normalized_components(candidate)?;
+    if root_c.is_empty() || cand_c.len() < root_c.len() {
+        return None;
     }
-    #[cfg(not(target_os = "windows"))]
-    None
+    if !root_c
+        .iter()
+        .zip(cand_c.iter())
+        .all(|(root_comp, cand_comp)| component_eq(root_comp, cand_comp))
+    {
+        return None;
+    }
+    let mut rest = PathBuf::new();
+    for comp in cand_c.into_iter().skip(root_c.len()) {
+        match comp {
+            NormComp::Normal(name) => rest.push(name),
+            NormComp::Root | NormComp::Prefix(_) => return None,
+        }
+    }
+    Some(rest)
 }
 
 /// SHA-1 hex digest (the repo already depends on `sha1`; this is also the hash
@@ -236,69 +242,18 @@ pub fn sha1_hex(data: &[u8]) -> String {
 /// Write via temp file + rename so a reader (or a crash mid-write) never sees
 /// a half-written document.
 ///
-/// The temp path is a new file (`create_new`, random suffix). A planted symlink
-/// at that name is not opened. Rename then replaces a planted symlink at
-/// `path` without following it, so the link target does not receive the write.
+/// The temp path is a new file (`create_new`, random suffix) opened on a
+/// directory fd. A planted symlink at the final component is replaced, not
+/// followed. A symlink in any ancestor — other than the platform directory
+/// aliases directly under `/` — is refused, and missing directories are created
+/// with `mkdirat` on that fd so `create_dir_all` cannot walk a link.
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("Cannot determine parent dir of {}", path.display()))?;
-    std::fs::create_dir_all(parent)
-        .map_err(|e| format!("Failed to create {}: {e}", parent.display()))?;
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "file".to_string());
-    let mut last_err = String::from("Failed to create temp file");
-    for _ in 0..16 {
-        let tmp = parent.join(format!(".{name}.tmp-{}", uuid::Uuid::new_v4().simple()));
-        let mut file = match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)
-        {
-            Ok(file) => file,
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                last_err = format!("Failed to create temp file: {e}");
-                continue;
-            }
-            Err(e) => return Err(format!("Failed to create temp file: {e}")),
-        };
-        if let Err(e) = file.write_all(bytes).and_then(|_| file.sync_all()) {
-            drop(file);
-            let _ = std::fs::remove_file(&tmp);
-            return Err(format!("Failed to write temp file: {e}"));
-        }
-        drop(file);
-        match replace_without_following_symlink(&tmp, path) {
-            Ok(()) => return Ok(()),
-            Err(e) => {
-                let _ = std::fs::remove_file(&tmp);
-                return Err(format!("Failed to replace {}: {e}", path.display()));
-            }
-        }
-    }
-    Err(last_err)
+    nofollow::atomic_write(path, bytes)
 }
 
-/// `rename` replaces a destination symlink's directory entry. If a platform
-/// refuses to rename onto an existing symlink, unlink that symlink node (not
-/// its target) and retry. Never open the destination for writing.
-fn replace_without_following_symlink(tmp: &Path, dest: &Path) -> std::io::Result<()> {
-    match std::fs::rename(tmp, dest) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            let is_link = std::fs::symlink_metadata(dest)
-                .map(|m| m.file_type().is_symlink())
-                .unwrap_or(false);
-            if !is_link {
-                return Err(e);
-            }
-            std::fs::remove_file(dest)?;
-            std::fs::rename(tmp, dest)
-        }
-    }
-}
+pub(crate) use nofollow::{
+    ensure_dir_nofollow, open_read_nofollow, remove_tree_nofollow, write_nofollow, DirFd,
+};
 
 /// Copy `file` to `<root>/.prism/mcp-backups/<timestamp_ms>/<rel>` before a
 /// destructive overwrite. Returns the backup's absolute path.
@@ -323,6 +278,625 @@ pub fn backup_file(root: &Path, file: &Path) -> Result<PathBuf, String> {
     }
     std::fs::copy(file, &dest).map_err(|e| format!("Failed to back up {}: {e}", file.display()))?;
     Ok(dest)
+}
+
+#[cfg(unix)]
+mod nofollow {
+    use std::ffi::{CString, OsStr};
+    use std::fs::File;
+    use std::io::{self, Write};
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
+    use std::path::{Component, Path, PathBuf};
+
+    /// Directory held open so later creates and writes use `openat`/`mkdirat`
+    /// and cannot follow a symlink swapped into the path.
+    pub(crate) struct DirFd {
+        file: File,
+    }
+
+    impl DirFd {
+        fn from_raw(fd: RawFd) -> Self {
+            Self {
+                file: unsafe { File::from_raw_fd(fd) },
+            }
+        }
+
+        fn raw(&self) -> RawFd {
+            self.file.as_raw_fd()
+        }
+
+        pub(crate) fn open(path: &Path) -> io::Result<Self> {
+            walk(path, false)
+        }
+
+        pub(crate) fn ensure(path: &Path) -> io::Result<Self> {
+            walk(path, true)
+        }
+
+        /// Create or open a child directory. A child symlink is refused.
+        pub(crate) fn subdir(&self, name: &OsStr) -> io::Result<Self> {
+            match self.open_child(name) {
+                Ok(dir) => Ok(dir),
+                Err(e) if is_eloop(&e) => Err(refuse()),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    self.mkdir(name)?;
+                    self.open_child(name)
+                        .map_err(|err| if is_eloop(&err) { refuse() } else { err })
+                }
+                Err(e) => Err(e),
+            }
+        }
+
+        pub(crate) fn write(&self, name: &OsStr, bytes: &[u8]) -> io::Result<()> {
+            let mut file = self.open_write(name, false)?;
+            file.write_all(bytes)?;
+            file.sync_all()?;
+            Ok(())
+        }
+
+        pub(crate) fn create_new(&self, name: &OsStr) -> io::Result<File> {
+            self.open_write(name, true)
+        }
+
+        /// Replace `to`, including when `to` is a symlink. `renameat` replaces
+        /// the directory entry and does not follow it.
+        pub(crate) fn rename_replace(&self, from: &OsStr, to: &OsStr) -> io::Result<()> {
+            let src = cstring(from)?;
+            let dst = cstring(to)?;
+            let rc = unsafe { libc::renameat(self.raw(), src.as_ptr(), self.raw(), dst.as_ptr()) };
+            if rc == 0 {
+                return Ok(());
+            }
+            let err = io::Error::last_os_error();
+            if self.child_is_symlink(to).unwrap_or(false) {
+                self.unlink_file(to)?;
+                let rc =
+                    unsafe { libc::renameat(self.raw(), src.as_ptr(), self.raw(), dst.as_ptr()) };
+                if rc == 0 {
+                    return Ok(());
+                }
+                return Err(io::Error::last_os_error());
+            }
+            Err(err)
+        }
+
+        pub(crate) fn unlink_file(&self, name: &OsStr) -> io::Result<()> {
+            let c = cstring(name)?;
+            let rc = unsafe { libc::unlinkat(self.raw(), c.as_ptr(), 0) };
+            if rc == 0 {
+                Ok(())
+            } else {
+                Err(io::Error::last_os_error())
+            }
+        }
+
+        fn mkdir(&self, name: &OsStr) -> io::Result<()> {
+            let c = cstring(name)?;
+            let rc = unsafe { libc::mkdirat(self.raw(), c.as_ptr(), 0o755 as libc::mode_t) };
+            if rc == 0 {
+                return Ok(());
+            }
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::AlreadyExists {
+                Ok(())
+            } else {
+                Err(err)
+            }
+        }
+
+        fn open_child(&self, name: &OsStr) -> io::Result<DirFd> {
+            let c = cstring(name)?;
+            let fd = unsafe {
+                libc::openat(
+                    self.raw(),
+                    c.as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                )
+            };
+            if fd < 0 {
+                let err = io::Error::last_os_error();
+                if self.child_is_symlink(name).unwrap_or(false) {
+                    return Err(io::Error::from_raw_os_error(libc::ELOOP));
+                }
+                return Err(err);
+            }
+            Ok(DirFd::from_raw(fd))
+        }
+
+        fn open_write(&self, name: &OsStr, exclusive: bool) -> io::Result<File> {
+            let c = cstring(name)?;
+            let mut flags = libc::O_WRONLY | libc::O_CREAT | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+            flags |= if exclusive {
+                libc::O_EXCL
+            } else {
+                libc::O_TRUNC
+            };
+            let fd = unsafe { libc::openat(self.raw(), c.as_ptr(), flags, 0o644 as libc::c_uint) };
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(unsafe { File::from_raw_fd(fd) })
+        }
+
+        fn child_is_symlink(&self, name: &OsStr) -> io::Result<bool> {
+            let c = cstring(name)?;
+            let mut st: libc::stat = unsafe { std::mem::zeroed() };
+            let rc = unsafe {
+                libc::fstatat(self.raw(), c.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW)
+            };
+            if rc != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok((st.st_mode & libc::S_IFMT) == libc::S_IFLNK)
+        }
+
+        fn read_link(&self, name: &OsStr) -> io::Result<PathBuf> {
+            let c = cstring(name)?;
+            let mut cap = 1024usize;
+            loop {
+                let mut buf = vec![0u8; cap];
+                let n = unsafe {
+                    libc::readlinkat(
+                        self.raw(),
+                        c.as_ptr(),
+                        buf.as_mut_ptr() as *mut libc::c_char,
+                        buf.len(),
+                    )
+                };
+                if n < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                let n = n as usize;
+                if n < buf.len() {
+                    buf.truncate(n);
+                    return Ok(PathBuf::from(OsStr::from_bytes(&buf)));
+                }
+                cap = cap.saturating_mul(2);
+                if cap > 1024 * 1024 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "symlink target too long",
+                    ));
+                }
+            }
+        }
+
+        fn remove_child(&self, name: &OsStr) -> io::Result<()> {
+            match self.open_child(name) {
+                Ok(child) => {
+                    child.clear_children()?;
+                    let c = cstring(name)?;
+                    let rc = unsafe { libc::unlinkat(self.raw(), c.as_ptr(), libc::AT_REMOVEDIR) };
+                    if rc == 0 {
+                        Ok(())
+                    } else {
+                        Err(io::Error::last_os_error())
+                    }
+                }
+                Err(e) if is_eloop(&e) => self.unlink_file(name),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+                Err(e) if e.raw_os_error() == Some(libc::ENOTDIR) => self.unlink_file(name),
+                Err(e) => Err(e),
+            }
+        }
+
+        fn clear_children(&self) -> io::Result<()> {
+            let dup_fd = unsafe { libc::fcntl(self.raw(), libc::F_DUPFD_CLOEXEC, 0) };
+            if dup_fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let dirp = unsafe { libc::fdopendir(dup_fd) };
+            if dirp.is_null() {
+                unsafe { libc::close(dup_fd) };
+                return Err(io::Error::last_os_error());
+            }
+            let names = match read_names(dirp) {
+                Ok(names) => names,
+                Err(err) => {
+                    unsafe { libc::closedir(dirp) };
+                    return Err(err);
+                }
+            };
+            if unsafe { libc::closedir(dirp) } != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            for name in names {
+                self.remove_child(OsStr::from_bytes(&name))?;
+            }
+            Ok(())
+        }
+    }
+
+    pub(crate) fn ensure_dir_nofollow(path: &Path) -> io::Result<()> {
+        DirFd::ensure(path).map(|_| ())
+    }
+
+    pub(crate) fn write_nofollow(path: &Path, bytes: &[u8]) -> io::Result<()> {
+        let parent = parent_or_dot(path)?;
+        let name = file_name(path)?;
+        DirFd::ensure(parent)?.write(name, bytes)
+    }
+
+    pub(crate) fn open_read_nofollow(path: &Path) -> io::Result<File> {
+        let parent = parent_or_dot(path)?;
+        let name = file_name(path)?;
+        let dir = DirFd::open(parent)?;
+        let c = cstring(name)?;
+        let fd = unsafe {
+            libc::openat(
+                dir.raw(),
+                c.as_ptr(),
+                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(unsafe { File::from_raw_fd(fd) })
+    }
+
+    pub(crate) fn remove_tree_nofollow(path: &Path) -> io::Result<()> {
+        let parent = path
+            .parent()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing parent"))?;
+        let name = file_name(path)?;
+        DirFd::open(parent)?.remove_child(name)
+    }
+
+    pub(super) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+        let parent = path
+            .parent()
+            .ok_or_else(|| format!("Cannot determine parent dir of {}", path.display()))?;
+        let name = file_name(path).map_err(|e| format!("Cannot determine file name: {e}"))?;
+        let dir = DirFd::ensure(parent)
+            .map_err(|e| format!("Failed to create {}: {e}", parent.display()))?;
+        let mut last_err = String::from("Failed to create temp file");
+        for _ in 0..16 {
+            let mut tmp_bytes = b".".to_vec();
+            tmp_bytes.extend_from_slice(name.as_bytes());
+            tmp_bytes
+                .extend_from_slice(format!(".tmp-{}", uuid::Uuid::new_v4().simple()).as_bytes());
+            let tmp = std::ffi::OsString::from_vec(tmp_bytes);
+            let mut file = match dir.create_new(&tmp) {
+                Ok(file) => file,
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                    last_err = format!("Failed to create temp file: {e}");
+                    continue;
+                }
+                Err(e) => return Err(format!("Failed to create temp file: {e}")),
+            };
+            if let Err(e) = file.write_all(bytes).and_then(|_| file.sync_all()) {
+                drop(file);
+                let _ = dir.unlink_file(&tmp);
+                return Err(format!("Failed to write temp file: {e}"));
+            }
+            drop(file);
+            match dir.rename_replace(&tmp, name) {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    let _ = dir.unlink_file(&tmp);
+                    return Err(format!("Failed to replace {}: {e}", path.display()));
+                }
+            }
+        }
+        Err(last_err)
+    }
+
+    fn parent_or_dot(path: &Path) -> io::Result<&Path> {
+        match path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => Ok(parent),
+            Some(_) => Ok(Path::new(".")),
+            None => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "missing parent",
+            )),
+        }
+    }
+
+    fn file_name(path: &Path) -> io::Result<&OsStr> {
+        path.file_name()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing file name"))
+    }
+
+    fn walk(path: &Path, create: bool) -> io::Result<DirFd> {
+        let path = absolute(path)?;
+        let mut dir = open_root()?;
+        let mut logical = PathBuf::from("/");
+        for comp in path.components() {
+            match comp {
+                Component::RootDir => {}
+                Component::Prefix(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "path prefix is not supported",
+                    ));
+                }
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    dir = dir.open_child(OsStr::new("..")).map_err(|err| {
+                        if is_eloop(&err) {
+                            refuse()
+                        } else {
+                            err
+                        }
+                    })?;
+                    logical.pop();
+                    if logical.as_os_str().is_empty() {
+                        logical.push("/");
+                    }
+                }
+                Component::Normal(name) => {
+                    let (next, next_logical) = step(&dir, name, &logical, create)?;
+                    dir = next;
+                    logical = next_logical;
+                }
+            }
+        }
+        Ok(dir)
+    }
+
+    /// macOS publishes `/tmp` and `/var` as symlinks directly under `/`. Those
+    /// are the only ancestor symlinks this walk traverses, by opening the
+    /// canonical directory rather than by a later path lookup. Any other
+    /// ancestor symlink is refused, and a missing component is created with
+    /// `mkdirat` on the already-opened parent.
+    fn step(
+        dir: &DirFd,
+        name: &OsStr,
+        logical: &Path,
+        create: bool,
+    ) -> io::Result<(DirFd, PathBuf)> {
+        match dir.open_child(name) {
+            Ok(next) => {
+                let mut next_logical = logical.to_path_buf();
+                next_logical.push(name);
+                Ok((next, next_logical))
+            }
+            Err(e) if is_eloop(&e) => {
+                if logical != Path::new("/") {
+                    return Err(refuse());
+                }
+                let target = dir.read_link(name)?;
+                let joined = if target.is_absolute() {
+                    target
+                } else {
+                    logical.join(target)
+                };
+                let canon = std::fs::canonicalize(&joined).map_err(|_| refuse())?;
+                let next = walk(&canon, false)?;
+                Ok((next, canon))
+            }
+            Err(e) if create && e.kind() == io::ErrorKind::NotFound => {
+                dir.mkdir(name)?;
+                let next =
+                    dir.open_child(name)
+                        .map_err(|err| if is_eloop(&err) { refuse() } else { err })?;
+                let mut next_logical = logical.to_path_buf();
+                next_logical.push(name);
+                Ok((next, next_logical))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn absolute(path: &Path) -> io::Result<PathBuf> {
+        if path.as_os_str().is_empty() {
+            return std::env::current_dir();
+        }
+        if path.is_absolute() {
+            Ok(path.to_path_buf())
+        } else {
+            Ok(std::env::current_dir()?.join(path))
+        }
+    }
+
+    fn open_root() -> io::Result<DirFd> {
+        let root = CString::new("/")
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "root path"))?;
+        let fd = unsafe {
+            libc::open(
+                root.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(DirFd::from_raw(fd))
+    }
+
+    fn cstring(name: &OsStr) -> io::Result<CString> {
+        CString::new(name.as_bytes())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "name contains NUL"))
+    }
+
+    fn is_eloop(err: &io::Error) -> bool {
+        err.raw_os_error() == Some(libc::ELOOP)
+    }
+
+    fn refuse() -> io::Error {
+        io::Error::new(io::ErrorKind::Other, "refusing to follow symlink")
+    }
+
+    fn clear_errno() {
+        #[cfg(target_os = "macos")]
+        unsafe {
+            *libc::__error() = 0;
+        }
+        #[cfg(not(target_os = "macos"))]
+        unsafe {
+            *libc::__errno_location() = 0;
+        }
+    }
+
+    fn errno_get() -> i32 {
+        #[cfg(target_os = "macos")]
+        unsafe {
+            *libc::__error()
+        }
+        #[cfg(not(target_os = "macos"))]
+        unsafe {
+            *libc::__errno_location()
+        }
+    }
+
+    fn read_names(dirp: *mut libc::DIR) -> io::Result<Vec<Vec<u8>>> {
+        let mut names = Vec::new();
+        loop {
+            clear_errno();
+            let ent = unsafe { libc::readdir(dirp) };
+            if ent.is_null() {
+                if errno_get() == 0 {
+                    break;
+                }
+                return Err(io::Error::last_os_error());
+            }
+            let bytes = unsafe { std::ffi::CStr::from_ptr((*ent).d_name.as_ptr()) }.to_bytes();
+            if bytes == b"." || bytes == b".." {
+                continue;
+            }
+            names.push(bytes.to_vec());
+        }
+        Ok(names)
+    }
+}
+
+#[cfg(not(unix))]
+mod nofollow {
+    use std::ffi::OsStr;
+    use std::fs::{self, File};
+    use std::io::{self, Write};
+    use std::path::{Path, PathBuf};
+
+    pub(crate) struct DirFd {
+        path: PathBuf,
+    }
+
+    impl DirFd {
+        pub(crate) fn open(path: &Path) -> io::Result<Self> {
+            if path.is_dir() {
+                Ok(Self {
+                    path: path.to_path_buf(),
+                })
+            } else {
+                Err(io::Error::new(io::ErrorKind::NotFound, "not a directory"))
+            }
+        }
+
+        pub(crate) fn ensure(path: &Path) -> io::Result<Self> {
+            fs::create_dir_all(path)?;
+            Ok(Self {
+                path: path.to_path_buf(),
+            })
+        }
+
+        pub(crate) fn subdir(&self, name: &OsStr) -> io::Result<Self> {
+            let path = self.path.join(name);
+            fs::create_dir_all(&path)?;
+            Ok(Self { path })
+        }
+
+        pub(crate) fn write(&self, name: &OsStr, bytes: &[u8]) -> io::Result<()> {
+            let mut file = File::create(self.path.join(name))?;
+            file.write_all(bytes)?;
+            file.sync_all()?;
+            Ok(())
+        }
+
+        pub(crate) fn create_new(&self, name: &OsStr) -> io::Result<File> {
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(self.path.join(name))
+        }
+
+        pub(crate) fn unlink_file(&self, name: &OsStr) -> io::Result<()> {
+            fs::remove_file(self.path.join(name))
+        }
+
+        pub(crate) fn rename_replace(&self, from: &OsStr, to: &OsStr) -> io::Result<()> {
+            let tmp = self.path.join(from);
+            let dest = self.path.join(to);
+            match fs::rename(&tmp, &dest) {
+                Ok(()) => Ok(()),
+                Err(e) => {
+                    let is_link = fs::symlink_metadata(&dest)
+                        .map(|m| m.file_type().is_symlink())
+                        .unwrap_or(false);
+                    if !is_link {
+                        return Err(e);
+                    }
+                    fs::remove_file(&dest)?;
+                    fs::rename(&tmp, &dest)
+                }
+            }
+        }
+    }
+
+    pub(crate) fn ensure_dir_nofollow(path: &Path) -> io::Result<()> {
+        DirFd::ensure(path).map(|_| ())
+    }
+
+    pub(crate) fn write_nofollow(path: &Path, bytes: &[u8]) -> io::Result<()> {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent)?;
+            }
+        }
+        fs::write(path, bytes)
+    }
+
+    pub(crate) fn open_read_nofollow(path: &Path) -> io::Result<File> {
+        File::open(path)
+    }
+
+    pub(crate) fn remove_tree_nofollow(path: &Path) -> io::Result<()> {
+        fs::remove_dir_all(path)
+    }
+
+    pub(super) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+        let parent = path
+            .parent()
+            .ok_or_else(|| format!("Cannot determine parent dir of {}", path.display()))?;
+        let dir = DirFd::ensure(parent)
+            .map_err(|e| format!("Failed to create {}: {e}", parent.display()))?;
+        let name = path
+            .file_name()
+            .map(|n| n.to_os_string())
+            .unwrap_or_else(|| "file".into());
+        let mut last_err = String::from("Failed to create temp file");
+        for _ in 0..16 {
+            let tmp_name = format!(
+                ".{}.tmp-{}",
+                name.to_string_lossy(),
+                uuid::Uuid::new_v4().simple()
+            );
+            let tmp = OsStr::new(&tmp_name);
+            let mut file = match dir.create_new(tmp) {
+                Ok(file) => file,
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                    last_err = format!("Failed to create temp file: {e}");
+                    continue;
+                }
+                Err(e) => return Err(format!("Failed to create temp file: {e}")),
+            };
+            if let Err(e) = file.write_all(bytes).and_then(|_| file.sync_all()) {
+                drop(file);
+                let _ = dir.unlink_file(tmp);
+                return Err(format!("Failed to write temp file: {e}"));
+            }
+            drop(file);
+            match dir.rename_replace(tmp, &name) {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    let _ = dir.unlink_file(tmp);
+                    return Err(format!("Failed to replace {}: {e}", path.display()));
+                }
+            }
+        }
+        Err(last_err)
+    }
 }
 
 #[cfg(test)]
@@ -525,5 +1099,147 @@ mod tests {
         assert!(dest.starts_with(root.join(".prism").join("mcp-backups")));
         assert_eq!(std::fs::read_to_string(dest).unwrap(), "old");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn adversarial_atomic_parent_symlink_is_not_followed() {
+        let root = tmpdir("adv-atomic-parent");
+        let outside = tmpdir("adv-atomic-parent-out");
+        std::fs::write(outside.join("secret.txt"), b"original").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("parentlink")).unwrap();
+        let existing = root.join("parentlink").join("secret.txt");
+        let existing_result = atomic_write(&existing, b"pwned");
+        assert_eq!(
+            std::fs::read(outside.join("secret.txt")).unwrap(),
+            b"original",
+            "parent symlink was followed onto an existing file; write={existing_result:?}"
+        );
+        let fresh = root.join("parentlink").join("brand-new.txt");
+        let fresh_result = atomic_write(&fresh, b"pwned");
+        assert!(
+            !outside.join("brand-new.txt").exists(),
+            "parent symlink was followed for a new file; write={fresh_result:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn adversarial_atomic_ancestor_symlink_is_not_followed() {
+        let root = tmpdir("adv-atomic-anc");
+        let outside = tmpdir("adv-atomic-anc-out");
+        std::fs::write(outside.join("secret.txt"), b"original").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+        let dest = root.join("link").join("newdir").join("file.txt");
+        let result = atomic_write(&dest, b"pwned");
+        assert!(
+            !outside.join("newdir").exists(),
+            "ancestor symlink was followed; write={result:?} tree={:?}",
+            std::fs::read_dir(&outside)
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            std::fs::read(outside.join("secret.txt")).unwrap(),
+            b"original"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[cfg(unix)]
+    fn flip_component_case(path: &Path, component: &std::ffi::OsStr) -> PathBuf {
+        let mut out = PathBuf::new();
+        for c in path.components() {
+            match c {
+                Component::Normal(name) if name == component => {
+                    let flipped: String = name
+                        .to_string_lossy()
+                        .chars()
+                        .map(|ch| {
+                            if ch.is_ascii_lowercase() {
+                                ch.to_ascii_uppercase()
+                            } else if ch.is_ascii_uppercase() {
+                                ch.to_ascii_lowercase()
+                            } else {
+                                ch
+                            }
+                        })
+                        .collect();
+                    out.push(flipped);
+                }
+                Component::Normal(name) => out.push(name),
+                Component::RootDir => out.push("/"),
+                Component::CurDir => out.push("."),
+                Component::ParentDir => out.push(".."),
+                Component::Prefix(prefix) => out.push(prefix.as_os_str()),
+            }
+        }
+        out
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn adversarial_confine_dot_slash_sibling_and_case() {
+        let base = tmpdir("adv-comp");
+        let root = base.join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("secret.txt"), b"inside").unwrap();
+
+        assert_eq!(
+            confine(&root, "./secret.txt").unwrap(),
+            root.join("secret.txt")
+        );
+        assert!(confine(&root, "secret.txt/").is_ok());
+        let abs_dot = root.join(".").join("secret.txt");
+        assert!(
+            confine(&root, abs_dot.to_str().unwrap()).is_ok(),
+            "absolute dot child refused"
+        );
+        assert!(confine(&root, "/proj-secret").is_err());
+        assert!(confine(&root, "/a/cv-private").is_err());
+
+        let proj_secret = base.join("proj-secret");
+        std::fs::create_dir_all(&proj_secret).unwrap();
+        std::fs::write(proj_secret.join("secret.txt"), b"nope").unwrap();
+        assert!(confine(&root, proj_secret.to_str().unwrap()).is_err());
+
+        let cv = base.join("a").join("cv");
+        let cv_private = base.join("a").join("cv-private");
+        std::fs::create_dir_all(&cv).unwrap();
+        std::fs::create_dir_all(&cv_private).unwrap();
+        std::fs::write(cv_private.join("secret.txt"), b"nope").unwrap();
+        assert!(confine(&cv, cv_private.to_str().unwrap()).is_err());
+
+        #[cfg(not(target_os = "linux"))]
+        assert!(
+            confine(&root, "SECRET.TXT").is_ok(),
+            "case-only relative child refused"
+        );
+
+        let flipped = flip_component_case(&root.join("secret.txt"), root.file_name().unwrap());
+        #[cfg(not(target_os = "linux"))]
+        {
+            assert!(
+                flipped.exists(),
+                "case-variant path did not resolve on this volume: {}",
+                flipped.display()
+            );
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(
+                std::fs::metadata(root.join("secret.txt")).unwrap().ino(),
+                std::fs::metadata(&flipped).unwrap().ino()
+            );
+            let got = confine(&root, flipped.to_str().unwrap());
+            assert!(
+                got.is_ok(),
+                "real child refused (same inode, different component case): path={} err={got:?}",
+                flipped.display()
+            );
+        }
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

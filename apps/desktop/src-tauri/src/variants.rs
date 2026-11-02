@@ -17,7 +17,10 @@
 //! project is always derivable from a variant's path, which keeps switching
 //! stateless.
 
-use crate::plugins::path_guard::path_is_within;
+use crate::plugins::path_guard::{
+    ensure_dir_nofollow, open_read_nofollow, path_is_within, remove_tree_nofollow, write_nofollow,
+    DirFd,
+};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
@@ -265,16 +268,26 @@ const COPY_MAX_BYTES: u64 = 32 * 1024 * 1024;
 /// sibling variants — and common heavy non-source dirs.
 ///
 /// Symlinks are not followed (a link to a directory is not a directory here).
-/// Depth, entry count, and total bytes are capped.
+/// The destination is created and written through a no-follow directory fd, so
+/// a symlink swapped into an ancestor after the path check cannot receive the
+/// copy. Depth, entry count, and total bytes are capped.
 fn copy_master_tree(src: &Path, dst: &Path) -> io::Result<()> {
+    let src_meta = fs::symlink_metadata(src)?;
+    if src_meta.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "refusing to follow symlink while copying master tree",
+        ));
+    }
+    let dst_fd = DirFd::ensure(dst)?;
     let mut entries = 0usize;
     let mut bytes = 0u64;
-    copy_master_tree_inner(src, dst, 0, &mut entries, &mut bytes)
+    copy_master_tree_inner(src, &dst_fd, 0, &mut entries, &mut bytes)
 }
 
 fn copy_master_tree_inner(
     src: &Path,
-    dst: &Path,
+    dst: &DirFd,
     depth: usize,
     entries: &mut usize,
     bytes: &mut u64,
@@ -292,7 +305,6 @@ fn copy_master_tree_inner(
             "refusing to follow symlink while copying master tree",
         ));
     }
-    fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {
         let entry = entry?;
         *entries += 1;
@@ -320,7 +332,15 @@ fn copy_master_tree_inner(
             {
                 continue;
             }
-            copy_master_tree_inner(&src_path, &dst.join(&name), depth + 1, entries, bytes)?;
+            // The next level would exceed the cap. Do not create it.
+            if depth >= COPY_MAX_DEPTH {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "copy loop cap exceeded",
+                ));
+            }
+            let child = dst.subdir(&name)?;
+            copy_master_tree_inner(&src_path, &child, depth + 1, entries, bytes)?;
         } else if ft.is_file() {
             let len = fs::symlink_metadata(&src_path)?.len();
             if bytes.saturating_add(len) > COPY_MAX_BYTES {
@@ -330,7 +350,9 @@ fn copy_master_tree_inner(
                 ));
             }
             *bytes += len;
-            fs::copy(&src_path, &dst.join(&name))?;
+            let mut input = open_read_nofollow(&src_path)?;
+            let mut output = dst.create_new(&name)?;
+            io::copy(&mut input, &mut output)?;
         }
     }
     Ok(())
@@ -363,13 +385,10 @@ fn read_manifest(variant_dir: &Path) -> VariantManifest {
 
 fn write_manifest(variant_dir: &Path, manifest: &VariantManifest) -> Result<(), String> {
     let path = manifest_path(variant_dir);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create variant metadata dir: {}", e))?;
-    }
     let raw = serde_json::to_string_pretty(manifest)
         .map_err(|e| format!("Failed to serialize variant manifest: {}", e))?;
-    fs::write(&path, raw).map_err(|e| format!("Failed to write variant manifest: {}", e))?;
+    write_nofollow(&path, raw.as_bytes())
+        .map_err(|e| format!("Failed to write variant manifest: {}", e))?;
     // Migrate away from the old visible location so it stops cluttering the tree.
     let legacy = legacy_manifest_path(variant_dir);
     if legacy.is_file() {
@@ -414,13 +433,21 @@ fn read_jd(variant_dir: &Path) -> String {
 fn write_jd(variant_dir: &Path, jd: &str) -> Result<(), String> {
     let path = jd_path(variant_dir);
     if jd.trim().is_empty() {
-        if path.is_file() {
-            fs::remove_file(&path)
-                .map_err(|e| format!("Failed to clear job description: {}", e))?;
+        if let (Some(parent), Some(name)) = (path.parent(), path.file_name()) {
+            match DirFd::open(parent) {
+                Ok(dir) => match dir.unlink_file(name) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(format!("Failed to clear job description: {}", e)),
+                },
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(format!("Failed to clear job description: {}", e)),
+            }
         }
         return Ok(());
     }
-    fs::write(&path, jd).map_err(|e| format!("Failed to write job description: {}", e))
+    write_nofollow(&path, jd.as_bytes())
+        .map_err(|e| format!("Failed to write job description: {}", e))
 }
 
 fn info_from_dir(slug: &str, variant_dir: &Path) -> VariantInfo {
@@ -550,13 +577,13 @@ pub(crate) fn create_variant_extended_blocking(
         return Err("Project folder no longer exists.".to_string());
     }
     let dir = variants_dir(&owner);
-    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create variants folder: {}", e))?;
+    ensure_dir_nofollow(&dir).map_err(|e| format!("Failed to create variants folder: {}", e))?;
 
     let slug = unique_slug(&dir, &slugify(name));
     let variant_dir = dir.join(&slug);
 
     if let Err(err) = copy_master_tree(&owner, &variant_dir) {
-        let _ = fs::remove_dir_all(&variant_dir);
+        let _ = remove_tree_nofollow(&variant_dir);
         return Err(format!("Failed to copy the master document: {}", err));
     }
 
@@ -588,7 +615,7 @@ pub(crate) fn create_variant_extended_blocking(
     };
     let written = write_manifest(&variant_dir, &manifest).and_then(|_| write_jd(&variant_dir, jd));
     if let Err(err) = written {
-        let _ = fs::remove_dir_all(&variant_dir);
+        let _ = remove_tree_nofollow(&variant_dir);
         return Err(err);
     }
 
@@ -599,9 +626,11 @@ pub(crate) fn create_variant_extended_blocking(
             "variantSlug": &slug,
             "runs": []
         });
-        let _ = fs::write(
-            log_path,
-            serde_json::to_string_pretty(&default_log).unwrap_or_default(),
+        let _ = write_nofollow(
+            &log_path,
+            serde_json::to_string_pretty(&default_log)
+                .unwrap_or_default()
+                .as_bytes(),
         );
     }
 
@@ -627,9 +656,11 @@ pub(crate) fn create_variant_extended_blocking(
                 "score": 100
             }
         });
-        let _ = fs::write(
-            ats_path,
-            serde_json::to_string_pretty(&default_ats).unwrap_or_default(),
+        let _ = write_nofollow(
+            &ats_path,
+            serde_json::to_string_pretty(&default_ats)
+                .unwrap_or_default()
+                .as_bytes(),
         );
     }
 
@@ -1395,5 +1426,46 @@ mod tests {
             "expected size cap, got {err}"
         );
         assert!(!tmp.path().join("dst-big").join("big.bin").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn adversarial_variant_toctou_symlink_swap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let owner = tmp.path().join("proj");
+        let outside = tmp.path().join("outside");
+        fs::create_dir_all(&owner).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(owner.join("main.tex"), b"master-bytes").unwrap();
+        fs::write(outside.join("secret.txt"), b"secret").unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let spinner = std::thread::spawn({
+            let (owner, outside, stop) = (owner.clone(), outside.clone(), stop.clone());
+            move || {
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let prism = owner.join(".prism");
+                    let _ = fs::remove_dir_all(&prism);
+                    let _ = fs::remove_file(&prism);
+                    let _ = std::os::unix::fs::symlink(&outside, &prism);
+                }
+            }
+        });
+        for _ in 0..400 {
+            let _ = create_variant_blocking(&owner.to_string_lossy(), "Acme", "jd", "draft");
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        spinner.join().unwrap();
+        assert!(
+            !outside.join("variants").exists(),
+            "TOCTOU planted .prism symlink was followed; outside={:?}",
+            fs::read_dir(&outside)
+                .map(|rd| {
+                    rd.filter_map(|e| e.ok())
+                        .map(|e| e.file_name())
+                        .collect::<Vec<_>>()
+                })
+                .ok()
+        );
+        assert_eq!(fs::read(outside.join("secret.txt")).unwrap(), b"secret");
     }
 }

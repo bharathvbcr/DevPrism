@@ -274,6 +274,7 @@ async fn finish_cursor_print_child(
     cancel_flag: Option<&AtomicBool>,
     cancel_notify: Option<&Notify>,
 ) -> Result<String, String> {
+    let _stderr_drain = crate::claude::start_print_stderr_drain(child.stderr.take());
     let stdout = child
         .stdout
         .take()
@@ -788,5 +789,56 @@ mod tests {
         );
         assert!(err.contains("bad"), "status error missing stdout: {err}");
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cred_cursor_hello_not_lost_to_unread_stderr() {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args([
+            "-c",
+            "printf hello; exec 1>&-; dd if=/dev/zero bs=1024 count=1024 of=/dev/stderr status=none; exit 0",
+        ]);
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        cmd.stdin(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().expect("hello");
+        let child_pid = child.id().expect("child pid") as i32;
+        let started = std::time::Instant::now();
+        let bounded = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            finish_cursor_print_child(
+                &mut child,
+                std::time::Duration::from_secs(2),
+                None,
+                None,
+            ),
+        )
+        .await;
+        let result = match bounded {
+            Ok(result) => result,
+            Err(_) => {
+                cred_kill_pid(child_pid);
+                for pid in crate::claude::direct_child_pids(child_pid) {
+                    cred_kill_pid(pid);
+                }
+                panic!("finish_cursor_print_child hung past the outer bound");
+            }
+        };
+        if cred_process_running(child_pid) {
+            cred_kill_pid(child_pid);
+        }
+        let text = result.expect("stdout already read must not become a timeout");
+        assert_eq!(text, "hello");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "hello plus a full stderr pipe took {:?}",
+            started.elapsed()
+        );
+        assert!(
+            !text.contains("E_CLI_TIMEOUT"),
+            "stderr backpressure became a timeout"
+        );
     }
 }

@@ -3801,6 +3801,36 @@ fn kill_spawned_descendants(pid: u32) {
     }
 }
 
+/// Discards piped stderr so a full pipe cannot stall `wait` after stdout is done.
+/// Drop aborts the task. Dropping the `JoinHandle` alone would detach it.
+pub(crate) struct PrintStderrDrain {
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for PrintStderrDrain {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+pub(crate) fn start_print_stderr_drain(
+    stderr: Option<tokio::process::ChildStderr>,
+) -> Option<PrintStderrDrain> {
+    let stderr = stderr?;
+    let task = tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let mut reader = tokio::io::BufReader::new(stderr);
+        let mut chunk = [0u8; 8192];
+        loop {
+            match reader.read(&mut chunk).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
+    });
+    Some(PrintStderrDrain { task })
+}
+
 pub(crate) async fn stop_print_child(child: &mut tokio::process::Child) {
     #[cfg(unix)]
     if let Some(pid) = child.id() {
@@ -3820,6 +3850,7 @@ async fn finish_claude_print_child(
     use tokio::io::AsyncWriteExt;
 
     let mut stdin = child.stdin.take();
+    let _stderr_drain = start_print_stderr_drain(child.stderr.take());
     let stdout = child
         .stdout
         .take()
@@ -7679,6 +7710,59 @@ mod tests {
         assert!(
             elapsed < std::time::Duration::from_secs(8),
             "8MiB unread stdin took {elapsed:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cred_claude_hello_not_lost_to_unread_stderr() {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args([
+            "-c",
+            "printf hello; exec 1>&-; dd if=/dev/zero bs=1024 count=1024 of=/dev/stderr status=none; exit 0",
+        ]);
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        cmd.stdin(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().expect("hello");
+        let child_pid = child.id().expect("child pid") as i32;
+        let started = std::time::Instant::now();
+        let bounded = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            finish_claude_print_child(
+                &mut child,
+                None,
+                std::time::Duration::from_secs(2),
+                None,
+                None,
+                1024 * 1024,
+            ),
+        )
+        .await;
+        let result = match bounded {
+            Ok(result) => result,
+            Err(_) => {
+                adv3_kill_pid(child_pid);
+                for pid in direct_child_pids(child_pid) {
+                    adv3_kill_pid(pid);
+                }
+                panic!("finish_claude_print_child hung past the outer bound");
+            }
+        };
+        if adv3_process_running(child_pid) {
+            adv3_kill_pid(child_pid);
+        }
+        let text = result.expect("stdout already read must not become a timeout");
+        assert_eq!(text, "hello");
+        assert!(
+            !text.contains("E_CLI_TIMEOUT"),
+            "stderr backpressure became a timeout: {text}"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "hello plus a full stderr pipe took {:?}",
+            started.elapsed()
         );
     }
 }

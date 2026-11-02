@@ -45,6 +45,7 @@ pub struct ZoteroOAuthResult {
 
 pub struct ZoteroOAuthPending {
     listener: TcpListener,
+    request_token: String,
     request_token_secret: String,
 }
 
@@ -131,15 +132,80 @@ fn build_auth_header(params: &[(String, String)]) -> String {
     format!("OAuth {}", parts.join(", "))
 }
 
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                let hi = from_hex(bytes[i + 1]);
+                let lo = from_hex(bytes[i + 2]);
+                if let (Some(hi), Some(lo)) = (hi, lo) {
+                    out.push((hi << 4) | lo);
+                    i += 3;
+                } else {
+                    out.push(b'%');
+                    i += 1;
+                }
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(out).unwrap_or_else(|_| input.to_string())
+}
+
+fn from_hex(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 fn parse_form_urlencoded(body: &str) -> HashMap<String, String> {
     body.split('&')
         .filter_map(|pair| {
+            if pair.is_empty() {
+                return None;
+            }
             let mut parts = pair.splitn(2, '=');
             let key = parts.next()?;
             let value = parts.next().unwrap_or("");
-            Some((key.to_string(), value.to_string()))
+            Some((percent_decode(key), percent_decode(value)))
         })
         .collect()
+}
+
+/// A callback is `GET /callback` whose decoded `oauth_token` equals the
+/// request token from this flow. Anything else is not the callback.
+fn callback_from_http(request: &str, expected_token: &str) -> Option<(String, String)> {
+    let first_line = request.lines().next().unwrap_or("");
+    let mut parts = first_line.split_whitespace();
+    let method = parts.next().unwrap_or("");
+    let target = parts.next().unwrap_or("");
+    if !method.eq_ignore_ascii_case("GET") {
+        return None;
+    }
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    if path != "/callback" {
+        return None;
+    }
+    let params = parse_form_urlencoded(query);
+    let token = params.get("oauth_token")?.clone();
+    let verifier = params.get("oauth_verifier")?.clone();
+    if token.is_empty() || verifier.is_empty() || token != expected_token {
+        return None;
+    }
+    Some((token, verifier))
 }
 
 // ─── OAuth Flow Steps ───
@@ -200,10 +266,13 @@ async fn request_token(callback_url: &str) -> Result<(String, String), String> {
     Ok((token, secret))
 }
 
-async fn wait_for_callback(listener: TcpListener) -> Result<(String, String), String> {
+async fn wait_for_callback(
+    listener: TcpListener,
+    expected_token: &str,
+) -> Result<(String, String), String> {
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(120),
-        accept_callback(listener),
+        accept_callback(listener, expected_token),
     )
     .await;
 
@@ -213,44 +282,47 @@ async fn wait_for_callback(listener: TcpListener) -> Result<(String, String), St
     }
 }
 
-async fn accept_callback(listener: TcpListener) -> Result<(String, String), String> {
-    let (mut stream, _) = listener
-        .accept()
-        .await
-        .map_err(|e| format!("Accept failed: {}", e))?;
+/// Keep accepting until the request is the OAuth callback for `expected_token`.
+/// A stray connection (wrong path, wrong or missing token) is answered and
+/// ignored so it does not abort the wait.
+async fn accept_callback(
+    listener: TcpListener,
+    expected_token: &str,
+) -> Result<(String, String), String> {
+    const MAX_STRAY_OAUTH_CONNECTIONS: usize = 32;
+    let mut stray = 0usize;
+    loop {
+        if stray > MAX_STRAY_OAUTH_CONNECTIONS {
+            return Err("OAuth callback received too many non-matching connections".into());
+        }
+        let (mut stream, _) = listener
+            .accept()
+            .await
+            .map_err(|e| format!("Accept failed: {}", e))?;
 
-    let mut buf = vec![0u8; 4096];
-    let n = stream
-        .read(&mut buf)
-        .await
-        .map_err(|e| format!("Read failed: {}", e))?;
-    let request = String::from_utf8_lossy(buf.get(..n).unwrap_or(&buf));
-
-    // Parse: GET /callback?oauth_token=xxx&oauth_verifier=yyy HTTP/1.1
-    let first_line = request.lines().next().unwrap_or("");
-    let path = first_line.split_whitespace().nth(1).unwrap_or("");
-    let query = path.split('?').nth(1).unwrap_or("");
-    let params = parse_form_urlencoded(query);
-
-    // Respond with success page
-    let html = r#"<!DOCTYPE html><html><body style="font-family:system-ui;text-align:center;padding:60px"><h2>Connected to Zotero!</h2><p style="color:#666">You can close this tab and return to DevPrism.</p><script>setTimeout(()=>window.close(),1500)</script></body></html>"#;
-    let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        html.len(),
-        html
-    );
-    let _ = stream.write_all(response.as_bytes()).await;
-
-    let token = params
-        .get("oauth_token")
-        .cloned()
-        .ok_or("Missing oauth_token in callback")?;
-    let verifier = params
-        .get("oauth_verifier")
-        .cloned()
-        .ok_or("Missing oauth_verifier in callback")?;
-
-    Ok((token, verifier))
+        let mut buf = vec![0u8; 4096];
+        let n = match stream.read(&mut buf).await {
+            Ok(n) => n,
+            Err(_) => {
+                stray += 1;
+                continue;
+            }
+        };
+        let request = String::from_utf8_lossy(buf.get(..n).unwrap_or(&buf));
+        if let Some((token, verifier)) = callback_from_http(&request, expected_token) {
+            let html = r#"<!DOCTYPE html><html><body style="font-family:system-ui;text-align:center;padding:60px"><h2>Connected to Zotero!</h2><p style="color:#666">You can close this tab and return to DevPrism.</p><script>setTimeout(()=>window.close(),1500)</script></body></html>"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                html.len(),
+                html
+            );
+            let _ = stream.write_all(response.as_bytes()).await;
+            return Ok((token, verifier));
+        }
+        let miss = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        let _ = stream.write_all(miss.as_bytes()).await;
+        stray += 1;
+    }
 }
 
 async fn access_token(
@@ -337,12 +409,14 @@ pub async fn zotero_start_oauth(
     // Build authorize URL
     let authorize_url = format!(
         "{}?oauth_token={}&name=DevPrism&library_access=1&notes_access=0&write_access=0&all_groups=read",
-        AUTHORIZE_URL, token
+        AUTHORIZE_URL,
+        percent_encode(&token)
     );
 
     // Store pending state
     *state.lock().await = Some(ZoteroOAuthPending {
         listener,
+        request_token: token,
         request_token_secret: secret,
     });
 
@@ -360,7 +434,8 @@ pub async fn zotero_complete_oauth(
         .ok_or("No pending OAuth flow. Call zotero_start_oauth first.")?;
 
     // Wait for the callback from Zotero
-    let (oauth_token, oauth_verifier) = wait_for_callback(pending.listener).await?;
+    let (oauth_token, oauth_verifier) =
+        wait_for_callback(pending.listener, &pending.request_token).await?;
 
     // Exchange for access token
     access_token(&oauth_token, &pending.request_token_secret, &oauth_verifier).await
@@ -375,6 +450,7 @@ pub async fn zotero_cancel_oauth(state: tauri::State<'_, ZoteroOAuthState>) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[test]
     fn test_percent_encode_unreserved() {
@@ -487,9 +563,58 @@ mod tests {
     #[test]
     fn test_parse_form_urlencoded_empty_string() {
         let result = parse_form_urlencoded("");
-        // Empty string splits into [""] — splitn(2, '=') on "" yields key="" with no '=',
-        // so value defaults to "" and we get one entry: ("", "")
-        assert_eq!(result.len(), 1);
-        assert_eq!(result.get("").unwrap(), "");
+        // An empty body is not a pair. (A lone empty pair used to be inserted.)
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn callback_matches_percent_encoded_oauth_token() {
+        let expected = "tok/en with space";
+        let query_token = percent_encode(expected);
+        let request =
+            format!("GET /callback?oauth_token={query_token}&oauth_verifier=ver%2B1 HTTP/1.1\r\n");
+        let (token, verifier) = callback_from_http(&request, expected).unwrap();
+        assert_eq!(token, expected);
+        assert_eq!(verifier, "ver+1");
+        assert!(callback_from_http(&request, "other-token").is_none());
+        assert!(callback_from_http("GET / HTTP/1.1\r\n", expected).is_none());
+        assert!(
+            callback_from_http("GET /callback?oauth_verifier=only HTTP/1.1\r\n", expected)
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn stray_connection_does_not_abort_oauth_wait() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let expected = "tok/en";
+        let encoded = percent_encode(expected);
+        let task = tokio::spawn(async move { accept_callback(listener, expected).await });
+
+        let mut stray = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        stray
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut buf = [0u8; 128];
+        let n = stray.read(&mut buf).await.unwrap();
+        assert!(std::str::from_utf8(&buf[..n]).unwrap().contains("404"));
+        drop(stray);
+
+        let mut real = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        let body = format!(
+            "GET /callback?oauth_token={encoded}&oauth_verifier=ver HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+        );
+        real.write_all(body.as_bytes()).await.unwrap();
+        let _ = real.read(&mut buf).await;
+
+        let (token, verifier) = task.await.unwrap().unwrap();
+        assert_eq!(token, expected);
+        assert_eq!(verifier, "ver");
     }
 }

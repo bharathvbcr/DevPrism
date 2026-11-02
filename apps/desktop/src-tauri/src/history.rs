@@ -58,7 +58,51 @@ fn history_path(project_root: &str) -> PathBuf {
 
 fn open_repo(project_root: &str) -> Result<Repository, String> {
     let git_dir = history_path(project_root);
-    Repository::open(&git_dir).map_err(|e| format!("Failed to open history repo: {}", e))
+    let repo =
+        Repository::open(&git_dir).map_err(|e| format!("Failed to open history repo: {}", e))?;
+    ensure_history_workdir_confined(&repo, Path::new(project_root))?;
+    Ok(repo)
+}
+
+/// A planted `history.git` can set `core.worktree` (or be a gitlink whose
+/// repository does) to a directory outside the project. Libgit2 would then
+/// add and check out that tree. Refuse before any worktree operation.
+fn ensure_history_workdir_confined(repo: &Repository, project_root: &Path) -> Result<(), String> {
+    let real_root = crate::plugins::path_guard::canonicalize_existing(project_root)
+        .ok_or_else(|| "history repo refused: project root is unavailable".to_string())?;
+    if let Some(configured) = local_core_worktree(repo) {
+        let configured_path = PathBuf::from(&configured);
+        let absolute = if configured_path.is_absolute() {
+            configured_path
+        } else {
+            repo.path().join(configured_path)
+        };
+        let real = crate::plugins::path_guard::canonicalize_existing(&absolute).unwrap_or(absolute);
+        if !crate::plugins::path_guard::path_is_within(&real, &real_root) {
+            return Err(
+                "history.git core.worktree points outside the project; refusing to follow it"
+                    .to_string(),
+            );
+        }
+    }
+    if let Some(workdir) = repo.workdir() {
+        let real = crate::plugins::path_guard::canonicalize_existing(workdir)
+            .unwrap_or_else(|| workdir.to_path_buf());
+        if !crate::plugins::path_guard::path_is_within(&real, &real_root) {
+            return Err(
+                "history.git core.worktree points outside the project; refusing to follow it"
+                    .to_string(),
+            );
+        }
+    }
+    Ok(())
+}
+
+/// `core.worktree` from this repository's own config file only. The stacked
+/// config would also see a caller's global gitconfig, which is not this repo.
+fn local_core_worktree(repo: &Repository) -> Option<String> {
+    let cfg = git2::Config::open(&repo.path().join("config")).ok()?;
+    cfg.get_string("core.worktree").ok()
 }
 
 fn default_signature() -> Result<Signature<'static>, String> {
@@ -190,9 +234,11 @@ pub fn history_init_blocking(project_root: String) -> Result<(), String> {
     let git_dir = history_path(&project_root);
 
     if git_dir.exists() {
-        // Already initialized — verify and ensure excludes
+        // Already initialized — verify and ensure excludes. A planted repo whose
+        // worktree leaves the project is refused before excludes or checkout.
         let repo =
             Repository::open(&git_dir).map_err(|e| format!("Corrupt history repo: {}", e))?;
+        ensure_history_workdir_confined(&repo, Path::new(&project_root))?;
         ensure_excludes(&project_root, &repo);
         return Ok(());
     }
@@ -1026,6 +1072,59 @@ mod tests {
         let head = repo.head().unwrap();
         let commit = head.peel_to_commit().unwrap();
         assert!(commit.message().unwrap().contains("[init]"));
+    }
+
+    #[test]
+    fn planted_history_git_outside_worktree_is_refused() {
+        let dir = setup_project(&[("main.tex", "hi")]);
+        let outside = TempDir::new().unwrap();
+        fs::write(outside.path().join("secret.txt"), "do-not-touch").unwrap();
+        let git_dir = dir.path().join(".claudeprism").join("history.git");
+        fs::create_dir_all(&git_dir).unwrap();
+        fs::write(git_dir.join("HEAD"), "ref: refs/heads/master\n").unwrap();
+        fs::create_dir_all(git_dir.join("objects")).unwrap();
+        fs::create_dir_all(git_dir.join("refs").join("heads")).unwrap();
+        let worktree = outside.path().to_string_lossy().replace('\\', "/");
+        fs::write(
+            git_dir.join("config"),
+            format!(
+                "[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tworktree = \"{worktree}\"\n"
+            ),
+        )
+        .unwrap();
+
+        let mut outside_before: Vec<_> = fs::read_dir(outside.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        outside_before.sort();
+
+        let err = match history_snapshot_blocking(root(&dir), "nope".into()) {
+            Err(err) => err,
+            Ok(info) => panic!(
+                "expected worktree refusal, snapshot returned {}",
+                info.as_ref().map(|s| s.id.as_str()).unwrap_or("none")
+            ),
+        };
+        assert!(
+            err.contains("outside the project"),
+            "expected worktree refusal, got {err}"
+        );
+        let err_init = history_init_blocking(root(&dir)).unwrap_err();
+        assert!(
+            err_init.contains("outside the project"),
+            "init followed planted worktree: {err_init}"
+        );
+        assert_eq!(
+            fs::read_to_string(outside.path().join("secret.txt")).unwrap(),
+            "do-not-touch"
+        );
+        let mut outside_after: Vec<_> = fs::read_dir(outside.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        outside_after.sort();
+        assert_eq!(outside_before, outside_after);
     }
 
     #[test]

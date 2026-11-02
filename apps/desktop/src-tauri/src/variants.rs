@@ -17,6 +17,7 @@
 //! project is always derivable from a variant's path, which keeps switching
 //! stateless.
 
+use crate::plugins::path_guard::path_is_within;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
@@ -137,6 +138,70 @@ pub(crate) fn derive_owner_root(project_root: &str) -> PathBuf {
     path.to_path_buf()
 }
 
+/// Refuse a variant owner that is a symlink whose target leaves the directory
+/// that contains the link. An in-project link (target still inside that
+/// parent) is not this escape. Missing owners are left for the caller.
+fn refuse_escaping_owner_symlink(owner: &Path) -> Result<(), String> {
+    let meta = match fs::symlink_metadata(owner) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("Variant owner could not be checked: {e}")),
+    };
+    if !meta.file_type().is_symlink() {
+        return Ok(());
+    }
+    let canon = fs::canonicalize(owner)
+        .map_err(|_| "Variant owner is a symlink that escapes the project.".to_string())?;
+    let Some(parent) = owner.parent().filter(|p| !p.as_os_str().is_empty()) else {
+        return Err("Variant owner is a symlink that escapes the project.".to_string());
+    };
+    let parent_canon = fs::canonicalize(parent)
+        .map_err(|_| "Variant owner is a symlink that escapes the project.".to_string())?;
+    if !path_is_within(&canon, &parent_canon) {
+        return Err("Variant owner is a symlink that escapes the project.".to_string());
+    }
+    Ok(())
+}
+
+/// Walk `path` while it exists. An intermediate symlink whose target is outside
+/// the canonical owner is the same escape as a symlink owner. Stop at the first
+/// missing component.
+fn refuse_escaping_symlink_prefix(path: &Path, owner: &Path) -> Result<(), String> {
+    let Ok(root_canon) = fs::canonicalize(owner) else {
+        return Ok(());
+    };
+    // Only components under the owner. Ancestors such as /tmp -> /private/tmp
+    // are the platform's own links, not a planted escape below the project.
+    let rel = path
+        .strip_prefix(owner)
+        .map_err(|_| "Variant path is outside its owner.".to_string())?;
+    let mut cur = owner.to_path_buf();
+    for component in rel.components() {
+        cur.push(component);
+        let meta = match fs::symlink_metadata(&cur) {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => break,
+            Err(e) => return Err(format!("Variant path could not be checked: {e}")),
+        };
+        if !meta.file_type().is_symlink() {
+            continue;
+        }
+        let canon = fs::canonicalize(&cur)
+            .map_err(|_| "Variant path is a symlink that escapes the project.".to_string())?;
+        if !path_is_within(&canon, &root_canon) {
+            return Err("Variant path is a symlink that escapes the project.".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn checked_owner(project_root: &str) -> Result<PathBuf, String> {
+    let owner = derive_owner_root(project_root);
+    refuse_escaping_owner_symlink(&owner)?;
+    refuse_escaping_symlink_prefix(&variants_dir(&owner), &owner)?;
+    Ok(owner)
+}
+
 fn variants_dir(owner: &Path) -> PathBuf {
     owner.join(".prism").join("variants")
 }
@@ -188,24 +253,83 @@ fn unique_slug(dir: &Path, base: &str) -> String {
     }
 }
 
+/// Hard stop for a symlink cycle or a planted deep tree.
+const COPY_MAX_DEPTH: usize = 64;
+/// Hard stop for a wide tree. Counts every directory entry visited.
+const COPY_MAX_ENTRIES: usize = 20_000;
+/// Hard stop for bytes of regular-file content copied into the variant.
+const COPY_MAX_BYTES: u64 = 32 * 1024 * 1024;
+
 /// Copy the master's source tree into a new variant folder. Skips dot-dirs
 /// (`.prism`, `.claudeprism`, `.git`) — which also prevents recursively copying
 /// sibling variants — and common heavy non-source dirs.
+///
+/// Symlinks are not followed (a link to a directory is not a directory here).
+/// Depth, entry count, and total bytes are capped.
 fn copy_master_tree(src: &Path, dst: &Path) -> io::Result<()> {
+    let mut entries = 0usize;
+    let mut bytes = 0u64;
+    copy_master_tree_inner(src, dst, 0, &mut entries, &mut bytes)
+}
+
+fn copy_master_tree_inner(
+    src: &Path,
+    dst: &Path,
+    depth: usize,
+    entries: &mut usize,
+    bytes: &mut u64,
+) -> io::Result<()> {
+    if depth > COPY_MAX_DEPTH {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "copy loop cap exceeded",
+        ));
+    }
+    let src_meta = fs::symlink_metadata(src)?;
+    if src_meta.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "refusing to follow symlink while copying master tree",
+        ));
+    }
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {
         let entry = entry?;
+        *entries += 1;
+        if *entries > COPY_MAX_ENTRIES {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "copy loop cap exceeded",
+            ));
+        }
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
         let src_path = entry.path();
-        if src_path.is_dir() {
+        let ft = entry.file_type()?;
+        let ft = if ft.is_symlink() || ft.is_dir() || ft.is_file() {
+            ft
+        } else {
+            fs::symlink_metadata(&src_path)?.file_type()
+        };
+        if ft.is_symlink() {
+            continue;
+        }
+        if ft.is_dir() {
             if name_str.starts_with('.')
                 || matches!(name_str.as_ref(), "node_modules" | "target" | "dist")
             {
                 continue;
             }
-            copy_master_tree(&src_path, &dst.join(&name))?;
-        } else {
+            copy_master_tree_inner(&src_path, &dst.join(&name), depth + 1, entries, bytes)?;
+        } else if ft.is_file() {
+            let len = fs::symlink_metadata(&src_path)?.len();
+            if bytes.saturating_add(len) > COPY_MAX_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "copy size cap exceeded",
+                ));
+            }
+            *bytes += len;
             fs::copy(&src_path, &dst.join(&name))?;
         }
     }
@@ -339,7 +463,7 @@ fn info_from_dir(slug: &str, variant_dir: &Path) -> VariantInfo {
 }
 
 pub(crate) fn list_variants_blocking(project_root: &str) -> Result<Vec<VariantInfo>, String> {
-    let owner = derive_owner_root(project_root);
+    let owner = checked_owner(project_root)?;
     let dir = variants_dir(&owner);
     if !dir.is_dir() {
         return Ok(Vec::new());
@@ -372,7 +496,7 @@ pub(crate) fn get_variant_blocking(
     if !is_safe_id(variant_id) {
         return Err("Invalid version id.".to_string());
     }
-    let owner = derive_owner_root(project_root);
+    let owner = checked_owner(project_root)?;
     let variant_dir = variants_dir(&owner).join(variant_id);
     if !variant_dir.is_dir() {
         return Err("That version no longer exists.".to_string());
@@ -421,7 +545,7 @@ pub(crate) fn create_variant_extended_blocking(
             return Err("ATS score must be between 0 and 100.".to_string());
         }
     }
-    let owner = derive_owner_root(project_root);
+    let owner = checked_owner(project_root)?;
     if !owner.is_dir() {
         return Err("Project folder no longer exists.".to_string());
     }
@@ -553,7 +677,7 @@ pub(crate) fn update_variant_extended_blocking(
             return Err("ATS score must be between 0 and 100.".to_string());
         }
     }
-    let owner = derive_owner_root(project_root);
+    let owner = checked_owner(project_root)?;
     let variant_dir = variants_dir(&owner).join(variant_id);
     if !variant_dir.is_dir() {
         return Err("That version no longer exists.".to_string());
@@ -624,7 +748,7 @@ pub(crate) fn delete_variant_blocking(project_root: &str, variant_id: &str) -> R
     if !is_safe_id(variant_id) {
         return Err("Invalid version id.".to_string());
     }
-    let owner = derive_owner_root(project_root);
+    let owner = checked_owner(project_root)?;
     let variant_dir = variants_dir(&owner).join(variant_id);
     if !variant_dir.is_dir() {
         return Ok(()); // already gone — treat as success
@@ -691,7 +815,7 @@ pub(crate) fn diff_variant_blocking(
     if !is_safe_id(variant_id) {
         return Err("Invalid version id.".to_string());
     }
-    let owner = derive_owner_root(project_root);
+    let owner = checked_owner(project_root)?;
     let variant_dir = variants_dir(&owner).join(variant_id);
     if !variant_dir.is_dir() {
         return Err("That version no longer exists.".to_string());
@@ -1192,5 +1316,84 @@ mod tests {
             "legacy"
         );
         assert_eq!(list_variants_blocking(&owner_str).unwrap()[0].jd, "legacy");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn variant_owner_symlink_that_escapes_project_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("proj");
+        fs::create_dir_all(&project).unwrap();
+        let outside = tmp.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("secret.txt"), "secret").unwrap();
+        let owner_link = project.join("owner-link");
+        std::os::unix::fs::symlink(&outside, &owner_link).unwrap();
+
+        let err = create_variant_blocking(&owner_link.to_string_lossy(), "Acme", "jd", "draft")
+            .unwrap_err();
+        assert!(
+            err.contains("escapes the project"),
+            "expected symlink refusal, got {err}"
+        );
+        assert!(!outside.join(".prism").exists());
+        assert_eq!(
+            fs::read_to_string(outside.join("secret.txt")).unwrap(),
+            "secret"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_master_tree_does_not_follow_symlinks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let dst = tmp.path().join("dst");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("main.tex"), "ok").unwrap();
+        let outside = tmp.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("secret.txt"), "secret").unwrap();
+        std::os::unix::fs::symlink(outside.join("secret.txt"), src.join("leak")).unwrap();
+        std::os::unix::fs::symlink(&outside, src.join("subdir-link")).unwrap();
+
+        copy_master_tree(&src, &dst).unwrap();
+        assert_eq!(fs::read_to_string(dst.join("main.tex")).unwrap(), "ok");
+        assert!(!dst.join("leak").exists());
+        assert!(!dst.join("subdir-link").exists());
+        assert_eq!(
+            fs::read_to_string(outside.join("secret.txt")).unwrap(),
+            "secret"
+        );
+    }
+
+    #[test]
+    fn copy_master_tree_enforces_loop_and_size_caps() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        let mut deep = src.clone();
+        for i in 0..=COPY_MAX_DEPTH {
+            deep.push(format!("d{i}"));
+        }
+        fs::create_dir_all(&deep).unwrap();
+        fs::write(deep.join("f.txt"), "x").unwrap();
+        let err = copy_master_tree(&src, &tmp.path().join("dst-deep")).unwrap_err();
+        assert!(
+            err.to_string().contains("loop cap"),
+            "expected loop cap, got {err}"
+        );
+
+        let wide = tmp.path().join("wide");
+        fs::create_dir_all(&wide).unwrap();
+        let big = wide.join("big.bin");
+        let file = fs::File::create(&big).unwrap();
+        file.set_len(COPY_MAX_BYTES + 1).unwrap();
+        let err = copy_master_tree(&wide, &tmp.path().join("dst-big")).unwrap_err();
+        assert!(
+            err.to_string().contains("size cap"),
+            "expected size cap, got {err}"
+        );
+        assert!(!tmp.path().join("dst-big").join("big.bin").exists());
     }
 }

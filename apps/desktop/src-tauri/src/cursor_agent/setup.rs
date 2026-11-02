@@ -209,4 +209,20 @@ mod tests {
         );
         assert_eq!(std::env::var("CURSOR_API_KEY").ok(), before);
     }
+
+    #[test]
+    fn adv_cred_setup_does_not_call_set_var() {
+        let src = include_str!("setup.rs");
+        let prod = src
+            .split("#[cfg(test)]\nmod tests {")
+            .next()
+            .expect("production source");
+        for line in prod.lines() {
+            let code = line.split("//").next().unwrap_or(line);
+            assert!(
+                !code.contains("set_var"),
+                "set_var must be gone from cursor setup: {line}"
+            );
+        }
+    }
 }

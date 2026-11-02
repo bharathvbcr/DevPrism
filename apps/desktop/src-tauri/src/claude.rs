@@ -6695,4 +6695,340 @@ mod tests {
         .expect("fake child result");
         assert_eq!(text, "ok-from-fake");
     }
+
+    fn adv_cred_production_source() -> &'static str {
+        include_str!("claude.rs")
+            .split("#[cfg(test)]\nmod tests {")
+            .next()
+            .expect("production source precedes tests")
+    }
+
+    fn adv_cred_code_without_comments(line: &str) -> &str {
+        line.split("//").next().unwrap_or(line)
+    }
+
+    /// Every Claude argv composition, including ones that do not go through
+    /// `common_claude_args` alone. A later push of the permission-skip flag
+    /// has to show up here or in the production source scan.
+    fn adv_cred_every_claude_argv(cwd: &str) -> Vec<(&'static str, Vec<String>)> {
+        let common = common_claude_args(cwd);
+        let print = claude_print_args(Some("stay on the page"));
+        let (print_transported, _) = with_prompt_transport(print, "prompt-body".to_string());
+        let (mut execute, _) = with_prompt_transport(Vec::new(), "prompt-body".to_string());
+        execute.push("--model".to_string());
+        execute.push("sonnet".to_string());
+        execute.extend(common.clone());
+        let (mut continue_args, _) =
+            with_prompt_transport(vec!["-c".to_string()], "prompt-body".to_string());
+        continue_args.extend(common.clone());
+        let (mut resume_args, _) = with_prompt_transport(
+            vec!["--resume".to_string(), "session-id".to_string()],
+            "prompt-body".to_string(),
+        );
+        resume_args.extend(common.clone());
+        let (mut proxy_args, _) =
+            with_prompt_transport(vec!["-c".to_string()], "prompt-body".to_string());
+        proxy_args.push("--model".to_string());
+        proxy_args.push("sonnet".to_string());
+        proxy_args.extend(common.clone());
+        vec![
+            ("common_claude_args", common),
+            ("complete_claude_print", print_transported),
+            ("execute_claude_code", execute),
+            ("continue_claude_code", continue_args),
+            ("resume_claude_code", resume_args),
+            ("execute_openai_compatible_via_claude_proxy", proxy_args),
+        ]
+    }
+
+    #[test]
+    fn adv_cred_no_argv_builder_passes_skip_permissions() {
+        let cwd = std::env::temp_dir().join("devprism_adv_cred_args");
+        let cwd = cwd.to_str().expect("utf8 temp");
+        for (name, args) in adv_cred_every_claude_argv(cwd) {
+            assert!(
+                !args.iter().any(|arg| arg == "--dangerously-skip-permissions"),
+                "{name} still passes --dangerously-skip-permissions: {args:?}"
+            );
+        }
+        let print = adv_cred_every_claude_argv(cwd)
+            .into_iter()
+            .find(|(name, _)| *name == "complete_claude_print")
+            .expect("print argv")
+            .1;
+        assert!(
+            print
+                .windows(2)
+                .any(|pair| pair[0] == "--tools" && pair[1].is_empty()),
+            "print argv lost the empty --tools value: {print:?}"
+        );
+        for line in adv_cred_production_source().lines() {
+            let code = adv_cred_code_without_comments(line);
+            assert!(
+                !code.contains("dangerously-skip-permissions"),
+                "production argv builder still mentions the flag outside a comment: {line}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn adv_cred_print_empty_tools_survives_process_argv() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script = dir.path().join("dump-argv.sh");
+        let dump = dir.path().join("argv.bin");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf '%s\\0' \"$@\" > \"$DUMP_ARGV\"\n",
+        )
+        .expect("script");
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&script).expect("meta").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).expect("chmod");
+
+        let (_, argv) = adv_cred_every_claude_argv(dir.path().to_str().expect("utf8"))
+            .into_iter()
+            .find(|(name, _)| *name == "complete_claude_print")
+            .expect("print argv");
+        let argv: Vec<String> = argv.iter().map(|arg| strip_nul(arg).into_owned()).collect();
+        let mut cmd = tokio::process::Command::new(&script);
+        cmd.args(&argv);
+        cmd.env("DUMP_ARGV", &dump);
+        cmd.current_dir(dir.path());
+        let status = cmd.status().await.expect("dump argv");
+        assert!(status.success(), "dump script failed");
+        let bytes = std::fs::read(&dump).expect("argv dump");
+        let mut slots: Vec<String> = bytes
+            .split(|byte| *byte == 0)
+            .map(|slot| String::from_utf8(slot.to_vec()).expect("argv utf8"))
+            .collect();
+        if slots.last().is_some_and(|slot| slot.is_empty()) {
+            slots.pop();
+        }
+        assert!(
+            slots
+                .windows(2)
+                .any(|pair| pair[0] == "--tools" && pair[1].is_empty()),
+            "empty --tools value was stripped from the spawned argv: {slots:?}"
+        );
+        assert!(
+            !slots
+                .iter()
+                .any(|arg| arg == "--dangerously-skip-permissions"),
+            "spawned print argv contains the permission-skip flag: {slots:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn adv_cred_unread_stdin_times_out_without_hanging() {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", "exec 1>&-; sleep 3600"]);
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().expect("sleep");
+        let started = std::time::Instant::now();
+        let bounded = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            finish_claude_print_child(
+                &mut child,
+                Some("x".repeat(8 * 1024 * 1024)),
+                std::time::Duration::from_secs(1),
+                None,
+                None,
+                1024 * 1024,
+            ),
+        )
+        .await;
+        let err = match bounded {
+            Ok(result) => result.expect_err("a child that never reads stdin must time out"),
+            Err(_) => panic!("finish_claude_print_child hung past the outer bound"),
+        };
+        assert!(
+            err.contains("E_CLI_TIMEOUT"),
+            "expected a timeout error, got {err}"
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(8));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn adv_cred_short_stdin_write_error_surfaces() {
+        let mut cmd = tokio::process::Command::new("sh");
+        // Read one byte, then close stdin. write_all must surface the short
+        // write / broken pipe instead of waiting out the timeout.
+        cmd.args([
+            "-c",
+            "dd ibs=1 count=1 of=/dev/null 2>/dev/null; exec 0<&-; sleep 3600",
+        ]);
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().expect("sh");
+        let bounded = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            finish_claude_print_child(
+                &mut child,
+                Some("y".repeat(256 * 1024)),
+                std::time::Duration::from_secs(5),
+                None,
+                None,
+                1024 * 1024,
+            ),
+        )
+        .await;
+        let err = match bounded {
+            Ok(result) => result.expect_err("broken pipe must not look like success"),
+            Err(_) => panic!("stdin write error was discarded and the wait hung"),
+        };
+        assert!(
+            err.contains("Failed to write Claude Code prompt")
+                || err.contains("Failed to close Claude Code prompt stream"),
+            "stdin write error must surface, got {err}"
+        );
+        assert!(
+            !err.contains("E_CLI_TIMEOUT"),
+            "a short write must not be ignored until timeout: {err}"
+        );
+    }
+
+    #[test]
+    fn adv_cred_partial_write_dropped_before_rename_keeps_previous_bytes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("anthropic-auth.json");
+        let previous = br#"{"anthropic_api_key":"test-key-not-a-secret","anthropic_base_url":"https://example.test/v1"}"#;
+        std::fs::write(&path, previous).expect("seed");
+
+        let (mut file, tmp) = create_auth_temp_file(&path).expect("temp");
+        file.write_all(br#"{"anthropic_api_key":"replacement""#)
+            .expect("partial write");
+        file.flush().expect("flush");
+        drop(file);
+        std::fs::remove_file(&tmp).expect("drop temp file before rename");
+
+        let err = replace_auth_file(&tmp, &path).expect_err("missing temp must be an error");
+        assert!(!err.is_empty(), "recovery error must be visible");
+        assert_eq!(std::fs::read(&path).expect("dest"), previous);
+        assert_ne!(std::fs::read(&path).expect("dest"), b"{}");
+        assert_ne!(std::fs::read(&path).expect("dest"), b"");
+    }
+
+    #[test]
+    fn adv_cred_corrupt_json_is_not_replaced_with_empty_valid_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("anthropic-auth.json");
+        let garbage = b"{not-json test-key-not-a-secret";
+        std::fs::write(&path, garbage).expect("seed");
+
+        let err = match read_auth_config_file_for_update(&path) {
+            Err(err) => err,
+            Ok(_) => panic!("corrupt auth file recovery must be an error the caller can see"),
+        };
+        assert!(
+            err.to_ascii_lowercase().contains("parse"),
+            "expected a visible parse error, got {err}"
+        );
+        assert_eq!(std::fs::read(&path).expect("bytes"), garbage);
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&std::fs::read(&path).expect("bytes"))
+                .is_err(),
+            "corrupt file must not become valid JSON"
+        );
+    }
+
+    #[test]
+    fn adv_cred_parse_errors_are_not_reported_as_no_key() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("anthropic-auth.json");
+        let cases: &[(&[u8], &str)] = &[
+            (br"{" , "truncated object"),
+            (
+                br#"{"anthropic_api_key":"sk-ant-test-key-not-a-secret""#,
+                "truncated after key",
+            ),
+            (b"\"test-key-not-a-secret\"", "json string"),
+            (b"null", "json null"),
+            (b"1", "json number"),
+            (
+                br#"{"anthropic_api_key":["test-key-not-a-secret"]}"#,
+                "key is an array",
+            ),
+            (br#"{"anthropic_api_key":1}"#, "key is a number"),
+            (
+                b"{\"anthropic_api_key\":\"test-key-not-a-secret\xff\"}",
+                "key is not valid utf-8",
+            ),
+        ];
+        for (bytes, label) in cases {
+            std::fs::write(&path, bytes).unwrap_or_else(|err| panic!("{label}: {err}"));
+            match stored_claude_credential_at(&path) {
+                Err(err) => {
+                    assert!(
+                        !err.to_ascii_lowercase().contains("no key"),
+                        "{label} was worded as a missing key: {err}"
+                    );
+                    assert!(!err.is_empty(), "{label}");
+                }
+                Ok(None) => panic!("{label}: parse or read failure reported as no key"),
+                Ok(Some(cred)) => panic!("{label}: invented key {}", cred.api_key),
+            }
+            assert_eq!(std::fs::read(&path).expect("unchanged"), *bytes, "{label}");
+        }
+
+        std::fs::write(
+            &path,
+            br#"{"anthropic_api_key":"sk-ant-test-key-not-a-secret"}"#,
+        )
+        .expect("valid");
+        match stored_claude_credential_at(&path) {
+            Ok(Some(cred)) => assert_eq!(cred.api_key, "sk-ant-test-key-not-a-secret"),
+            Ok(None) => panic!("a real stored key must not be reported as no key"),
+            Err(err) => panic!("valid auth file must parse: {err}"),
+        }
+    }
+
+    #[test]
+    fn adv_cred_windows_acl_source_is_owner_only() {
+        let src = adv_cred_production_source();
+        let start = src
+            .find("fn restrict_auth_file_to_owner_windows")
+            .expect("windows acl function");
+        let rest = &src[start..];
+        let end = rest
+            .find("\n/// Serializes every auth-config")
+            .expect("function end");
+        let body = &rest[..end];
+        let code_lines = body
+            .lines()
+            .filter(|line| {
+                let trimmed = adv_cred_code_without_comments(line).trim();
+                !trimmed.is_empty()
+            })
+            .count();
+        assert!(code_lines > 20, "windows acl looks empty: {body}");
+        assert!(body.contains("SetNamedSecurityInfoW"), "{body}");
+        assert!(body.contains("SetEntriesInAclW(1,"), "acl must be a single entry");
+        assert!(body.contains("PROTECTED_DACL_SECURITY_INFORMATION"));
+        assert!(body.contains("TOKEN_USER"));
+        assert!(body.contains("TRUSTEE_IS_USER"));
+        let lower = body.to_ascii_lowercase();
+        assert!(!lower.contains("everyone"), "acl names Everyone");
+        assert!(!body.contains("S-1-1-0"), "acl grants World");
+        assert!(!lower.contains("builtin"), "acl names a builtin group");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn adv_cred_windows_acl_compiles_against_a_temp_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("anthropic-auth.json");
+        let body = br#"{"anthropic_api_key":"test-key-not-a-secret"}"#;
+        std::fs::write(&path, body).expect("seed");
+        restrict_auth_file_to_owner_windows(&path).expect("owner-only acl");
+        assert_eq!(std::fs::read(&path).expect("unchanged"), body);
+    }
 }

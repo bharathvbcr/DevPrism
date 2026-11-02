@@ -31,3 +31,11 @@ jobs:
 
       - name: Agent instructions contract
         run: bun run agents:verify:all
+
+      # One iteration, not a gate. Rust/Typst is not installed on this job;
+      # a required cargo, vitest, or tsc step is a different card.
+      - name: Benchmark smoke
+        continue-on-error: true
+        env:
+          BENCH_SMOKE: "1"
+        run: bun run --filter=@devprism/desktop bench -- --smoke --skip-rust

@@ -12,7 +12,7 @@
     "build:macos": "TECTONIC_DEP_BACKEND=vcpkg VCPKG_ROOT=$HOME/vcpkg CXXFLAGS=-std=c++17 CFLAGS= tauri build --target aarch64-apple-darwin --no-sign",
     "test": "vitest run",
     "test:watch": "vitest",
-    "bench:typing": "tsx scripts/bench-typing.ts"
+    "bench": "bun scripts/bench/run.ts"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.0",

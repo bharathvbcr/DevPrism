@@ -630,4 +630,163 @@ mod tests {
             "sleep grandchild {sleep_pid} still running after timeout"
         );
     }
+
+    #[cfg(unix)]
+    struct CredReap(Vec<i32>);
+
+    #[cfg(unix)]
+    impl Drop for CredReap {
+        fn drop(&mut self) {
+            let mut extra = Vec::new();
+            for pid in &self.0 {
+                if *pid > 1 {
+                    extra.extend(crate::claude::direct_child_pids(*pid));
+                }
+            }
+            for pid in extra.iter().chain(self.0.iter()) {
+                cred_kill_pid(*pid);
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    async fn cred_sleep_grandchild(child_pid: i32) -> i32 {
+        let mut sleep_pid = 0i32;
+        for _ in 0..25 {
+            if let Some(grandchild) = crate::claude::direct_child_pids(child_pid)
+                .into_iter()
+                .find(|pid| *pid > 1 && *pid != child_pid)
+            {
+                sleep_pid = grandchild;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        sleep_pid
+    }
+
+    /// Stdout is already closed and the shell is blocked in `sleep`. Cancel must
+    /// win during `child.wait`, before the print deadline, and both pids must die.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cred_cursor_closed_stdout_cancel_during_wait() {
+        let notify = std::sync::Arc::new(tokio::sync::Notify::new());
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", "exec 1>&-; sleep 3600"]);
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::null());
+        cmd.stdin(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().expect("sleep");
+        let child_pid = child.id().expect("child pid") as i32;
+        let sleep_pid = cred_sleep_grandchild(child_pid).await;
+        let mut reap = CredReap(vec![child_pid, sleep_pid]);
+        let notify_later = std::sync::Arc::clone(&notify);
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            notify_later.notify_waiters();
+        });
+        let started = std::time::Instant::now();
+        let bounded = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            finish_cursor_print_child(
+                &mut child,
+                std::time::Duration::from_secs(30),
+                None,
+                Some(notify.as_ref()),
+            ),
+        )
+        .await;
+        let err = match bounded {
+            Ok(result) => result.expect_err("cancel during wait must not return stdout"),
+            Err(_) => panic!("cancel during wait hung past the outer bound"),
+        };
+        let mut gone = false;
+        for _ in 0..15 {
+            if !cred_process_running(child_pid) {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        }
+        let sleep_gone = sleep_pid <= 1 || !cred_process_running(sleep_pid);
+        if gone {
+            reap.0.retain(|pid| *pid != child_pid);
+        }
+        if sleep_gone {
+            reap.0.retain(|pid| *pid != sleep_pid);
+        }
+        assert_eq!(err, "cancelled");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(8),
+            "cancel took {:?}",
+            started.elapsed()
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "cancel waited too long ({:?}); the 30s deadline should not win",
+            started.elapsed()
+        );
+        assert!(gone, "recorded pid {child_pid} still running after cancel");
+        assert!(
+            sleep_pid > 1 && sleep_gone,
+            "sleep grandchild {sleep_pid} still running after cancel"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cred_cursor_print_hello_and_nonzero_do_not_hang() {
+        for notify in [false, true] {
+            let notify = notify.then(tokio::sync::Notify::new);
+            let mut cmd = tokio::process::Command::new("sh");
+            cmd.args(["-c", "printf hello"]);
+            cmd.stdout(std::process::Stdio::piped());
+            cmd.stderr(std::process::Stdio::piped());
+            cmd.stdin(std::process::Stdio::null());
+            cmd.kill_on_drop(true);
+            let mut child = cmd.spawn().expect("hello");
+            let started = std::time::Instant::now();
+            let bounded = tokio::time::timeout(
+                std::time::Duration::from_secs(8),
+                finish_cursor_print_child(
+                    &mut child,
+                    std::time::Duration::from_secs(5),
+                    None,
+                    notify.as_ref(),
+                ),
+            )
+            .await;
+            let text = match bounded {
+                Ok(result) => result.expect("exit 0 with stdout must be Ok"),
+                Err(_) => panic!("hello child hung (notify={})", notify.is_some()),
+            };
+            assert_eq!(text, "hello");
+            assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        }
+
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", "printf bad; exit 7"]);
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        cmd.stdin(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().expect("nonzero");
+        let started = std::time::Instant::now();
+        let bounded = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            finish_cursor_print_child(&mut child, std::time::Duration::from_secs(5), None, None),
+        )
+        .await;
+        let err = match bounded {
+            Ok(result) => result.expect_err("non-zero exit must be an error"),
+            Err(_) => panic!("non-zero child hung"),
+        };
+        assert!(
+            err.contains("status") && err.contains('7'),
+            "status error missing the exit code: {err}"
+        );
+        assert!(err.contains("bad"), "status error missing stdout: {err}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
 }

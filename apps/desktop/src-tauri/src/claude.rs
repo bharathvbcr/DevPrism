@@ -7053,4 +7053,89 @@ mod tests {
         restrict_auth_file_to_owner_windows(&path).expect("owner-only acl");
         assert_eq!(std::fs::read(&path).expect("unchanged"), body);
     }
+
+    #[test]
+    fn adv2_cred_non_object_auth_json_is_a_parse_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("anthropic-auth.json");
+        let cases: &[(&[u8], &str)] = &[
+            (b"[]", "empty array"),
+            (b"[null]", "array of null"),
+            (b"[{}]", "array of empty object"),
+            (
+                br#"["claude-code","test-key-not-a-secret"]"#,
+                "positional string array",
+            ),
+            (
+                br#"[{"anthropic_api_key":"test-key-not-a-secret"}]"#,
+                "array wrapping the key object",
+            ),
+            (b"\"test-key-not-a-secret\"", "top-level string"),
+            (b"1", "top-level number"),
+            (b"0", "top-level zero"),
+            (b"-2.5", "top-level negative number"),
+            (b"{", "truncated object"),
+            (b"\xef\xbb\xbf[]", "bom then empty array"),
+        ];
+        for (bytes, label) in cases {
+            std::fs::write(&path, bytes).unwrap_or_else(|err| panic!("{label}: {err}"));
+            match stored_claude_credential_at(&path) {
+                Err(err) => {
+                    let lower = err.to_ascii_lowercase();
+                    assert!(
+                        lower.contains("parse") || lower.contains("read"),
+                        "{label}: expected a parse error, got {err}"
+                    );
+                    assert!(
+                        !lower.contains("no key"),
+                        "{label}: worded as a missing key: {err}"
+                    );
+                }
+                Ok(None) => panic!("{label}: reported as no key"),
+                Ok(Some(cred)) => panic!("{label}: stored key {}", cred.api_key),
+            }
+            assert_eq!(std::fs::read(&path).expect("unchanged"), *bytes, "{label}");
+        }
+
+        std::fs::write(&path, b"{}").expect("object with no key");
+        match stored_claude_credential_at(&path) {
+            Ok(None) => {}
+            Ok(Some(cred)) => panic!("object with no key invented {}", cred.api_key),
+            Err(err) => panic!("a valid object with no key may still be no key, got {err}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn adv2_cred_small_unread_stdin_with_open_stdout_times_out() {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", "sleep 3600"]);
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().expect("sleep");
+        let started = std::time::Instant::now();
+        let bounded = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            finish_claude_print_child(
+                &mut child,
+                Some("x".to_string()),
+                std::time::Duration::from_secs(1),
+                None,
+                None,
+                1024 * 1024,
+            ),
+        )
+        .await;
+        let err = match bounded {
+            Ok(result) => result.expect_err("a child that never reads stdin must time out"),
+            Err(_) => panic!("finish_claude_print_child hung past the outer bound"),
+        };
+        assert!(
+            err.contains("E_CLI_TIMEOUT"),
+            "expected a timeout error, got {err}"
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(8));
+    }
 }

@@ -415,4 +415,87 @@ mod tests {
             "stream spawn must not set the process environment"
         );
     }
+
+    #[test]
+    fn adv2_cred_both_commands_put_fake_key_on_the_child_only() {
+        let parent = std::env::var_os("CURSOR_API_KEY");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cwd = dir.path().to_str().expect("utf8 cwd");
+        let key = "test-key-not-a-secret";
+
+        let stream = build_stream_command_with_key("/bin/sh", cwd, "prompt", None, Some(key));
+        assert_eq!(cursor_key_override(&stream).as_deref(), Some(key));
+
+        let print = cursor_print_command(
+            "/bin/sh",
+            cwd,
+            vec!["-c".to_string(), "printf %s \"$CURSOR_API_KEY\"".to_string()],
+            Some(key),
+        );
+        assert_eq!(cursor_key_override(&print).as_deref(), Some(key));
+
+        let stored = stored_cursor_api_key();
+        let wrapped = build_stream_command("/bin/sh", cwd, "prompt", None);
+        assert!(
+            cursor_key_override(&wrapped).as_deref() == stored.as_deref(),
+            "build_stream_command did not put the stored cursor key on the child"
+        );
+        assert_eq!(
+            std::env::var_os("CURSOR_API_KEY"),
+            parent,
+            "command builders wrote the process environment"
+        );
+
+        for (name, src) in [
+            ("setup.rs", include_str!("setup.rs")),
+            ("stream_spawn.rs", include_str!("stream_spawn.rs")),
+        ] {
+            let prod = src.split("\n#[cfg(test)]").next().expect("production");
+            for line in prod.lines() {
+                let code = line.split("//").next().unwrap_or(line);
+                assert!(
+                    !code.contains("set_var"),
+                    "{name} production code calls set_var: {line}"
+                );
+            }
+        }
+
+        let spawn_src = include_str!("stream_spawn.rs");
+        let prod = spawn_src.split("\n#[cfg(test)]").next().expect("production");
+        let print_fn = prod
+            .split("pub async fn complete_cursor_print(")
+            .nth(1)
+            .expect("complete_cursor_print");
+        assert!(
+            print_fn.contains("cursor_print_command(")
+                && print_fn.contains("stored_cursor_api_key().as_deref()"),
+            "complete_cursor_print does not pass the stored key through cursor_print_command"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn adv2_cred_spawned_child_prints_the_fake_key() {
+        let parent = std::env::var_os("CURSOR_API_KEY");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cwd = dir.path().to_str().expect("utf8 cwd");
+        let mut cmd = cursor_print_command(
+            "/bin/sh",
+            cwd,
+            vec!["-c".to_string(), "printf %s \"$CURSOR_API_KEY\"".to_string()],
+            Some("test-key-not-a-secret"),
+        );
+        cmd.stdin(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
+        let output = tokio::time::timeout(std::time::Duration::from_secs(5), cmd.output())
+            .await
+            .expect("child hung")
+            .expect("sh");
+        assert!(output.status.success(), "sh failed");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "test-key-not-a-secret"
+        );
+        assert_eq!(std::env::var_os("CURSOR_API_KEY"), parent);
+    }
 }

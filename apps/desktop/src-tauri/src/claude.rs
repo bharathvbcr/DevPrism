@@ -7281,4 +7281,404 @@ mod tests {
         assert!(err.contains("E_CLI_TIMEOUT"), "expected a timeout error, got {err}");
         assert!(started.elapsed() < std::time::Duration::from_secs(8));
     }
+
+    #[cfg(unix)]
+    fn adv3_process_running(pid: i32) -> bool {
+        if pid <= 1 {
+            return false;
+        }
+        let output = std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output();
+        match output {
+            Ok(output) if output.status.success() => {
+                let stat = String::from_utf8_lossy(&output.stdout);
+                let stat = stat.trim();
+                !stat.is_empty() && !stat.starts_with('Z')
+            }
+            _ => false,
+        }
+    }
+
+    #[cfg(unix)]
+    fn adv3_kill_pid(pid: i32) {
+        if pid > 1 {
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+            }
+        }
+    }
+
+    /// `ps` can still see a pid for a few milliseconds after it is reaped.
+    #[cfg(unix)]
+    async fn adv3_wait_until_stopped(pid: i32) -> bool {
+        for _ in 0..15 {
+            if !adv3_process_running(pid) {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        }
+        !adv3_process_running(pid)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn adv3_cred_closed_stdout_exec_sleep_is_reaped_on_timeout() {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", "exec 1>&-; sleep 3600"]);
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().expect("sleep");
+        let child_pid = child.id().expect("child pid") as i32;
+        let started = std::time::Instant::now();
+        let bounded = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            finish_claude_print_child(
+                &mut child,
+                Some("x".to_string()),
+                std::time::Duration::from_secs(1),
+                None,
+                None,
+                1024 * 1024,
+            ),
+        )
+        .await;
+        let err = match bounded {
+            Ok(result) => result.expect_err("closed stdout and a live sleep must time out"),
+            Err(_) => {
+                adv3_kill_pid(child_pid);
+                panic!("finish_claude_print_child hung past the outer bound");
+            }
+        };
+        let elapsed = started.elapsed();
+        let gone = adv3_wait_until_stopped(child_pid).await;
+        if !gone {
+            adv3_kill_pid(child_pid);
+        }
+        assert!(
+            err.contains("E_CLI_TIMEOUT"),
+            "expected a timeout error, got {err}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(8),
+            "timeout return took {elapsed:?}, not well under 8s"
+        );
+        assert!(
+            gone,
+            "exec sleep pid {child_pid} still running after timeout return"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn adv3_cred_shell_wait_leaves_no_sleep_grandchild() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pid_path = dir.path().join("sleep.pid");
+        let script = format!(
+            "sleep 3600 >/dev/null & echo $! > '{}'; exec 1>&-; wait",
+            pid_path.display()
+        );
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", &script]);
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().expect("shell");
+        let shell_pid = child.id().expect("shell pid") as i32;
+        let started = std::time::Instant::now();
+        let finish = finish_claude_print_child(
+            &mut child,
+            Some("x".to_string()),
+            std::time::Duration::from_secs(1),
+            None,
+            None,
+            1024 * 1024,
+        );
+        tokio::pin!(finish);
+        let mut sleep_pid = 0i32;
+        let mut saw_two_live = false;
+        let err = loop {
+            tokio::select! {
+                result = &mut finish => {
+                    break result;
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_millis(40)) => {
+                    if sleep_pid == 0 {
+                        if let Ok(text) = std::fs::read_to_string(&pid_path) {
+                            sleep_pid = text.trim().parse::<i32>().unwrap_or(0);
+                        }
+                    }
+                    if sleep_pid > 1
+                        && sleep_pid != shell_pid
+                        && adv3_process_running(sleep_pid)
+                        && adv3_process_running(shell_pid)
+                    {
+                        saw_two_live = true;
+                    }
+                    if started.elapsed() >= std::time::Duration::from_secs(8) {
+                        adv3_kill_pid(sleep_pid);
+                        adv3_kill_pid(shell_pid);
+                        panic!("finish_claude_print_child hung past the outer bound");
+                    }
+                }
+            }
+        };
+        let err = err.expect_err("shell blocked in wait must time out");
+        let elapsed = started.elapsed();
+        if sleep_pid == 0 {
+            if let Ok(text) = std::fs::read_to_string(&pid_path) {
+                sleep_pid = text.trim().parse::<i32>().unwrap_or(0);
+            }
+        }
+        let sleep_gone = adv3_wait_until_stopped(sleep_pid).await;
+        if !sleep_gone {
+            adv3_kill_pid(sleep_pid);
+        }
+        adv3_kill_pid(shell_pid);
+        assert!(
+            saw_two_live,
+            "construction was not a live shell {shell_pid} plus a different sleep {sleep_pid}"
+        );
+        assert!(
+            err.contains("E_CLI_TIMEOUT"),
+            "expected a timeout error, got {err}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(8),
+            "timeout return took {elapsed:?}, not well under 8s"
+        );
+        assert!(
+            sleep_pid > 1 && sleep_pid != shell_pid,
+            "sleep pid {sleep_pid} is not a different process from shell {shell_pid}"
+        );
+        assert!(
+            sleep_gone,
+            "sleep pid {sleep_pid} still running after the shell timed out"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn adv3_cred_fast_exit_after_one_byte_is_not_a_timeout() {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args([
+            "-c",
+            "read dummy; printf '%s' '{\"result\":\"ok-fast\"}'; exit 0",
+        ]);
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().expect("sh");
+        let started = std::time::Instant::now();
+        let bounded = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            finish_claude_print_child(
+                &mut child,
+                Some("x".to_string()),
+                std::time::Duration::from_secs(5),
+                None,
+                None,
+                1024 * 1024,
+            ),
+        )
+        .await;
+        let elapsed = started.elapsed();
+        let result = match bounded {
+            Ok(result) => result,
+            Err(_) => panic!("finish_claude_print_child hung past the outer bound"),
+        };
+        match &result {
+            Ok(text) => assert_eq!(text, "ok-fast"),
+            Err(err) => {
+                assert!(
+                    !err.contains("E_CLI_TIMEOUT"),
+                    "a fast exit 0 was reported as a timeout after {elapsed:?}: {err}"
+                );
+                let parsed = extract_claude_print_result("{\"result\":\"ok-fast\"}");
+                assert_eq!(
+                    parsed.ok().as_deref(),
+                    Some(err.as_str()),
+                    "fast exit must be Ok or that extract error, got {err}"
+                );
+            }
+        }
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "fast success took {elapsed:?}, not well under the 5s timeout"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn adv3_cred_cancel_during_wait_reaps_closed_stdout_sleep() {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", "exec 1>&-; sleep 3600"]);
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().expect("sleep");
+        let child_pid = child.id().expect("child pid") as i32;
+        let notify = std::sync::Arc::new(tokio::sync::Notify::new());
+        let notify_later = std::sync::Arc::clone(&notify);
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            notify_later.notify_one();
+        });
+        let started = std::time::Instant::now();
+        let bounded = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            finish_claude_print_child(
+                &mut child,
+                Some("x".to_string()),
+                std::time::Duration::from_secs(30),
+                None,
+                Some(notify.as_ref()),
+                1024 * 1024,
+            ),
+        )
+        .await;
+        let err = match bounded {
+            Ok(result) => result.expect_err("cancel during wait must not succeed"),
+            Err(_) => {
+                adv3_kill_pid(child_pid);
+                panic!("finish_claude_print_child hung past the outer bound");
+            }
+        };
+        let elapsed = started.elapsed();
+        let gone = adv3_wait_until_stopped(child_pid).await;
+        if !gone {
+            adv3_kill_pid(child_pid);
+        }
+        assert_eq!(err, "cancelled", "cancel during wait returned {err}");
+        assert!(
+            elapsed < std::time::Duration::from_secs(8),
+            "cancel took {elapsed:?}"
+        );
+        assert!(gone, "child pid {child_pid} still running after cancel");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn adv3_cred_closed_stdin_write_names_the_prompt_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let flag = dir.path().join("stdin-closed");
+        // Close stdin, then signal. The write starts only after that signal,
+        // so one byte cannot land in the pipe before the read end is gone.
+        let script = format!("exec 0<&-; echo closed > '{}'; sleep 30", flag.display());
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", &script]);
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().expect("sh");
+        let child_pid = child.id().expect("child pid") as i32;
+        let ready = std::time::Instant::now();
+        loop {
+            if flag.is_file() {
+                break;
+            }
+            if ready.elapsed() >= std::time::Duration::from_secs(2) {
+                adv3_kill_pid(child_pid);
+                panic!("child never closed stdin");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let started = std::time::Instant::now();
+        let bounded = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            finish_claude_print_child(
+                &mut child,
+                Some("x".to_string()),
+                std::time::Duration::from_secs(5),
+                None,
+                None,
+                1024 * 1024,
+            ),
+        )
+        .await;
+        let err = match bounded {
+            Ok(result) => result.expect_err("closed stdin must fail the write"),
+            Err(_) => {
+                adv3_kill_pid(child_pid);
+                panic!("finish_claude_print_child hung past the outer bound");
+            }
+        };
+        adv3_kill_pid(child_pid);
+        assert!(
+            err.contains("Failed to write Claude Code prompt"),
+            "write failure must name the prompt write, got {err}"
+        );
+        assert!(
+            !err.contains("E_CLI_TIMEOUT"),
+            "a write failure must not become a timeout: {err}"
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn adv3_cred_eight_mib_unread_stdin_times_out_inside_outer_bound() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pid_path = dir.path().join("sleep.pid");
+        let script = format!(
+            "sleep 3600 >/dev/null & echo $! > '{}'; wait",
+            pid_path.display()
+        );
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", &script]);
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().expect("shell");
+        let shell_pid = child.id().expect("shell pid") as i32;
+        let started = std::time::Instant::now();
+        let bounded = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            finish_claude_print_child(
+                &mut child,
+                Some("x".repeat(8 * 1024 * 1024)),
+                std::time::Duration::from_secs(1),
+                None,
+                None,
+                1024 * 1024,
+            ),
+        )
+        .await;
+        let err = match bounded {
+            Ok(result) => result.expect_err("unread 8MiB stdin must time out"),
+            Err(_) => {
+                adv3_kill_pid(shell_pid);
+                if let Ok(text) = std::fs::read_to_string(&pid_path) {
+                    if let Ok(pid) = text.trim().parse::<i32>() {
+                        adv3_kill_pid(pid);
+                    }
+                }
+                panic!("finish_claude_print_child hung past the outer bound");
+            }
+        };
+        let elapsed = started.elapsed();
+        if let Ok(text) = std::fs::read_to_string(&pid_path) {
+            if let Ok(pid) = text.trim().parse::<i32>() {
+                if !adv3_wait_until_stopped(pid).await {
+                    adv3_kill_pid(pid);
+                }
+            }
+        }
+        adv3_kill_pid(shell_pid);
+        assert!(
+            err.contains("E_CLI_TIMEOUT"),
+            "expected a timeout error, got {err}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(8),
+            "8MiB unread stdin took {elapsed:?}"
+        );
+    }
 }

@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { cargoBenchArgs } from "./cargo-args";
 import { notMeasured } from "./stats";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -62,8 +63,7 @@ if (!skipRust) {
     DEVPRISM_BENCH_RUST_JSON: rustJson,
     DEVPRISM_BENCH_PDF: pdfPath,
   };
-  const cargoArgs = ["bench", "--manifest-path", manifest];
-  if (smoke) cargoArgs.push("--", "--smoke");
+  const cargoArgs = cargoBenchArgs(manifest, smoke);
   rustExit = await run("cargo", cargoArgs, repo, env);
 }
 

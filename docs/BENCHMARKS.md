@@ -13,8 +13,10 @@ TECTONIC_DEP_BACKEND=vcpkg VCPKG_ROOT=$HOME/vcpkg \
   PKG_CONFIG_PATH=/opt/homebrew/opt/icu4c@78/lib/pkgconfig:/opt/homebrew/opt/openssl@3/lib/pkgconfig \
   CXXFLAGS="-std=c++17 -I/opt/homebrew/opt/harfbuzz/include" \
   CFLAGS="-I/opt/homebrew/opt/harfbuzz/include" \
-  cargo bench --manifest-path apps/desktop/src-tauri/Cargo.toml
+  cargo bench --manifest-path apps/desktop/src-tauri/Cargo.toml --bench baseline
 ```
+
+`--bench baseline` is required. `cargo bench -- --smoke` forwards `--smoke` to the lib unittest harness, which rejects the flag and does not run the bench.
 
 `bun run bench` sets those variables itself. The committed figures are `bench-results/baseline-2026-10.json`, written by a non-smoke run. The statistic is the **minimum** of the same-config reruns. Spread is max minus min of those reruns. The mean is not the reported figure. A full run uses **N = 7** after **one excluded warmup**. `first_call_ms` / `warmup` is that excluded pass (font discovery on the first Typst compile). It is not part of the spread.
 
@@ -42,7 +44,7 @@ A measurement that did not run is `status: "not_measured"` with a reason. It is 
 
 9. **In-process Typst compile wall time.** Same public API, `std::time` inside the worker (thread spawn is not the number). Harness deadline is 120 seconds. A hang returns `Exceeded` and the process exits without a duration. The deadline does not change the engine. This tree does not have a 30-second in-engine deadline. The bench also refuses to record a duration when `success` is false, the page count is wrong, or the PDF header is missing. One-page and thirty-page compiles are both reported. The release profile is unchanged (`lto = thin`, `codegen-units = 1`).
 
-The deadline self-check sleeps 2 seconds behind a 40 millisecond wait and must return before that sleep ends. `cargo test --test bench_harness` covers it. `cargo bench -- --self-test` runs only that check.
+The deadline self-check sleeps 2 seconds behind a 40 millisecond wait and must return before that sleep ends. `cargo test --test bench_harness` covers it. `cargo bench --bench baseline --manifest-path apps/desktop/src-tauri/Cargo.toml -- --self-test` runs only that check. `bun run --filter=@devprism/desktop bench -- --smoke` runs one iteration of the same `baseline` target.
 
 ## CI
 

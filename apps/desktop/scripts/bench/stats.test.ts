@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { cargoBenchArgs } from "./cargo-args";
 import { summarize, valueOrThrow } from "./stats";
 
 describe("bench summary", () => {
@@ -23,5 +24,27 @@ describe("bench summary", () => {
 
   it("rejects a non-finite sample", () => {
     expect(() => summarize([1, Number.NaN])).toThrow(/non-finite/);
+  });
+});
+
+describe("cargo bench argv", () => {
+  it("targets only baseline, and puts --smoke after --", () => {
+    const full = cargoBenchArgs("apps/desktop/src-tauri/Cargo.toml", false);
+    expect(full).toEqual([
+      "bench",
+      "--manifest-path",
+      "apps/desktop/src-tauri/Cargo.toml",
+      "--bench",
+      "baseline",
+    ]);
+    expect(full).not.toContain("--lib");
+    expect(full).not.toContain("--smoke");
+
+    const smoke = cargoBenchArgs("apps/desktop/src-tauri/Cargo.toml", true);
+    expect(smoke.slice(0, 5)).toEqual(full);
+    expect(smoke.indexOf("--")).toBeLessThan(smoke.indexOf("--smoke"));
+    expect(smoke.at(-2)).toBe("--");
+    expect(smoke.at(-1)).toBe("--smoke");
+    expect(smoke).not.toContain("--lib");
   });
 });

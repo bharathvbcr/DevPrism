@@ -3712,8 +3712,103 @@ pub async fn complete_claude_print(
 }
 
 /// Writes the prompt, reads stdout, and waits, all inside one timeout/cancel
-/// select. Stdin write and shutdown errors propagate. A child that never
-/// reads stdin blocks the write, and the select then times out and kills it.
+/// select. After stdout is already closed, `wait` stays on that same deadline
+/// and cancel. A child that does not exit is killed, then waited, and the
+/// timeout or cancelled error is returned. Descendants are signaled first so
+/// a shell that only execs a redirection cannot leave `sleep` running. Stdin
+/// write and shutdown errors propagate. A child that never reads stdin blocks
+/// the write, and the select then times out and kills it.
+#[cfg(unix)]
+fn direct_child_pids(pid: i32) -> Vec<i32> {
+    #[cfg(target_os = "macos")]
+    {
+        // `proc_listchildpids` writes `pid_t`s. A NULL buffer does not report
+        // this parent's child count, so the buffer is a fixed cap.
+        let mut buf = vec![0i32; 64];
+        let reported = unsafe {
+            extern "C" {
+                fn proc_listchildpids(
+                    ppid: i32,
+                    buffer: *mut libc::c_void,
+                    buffersize: i32,
+                ) -> i32;
+            }
+            proc_listchildpids(
+                pid,
+                buf.as_mut_ptr().cast(),
+                (buf.len() * std::mem::size_of::<i32>()) as i32,
+            )
+        };
+        if reported <= 0 {
+            return Vec::new();
+        }
+        let count = (reported as usize).min(buf.len());
+        buf.truncate(count);
+        buf.retain(|child| *child > 1);
+        buf
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let mut children = Vec::new();
+        let Ok(entries) = std::fs::read_dir("/proc") else {
+            return children;
+        };
+        for entry in entries.flatten() {
+            let Ok(child) = entry.file_name().to_string_lossy().parse::<i32>() else {
+                continue;
+            };
+            if child <= 1 {
+                continue;
+            }
+            let Ok(status) = std::fs::read_to_string(format!("/proc/{child}/status")) else {
+                continue;
+            };
+            let is_child = status.lines().any(|line| {
+                line.strip_prefix("PPid:")
+                    .is_some_and(|rest| rest.trim() == pid.to_string())
+            });
+            if is_child {
+                children.push(child);
+            }
+            if children.len() >= 64 {
+                break;
+            }
+        }
+        children
+    }
+}
+
+#[cfg(unix)]
+fn kill_spawned_descendants(pid: u32) {
+    fn collect(pid: i32, depth: usize, out: &mut Vec<i32>) {
+        if depth > 8 || out.len() >= 64 {
+            return;
+        }
+        for child in direct_child_pids(pid) {
+            collect(child, depth + 1, out);
+            if out.len() >= 64 {
+                return;
+            }
+            out.push(child);
+        }
+    }
+    let mut descendants = Vec::new();
+    collect(pid as i32, 0, &mut descendants);
+    for child in descendants {
+        unsafe {
+            libc::kill(child, libc::SIGKILL);
+        }
+    }
+}
+
+async fn stop_print_child(child: &mut tokio::process::Child) {
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        kill_spawned_descendants(pid);
+    }
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+}
 async fn finish_claude_print_child(
     child: &mut tokio::process::Child,
     stdin_payload: Option<String>,
@@ -3763,32 +3858,49 @@ async fn finish_claude_print_child(
 
     let outcome = tokio::select! {
         _ = &mut cancelled => {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
+            stop_print_child(child).await;
             Err("cancelled".to_string())
         }
         _ = &mut deadline => {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
+            stop_print_child(child).await;
             Err(format!(
                 "[E_CLI_TIMEOUT] Claude Code print mode timed out after {}s.",
                 timeout.as_secs()
             ))
         }
         read = &mut write_and_read => {
-            let buf = read?;
-            let status = child
-                .wait()
-                .await
-                .map_err(|e| format!("Claude Code wait failed: {e}"))?;
-            if !status.success() {
-                let preview = String::from_utf8_lossy(&buf);
-                return Err(format!(
-                    "Claude Code exited with status {status}. Output: {}",
-                    preview.chars().take(400).collect::<String>()
-                ));
+            let buf = match read {
+                Ok(buf) => buf,
+                Err(err) => {
+                    stop_print_child(child).await;
+                    return Err(err);
+                }
+            };
+            tokio::select! {
+                _ = &mut cancelled => {
+                    stop_print_child(child).await;
+                    Err("cancelled".to_string())
+                }
+                _ = &mut deadline => {
+                    stop_print_child(child).await;
+                    Err(format!(
+                        "[E_CLI_TIMEOUT] Claude Code print mode timed out after {}s.",
+                        timeout.as_secs()
+                    ))
+                }
+                status = child.wait() => {
+                    let status = status
+                        .map_err(|e| format!("Claude Code wait failed: {e}"))?;
+                    if !status.success() {
+                        let preview = String::from_utf8_lossy(&buf);
+                        return Err(format!(
+                            "Claude Code exited with status {status}. Output: {}",
+                            preview.chars().take(400).collect::<String>()
+                        ));
+                    }
+                    extract_claude_print_result(&String::from_utf8_lossy(&buf))
+                }
             }
-            extract_claude_print_result(&String::from_utf8_lossy(&buf))
         }
     };
 
@@ -7136,6 +7248,37 @@ mod tests {
             err.contains("E_CLI_TIMEOUT"),
             "expected a timeout error, got {err}"
         );
+        assert!(started.elapsed() < std::time::Duration::from_secs(8));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn adv2_cred_small_unread_stdin_with_closed_stdout_times_out() {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", "exec 1>&-; sleep 3600"]);
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().expect("sleep");
+        let started = std::time::Instant::now();
+        let bounded = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            finish_claude_print_child(
+                &mut child,
+                Some("x".to_string()),
+                std::time::Duration::from_secs(1),
+                None,
+                None,
+                1024 * 1024,
+            ),
+        )
+        .await;
+        let err = match bounded {
+            Ok(result) => result.expect_err("a child that never reads stdin must time out"),
+            Err(_) => panic!("finish_claude_print_child hung past the outer bound"),
+        };
+        assert!(err.contains("E_CLI_TIMEOUT"), "expected a timeout error, got {err}");
         assert!(started.elapsed() < std::time::Duration::from_secs(8));
     }
 }

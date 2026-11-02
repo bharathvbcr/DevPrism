@@ -83,6 +83,7 @@ fn build_stream_command_with_key(
         "--output-format".to_string(),
         "stream-json".to_string(),
         "--stream-partial-output".to_string(),
+        // Cursor agent print-mode switch. A-4 does not apply to this argv.
         "--dangerously-skip-permissions".to_string(),
     ];
     if let Some(sid) = resume_session_id {
@@ -234,6 +235,7 @@ pub async fn complete_cursor_print(
         "--force".to_string(),
         "--output-format".to_string(),
         "text".to_string(),
+        // Cursor agent print-mode switch. A-4 does not apply to this argv.
         "--dangerously-skip-permissions".to_string(),
         full_prompt,
     ];

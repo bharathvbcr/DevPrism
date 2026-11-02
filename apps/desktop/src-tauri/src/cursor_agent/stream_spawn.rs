@@ -841,4 +841,60 @@ mod tests {
             "stderr backpressure became a timeout"
         );
     }
+
+    /// Stderr fills the pipe before any stdout byte. The drain must be polled
+    /// during `read_to_end`, on both the notify and no-notify select paths.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cred_cursor_hello_after_stderr_flood_while_stdout_open() {
+        for notify in [false, true] {
+            let notify = notify.then(tokio::sync::Notify::new);
+            let mut cmd = tokio::process::Command::new("sh");
+            cmd.args([
+                "-c",
+                "dd if=/dev/zero bs=1024 count=1024 >&2; printf hello; exec 1>&-; exit 0",
+            ]);
+            cmd.stdout(std::process::Stdio::piped());
+            cmd.stderr(std::process::Stdio::piped());
+            cmd.stdin(std::process::Stdio::null());
+            cmd.kill_on_drop(true);
+            let mut child = cmd.spawn().expect("hello");
+            let child_pid = child.id().expect("child pid") as i32;
+            let started = std::time::Instant::now();
+            let bounded = tokio::time::timeout(
+                std::time::Duration::from_secs(8),
+                finish_cursor_print_child(
+                    &mut child,
+                    std::time::Duration::from_secs(2),
+                    None,
+                    notify.as_ref(),
+                ),
+            )
+            .await;
+            let result = match bounded {
+                Ok(result) => result,
+                Err(_) => {
+                    cred_kill_pid(child_pid);
+                    for pid in crate::claude::direct_child_pids(child_pid) {
+                        cred_kill_pid(pid);
+                    }
+                    panic!(
+                        "finish_cursor_print_child hung past the outer bound (notify={})",
+                        notify.is_some()
+                    );
+                }
+            };
+            if cred_process_running(child_pid) {
+                cred_kill_pid(child_pid);
+            }
+            let text = result.expect("stderr-first flood must not become a timeout");
+            assert_eq!(text, "hello");
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(5),
+                "stderr-first hello took {:?} (notify={})",
+                started.elapsed(),
+                notify.is_some()
+            );
+        }
+    }
 }

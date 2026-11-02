@@ -7765,4 +7765,56 @@ mod tests {
             started.elapsed()
         );
     }
+
+    /// Stderr fills the pipe before any stdout byte. `read_to_end` cannot
+    /// finish until the child is unblocked, so the drain has to run concurrently
+    /// with the stdout read, not only after it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cred_claude_hello_after_stderr_flood_while_stdout_open() {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args([
+            "-c",
+            "dd if=/dev/zero bs=1024 count=1024 >&2; printf hello; exec 1>&-; exit 0",
+        ]);
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        cmd.stdin(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().expect("hello");
+        let child_pid = child.id().expect("child pid") as i32;
+        let started = std::time::Instant::now();
+        let bounded = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            finish_claude_print_child(
+                &mut child,
+                None,
+                std::time::Duration::from_secs(2),
+                None,
+                None,
+                1024 * 1024,
+            ),
+        )
+        .await;
+        let result = match bounded {
+            Ok(result) => result,
+            Err(_) => {
+                adv3_kill_pid(child_pid);
+                for pid in direct_child_pids(child_pid) {
+                    adv3_kill_pid(pid);
+                }
+                panic!("finish_claude_print_child hung past the outer bound");
+            }
+        };
+        if adv3_process_running(child_pid) {
+            adv3_kill_pid(child_pid);
+        }
+        let text = result.expect("stderr-first flood must not become a timeout");
+        assert_eq!(text, "hello");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "stderr-first hello took {:?}",
+            started.elapsed()
+        );
+    }
 }

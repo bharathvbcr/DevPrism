@@ -257,6 +257,23 @@ pub async fn complete_cursor_print(
         .spawn()
         .map_err(|e| format!("Failed to spawn Cursor CLI: {e}"))?;
 
+    finish_cursor_print_child(
+        &mut child,
+        std::time::Duration::from_secs(PRINT_TIMEOUT_SECS),
+        cancel_flag.as_deref(),
+        cancel_notify.as_deref(),
+    )
+    .await
+}
+
+/// Reads stdout and waits inside one deadline. `child.wait` stays on that
+/// deadline after stdout has already closed.
+async fn finish_cursor_print_child(
+    child: &mut tokio::process::Child,
+    timeout: std::time::Duration,
+    cancel_flag: Option<&AtomicBool>,
+    cancel_notify: Option<&Notify>,
+) -> Result<String, String> {
     let stdout = child
         .stdout
         .take()
@@ -271,80 +288,101 @@ pub async fn complete_cursor_print(
             .map_err(|e| format!("Failed to read Cursor CLI output: {e}"))
     };
 
-    let deadline = tokio::time::sleep(std::time::Duration::from_secs(PRINT_TIMEOUT_SECS));
+    let deadline = tokio::time::sleep(timeout);
     tokio::pin!(deadline);
+    let timeout_secs = timeout.as_secs();
 
     let outcome = if let Some(notify) = cancel_notify {
         tokio::select! {
             _ = notify.notified() => {
-                let _ = child.kill().await;
-                let _ = child.wait().await;
+                crate::claude::stop_print_child(child).await;
                 Err("cancelled".into())
             }
             _ = &mut deadline => {
-                let _ = child.kill().await;
-                let _ = child.wait().await;
+                crate::claude::stop_print_child(child).await;
                 Err(format!(
-                    "[E_CLI_TIMEOUT] Cursor CLI print mode timed out after {PRINT_TIMEOUT_SECS}s."
+                    "[E_CLI_TIMEOUT] Cursor CLI print mode timed out after {timeout_secs}s."
                 ))
             }
             read = read_stdout => {
-                read?;
-                let status = child
-                    .wait()
-                    .await
-                    .map_err(|e| format!("Cursor CLI wait failed: {e}"))?;
-                if !status.success() {
-                    let preview = String::from_utf8_lossy(&buf);
-                    return Err(format!(
-                        "Cursor CLI exited with status {status}. Output: {}",
-                        preview.chars().take(400).collect::<String>()
-                    ));
+                if let Err(err) = read {
+                    crate::claude::stop_print_child(child).await;
+                    return Err(err);
                 }
-                let text = String::from_utf8_lossy(&buf).trim().to_string();
-                if text.is_empty() {
-                    Err("Cursor CLI returned an empty response.".into())
-                } else {
-                    Ok(text)
+                tokio::select! {
+                    _ = notify.notified() => {
+                        crate::claude::stop_print_child(child).await;
+                        Err("cancelled".into())
+                    }
+                    _ = &mut deadline => {
+                        crate::claude::stop_print_child(child).await;
+                        Err(format!(
+                            "[E_CLI_TIMEOUT] Cursor CLI print mode timed out after {timeout_secs}s."
+                        ))
+                    }
+                    status = child.wait() => {
+                        let status = status
+                            .map_err(|e| format!("Cursor CLI wait failed: {e}"))?;
+                        if !status.success() {
+                            let preview = String::from_utf8_lossy(&buf);
+                            return Err(format!(
+                                "Cursor CLI exited with status {status}. Output: {}",
+                                preview.chars().take(400).collect::<String>()
+                            ));
+                        }
+                        let text = String::from_utf8_lossy(&buf).trim().to_string();
+                        if text.is_empty() {
+                            Err("Cursor CLI returned an empty response.".into())
+                        } else {
+                            Ok(text)
+                        }
+                    }
                 }
             }
         }
     } else {
         tokio::select! {
             _ = &mut deadline => {
-                let _ = child.kill().await;
-                let _ = child.wait().await;
+                crate::claude::stop_print_child(child).await;
                 Err(format!(
-                    "[E_CLI_TIMEOUT] Cursor CLI print mode timed out after {PRINT_TIMEOUT_SECS}s."
+                    "[E_CLI_TIMEOUT] Cursor CLI print mode timed out after {timeout_secs}s."
                 ))
             }
             read = read_stdout => {
-                read?;
-                let status = child
-                    .wait()
-                    .await
-                    .map_err(|e| format!("Cursor CLI wait failed: {e}"))?;
-                if !status.success() {
-                    let preview = String::from_utf8_lossy(&buf);
-                    return Err(format!(
-                        "Cursor CLI exited with status {status}. Output: {}",
-                        preview.chars().take(400).collect::<String>()
-                    ));
+                if let Err(err) = read {
+                    crate::claude::stop_print_child(child).await;
+                    return Err(err);
                 }
-                let text = String::from_utf8_lossy(&buf).trim().to_string();
-                if text.is_empty() {
-                    Err("Cursor CLI returned an empty response.".into())
-                } else {
-                    Ok(text)
+                tokio::select! {
+                    _ = &mut deadline => {
+                        crate::claude::stop_print_child(child).await;
+                        Err(format!(
+                            "[E_CLI_TIMEOUT] Cursor CLI print mode timed out after {timeout_secs}s."
+                        ))
+                    }
+                    status = child.wait() => {
+                        let status = status
+                            .map_err(|e| format!("Cursor CLI wait failed: {e}"))?;
+                        if !status.success() {
+                            let preview = String::from_utf8_lossy(&buf);
+                            return Err(format!(
+                                "Cursor CLI exited with status {status}. Output: {}",
+                                preview.chars().take(400).collect::<String>()
+                            ));
+                        }
+                        let text = String::from_utf8_lossy(&buf).trim().to_string();
+                        if text.is_empty() {
+                            Err("Cursor CLI returned an empty response.".into())
+                        } else {
+                            Ok(text)
+                        }
+                    }
                 }
             }
         }
     };
 
-    if cancel_flag
-        .as_ref()
-        .is_some_and(|f| f.load(Ordering::Relaxed))
-    {
+    if cancel_flag.is_some_and(|f| f.load(Ordering::Relaxed)) {
         return Err("cancelled".into());
     }
     outcome
@@ -499,5 +537,97 @@ mod tests {
             "test-key-not-a-secret"
         );
         assert_eq!(std::env::var_os("CURSOR_API_KEY"), parent);
+    }
+
+    #[cfg(unix)]
+    fn cred_process_running(pid: i32) -> bool {
+        if pid <= 1 {
+            return false;
+        }
+        let output = std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output();
+        match output {
+            Ok(output) if output.status.success() => {
+                let stat = String::from_utf8_lossy(&output.stdout);
+                let stat = stat.trim();
+                !stat.is_empty() && !stat.starts_with('Z')
+            }
+            _ => false,
+        }
+    }
+
+    #[cfg(unix)]
+    fn cred_kill_pid(pid: i32) {
+        if pid > 1 {
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cred_cursor_closed_stdout_wait_times_out() {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", "exec 1>&-; sleep 3600"]);
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::null());
+        cmd.stdin(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().expect("sleep");
+        let child_pid = child.id().expect("child pid") as i32;
+        let mut sleep_pid = 0i32;
+        for _ in 0..25 {
+            if let Some(grandchild) = crate::claude::direct_child_pids(child_pid)
+                .into_iter()
+                .find(|pid| *pid > 1 && *pid != child_pid)
+            {
+                sleep_pid = grandchild;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let started = std::time::Instant::now();
+        let bounded = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            finish_cursor_print_child(
+                &mut child,
+                std::time::Duration::from_secs(1),
+                None,
+                None,
+            ),
+        )
+        .await;
+        let err = match bounded {
+            Ok(result) => result.expect_err("closed stdout and a live sleep must time out"),
+            Err(_) => {
+                cred_kill_pid(child_pid);
+                cred_kill_pid(sleep_pid);
+                panic!("finish_cursor_print_child hung past the outer bound");
+            }
+        };
+        let mut gone = false;
+        for _ in 0..15 {
+            if !cred_process_running(child_pid) {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        }
+        if !gone {
+            cred_kill_pid(child_pid);
+        }
+        let sleep_gone = sleep_pid <= 1 || !cred_process_running(sleep_pid);
+        if !sleep_gone {
+            cred_kill_pid(sleep_pid);
+        }
+        assert!(err.contains("E_CLI_TIMEOUT"), "expected a timeout error, got {err}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(8));
+        assert!(gone, "recorded pid {child_pid} still running after timeout");
+        assert!(
+            sleep_pid > 1 && sleep_gone,
+            "sleep grandchild {sleep_pid} still running after timeout"
+        );
     }
 }

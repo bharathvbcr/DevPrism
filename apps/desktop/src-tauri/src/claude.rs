@@ -3719,7 +3719,7 @@ pub async fn complete_claude_print(
 /// write and shutdown errors propagate. A child that never reads stdin blocks
 /// the write, and the select then times out and kills it.
 #[cfg(unix)]
-fn direct_child_pids(pid: i32) -> Vec<i32> {
+pub(crate) fn direct_child_pids(pid: i32) -> Vec<i32> {
     #[cfg(target_os = "macos")]
     {
         // `proc_listchildpids` writes `pid_t`s. A NULL buffer does not report
@@ -3801,7 +3801,7 @@ fn kill_spawned_descendants(pid: u32) {
     }
 }
 
-async fn stop_print_child(child: &mut tokio::process::Child) {
+pub(crate) async fn stop_print_child(child: &mut tokio::process::Child) {
     #[cfg(unix)]
     if let Some(pid) = child.id() {
         kill_spawned_descendants(pid);

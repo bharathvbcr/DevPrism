@@ -13,8 +13,30 @@ use crate::agent_process::{
 };
 
 use super::acp_client;
-use super::setup::find_agent_binary;
+use super::setup::{find_agent_binary, stored_cursor_api_key};
 use super::stream_adapter;
+
+/// Puts the stored Cursor key on this child only. Does not touch the process env.
+fn attach_cursor_api_key(cmd: &mut Command, key: Option<&str>) {
+    if let Some(key) = key.map(str::trim).filter(|key| !key.is_empty()) {
+        cmd.env("CURSOR_API_KEY", key);
+    }
+}
+
+fn cursor_print_command(
+    agent_path: &str,
+    cwd: &str,
+    args: Vec<String>,
+    api_key: Option<&str>,
+) -> Command {
+    let mut cmd = Command::new(agent_path);
+    cmd.args(args);
+    cmd.current_dir(cwd);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    attach_cursor_api_key(&mut cmd, api_key);
+    cmd
+}
 
 fn cursor_system_prompt(project_path: &str) -> String {
     let mut system_prompt = String::from(
@@ -35,6 +57,23 @@ fn build_stream_command(
     project_path: &str,
     prompt: &str,
     resume_session_id: Option<&str>,
+) -> Command {
+    // Same source as ACP: the auth file (or an already-present env var), not set_var.
+    build_stream_command_with_key(
+        agent_path,
+        project_path,
+        prompt,
+        resume_session_id,
+        stored_cursor_api_key().as_deref(),
+    )
+}
+
+fn build_stream_command_with_key(
+    agent_path: &str,
+    project_path: &str,
+    prompt: &str,
+    resume_session_id: Option<&str>,
+    api_key: Option<&str>,
 ) -> Command {
     let system = cursor_system_prompt(project_path);
     let full_prompt = format!("{system}\n\n---\n\n{prompt}");
@@ -57,6 +96,7 @@ fn build_stream_command(
     cmd.current_dir(project_path);
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
+    attach_cursor_api_key(&mut cmd, api_key);
     cmd
 }
 
@@ -198,11 +238,12 @@ pub async fn complete_cursor_print(
         full_prompt,
     ];
 
-    let mut cmd = Command::new(&agent_path);
-    cmd.args(args);
-    cmd.current_dir(&cwd_str);
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
+    let mut cmd = cursor_print_command(
+        &agent_path,
+        &cwd_str,
+        args,
+        stored_cursor_api_key().as_deref(),
+    );
     #[cfg(windows)]
     {
         const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -305,4 +346,73 @@ pub async fn complete_cursor_print(
         return Err("cancelled".into());
     }
     outcome
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cursor_key_override(cmd: &Command) -> Option<String> {
+        cmd.as_std().get_envs().find_map(|(name, value)| {
+            (name == "CURSOR_API_KEY").then(|| {
+                value
+                    .map(|v| v.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            })
+        })
+    }
+
+    #[test]
+    fn adv_cred_stream_json_command_receives_saved_cursor_key() {
+        let parent = std::env::var_os("CURSOR_API_KEY");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cwd = dir.path().to_str().expect("utf8 cwd");
+        let key = "test-key-not-a-secret";
+
+        let stream =
+            build_stream_command_with_key("/usr/bin/true", cwd, "prompt", None, Some(key));
+        assert_eq!(cursor_key_override(&stream).as_deref(), Some(key));
+
+        let print = cursor_print_command("/usr/bin/true", cwd, vec!["-p".to_string()], Some(key));
+        assert_eq!(cursor_key_override(&print).as_deref(), Some(key));
+
+        let blank =
+            cursor_print_command("/usr/bin/true", cwd, vec!["-p".to_string()], Some(" \t"));
+        assert!(
+            cursor_key_override(&blank).is_none(),
+            "a blank key must not be placed on the child"
+        );
+        assert_eq!(
+            std::env::var_os("CURSOR_API_KEY"),
+            parent,
+            "building the command must not change the process environment"
+        );
+
+        let src = include_str!("stream_spawn.rs");
+        let prod = src.split("\n#[cfg(test)]").next().expect("production source");
+        let stream_fn = prod
+            .split("fn build_stream_command(")
+            .nth(1)
+            .expect("build_stream_command");
+        let stream_fn = stream_fn
+            .split("fn build_stream_command_with_key(")
+            .next()
+            .expect("stream wrapper");
+        assert!(
+            stream_fn.contains("stored_cursor_api_key().as_deref()"),
+            "stream-json must pass the stored key into the command that sets CURSOR_API_KEY"
+        );
+        let print_fn = prod
+            .split("pub async fn complete_cursor_print(")
+            .nth(1)
+            .expect("complete_cursor_print");
+        assert!(
+            print_fn.contains("stored_cursor_api_key().as_deref()"),
+            "print mode must pass the stored key into the command that sets CURSOR_API_KEY"
+        );
+        assert!(
+            !prod.contains("set_var("),
+            "stream spawn must not set the process environment"
+        );
+    }
 }

@@ -447,7 +447,17 @@ fn read_auth_config_file(path: &Path) -> Result<DevPrismAuthConfig, String> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("Failed to read auth settings: {}", e))?;
     let content = content.trim_start_matches('\u{feff}');
-    let config = serde_json::from_str(content)
+    // serde_json accepts a JSON array as a positional struct when the type
+    // implements Default. An array is not an auth file: `[]` must not become
+    // "no key", and a positional array must not become a stored key.
+    let value: Value = serde_json::from_str(content)
+        .map_err(|e| format!("Failed to parse auth settings: {}", e))?;
+    if !value.is_object() {
+        return Err(
+            "Failed to parse auth settings: auth file must be a JSON object".to_string(),
+        );
+    }
+    let config = serde_json::from_value(value)
         .map_err(|e| format!("Failed to parse auth settings: {}", e))?;
     restrict_auth_file_permissions(path)?;
     Ok(config)
@@ -6953,6 +6963,11 @@ mod tests {
             (b"\"test-key-not-a-secret\"", "json string"),
             (b"null", "json null"),
             (b"1", "json number"),
+            (b"[]", "json array"),
+            (
+                br#"["claude-code","sk-ant-test-key-not-a-secret"]"#,
+                "json array in field order",
+            ),
             (
                 br#"{"anthropic_api_key":["test-key-not-a-secret"]}"#,
                 "key is an array",
@@ -6988,6 +7003,13 @@ mod tests {
             Ok(Some(cred)) => assert_eq!(cred.api_key, "sk-ant-test-key-not-a-secret"),
             Ok(None) => panic!("a real stored key must not be reported as no key"),
             Err(err) => panic!("valid auth file must parse: {err}"),
+        }
+
+        std::fs::write(&path, b"{}").expect("object with no key");
+        match stored_claude_credential_at(&path) {
+            Ok(None) => {}
+            Ok(Some(cred)) => panic!("object with no key invented {}", cred.api_key),
+            Err(err) => panic!("a valid object with no key may still be no key, got {err}"),
         }
     }
 

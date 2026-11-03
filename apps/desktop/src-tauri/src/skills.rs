@@ -2948,4 +2948,272 @@ mod tests {
             "over-cap pax size was not rejected before the body write"
         );
     }
+
+    /// `dst/link/newfile` where `link` is a symlink to a directory and `newfile`
+    /// does not exist yet. Recursing into that directory must not create it outside.
+    #[cfg(unix)]
+    #[test]
+    fn adv_copy_dir_does_not_create_missing_file_through_dest_dir_symlink() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        let dst = tmp.path().join("dst");
+        std::fs::create_dir_all(&dst).unwrap();
+        symlink(&outside, dst.join("link")).unwrap();
+
+        let src = tmp.path().join("src");
+        let nested = src.join("link").join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(src.join("link").join("newfile"), b"LEAKED-NEW").unwrap();
+        std::fs::write(nested.join("newfile"), b"LEAKED-NESTED").unwrap();
+
+        let copied = copy_dir_recursive(&src, &dst);
+
+        let direct_src = tmp.path().join("direct-src");
+        std::fs::create_dir_all(&direct_src).unwrap();
+        std::fs::write(direct_src.join("newfile"), b"LEAKED-DIRECT").unwrap();
+        let copied_direct = copy_dir_recursive(&direct_src, &dst.join("link").join("newdir"));
+        let mut link_dot = dst.join("link");
+        link_dot.push(".");
+        let copied_dot = copy_dir_recursive(&direct_src, &link_dot);
+        let mut link_slash = dst.join("link");
+        link_slash.push("");
+        let copied_slash = copy_dir_recursive(&direct_src, &link_slash);
+
+        let leaked = [
+            outside.join("newfile"),
+            outside.join("nested"),
+            outside.join("nested").join("newfile"),
+            outside.join("newdir"),
+            outside.join("newdir").join("newfile"),
+        ];
+        let hits: Vec<String> = leaked
+            .iter()
+            .filter(|path| path.exists())
+            .map(|path| path.display().to_string())
+            .collect();
+        assert!(
+            hits.is_empty(),
+            "destination dir symlink created {}: recursive={copied:?} direct={copied_direct:?} dot={copied_dot:?} slash={copied_slash:?} dot_path={} slash_path={}",
+            hits.join(", "),
+            link_dot.display(),
+            link_slash.display()
+        );
+        let err = copied.expect_err("recursing through a destination dir symlink must fail");
+        assert!(
+            err.contains("symlink"),
+            "recursive copy failed closed for a reason other than the symlink: {err}"
+        );
+        let direct_err = copied_direct
+            .expect_err("copy into a missing directory below a destination symlink must fail");
+        assert!(
+            direct_err.contains("symlink"),
+            "direct copy failed closed for a reason other than the symlink: {direct_err}"
+        );
+        // `link/.` and `link/` make lstat report the target directory. The file
+        // copy still walks back to the symlink, because `Path::pop` drops `.`.
+        let dot_err = copied_dot.expect_err("copy through link/. must fail closed");
+        assert!(dot_err.contains("symlink"), "{dot_err}");
+        let slash_err = copied_slash.expect_err("copy through link/ must fail closed");
+        assert!(slash_err.contains("symlink"), "{slash_err}");
+    }
+
+    /// Two declared sizes that each fit under the cap but sum over it.
+    /// The second pax size is one byte over the remaining budget; its payload is a few bytes.
+    #[test]
+    fn adv_unpack_sum_of_pax_sizes_over_cap_does_not_create_second_file() {
+        let first_len: u64 = 32;
+        let second_declared = MAX_TARBALL_UNCOMPRESSED_BYTES - first_len + 1;
+        assert!(second_declared < MAX_TARBALL_UNCOMPRESSED_BYTES);
+        assert!(first_len + second_declared > MAX_TARBALL_UNCOMPRESSED_BYTES);
+        let payload = b"LEAKED!!";
+        let pax_body = adv_pax_record("size", &second_declared.to_string());
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&ustar_header("repo/first.bin", first_len, b'0', ""));
+        raw.extend(std::iter::repeat(b'a').take(first_len as usize));
+        adv_pad_512(&mut raw);
+        raw.extend_from_slice(&ustar_header(
+            "./PaxHeaders/second",
+            pax_body.len() as u64,
+            b'x',
+            "",
+        ));
+        raw.extend_from_slice(&pax_body);
+        adv_pad_512(&mut raw);
+        raw.extend_from_slice(&ustar_header(
+            "repo/second.bin",
+            payload.len() as u64,
+            b'0',
+            "",
+        ));
+        raw.extend_from_slice(payload);
+        adv_pad_512(&mut raw);
+        raw.extend_from_slice(&[0u8; 1024]);
+        let bytes = gzip_bytes(&raw);
+
+        let mut first_size = None;
+        let mut second_size = None;
+        let mut second_header = None;
+        {
+            let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(bytes.as_slice()));
+            let mut entries = archive.entries().unwrap();
+            while let Some(entry) = entries.next() {
+                let mut entry = entry.expect("tar entry");
+                let name = entry.path().unwrap().display().to_string();
+                let size = entry.size();
+                let header_size = entry.header().size().unwrap();
+                if name.ends_with("first.bin") {
+                    first_size = Some(size);
+                    std::io::copy(&mut entry, &mut std::io::sink()).unwrap();
+                } else if name.ends_with("second.bin") {
+                    second_size = Some(size);
+                    second_header = Some(header_size);
+                    break;
+                } else if size <= 1024 * 1024 {
+                    std::io::copy(&mut entry, &mut std::io::sink()).unwrap();
+                } else {
+                    break;
+                }
+            }
+        }
+        let first_size = first_size.expect("first entry missing");
+        let second_size = second_size.expect("second entry missing");
+        let second_header = second_header.expect("second header size missing");
+        assert!(
+            first_size <= MAX_TARBALL_UNCOMPRESSED_BYTES
+                && second_size <= MAX_TARBALL_UNCOMPRESSED_BYTES
+                && first_size + second_size > MAX_TARBALL_UNCOMPRESSED_BYTES,
+            "probe sizes were not each under the cap and over it together: \
+             first={first_size} second={second_size} header={second_header}"
+        );
+
+        let tmp = tempfile::tempdir().unwrap();
+        let result = unpack_tarball(&bytes, tmp.path());
+        let second_paths = [
+            tmp.path().join("repo-raw").join("repo").join("second.bin"),
+            tmp.path().join("repo").join("second.bin"),
+        ];
+        for path in &second_paths {
+            let written = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+            assert!(
+                !path.exists(),
+                "second file was created at {} ({written} bytes) despite declared sizes \
+                 {first_size}+{second_size}: {result:?}",
+                path.display()
+            );
+        }
+        let err = result.expect_err("sum of declared sizes over the cap must fail");
+        assert!(
+            err.contains("uncompressed"),
+            "sum over the cap must be the uncompressed cap, got {err} \
+             (first={first_size} second={second_size} header={second_header})"
+        );
+        assert!(
+            tmp.path()
+                .join("repo-raw")
+                .join("repo")
+                .join("first.bin")
+                .is_file(),
+            "first file was not written before the second entry was rejected: {err}"
+        );
+    }
+
+    /// Global pax `size` (typeflag `g`). tar 0.4.46 does not apply that record to
+    /// the next entry; a body past the cap would be a break, a small ustar body is not.
+    #[test]
+    fn adv_unpack_global_pax_size_does_not_write_over_cap_body() {
+        let big = MAX_TARBALL_UNCOMPRESSED_BYTES + 1;
+        let pax_body = adv_pax_record("size", &big.to_string());
+        let payload = b"tiny";
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&ustar_header(
+            "./PaxHeaders/global",
+            pax_body.len() as u64,
+            b'g',
+            "",
+        ));
+        raw.extend_from_slice(&pax_body);
+        adv_pad_512(&mut raw);
+        raw.extend_from_slice(&ustar_header(
+            "repo/after-global.bin",
+            payload.len() as u64,
+            b'0',
+            "",
+        ));
+        raw.extend_from_slice(payload);
+        adv_pad_512(&mut raw);
+        raw.extend_from_slice(&[0u8; 1024]);
+        let bytes = gzip_bytes(&raw);
+
+        let mut file_size = None;
+        let mut header_size = None;
+        {
+            let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(bytes.as_slice()));
+            let mut entries = archive.entries().unwrap();
+            while let Some(entry) = entries.next() {
+                let mut entry = entry.expect("tar entry");
+                let is_file = entry.header().entry_type().is_file();
+                let size = entry.size();
+                let header = entry.header().size().unwrap();
+                if is_file {
+                    file_size = Some(size);
+                    header_size = Some(header);
+                    if size <= payload.len() as u64 {
+                        std::io::copy(&mut entry, &mut std::io::sink()).unwrap();
+                    }
+                    break;
+                } else if size <= 1024 * 1024 {
+                    std::io::copy(&mut entry, &mut std::io::sink()).unwrap();
+                } else {
+                    break;
+                }
+            }
+        }
+        let file_size = file_size.expect("regular file after global pax missing");
+        let header_size = header_size.expect("header size missing");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let result = unpack_tarball(&bytes, tmp.path());
+        let paths = [
+            tmp.path()
+                .join("repo-raw")
+                .join("repo")
+                .join("after-global.bin"),
+            tmp.path().join("repo").join("after-global.bin"),
+        ];
+        let written = paths
+            .iter()
+            .map(|path| std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0))
+            .max()
+            .unwrap();
+        let exists = paths.iter().any(|path| path.exists());
+        if file_size > MAX_TARBALL_UNCOMPRESSED_BYTES {
+            assert!(
+                !exists && written == 0,
+                "global pax Entry::size {file_size} is over the cap but wrote {written} bytes: {result:?}"
+            );
+            let err = result.expect_err("over-cap global pax size must fail");
+            assert!(
+                err.contains("uncompressed"),
+                "over-cap global pax size was not the uncompressed cap: {err}"
+            );
+        } else {
+            assert!(
+                written <= file_size && written <= payload.len() as u64,
+                "global pax wrote {written} bytes with Entry::size {file_size} header {header_size}: {result:?}"
+            );
+            assert!(
+                written <= MAX_TARBALL_UNCOMPRESSED_BYTES,
+                "global pax body of {written} bytes is past the cap"
+            );
+            let err = result.err();
+            assert!(
+                err.is_none(),
+                "small ustar body after a global pax header failed: {err:?}"
+            );
+            let got = std::fs::read(tmp.path().join("repo").join("after-global.bin")).unwrap();
+            assert_eq!(got, payload);
+        }
+    }
 }

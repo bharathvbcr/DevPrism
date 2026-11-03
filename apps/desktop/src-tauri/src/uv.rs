@@ -282,37 +282,23 @@ pub async fn install_uv(window: WebviewWindow) -> Result<(), String> {
         if std::fs::create_dir_all(&local_bin).is_err() {
             let user = std::env::var("USER").unwrap_or_default();
             let local_dir = home.join(".local");
-            let script = format!(
-                "mkdir -p '{}' && chown -R {} '{}'",
-                local_bin.display(),
-                user,
-                local_dir.display()
-            );
-            // The admin-password dialog waits on the user; keep that wait off
-            // the async runtime workers.
-            let output = tauri::async_runtime::spawn_blocking(move || {
-                std::process::Command::new("osascript")
-                    .args([
-                        "-e",
-                        &format!(
-                            "do shell script \"{}\" with administrator privileges",
-                            script
-                        ),
-                    ])
-                    .output()
-                    .map_err(|e| format!("Failed to fix permissions for ~/.local: {}", e))
-            })
-            .await
-            .map_err(|e| format!("Elevation task failed: {e}"))??;
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(format!(
-                    "Failed to create ~/.local/bin: {}. \
-                     Please run: sudo chown -R $(whoami) ~/.local",
-                    stderr.trim()
-                ));
-            }
+            let script = crate::elevation::build_mkdir_chown_script(&local_bin, &user, &local_dir)
+                .map_err(|e| {
+                    format!(
+                        "Failed to create ~/.local/bin: {e} \
+                         Please run: sudo chown -R $(whoami) ~/.local"
+                    )
+                })?;
+            // Bounded osascript. The admin dialog must not wait forever, and
+            // the path is AppleScript-quoted by the elevation helper.
+            crate::elevation::run_administrator_shell(&script)
+                .await
+                .map_err(|e| {
+                    format!(
+                        "Failed to create ~/.local/bin: {e} \
+                         Please run: sudo chown -R $(whoami) ~/.local"
+                    )
+                })?;
         }
     }
 

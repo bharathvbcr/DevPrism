@@ -14,6 +14,7 @@ mod claude;
 mod claude_process;
 mod comments;
 mod cursor_agent;
+mod elevation;
 pub mod export;
 mod google_auth;
 mod groq_setup;

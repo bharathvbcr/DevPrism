@@ -2642,4 +2642,140 @@ mod tests {
         );
         assert!(!linked_dst.join("secret.txt").exists());
     }
+
+    /// A symlink or hardlink entry must not be created, and a later file
+    /// entry under that name must not write the link target outside the tree.
+    #[cfg(unix)]
+    #[test]
+    fn adv_unpack_does_not_follow_symlink_or_hardlink_entries() {
+        use std::os::unix::fs::MetadataExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tmp.path().join("outside-dir");
+        std::fs::create_dir_all(&outside).unwrap();
+        let sentinel_dir = tempfile::tempdir().unwrap();
+        let sentinel = sentinel_dir.path().join("hard-sentinel");
+        std::fs::write(&sentinel, b"SECRET-HARDLINK").unwrap();
+        let before_nlink = std::fs::metadata(&sentinel).unwrap().nlink();
+        let outside_link = outside.to_string_lossy().into_owned();
+        let sentinel_link = sentinel.to_string_lossy().into_owned();
+        let bytes = gzip_tar_with(|builder| {
+            append_bytes(builder, "repo/skills/demo/SKILL.md", b"hello-skill");
+            let mut link = tar::Header::new_gnu();
+            link.set_entry_type(tar::EntryType::symlink());
+            link.set_size(0);
+            builder
+                .append_link(&mut link, "repo/escape", &outside_link)
+                .unwrap();
+            append_bytes(builder, "repo/escape/pwned.txt", b"PWNED-SYMLINK");
+            let mut hard = tar::Header::new_gnu();
+            hard.set_entry_type(tar::EntryType::hard_link());
+            hard.set_size(0);
+            builder
+                .append_link(&mut hard, "repo/skills/demo/hard", &sentinel_link)
+                .unwrap();
+        });
+        let unpack_result = unpack_tarball(&bytes, tmp.path());
+        assert!(
+            !outside.join("pwned.txt").exists(),
+            "symlink entry was followed and wrote outside: {unpack_result:?}"
+        );
+        assert!(
+            !tree_has_bytes(&outside, b"PWNED-SYMLINK"),
+            "link target directory received the file body"
+        );
+        let demo = tmp.path().join("repo").join("skills").join("demo");
+        if demo.join("escape").exists() || tmp.path().join("repo").join("escape").exists() {
+            let escape = tmp.path().join("repo").join("escape");
+            if escape.exists() {
+                let meta = std::fs::symlink_metadata(&escape).unwrap();
+                assert!(
+                    !meta.file_type().is_symlink(),
+                    "symlink entry was materialized at {}",
+                    escape.display()
+                );
+            }
+        }
+        assert!(
+            std::fs::symlink_metadata(demo.join("hard")).is_err(),
+            "hardlink entry was materialized"
+        );
+        assert_eq!(
+            std::fs::metadata(&sentinel).unwrap().nlink(),
+            before_nlink,
+            "hardlink entry linked the outside sentinel"
+        );
+        let extracted = tmp.path().join("repo");
+        assert!(
+            !extracted.exists() || !tree_has_bytes(&extracted, b"SECRET-HARDLINK"),
+            "hardlink target contents were written into the extracted tree"
+        );
+        let raw = tmp.path().join("repo-raw");
+        assert!(
+            !raw.exists() || !tree_has_bytes(&raw, b"SECRET-HARDLINK"),
+            "hardlink target contents were written into the raw tree"
+        );
+    }
+
+    fn adv_pax_record(key: &str, value: &str) -> Vec<u8> {
+        let mut len = 1usize;
+        for _ in 0..8 {
+            let rec = format!("{len} {key}={value}\n");
+            if rec.len() == len {
+                return rec.into_bytes();
+            }
+            len = rec.len();
+        }
+        panic!("could not size pax record for {key}");
+    }
+
+    fn adv_pad_512(buf: &mut Vec<u8>) {
+        let rem = buf.len() % 512;
+        if rem != 0 {
+            buf.resize(buf.len() + (512 - rem), 0);
+        }
+    }
+
+    /// Pax `path` can hide `..` or an absolute name past the ustar name field.
+    #[test]
+    fn adv_unpack_refuses_pax_absolute_and_parent_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let abs_target = tmp.path().join("abs-escape-target");
+        let parent_target = tmp.path().join("parent-escape-target");
+        let abs_body = adv_pax_record("path", &abs_target.to_string_lossy());
+        let mut raw = ustar_header("./PaxHeaders/abs", abs_body.len() as u64, b'x', "").to_vec();
+        raw.extend_from_slice(&abs_body);
+        adv_pad_512(&mut raw);
+        raw.extend_from_slice(&ustar_header("repo/local.bin", 5, b'0', ""));
+        raw.extend_from_slice(b"PWNED");
+        adv_pad_512(&mut raw);
+        raw.extend_from_slice(&[0u8; 1024]);
+        let err = unpack_tarball(&gzip_bytes(&raw), tmp.path()).unwrap_err();
+        assert!(
+            err.to_lowercase().contains("refus")
+                || err.to_lowercase().contains("absolute")
+                || err.to_lowercase().contains("parent"),
+            "absolute pax path must be refused: {err}"
+        );
+        assert!(!abs_target.exists(), "absolute pax path was written");
+        assert!(!tree_has_bytes(tmp.path(), b"PWNED"));
+
+        let parent_body = adv_pax_record(
+            "path",
+            &format!("repo/../../{}", parent_target.file_name().unwrap().to_string_lossy()),
+        );
+        let mut raw = ustar_header("./PaxHeaders/dot", parent_body.len() as u64, b'x', "").to_vec();
+        raw.extend_from_slice(&parent_body);
+        adv_pad_512(&mut raw);
+        raw.extend_from_slice(&ustar_header("repo/local.bin", 5, b'0', ""));
+        raw.extend_from_slice(b"PWNED");
+        adv_pad_512(&mut raw);
+        raw.extend_from_slice(&[0u8; 1024]);
+        let err = unpack_tarball(&gzip_bytes(&raw), tmp.path()).unwrap_err();
+        assert!(
+            err.to_lowercase().contains("refus") || err.to_lowercase().contains("parent"),
+            "pax parent path must be refused: {err}"
+        );
+        assert!(!parent_target.exists(), "pax .. path was written");
+        assert!(!tree_has_bytes(tmp.path(), b"PWNED"));
+    }
 }

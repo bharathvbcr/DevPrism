@@ -88,4 +88,81 @@ describe("shell confirm panel", () => {
       ["run_shell_command", { command, cwd: PROJECT }],
     ]);
   });
+
+  async function expectHeldUntilAcknowledged(command: string) {
+    renderShell(command);
+    await openConfirm();
+    const shown = confirmCommand();
+    expect(shown.textContent).toBe(command);
+    expect(shown.className).toContain("whitespace-pre-wrap");
+    const run = screen.getByRole("button", { name: "Run" });
+    expect(run).toBeDisabled();
+    fireEvent.click(run);
+    expect(shellInvocations()).toEqual([]);
+    await userEvent.click(
+      screen.getByRole("checkbox", { name: "Run the entire command block" }),
+    );
+    expect(screen.getByRole("button", { name: "Run" })).toBeEnabled();
+    await userEvent.click(
+      screen.getByRole("checkbox", { name: "Run the entire command block" }),
+    );
+    expect(screen.getByRole("button", { name: "Run" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+    expect(shellInvocations()).toEqual([]);
+    await userEvent.click(
+      screen.getByRole("checkbox", { name: "Run the entire command block" }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Run" }));
+    expect(shellInvocations()).toEqual([
+      ["run_shell_command", { command, cwd: PROJECT }],
+    ]);
+  }
+
+  it("holds a semicolon command until the box is checked, then sends all of it", async () => {
+    await expectHeldUntilAcknowledged("echo a; echo b");
+  });
+
+  it("holds a pipe command until the box is checked, then sends all of it", async () => {
+    await expectHeldUntilAcknowledged("echo a | wc -l");
+  });
+
+  it("shows the stripped multi-line block and sends that same string", async () => {
+    const command = "echo one\necho two | wc -l; echo three";
+    renderShell(`$ echo one\n$ echo two | wc -l; echo three`);
+    await openConfirm();
+    expect(confirmCommand().textContent).toBe(command);
+    const run = screen.getByRole("button", { name: "Run" });
+    expect(run).toBeDisabled();
+    fireEvent.click(run);
+    expect(shellInvocations()).toEqual([]);
+    await userEvent.click(
+      screen.getByRole("checkbox", { name: "Run the entire command block" }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Run" }));
+    expect(shellInvocations()).toEqual([
+      ["run_shell_command", { command, cwd: PROJECT }],
+    ]);
+  });
+
+  it("sends a one-line && backtick and substitution command whole", async () => {
+    const command = "echo `id` && echo $(whoami)";
+    renderShell(command);
+    await openConfirm();
+    expect(confirmCommand().textContent).toBe(command);
+    const run = screen.getByRole("button", { name: "Run" });
+    const blocked = (run as HTMLButtonElement).disabled;
+    if (blocked) {
+      await userEvent.click(
+        screen.getByRole("checkbox", { name: "Run the entire command block" }),
+      );
+    }
+    await userEvent.click(screen.getByRole("button", { name: "Run" }));
+    expect(shellInvocations()).toEqual([
+      ["run_shell_command", { command, cwd: PROJECT }],
+    ]);
+    // Residual, not a failure: newline / ';' / '|' are the second-ack
+    // criteria. `&&`, backticks, and $() are outside that list.
+    console.log(`F-16 residual && first-confirm blocked=${blocked}`);
+    expect(typeof blocked).toBe("boolean");
+  });
 });

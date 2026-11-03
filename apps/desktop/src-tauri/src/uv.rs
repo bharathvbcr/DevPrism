@@ -510,3 +510,40 @@ pub async fn uv_run_command(
         exit_code,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn installer_strings_and_uv_run_command_stay_unconfined() {
+        let src = include_str!("uv.rs");
+        let prod = src.split("#[cfg(test)]").next().unwrap_or(src);
+        assert!(
+            prod.contains("curl -LsSf https://astral.sh/uv/install.sh | sh"),
+            "unix installer string changed"
+        );
+        assert!(
+            prod.contains("irm https://astral.sh/uv/install.ps1 | iex"),
+            "windows installer string changed"
+        );
+        assert!(
+            prod.contains("pub async fn uv_run_command"),
+            "uv_run_command was removed"
+        );
+        let run_fn = prod
+            .split("pub async fn uv_run_command")
+            .nth(1)
+            .unwrap_or("");
+        assert!(
+            !run_fn.contains("allowlist") && !run_fn.contains("allow_list"),
+            "uv_run_command gained an allowlist"
+        );
+        assert!(
+            prod.contains("crate::elevation::build_mkdir_chown_script"),
+            "uv elevation no longer uses the shared helper"
+        );
+        assert!(
+            prod.contains("crate::elevation::run_administrator_shell"),
+            "uv elevation no longer uses the shared helper"
+        );
+    }
+}

@@ -267,6 +267,133 @@ mod tests {
         );
     }
 
+    #[test]
+    fn newline_quote_and_backslash_do_not_split_the_applescript_literal() {
+        let path = PathBuf::from("a\"b\\c'd\nset probeCanary to 1\n");
+        let script = build_mkdir_chown_script(&path, "alice", &path).unwrap();
+        let source = osascript_admin_source(&script);
+        let decoded = decode_admin_script(&source)
+            .expect("AppleScript literal must close only at the end");
+        assert_eq!(decoded, script);
+        assert!(decoded.contains('\n'));
+        assert!(decoded.contains('"'));
+        assert!(decoded.contains('\\'));
+        assert!(decoded.contains("'\\''"));
+
+        let quoted = apple_script_quoted(&script);
+        let probe = format!(
+            "set s to {quoted}\ntry\nreturn probeCanary as string\non error number n\nreturn \"NO_SPLIT:\" & n\nend try\n"
+        );
+        assert!(
+            !probe.contains("administrator"),
+            "the parser probe must not request administrator privileges"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let probe_path = dir.path().join("probe.applescript");
+        std::fs::write(&probe_path, &probe).unwrap();
+        let output = std::process::Command::new("osascript")
+            .arg(&probe_path)
+            .output()
+            .expect("osascript");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stdout.contains("NO_SPLIT"),
+            "newline split the AppleScript literal into a second statement\n\
+             stdout={stdout}\nstderr={stderr}\nsource={source}"
+        );
+
+        let cr_path = PathBuf::from("foo\rset probeCanary to 1\r");
+        let cr_script = build_mkdir_chown_script(&cr_path, "alice", &cr_path).unwrap();
+        let cr_probe = format!(
+            "set s to {}\ntry\nreturn probeCanary as string\non error number n\nreturn \"NO_SPLIT:\" & n\nend try\n",
+            apple_script_quoted(&cr_script)
+        );
+        assert!(!cr_probe.contains("administrator"));
+        let cr_path_file = dir.path().join("cr.applescript");
+        std::fs::write(&cr_path_file, &cr_probe).unwrap();
+        let cr_out = std::process::Command::new("osascript")
+            .arg(&cr_path_file)
+            .output()
+            .expect("osascript");
+        let cr_stdout = String::from_utf8_lossy(&cr_out.stdout);
+        let cr_stderr = String::from_utf8_lossy(&cr_out.stderr);
+        assert!(
+            cr_stdout.contains("NO_SPLIT"),
+            "carriage return split the AppleScript literal\nstdout={cr_stdout}\nstderr={cr_stderr}"
+        );
+    }
+
+    #[test]
+    fn more_invalid_usernames_are_not_interpolated() {
+        let path = PathBuf::from("/tmp/devprism-elevation");
+        for user in ["$(id)", "`id`", "a/b", ".hidden", "ä", "alice\r", "a\\b"] {
+            let err = build_mkdir_chown_script(&path, user, &path).unwrap_err();
+            assert!(!err.contains(user), "{user:?} was interpolated into: {err}");
+            assert!(!err.contains("chown"), "{user:?}: {err}");
+        }
+    }
+
+    /// `kill_on_drop` reaps the direct child. A grandchild it leaves behind is
+    /// the residual the brief allowed. This does not run osascript.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn adv_bounded_command_grandchild_is_residual() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell_pid_path = dir.path().join("shell.pid");
+        let sleep_pid_path = dir.path().join("sleep.pid");
+        let script = format!(
+            "echo $$ > {} ; sleep 60 & echo $! > {} ; wait",
+            shell_single_quote(&shell_pid_path.to_string_lossy()),
+            shell_single_quote(&sleep_pid_path.to_string_lossy())
+        );
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.arg("-c");
+        cmd.arg(&script);
+        let err = run_command_bounded(cmd, Duration::from_millis(500))
+            .await
+            .expect_err("the waiting shell must hit the deadline");
+        assert!(
+            err.to_lowercase().contains("timed out"),
+            "timeout must be reported, got {err}"
+        );
+        let shell_pid: i32 = std::fs::read_to_string(&shell_pid_path)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let sleep_pid: i32 = std::fs::read_to_string(&sleep_pid_path)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(shell_pid > 1 && sleep_pid > 1);
+        assert_ne!(shell_pid as u32, std::process::id());
+        assert_ne!(sleep_pid as u32, std::process::id());
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while pid_alive(shell_pid) && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            !pid_alive(shell_pid),
+            "direct child {shell_pid} survived kill_on_drop"
+        );
+        let survived = pid_alive(sleep_pid);
+        if survived && sleep_pid > 1 {
+            unsafe {
+                libc::kill(sleep_pid, libc::SIGKILL);
+            }
+        }
+        eprintln!(
+            "F-7 residual: run_command_bounded grandchild survived={survived} pid={sleep_pid}"
+        );
+        let _ = std::fs::create_dir_all("/tmp/wave4-results");
+        let _ = std::fs::write(
+            "/tmp/wave4-results/f7-grandchild.txt",
+            format!("survived={survived} pid={sleep_pid}\n"),
+        );
+    }
+
     #[cfg(unix)]
     fn pid_alive(pid: i32) -> bool {
         if pid <= 0 {

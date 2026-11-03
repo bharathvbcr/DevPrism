@@ -960,12 +960,11 @@ fn extract_archive_capped<R: std::io::Read>(
         }
         refuse_symlink_component(raw_dir, &dest)?;
 
-        // Reject on the declared size before reading the body, so a header
-        // that claims more than the cap cannot force a huge allocation.
-        let declared = entry
-            .header()
-            .size()
-            .map_err(|e| format!("Invalid tar entry size for {}: {e}", rel.display()))?;
+        // `Entry::size` is the pax size when a pax size record exists.
+        // `header().size()` stays the ustar field, which a crafted archive can
+        // leave at 0 while the body is larger than the cap. Reject before the
+        // output file is opened and before the body is copied.
+        let declared = entry.size();
         let next_uncompressed = uncompressed.saturating_add(declared);
         if next_uncompressed > MAX_TARBALL_UNCOMPRESSED_BYTES {
             return Err(format!(
@@ -1297,10 +1296,64 @@ fn copy_skills(repo_dir: &Path, target_dir: &Path) -> Result<usize, String> {
     replace_result
 }
 
+/// Refuse when `path`, or a missing path's parent component, is a symlink.
+///
+/// Stops at the first existing real directory. Ancestors above that directory
+/// (for example `/var` -> `/private/var`) are not part of the destination.
+fn refuse_dest_symlink(path: &Path) -> Result<(), String> {
+    let mut cur = path.to_path_buf();
+    let mut at_leaf = true;
+    loop {
+        match std::fs::symlink_metadata(&cur) {
+            Ok(meta) => {
+                let file_type = meta.file_type();
+                if file_type.is_symlink() {
+                    return Err(format!(
+                        "Refusing to follow symlink {} while copying skills",
+                        cur.display()
+                    ));
+                }
+                if file_type.is_dir() {
+                    return Ok(());
+                }
+                if at_leaf {
+                    return Ok(());
+                }
+                return Err(format!(
+                    "Refusing to copy through non-directory {}",
+                    cur.display()
+                ));
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                at_leaf = false;
+                if !cur.pop() {
+                    return Ok(());
+                }
+            }
+            Err(err) => {
+                return Err(format!("Failed to stat {}: {}", cur.display(), err));
+            }
+        }
+    }
+}
+
+/// Copy one regular file. `O_NOFOLLOW` on the destination rejects a symlink
+/// planted at the final path; `std::fs::copy` would follow it.
+fn copy_regular_file_nofollow(src: &Path, dst: &Path) -> Result<(), String> {
+    refuse_dest_symlink(dst)?;
+    let mut input =
+        std::fs::File::open(src).map_err(|e| format!("Failed to read {}: {}", src.display(), e))?;
+    let mut output = open_extracted_file(dst)?;
+    std::io::copy(&mut input, &mut output)
+        .map_err(|e| format!("Failed to copy {}: {}", src.display(), e))?;
+    Ok(())
+}
+
 /// Recursively copy a directory without following symlinks.
 ///
 /// `symlink_metadata` is required: `Path::is_dir` and `std::fs::copy` follow
-/// links, which would copy a link target into `~/.claude/skills`.
+/// links, which would copy a link target into `~/.claude/skills` or write
+/// through a symlink already planted at the destination.
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
     let src_meta = std::fs::symlink_metadata(src)
         .map_err(|e| format!("Failed to stat {}: {}", src.display(), e))?;
@@ -1315,8 +1368,12 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
         return Err(format!("Not a directory: {}", src.display()));
     }
 
+    refuse_dest_symlink(dst)?;
     std::fs::create_dir_all(dst)
         .map_err(|e| format!("Failed to create dir {}: {}", dst.display(), e))?;
+    // `create_dir_all` follows a directory symlink. Re-check the final path
+    // in case one was planted between the stat and the create.
+    refuse_dest_symlink(dst)?;
 
     let entries = std::fs::read_dir(src)
         .map_err(|e| format!("Failed to read dir {}: {}", src.display(), e))?;
@@ -1334,8 +1391,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
         if file_type.is_dir() {
             copy_dir_recursive(&entry_path, &target)?;
         } else if file_type.is_file() {
-            std::fs::copy(&entry_path, &target)
-                .map_err(|e| format!("Failed to copy {}: {}", entry_path.display(), e))?;
+            copy_regular_file_nofollow(&entry_path, &target)?;
         }
     }
 
@@ -2761,7 +2817,10 @@ mod tests {
 
         let parent_body = adv_pax_record(
             "path",
-            &format!("repo/../../{}", parent_target.file_name().unwrap().to_string_lossy()),
+            &format!(
+                "repo/../../{}",
+                parent_target.file_name().unwrap().to_string_lossy()
+            ),
         );
         let mut raw = ustar_header("./PaxHeaders/dot", parent_body.len() as u64, b'x', "").to_vec();
         raw.extend_from_slice(&parent_body);
@@ -2777,5 +2836,116 @@ mod tests {
         );
         assert!(!parent_target.exists(), "pax .. path was written");
         assert!(!tree_has_bytes(tmp.path(), b"PWNED"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn adv_copy_dir_does_not_follow_preplanted_destination_symlink() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        let outside_file = outside.join("planted-target.txt");
+        std::fs::write(&outside_file, b"ORIGINAL").unwrap();
+
+        let dst = tmp.path().join("dst");
+        std::fs::create_dir_all(&dst).unwrap();
+        symlink(&outside_file, dst.join("real.txt")).unwrap();
+        symlink(&outside, dst.join("sub")).unwrap();
+
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(src.join("sub")).unwrap();
+        std::fs::write(src.join("real.txt"), b"LEAKED-FILE").unwrap();
+        std::fs::write(src.join("sub").join("secret.txt"), b"LEAKED-DIR").unwrap();
+
+        let copied = copy_dir_recursive(&src, &dst);
+        let file_bytes = std::fs::read(&outside_file).unwrap_or_default();
+        let dir_leak = outside.join("secret.txt");
+        let dir_bytes = std::fs::read(&dir_leak).unwrap_or_default();
+
+        let outside_root = tmp.path().join("outside-root");
+        std::fs::create_dir_all(&outside_root).unwrap();
+        let dst_link = tmp.path().join("dst-link");
+        symlink(&outside_root, &dst_link).unwrap();
+        let src_root = tmp.path().join("src-root");
+        std::fs::create_dir_all(&src_root).unwrap();
+        std::fs::write(src_root.join("note.txt"), b"LEAKED-ROOT").unwrap();
+        let copied_root = copy_dir_recursive(&src_root, &dst_link);
+        let root_bytes = std::fs::read(outside_root.join("note.txt")).unwrap_or_default();
+
+        let mut leaks = Vec::new();
+        if file_bytes == b"LEAKED-FILE" {
+            leaks.push(format!("file symlink followed ({copied:?})"));
+        }
+        if dir_bytes == b"LEAKED-DIR" {
+            leaks.push(format!("directory symlink followed ({copied:?})"));
+        }
+        if root_bytes == b"LEAKED-ROOT" {
+            leaks.push(format!(
+                "destination root symlink followed ({copied_root:?})"
+            ));
+        }
+        assert!(
+            leaks.is_empty(),
+            "pre-planted destination symlinks received file contents outside the tree: {}",
+            leaks.join("; ")
+        );
+    }
+
+    #[test]
+    fn adv_unpack_pax_declared_size_over_cap_does_not_write_body() {
+        let big = MAX_TARBALL_UNCOMPRESSED_BYTES + 1;
+        let pax_body = adv_pax_record("size", &big.to_string());
+        let mut header_bytes = Vec::new();
+        header_bytes.extend_from_slice(&ustar_header(
+            "./PaxHeaders/huge",
+            pax_body.len() as u64,
+            b'x',
+            "",
+        ));
+        header_bytes.extend_from_slice(&pax_body);
+        adv_pad_512(&mut header_bytes);
+        header_bytes.extend_from_slice(&ustar_header("repo/huge.bin", 0, b'0', ""));
+
+        let enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        let mut writer = std::io::BufWriter::new(enc);
+        use std::io::Write;
+        writer.write_all(&header_bytes).unwrap();
+        let chunk = [0u8; 64 * 1024];
+        let mut left = big;
+        while left > 0 {
+            let n = std::cmp::min(left, chunk.len() as u64) as usize;
+            writer.write_all(&chunk[..n]).unwrap();
+            left -= n as u64;
+        }
+        let rem = (big % 512) as usize;
+        if rem != 0 {
+            writer.write_all(&vec![0u8; 512 - rem]).unwrap();
+        }
+        writer.write_all(&[0u8; 1024]).unwrap();
+        writer.flush().unwrap();
+        let enc = writer.into_inner().unwrap();
+        let bytes = enc.finish().unwrap();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let started = std::time::Instant::now();
+        let result = unpack_tarball(&bytes, tmp.path());
+        let huge = tmp.path().join("repo-raw").join("repo").join("huge.bin");
+        let written = std::fs::metadata(&huge).map(|meta| meta.len()).unwrap_or(0);
+        let err = result.expect_err("pax size over the uncompressed cap must fail");
+        assert!(
+            written <= 1024,
+            "pax-declared body wrote {written} bytes before failing: {err} \
+             (elapsed {:?})",
+            started.elapsed()
+        );
+        assert!(
+            err.contains("uncompressed"),
+            "over-cap pax size must be rejected as the uncompressed cap, got {err}"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "over-cap pax size was not rejected before the body write"
+        );
     }
 }

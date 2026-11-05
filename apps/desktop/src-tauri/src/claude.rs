@@ -435,8 +435,8 @@ fn read_auth_config_file(path: &Path) -> Result<DevPrismAuthConfig, String> {
         return Ok(DevPrismAuthConfig::default());
     }
 
-    let meta = std::fs::metadata(path)
-        .map_err(|e| format!("Failed to read auth settings: {}", e))?;
+    let meta =
+        std::fs::metadata(path).map_err(|e| format!("Failed to read auth settings: {}", e))?;
     if meta.len() > MAX_AUTH_FILE_BYTES {
         return Err(format!(
             "Failed to parse auth settings: file exceeds {} bytes",
@@ -453,9 +453,7 @@ fn read_auth_config_file(path: &Path) -> Result<DevPrismAuthConfig, String> {
     let value: Value = serde_json::from_str(content)
         .map_err(|e| format!("Failed to parse auth settings: {}", e))?;
     if !value.is_object() {
-        return Err(
-            "Failed to parse auth settings: auth file must be a JSON object".to_string(),
-        );
+        return Err("Failed to parse auth settings: auth file must be a JSON object".to_string());
     }
     let config = serde_json::from_value(value)
         .map_err(|e| format!("Failed to parse auth settings: {}", e))?;
@@ -694,12 +692,9 @@ fn create_auth_temp_file(dest: &Path) -> Result<(std::fs::File, PathBuf), String
     {
         options.mode(0o600);
     }
-    let file = options.open(&tmp_path).map_err(|e| {
-        format!(
-            "Failed to create auth settings temp file: {}",
-            e
-        )
-    })?;
+    let file = options
+        .open(&tmp_path)
+        .map_err(|e| format!("Failed to create auth settings temp file: {}", e))?;
     if let Err(err) = restrict_auth_file_permissions(&tmp_path) {
         drop(file);
         let _ = std::fs::remove_file(&tmp_path);
@@ -759,9 +754,8 @@ fn replace_existing_file_windows(tmp: &Path, dest: &Path) -> Result<(), String> 
         fn GetLastError() -> u32;
     }
 
-    let to_wide = |path: &Path| -> Vec<u16> {
-        path.as_os_str().encode_wide().chain(Some(0)).collect()
-    };
+    let to_wide =
+        |path: &Path| -> Vec<u16> { path.as_os_str().encode_wide().chain(Some(0)).collect() };
     let replaced = to_wide(dest);
     let replacement = to_wide(tmp);
     let status = unsafe {
@@ -776,7 +770,9 @@ fn replace_existing_file_windows(tmp: &Path, dest: &Path) -> Result<(), String> 
     };
     if status == 0 {
         let err = unsafe { GetLastError() };
-        return Err(format!("Failed to replace auth settings: ReplaceFile {err}"));
+        return Err(format!(
+            "Failed to replace auth settings: ReplaceFile {err}"
+        ));
     }
     Ok(())
 }
@@ -3727,11 +3723,8 @@ pub(crate) fn direct_child_pids(pid: i32) -> Vec<i32> {
         let mut buf = vec![0i32; 64];
         let reported = unsafe {
             extern "C" {
-                fn proc_listchildpids(
-                    ppid: i32,
-                    buffer: *mut libc::c_void,
-                    buffersize: i32,
-                ) -> i32;
+                fn proc_listchildpids(ppid: i32, buffer: *mut libc::c_void, buffersize: i32)
+                    -> i32;
             }
             proc_listchildpids(
                 pid,
@@ -5220,18 +5213,114 @@ pub struct ShellCommandResult {
     pub stderr: String,
 }
 
-fn truncate_shell_output(value: &[u8]) -> String {
-    const MAX_OUTPUT_BYTES: usize = 64 * 1024;
-    let truncated = value.len() > MAX_OUTPUT_BYTES;
-    let mut text = String::from_utf8_lossy(&value[..value.len().min(MAX_OUTPUT_BYTES)]).to_string();
-    if truncated {
-        text.push_str("\n[output truncated]");
+const SHELL_STREAM_CAP: usize = 64 * 1024;
+const SHELL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
+const SHELL_TRUNCATION_MARKER: &str = "\n[output truncated]";
+
+fn shell_stream_text(bytes: &[u8], truncated: bool) -> String {
+    let mut text = String::from_utf8_lossy(bytes).into_owned();
+    if text.len() > SHELL_STREAM_CAP {
+        let mut end = SHELL_STREAM_CAP;
+        while end > 0 && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+    }
+    if !truncated {
+        return text;
+    }
+    while text.len() + SHELL_TRUNCATION_MARKER.len() > SHELL_STREAM_CAP && !text.is_empty() {
+        text.pop();
+    }
+    if text.len() + SHELL_TRUNCATION_MARKER.len() <= SHELL_STREAM_CAP {
+        text.push_str(SHELL_TRUNCATION_MARKER);
     }
     text
 }
 
+fn shell_timeout_message(deadline: std::time::Duration) -> String {
+    let secs = deadline.as_secs();
+    if secs > 0 {
+        format!("Command timed out after {secs} seconds")
+    } else {
+        format!("Command timed out after {} ms", deadline.as_millis())
+    }
+}
+
+/// Read `reader` to EOF, retaining at most `cap` bytes and discarding the rest.
+/// Stopping at the cap would fill the pipe and deadlock the child.
+async fn drain_capped(
+    mut reader: impl tokio::io::AsyncRead + Unpin,
+    cap: usize,
+) -> (Vec<u8>, bool) {
+    use tokio::io::AsyncReadExt;
+    let mut kept = Vec::new();
+    let mut buf = [0u8; 8192];
+    let mut truncated = false;
+    loop {
+        let n = match reader.read(&mut buf).await {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        };
+        if truncated {
+            continue;
+        }
+        let room = cap.saturating_sub(kept.len());
+        if n > room {
+            if room > 0 {
+                kept.extend_from_slice(&buf[..room]);
+            }
+            truncated = true;
+        } else {
+            kept.extend_from_slice(&buf[..n]);
+        }
+    }
+    (kept, truncated)
+}
+
+/// Unix: the shell is started with `process_group(0)`, so its pid is the
+/// process-group id. `kill(-pgid, SIGKILL)` reaches grandchildren. Never
+/// signal pid 0 or 1, and never the test runner's own pid.
+#[cfg(unix)]
+struct ShellGroupGuard {
+    pid: u32,
+    armed: bool,
+}
+
+#[cfg(unix)]
+impl ShellGroupGuard {
+    fn kill_group(&self) {
+        if self.pid <= 1 || self.pid == std::process::id() {
+            return;
+        }
+        let _ = crate::native_agent::manvi_resume_bridge::send_signal_to_process_group(
+            self.pid,
+            libc::SIGKILL,
+        );
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ShellGroupGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.kill_group();
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn run_shell_command(command: String, cwd: String) -> Result<ShellCommandResult, String> {
+    run_shell_command_with_deadline(command, cwd, SHELL_DEADLINE).await
+}
+
+async fn run_shell_command_with_deadline(
+    command: String,
+    cwd: String,
+    deadline: std::time::Duration,
+) -> Result<ShellCommandResult, String> {
     let command = strip_nul(&command).trim().to_string();
     if command.is_empty() {
         return Err("Command is empty".to_string());
@@ -5256,23 +5345,91 @@ pub async fn run_shell_command(command: String, cwd: String) -> Result<ShellComm
     let (shell, args) = ("cmd", vec!["/C".to_string(), command]);
     let mut cmd = create_command(shell, args, &cwd, None)?;
     cmd.kill_on_drop(true);
+    cmd.stdin(std::process::Stdio::null());
+    #[cfg(unix)]
+    {
+        // New process group: pgid == child pid. A deadline must signal the
+        // group, not only the shell. Windows has no equivalent here.
+        cmd.process_group(0);
+    }
 
-    let child = cmd
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to spawn command: {}", e))?;
+    let pid = child.id().unwrap_or(0);
+    #[cfg(unix)]
+    let mut group = ShellGroupGuard {
+        pid,
+        armed: pid > 1,
+    };
 
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(120),
-        child.wait_with_output(),
-    )
-    .await
-    .map_err(|_| "Command timed out after 120 seconds".to_string())?
-    .map_err(|e| format!("Failed to wait for command: {}", e))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Failed to capture stdout".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "Failed to capture stderr".to_string())?;
+    let stdout_task = tokio::spawn(drain_capped(stdout, SHELL_STREAM_CAP));
+    let stderr_task = tokio::spawn(drain_capped(stderr, SHELL_STREAM_CAP));
+
+    let started = tokio::time::Instant::now();
+    let wait_result = tokio::time::timeout_at(started + deadline, child.wait()).await;
+    let status = match wait_result {
+        Ok(Ok(status)) => status,
+        Ok(Err(err)) => {
+            stdout_task.abort();
+            stderr_task.abort();
+            return Err(format!("Failed to wait for command: {err}"));
+        }
+        Err(_) => {
+            // Windows residual: only the direct child is killed. A job object
+            // that would also kill grandchildren is not implemented, and this
+            // path must not be described as a process-group kill.
+            #[cfg(unix)]
+            {
+                group.kill_group();
+                group.armed = false;
+            }
+            let _ = child.start_kill();
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), child.wait()).await;
+            stdout_task.abort();
+            stderr_task.abort();
+            return Err(shell_timeout_message(deadline));
+        }
+    };
+
+    let remaining = deadline.saturating_sub(started.elapsed());
+    let streams = tokio::time::timeout(remaining, async {
+        let stdout = stdout_task.await;
+        let stderr = stderr_task.await;
+        (stdout, stderr)
+    })
+    .await;
+    let (stdout, stderr) = match streams {
+        Ok((Ok(stdout), Ok(stderr))) => (stdout, stderr),
+        _ => {
+            // The reader tasks were moved into the timed future. Dropping that
+            // future detaches them; killing the group closes the pipes.
+            #[cfg(unix)]
+            {
+                group.kill_group();
+                group.armed = false;
+            }
+            let _ = child.start_kill();
+            return Err(shell_timeout_message(deadline));
+        }
+    };
+    #[cfg(unix)]
+    {
+        group.armed = false;
+    }
 
     Ok(ShellCommandResult {
-        exit_code: output.status.code().unwrap_or(-1),
-        stdout: truncate_shell_output(&output.stdout),
-        stderr: truncate_shell_output(&output.stderr),
+        exit_code: status.code().unwrap_or(-1),
+        stdout: shell_stream_text(&stdout.0, stdout.1),
+        stderr: shell_stream_text(&stderr.0, stderr.1),
     })
 }
 
@@ -5732,27 +5889,21 @@ mod tests {
     #[test]
     fn test_one_shot_print_args_disable_tools_without_skipping_permissions() {
         let args = claude_print_args(Some("stay on the page"));
-        assert!(
-            !args
-                .iter()
-                .any(|arg| arg == "--dangerously-skip-permissions")
-        );
+        assert!(!args
+            .iter()
+            .any(|arg| arg == "--dangerously-skip-permissions"));
         assert!(
             args.windows(2)
                 .any(|pair| pair[0] == "--tools" && pair[1].is_empty()),
             "claude --help documents --tools \"\" as disabling all tools"
         );
         let (transported, _) = with_prompt_transport(args, "prompt".to_string());
-        assert!(
-            !transported
-                .iter()
-                .any(|arg| arg == "--dangerously-skip-permissions")
-        );
-        assert!(
-            transported
-                .windows(2)
-                .any(|pair| pair[0] == "--tools" && pair[1].is_empty())
-        );
+        assert!(!transported
+            .iter()
+            .any(|arg| arg == "--dangerously-skip-permissions"));
+        assert!(transported
+            .windows(2)
+            .any(|pair| pair[0] == "--tools" && pair[1].is_empty()));
     }
 
     #[test]
@@ -6289,8 +6440,8 @@ mod tests {
     #[test]
     fn test_create_command_sets_args_and_cwd() {
         let args = vec!["--version".to_string()];
-        let cmd = create_command("/usr/bin/claude", args, "/tmp/project", None)
-            .expect("create command");
+        let cmd =
+            create_command("/usr/bin/claude", args, "/tmp/project", None).expect("create command");
         // Command is created 鈥?we can verify via its Debug representation
         let debug_str = format!("{:?}", cmd);
         assert!(debug_str.contains("--version"));
@@ -6306,8 +6457,8 @@ mod tests {
 
     #[test]
     fn test_create_command_custom_effort_level() {
-        let cmd =
-            create_command("/usr/bin/claude", vec![], "/tmp", Some("high")).expect("create command");
+        let cmd = create_command("/usr/bin/claude", vec![], "/tmp", Some("high"))
+            .expect("create command");
         let debug_str = format!("{:?}", cmd);
         assert!(debug_str.contains("claude"));
     }
@@ -6724,10 +6875,7 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&path)
-                .expect("meta")
-                .permissions()
-                .mode();
+            let mode = std::fs::metadata(&path).expect("meta").permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
         let cred = match stored_claude_credential_at(&path) {
@@ -6747,10 +6895,7 @@ mod tests {
             Err(err) => err,
             Ok(_) => panic!("parse error must not look like a missing key"),
         };
-        assert!(
-            err.to_ascii_lowercase().contains("parse"),
-            "got {err}"
-        );
+        assert!(err.to_ascii_lowercase().contains("parse"), "got {err}");
 
         std::fs::write(&path, b"{}").expect("empty object");
         match stored_claude_credential_at(&path) {
@@ -6783,10 +6928,7 @@ mod tests {
         )
         .await
         .expect_err("blocked stdin write must time out");
-        assert!(
-            err.contains("E_CLI_TIMEOUT"),
-            "expected timeout, got {err}"
-        );
+        assert!(err.contains("E_CLI_TIMEOUT"), "expected timeout, got {err}");
         assert!(started.elapsed() < std::time::Duration::from_secs(10));
     }
 
@@ -6900,7 +7042,9 @@ mod tests {
         let cwd = cwd.to_str().expect("utf8 temp");
         for (name, args) in adv_cred_every_claude_argv(cwd) {
             assert!(
-                !args.iter().any(|arg| arg == "--dangerously-skip-permissions"),
+                !args
+                    .iter()
+                    .any(|arg| arg == "--dangerously-skip-permissions"),
                 "{name} still passes --dangerously-skip-permissions: {args:?}"
             );
         }
@@ -7098,7 +7242,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("anthropic-auth.json");
         let cases: &[(&[u8], &str)] = &[
-            (br"{" , "truncated object"),
+            (br"{", "truncated object"),
             (
                 br#"{"anthropic_api_key":"sk-ant-test-key-not-a-secret""#,
                 "truncated after key",
@@ -7176,7 +7320,10 @@ mod tests {
             .count();
         assert!(code_lines > 20, "windows acl looks empty: {body}");
         assert!(body.contains("SetNamedSecurityInfoW"), "{body}");
-        assert!(body.contains("SetEntriesInAclW(1,"), "acl must be a single entry");
+        assert!(
+            body.contains("SetEntriesInAclW(1,"),
+            "acl must be a single entry"
+        );
         assert!(body.contains("PROTECTED_DACL_SECURITY_INFORMATION"));
         assert!(body.contains("TOKEN_USER"));
         assert!(body.contains("TRUSTEE_IS_USER"));
@@ -7309,7 +7456,10 @@ mod tests {
             Ok(result) => result.expect_err("a child that never reads stdin must time out"),
             Err(_) => panic!("finish_claude_print_child hung past the outer bound"),
         };
-        assert!(err.contains("E_CLI_TIMEOUT"), "expected a timeout error, got {err}");
+        assert!(
+            err.contains("E_CLI_TIMEOUT"),
+            "expected a timeout error, got {err}"
+        );
         assert!(started.elapsed() < std::time::Duration::from_secs(8));
     }
 
@@ -7815,6 +7965,455 @@ mod tests {
             started.elapsed() < std::time::Duration::from_secs(5),
             "stderr-first hello took {:?}",
             started.elapsed()
+        );
+    }
+
+    #[cfg(unix)]
+    fn shell_pid_alive(pid: i32) -> bool {
+        if pid <= 1 {
+            return false;
+        }
+        let rc = unsafe { libc::kill(pid, 0) };
+        if rc == 0 {
+            return true;
+        }
+        std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+    }
+
+    /// A short deadline must kill the shell and the sleep it started in the
+    /// same process group. Killing only the direct child leaves the sleep.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shell_timeout_kills_the_process_group_including_sleep() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell_pid_path = dir.path().join("shell.pid");
+        let sleep_pid_path = dir.path().join("sleep.pid");
+        let script = format!(
+            "echo $$ > {} ; sleep 60 & echo $! > {} ; wait",
+            shell_quote_single(&shell_pid_path.to_string_lossy()),
+            shell_quote_single(&sleep_pid_path.to_string_lossy())
+        );
+        let err = match run_shell_command_with_deadline(
+            script,
+            dir.path().to_string_lossy().to_string(),
+            std::time::Duration::from_millis(1500),
+        )
+        .await
+        {
+            Err(err) => err,
+            Ok(result) => panic!("the sleep must hit the deadline, exit {}", result.exit_code),
+        };
+        assert!(
+            err.to_lowercase().contains("timed out"),
+            "expected a timeout, got {err}"
+        );
+
+        let shell_pid: i32 = std::fs::read_to_string(&shell_pid_path)
+            .expect("shell pid file")
+            .trim()
+            .parse()
+            .expect("shell pid");
+        let sleep_pid: i32 = std::fs::read_to_string(&sleep_pid_path)
+            .expect("sleep pid file")
+            .trim()
+            .parse()
+            .expect("sleep pid");
+        assert!(shell_pid > 1 && sleep_pid > 1);
+        assert_ne!(shell_pid as u32, std::process::id());
+        assert_ne!(sleep_pid as u32, std::process::id());
+        assert_ne!(shell_pid, sleep_pid);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline
+            && (shell_pid_alive(shell_pid) || shell_pid_alive(sleep_pid))
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(
+            !shell_pid_alive(shell_pid),
+            "shell {shell_pid} survived the deadline"
+        );
+        assert!(
+            !shell_pid_alive(sleep_pid),
+            "sleep descendant {sleep_pid} survived; the group was not killed"
+        );
+    }
+
+    /// More than 64 KiB per stream must come back capped, and the child must
+    /// still exit. A reader that stops at the cap without draining deadlocks
+    /// on the full pipe; `wait_with_output` would also retain the whole buffer
+    /// and then append a marker past 64 KiB.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shell_output_retains_at_most_64kib_per_stream_while_draining() {
+        let dir = tempfile::tempdir().unwrap();
+        let started = std::time::Instant::now();
+        let result = run_shell_command_with_deadline(
+            "head -c 8388608 /dev/zero; head -c 8388608 /dev/zero >&2".to_string(),
+            dir.path().to_string_lossy().to_string(),
+            std::time::Duration::from_secs(5),
+        )
+        .await
+        .expect("draining past the cap must let the producer exit");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "producer stalled, the pipe was not drained past the cap"
+        );
+        assert_eq!(result.exit_code, 0, "stderr={}", result.stderr);
+        assert!(
+            result.stdout.len() <= 64 * 1024,
+            "stdout {}",
+            result.stdout.len()
+        );
+        assert!(
+            result.stderr.len() <= 64 * 1024,
+            "stderr {}",
+            result.stderr.len()
+        );
+        assert!(result.stdout.len() > 1024, "stdout was not retained");
+        assert!(result.stderr.len() > 1024, "stderr was not retained");
+        assert!(result
+            .stdout
+            .as_bytes()
+            .iter()
+            .take(64)
+            .all(|byte| *byte == 0));
+        assert!(result
+            .stderr
+            .as_bytes()
+            .iter()
+            .take(64)
+            .all(|byte| *byte == 0));
+    }
+
+    /// Kills one recorded pid on drop. Never signals 0, 1, or this process.
+    #[cfg(unix)]
+    struct AdvKillPid(i32);
+
+    #[cfg(unix)]
+    impl Drop for AdvKillPid {
+        fn drop(&mut self) {
+            if self.0 > 1 && (self.0 as u32) != std::process::id() {
+                unsafe {
+                    libc::kill(self.0, libc::SIGKILL);
+                }
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn adv_read_pid(path: &std::path::Path) -> i32 {
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        text.trim().parse().unwrap_or(0)
+    }
+
+    #[cfg(unix)]
+    fn adv_read_trimmed(path: &std::path::Path) -> String {
+        std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    }
+
+    /// A grandchild that stays in the shell's process group must die with it.
+    /// A descendant that has already left the group is not this assertion.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn adv_shell_timeout_kills_same_group_grandchild() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell_pid_path = dir.path().join("shell.pid");
+        let shell_pgid_path = dir.path().join("shell.pgid");
+        let inner_pid_path = dir.path().join("inner.pid");
+        let sleep_pid_path = dir.path().join("sleep.pid");
+        let sleep_pgid_path = dir.path().join("sleep.pgid");
+        let sleep_ppid_path = dir.path().join("sleep.ppid");
+        // Temp paths have no quotes. The inner `sh -c` script is single-quoted
+        // so the outer shell does not expand `$$` / `$!`; quoting the paths
+        // again would close that script early.
+        for path in [
+            &shell_pid_path,
+            &shell_pgid_path,
+            &inner_pid_path,
+            &sleep_pid_path,
+            &sleep_pgid_path,
+            &sleep_ppid_path,
+        ] {
+            let text = path.to_string_lossy();
+            assert!(
+                !text.contains(['\'', ' ', '\n']),
+                "temp path is not safe to inline: {text}"
+            );
+        }
+        let script = format!(
+            "echo $$ > {shell_pid}; ps -o pgid= -p $$ > {shell_pgid}; \
+             sh -c 'echo $$ > {inner_pid}; sleep 60 & echo $! > {sleep_pid}; \
+             ps -o pgid= -p $! > {sleep_pgid}; ps -o ppid= -p $! > {sleep_ppid}; wait' & \
+             wait",
+            shell_pid = shell_pid_path.display(),
+            shell_pgid = shell_pgid_path.display(),
+            inner_pid = inner_pid_path.display(),
+            sleep_pid = sleep_pid_path.display(),
+            sleep_pgid = sleep_pgid_path.display(),
+            sleep_ppid = sleep_ppid_path.display(),
+        );
+        let err = match run_shell_command_with_deadline(
+            script,
+            dir.path().to_string_lossy().to_string(),
+            std::time::Duration::from_millis(2000),
+        )
+        .await
+        {
+            Err(err) => err,
+            Ok(result) => panic!(
+                "the inner wait must hit the deadline, exit {}",
+                result.exit_code
+            ),
+        };
+        assert!(
+            err.to_lowercase().contains("timed out"),
+            "expected a timeout, got {err}"
+        );
+
+        let shell_pid = adv_read_pid(&shell_pid_path);
+        let inner_pid = adv_read_pid(&inner_pid_path);
+        let sleep_pid = adv_read_pid(&sleep_pid_path);
+        let _kill_sleep = AdvKillPid(sleep_pid);
+        let _kill_inner = AdvKillPid(inner_pid);
+        let _kill_shell = AdvKillPid(shell_pid);
+        let shell_pgid = adv_read_trimmed(&shell_pgid_path);
+        let sleep_pgid = adv_read_trimmed(&sleep_pgid_path);
+        let sleep_ppid = adv_read_trimmed(&sleep_ppid_path);
+        assert!(shell_pid > 1 && inner_pid > 1 && sleep_pid > 1);
+        assert_ne!(shell_pid as u32, std::process::id());
+        assert_ne!(sleep_pid, shell_pid);
+        assert_eq!(
+            sleep_ppid, inner_pid.to_string(),
+            "sleep should be a grandchild (ppid=inner), not the outer shell"
+        );
+        assert_ne!(
+            sleep_ppid,
+            shell_pid.to_string(),
+            "sleep was a direct child of the outer shell, not a grandchild"
+        );
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline
+            && (shell_pid_alive(shell_pid)
+                || shell_pid_alive(inner_pid)
+                || (shell_pgid == sleep_pgid && shell_pid_alive(sleep_pid)))
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(
+            !shell_pid_alive(shell_pid),
+            "outer shell {shell_pid} survived pgid {shell_pgid}"
+        );
+        assert!(
+            !shell_pid_alive(inner_pid),
+            "inner shell {inner_pid} survived pgid {shell_pgid}"
+        );
+        let same_group = shell_pgid == sleep_pgid;
+        let sleep_alive = shell_pid_alive(sleep_pid);
+        let _ = std::fs::create_dir_all("/tmp/wave4-results");
+        let _ = std::fs::write(
+            "/tmp/wave4-results/a16-grandchild.txt",
+            format!(
+                "shell={shell_pid} inner={inner_pid} sleep={sleep_pid} \
+                 shell_pgid={shell_pgid} sleep_pgid={sleep_pgid} ppid={sleep_ppid} \
+                 same_group={same_group} sleep_alive={sleep_alive}\n"
+            ),
+        );
+        if same_group {
+            assert!(
+                !sleep_alive,
+                "same-group grandchild sleep {sleep_pid} survived \
+                 shell_pgid={shell_pgid} sleep_pgid={sleep_pgid} ppid={sleep_ppid}"
+            );
+        } else {
+            eprintln!(
+                "A-16 residual: grandchild left the group shell_pgid={shell_pgid} \
+                 sleep_pgid={sleep_pgid} alive={sleep_alive}"
+            );
+        }
+    }
+
+    /// `setsid` leaves the shell's group. Survival is a residual, not a miss
+    /// of the group kill. A sleeper that stayed in the group must still die.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn adv_shell_setsid_escape_is_residual_same_group_must_die() {
+        let dir = tempfile::tempdir().unwrap();
+        let script_path = dir.path().join("leave.pl");
+        std::fs::write(
+            &script_path,
+            "use POSIX qw(setsid);\n\
+             my $rc = setsid();\n\
+             open my $pf, '>', $ARGV[0] or die $!;\n\
+             open my $gf, '>', $ARGV[1] or die $!;\n\
+             select $pf; $| = 1; select $gf; $| = 1;\n\
+             print $pf \"$$\\n\";\n\
+             print $gf getpgrp() . \"\\n\";\n\
+             open my $sf, '>', $ARGV[2] or die $!;\n\
+             select $sf; $| = 1;\n\
+             print $sf ($rc ? \"ok\\n\" : \"fail $!\\n\");\n\
+             sleep 60;\n",
+        )
+        .unwrap();
+        let shell_pid_path = dir.path().join("shell.pid");
+        let shell_pgid_path = dir.path().join("shell.pgid");
+        let sleep_pid_path = dir.path().join("sleep.pid");
+        let sleep_pgid_path = dir.path().join("sleep.pgid");
+        let status_path = dir.path().join("setsid.status");
+        let command = format!(
+            "echo $$ > {}; ps -o pgid= -p $$ > {}; perl {} {} {} {}",
+            shell_quote_single(&shell_pid_path.to_string_lossy()),
+            shell_quote_single(&shell_pgid_path.to_string_lossy()),
+            shell_quote_single(&script_path.to_string_lossy()),
+            shell_quote_single(&sleep_pid_path.to_string_lossy()),
+            shell_quote_single(&sleep_pgid_path.to_string_lossy()),
+            shell_quote_single(&status_path.to_string_lossy()),
+        );
+        let timed_out = match run_shell_command_with_deadline(
+            command,
+            dir.path().to_string_lossy().to_string(),
+            std::time::Duration::from_millis(2000),
+        )
+        .await
+        {
+            Err(err) => {
+                assert!(
+                    err.to_lowercase().contains("timed out"),
+                    "expected a timeout or a clean exit, got {err}"
+                );
+                true
+            }
+            Ok(result) => {
+                assert_eq!(result.exit_code, 0, "setsid helper failed: {}", result.stderr);
+                false
+            }
+        };
+        let sleep_pid = adv_read_pid(&sleep_pid_path);
+        let _kill_sleep = AdvKillPid(sleep_pid);
+        let shell_pid = adv_read_pid(&shell_pid_path);
+        let shell_pgid = adv_read_trimmed(&shell_pgid_path);
+        let sleep_pgid = adv_read_trimmed(&sleep_pgid_path);
+        if sleep_pid > 1 && shell_pgid == sleep_pgid && !shell_pgid.is_empty() {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while shell_pid_alive(sleep_pid) && std::time::Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            assert!(
+                !shell_pid_alive(sleep_pid),
+                "setsid did not leave the group and sleep {sleep_pid} survived \
+                 pgid {shell_pgid}"
+            );
+        }
+        let alive = sleep_pid > 1 && shell_pid_alive(sleep_pid);
+        let status = adv_read_trimmed(&status_path);
+        eprintln!(
+            "A-16 residual setsid: timed_out={timed_out} shell={shell_pid} \
+             shell_pgid={shell_pgid} sleep={sleep_pid} sleep_pgid={sleep_pgid} \
+             alive={alive} status={status}"
+        );
+        let _ = std::fs::create_dir_all("/tmp/wave4-results");
+        let _ = std::fs::write(
+            "/tmp/wave4-results/a16-setsid.txt",
+            format!(
+                "timed_out={timed_out} shell={shell_pid} shell_pgid={shell_pgid} \
+                 sleep={sleep_pid} sleep_pgid={sleep_pgid} alive={alive} status={status}\n"
+            ),
+        );
+    }
+
+    /// A shell that has already exited 0 may leave a backgrounded sleep. That
+    /// is not an A-16 timeout miss. Record it and reap the exact pid.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn adv_shell_success_background_sleep_is_residual() {
+        let dir = tempfile::tempdir().unwrap();
+        let sleep_pid_path = dir.path().join("sleep.pid");
+        let command = format!(
+            "sleep 30 & echo $! > {}; echo ok",
+            shell_quote_single(&sleep_pid_path.to_string_lossy())
+        );
+        let outcome = run_shell_command_with_deadline(
+            command,
+            dir.path().to_string_lossy().to_string(),
+            std::time::Duration::from_secs(2),
+        )
+        .await;
+        let sleep_pid = adv_read_pid(&sleep_pid_path);
+        let _kill_sleep = AdvKillPid(sleep_pid);
+        let (exited_ok, detail) = match &outcome {
+            Ok(result) => (result.exit_code == 0, format!("exit {}", result.exit_code)),
+            Err(err) => (false, err.clone()),
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let survived = sleep_pid > 1 && shell_pid_alive(sleep_pid);
+        // bash-as-sh waits for background jobs, so this often times out and the
+        // group kill reaps the sleep. That is the timeout path, not a break.
+        // Survival is only the residual when the shell has already exited 0.
+        let _ = std::fs::create_dir_all("/tmp/wave4-results");
+        let _ = std::fs::write(
+            "/tmp/wave4-results/a16-success-sleep.txt",
+            format!("exited_ok={exited_ok} detail={detail} survived={survived} pid={sleep_pid}\n"),
+        );
+        if exited_ok {
+            eprintln!("A-16 residual success-path background sleep survived={survived} pid={sleep_pid}");
+        }
+    }
+
+    /// Both streams at once, past 64 KiB of non-UTF-8. The returned strings
+    /// stay at or under 65536 bytes, the child exits, and a reader that stops
+    /// at the cap without draining would hit the deadline.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn adv_shell_non_utf8_both_streams_stay_within_64kib() {
+        let dir = tempfile::tempdir().unwrap();
+        let started = std::time::Instant::now();
+        let command = "perl -e 'binmode STDOUT; binmode STDERR; my $c = \"\\xff\" x 4096; \
+                       for (1..64) { print STDOUT $c; print STDERR $c; }'"
+            .to_string();
+        let result = run_shell_command_with_deadline(
+            command,
+            dir.path().to_string_lossy().to_string(),
+            std::time::Duration::from_secs(8),
+        )
+        .await
+        .expect("both streams must be drained past the cap or the child cannot exit");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(8),
+            "non-UTF-8 producer stalled after {:?}",
+            started.elapsed()
+        );
+        assert_eq!(result.exit_code, 0, "stderr={}", result.stderr);
+        assert!(
+            result.stdout.len() <= 65536,
+            "stdout string length {} exceeds 64 KiB",
+            result.stdout.len()
+        );
+        assert!(
+            result.stderr.len() <= 65536,
+            "stderr string length {} exceeds 64 KiB",
+            result.stderr.len()
+        );
+        assert!(
+            result.stdout.len() > 1024,
+            "stdout was not retained ({})",
+            result.stdout.len()
+        );
+        assert!(
+            result.stderr.len() > 1024,
+            "stderr was not retained ({})",
+            result.stderr.len()
+        );
+        assert!(
+            result.stdout.contains('\u{FFFD}'),
+            "lossy non-UTF-8 stdout should contain U+FFFD"
+        );
+        assert!(
+            result.stderr.contains('\u{FFFD}'),
+            "lossy non-UTF-8 stderr should contain U+FFFD"
         );
     }
 }

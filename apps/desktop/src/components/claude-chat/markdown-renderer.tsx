@@ -187,23 +187,33 @@ const CodeBlock: FC<{ language: string; code: string }> = ({
   const isShell = isShellCodeBlock(language, code);
 
   const [runState, setRunState] = useState<RunState>({ status: "idle" });
+  const [chainAcknowledged, setChainAcknowledged] = useState(false);
 
   const handleInsert = useCallback(() => {
     insertAtCursor(code);
   }, [insertAtCursor, code]);
 
-  // Strip leading $ or # prompts for execution
+  // Strip leading $ or # prompts for execution. The whole block runs.
   const cleanedCommand = code
     .split("\n")
     .map((line) => line.replace(/^\$\s*/, ""))
     .join("\n")
     .trim();
 
+  const needsSecondAck =
+    cleanedCommand.includes("\n") ||
+    cleanedCommand.includes(";") ||
+    cleanedCommand.includes("|");
+
   const handleRun = useCallback(() => {
+    setChainAcknowledged(false);
     setRunState({ status: "confirming" });
   }, []);
 
   const handleConfirm = useCallback(async () => {
+    if (needsSecondAck && !chainAcknowledged) {
+      return;
+    }
     if (!projectRoot) {
       setRunState({ status: "error", message: "No project open" });
       return;
@@ -231,9 +241,10 @@ const CodeBlock: FC<{ language: string; code: string }> = ({
     } catch (err: any) {
       setRunState({ status: "error", message: err?.message || String(err) });
     }
-  }, [cleanedCommand, projectRoot]);
+  }, [chainAcknowledged, cleanedCommand, needsSecondAck, projectRoot]);
 
   const handleCancel = useCallback(() => {
+    setChainAcknowledged(false);
     setRunState({ status: "idle" });
   }, []);
 
@@ -284,11 +295,31 @@ const CodeBlock: FC<{ language: string; code: string }> = ({
               </code>
             </span>
           </div>
+          <pre
+            data-testid="shell-confirm-command"
+            className="mb-2 whitespace-pre-wrap font-mono text-xs"
+          >
+            {cleanedCommand}
+          </pre>
+          {needsSecondAck && (
+            <label className="mb-2 flex items-start gap-2 text-muted-foreground text-xs">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={chainAcknowledged}
+                onChange={(event) => setChainAcknowledged(event.target.checked)}
+                aria-label="Run the entire command block"
+              />
+              This runs the entire block, including every line and every ; or |
+              chain.
+            </label>
+          )}
           <div className="flex gap-2">
             <button
               type="button"
               onClick={handleConfirm}
-              className="flex items-center gap-1 rounded bg-green-600 px-2.5 py-1 text-white text-xs"
+              disabled={needsSecondAck && !chainAcknowledged}
+              className="flex items-center gap-1 rounded bg-green-600 px-2.5 py-1 text-white text-xs disabled:opacity-50"
             >
               <PlayIcon className="size-3" />
               Run

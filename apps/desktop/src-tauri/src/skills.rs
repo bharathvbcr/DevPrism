@@ -3,10 +3,12 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tauri::{Emitter, Manager, WebviewWindow};
 
+/// Pinned 2026-11-02 (`git ls-remote` HEAD `a25cf9ec00e2745d03f8704acf6f6919694ccd9a`).
+/// No `refs/heads/main` or `/main/` fallback. The legacy
+/// `claude-scientific-skills` raw URL 404s at this commit and is omitted.
 const TARBALL_URLS: &[&str] = &[
-    "https://github.com/K-Dense-AI/scientific-agent-skills/archive/refs/heads/main.tar.gz",
-    "https://codeload.github.com/K-Dense-AI/scientific-agent-skills/tar.gz/refs/heads/main",
-    "https://github.com/K-Dense-AI/claude-scientific-skills/archive/refs/heads/main.tar.gz",
+    "https://github.com/K-Dense-AI/scientific-agent-skills/archive/a25cf9ec00e2745d03f8704acf6f6919694ccd9a.tar.gz",
+    "https://codeload.github.com/K-Dense-AI/scientific-agent-skills/tar.gz/a25cf9ec00e2745d03f8704acf6f6919694ccd9a",
 ];
 const SKILLS_DOWNLOAD_ATTEMPTS: usize = 3;
 const SKILLS_DOWNLOAD_TIMEOUT_SECS: u64 = 240;
@@ -14,15 +16,15 @@ const SKILLS_CONNECT_TIMEOUT_SECS: u64 = 20;
 const SKILLS_INSTALL_TIMEOUT_SECS: u64 = 420;
 const SKILL_CONTENT_TIMEOUT_SECS: u64 = 45;
 const RAW_SKILL_URLS: &[&str] = &[
-    "https://raw.githubusercontent.com/K-Dense-AI/scientific-agent-skills/main/skills",
-    "https://raw.githubusercontent.com/K-Dense-AI/claude-scientific-skills/main/scientific-skills",
+    "https://raw.githubusercontent.com/K-Dense-AI/scientific-agent-skills/a25cf9ec00e2745d03f8704acf6f6919694ccd9a/skills",
 ];
+/// Gzip bytes accepted before extraction. The pinned archive is ~234 MiB.
+const MAX_TARBALL_COMPRESSED_BYTES: u64 = 400 * 1024 * 1024;
+/// Tar entries accepted before extraction finishes. The pinned tree is 3498 paths.
+const MAX_TARBALL_ENTRIES: usize = 12_000;
+/// Sum of regular-file sizes declared by tar headers. The pinned archive is ~278 MiB.
+const MAX_TARBALL_UNCOMPRESSED_BYTES: u64 = 640 * 1024 * 1024;
 const SKILLS_SUBFOLDERS: &[&str] = &["skills", "scientific-skills"];
-/// How long to wait on the macOS administrator prompt when repairing
-/// skills-directory permissions. Well under SKILLS_INSTALL_TIMEOUT_SECS so a
-/// dismissed dialog surfaces as its own clear error instead of the generic
-/// outer install timeout.
-const ELEVATION_TIMEOUT_SECS: u64 = 120;
 
 // ─── Data Types ───
 
@@ -421,22 +423,17 @@ fn percent_encode_segment(segment: &str) -> String {
     out
 }
 
-/// Quote a string as ONE literal POSIX shell word (single quotes with the
-/// `'\''` escape for embedded quotes), so an interpolated path cannot inject
-/// shell metacharacters into the privileged script.
+/// Quote a string as ONE literal POSIX shell word. Delegates to the shared
+/// elevation helper so the existing skills tests keep one call site.
+#[cfg(test)]
 fn shell_single_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
+    crate::elevation::shell_single_quote(s)
 }
 
-/// Whether `user` is safe to interpolate unquoted as the chown target of a
-/// privileged script: POSIX username shape, no whitespace or metacharacters.
+/// Whether `user` is safe to interpolate unquoted as the chown target.
+#[cfg(test)]
 fn is_valid_admin_username(user: &str) -> bool {
-    let mut chars = user.chars();
-    match chars.next() {
-        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
-        _ => return false,
-    }
-    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    crate::elevation::is_valid_username(user)
 }
 
 fn find_skill_md(skill_dir: &Path) -> Option<PathBuf> {
@@ -838,6 +835,13 @@ fn find_extracted_repo_dir(raw_dir: &Path) -> Option<PathBuf> {
 }
 
 fn unpack_tarball(bytes: &[u8], tmp_dir: &Path) -> Result<(), String> {
+    if bytes.len() as u64 > MAX_TARBALL_COMPRESSED_BYTES {
+        return Err(format!(
+            "Tarball compressed size {} exceeds cap of {MAX_TARBALL_COMPRESSED_BYTES} bytes",
+            bytes.len()
+        ));
+    }
+
     reset_download_workspace(tmp_dir);
 
     let raw_dir = tmp_dir.join("repo-raw");
@@ -846,10 +850,7 @@ fn unpack_tarball(bytes: &[u8], tmp_dir: &Path) -> Result<(), String> {
 
     let decoder = flate2::read::GzDecoder::new(bytes);
     let mut archive = tar::Archive::new(decoder);
-
-    archive
-        .unpack(&raw_dir)
-        .map_err(|e| format!("Failed to extract tarball: {}", e))?;
+    extract_archive_capped(&mut archive, &raw_dir)?;
 
     let repo_source = find_extracted_repo_dir(&raw_dir)
         .ok_or_else(|| "Downloaded tarball did not contain a repository directory".to_string())?;
@@ -858,6 +859,157 @@ fn unpack_tarball(bytes: &[u8], tmp_dir: &Path) -> Result<(), String> {
         .map_err(|e| format!("Failed to prepare extracted repo: {}", e))?;
 
     let _ = std::fs::remove_dir_all(&raw_dir);
+    Ok(())
+}
+
+/// Reject `..` and absolute names before anything is written for that entry.
+fn safe_tar_rel_path(raw: &Path) -> Result<PathBuf, String> {
+    if raw.as_os_str().is_empty() {
+        return Err("Refusing empty tar entry name".to_string());
+    }
+    let mut rel = PathBuf::new();
+    for component in raw.components() {
+        match component {
+            std::path::Component::Normal(part) => {
+                if part == ".." || part == "." || part.is_empty() {
+                    return Err(format!("Refusing tar entry {}", raw.display()));
+                }
+                rel.push(part);
+            }
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => {
+                return Err(format!(
+                    "Refusing absolute or parent tar entry {}",
+                    raw.display()
+                ));
+            }
+        }
+    }
+    if rel.as_os_str().is_empty() {
+        return Err(format!("Refusing tar entry {}", raw.display()));
+    }
+    Ok(rel)
+}
+
+fn refuse_symlink_component(root: &Path, dest: &Path) -> Result<(), String> {
+    let mut cur = root.to_path_buf();
+    let Ok(suffix) = dest.strip_prefix(root) else {
+        return Err(format!(
+            "Refusing tar entry outside extraction dir: {}",
+            dest.display()
+        ));
+    };
+    for component in suffix.components() {
+        cur.push(component);
+        if let Ok(meta) = std::fs::symlink_metadata(&cur) {
+            if meta.file_type().is_symlink() {
+                return Err(format!(
+                    "Refusing to follow symlink {} while extracting skills",
+                    cur.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn open_extracted_file(path: &Path) -> Result<std::fs::File, String> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // Do not follow a symlink planted at the final path.
+        opts.custom_flags(libc::O_NOFOLLOW);
+    }
+    opts.open(path)
+        .map_err(|e| format!("Failed to create {}: {}", path.display(), e))
+}
+
+fn extract_archive_capped<R: std::io::Read>(
+    archive: &mut tar::Archive<R>,
+    raw_dir: &Path,
+) -> Result<(), String> {
+    let entries = archive
+        .entries()
+        .map_err(|e| format!("Failed to read tarball: {e}"))?;
+    let mut entry_count: usize = 0;
+    let mut uncompressed: u64 = 0;
+
+    for entry in entries {
+        let mut entry = entry.map_err(|e| format!("Failed to read tar entry: {e}"))?;
+        entry_count += 1;
+        if entry_count > MAX_TARBALL_ENTRIES {
+            return Err(format!(
+                "Tarball entry count exceeds cap of {MAX_TARBALL_ENTRIES}"
+            ));
+        }
+
+        let entry_path = entry
+            .path()
+            .map_err(|e| format!("Failed to read tar entry path: {e}"))?;
+        let rel = safe_tar_rel_path(entry_path.as_ref())?;
+        let dest = raw_dir.join(&rel);
+        if !dest.starts_with(raw_dir) {
+            return Err(format!(
+                "Refusing tar entry outside extraction dir: {}",
+                entry_path.display()
+            ));
+        }
+        refuse_symlink_component(raw_dir, &dest)?;
+
+        // `Entry::size` is the pax size when a pax size record exists.
+        // `header().size()` stays the ustar field, which a crafted archive can
+        // leave at 0 while the body is larger than the cap. Reject before the
+        // output file is opened and before the body is copied.
+        let declared = entry.size();
+        let next_uncompressed = uncompressed.saturating_add(declared);
+        if next_uncompressed > MAX_TARBALL_UNCOMPRESSED_BYTES {
+            return Err(format!(
+                "Tarball uncompressed size exceeds cap of {MAX_TARBALL_UNCOMPRESSED_BYTES} bytes"
+            ));
+        }
+        uncompressed = next_uncompressed;
+
+        let kind = entry.header().entry_type();
+        // Symlinks and hardlinks are not materialized. `archive.unpack` would
+        // write the link itself, which can point outside the extraction dir.
+        if kind.is_symlink() || kind.is_hard_link() {
+            std::io::copy(&mut entry, &mut std::io::sink())
+                .map_err(|e| format!("Failed to skip link entry {}: {e}", rel.display()))?;
+            continue;
+        }
+        if kind.is_dir() {
+            std::fs::create_dir_all(&dest)
+                .map_err(|e| format!("Failed to create dir {}: {e}", dest.display()))?;
+            std::io::copy(&mut entry, &mut std::io::sink())
+                .map_err(|e| format!("Failed to read directory entry {}: {e}", rel.display()))?;
+            continue;
+        }
+        if !kind.is_file() && !kind.is_contiguous() {
+            // Fifo, device, and extension headers are not written.
+            std::io::copy(&mut entry, &mut std::io::sink())
+                .map_err(|e| format!("Failed to skip special entry {}: {e}", rel.display()))?;
+            continue;
+        }
+
+        if let Some(parent) = dest.parent() {
+            refuse_symlink_component(raw_dir, parent)?;
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create dir {}: {e}", parent.display()))?;
+        }
+        let mut file = open_extracted_file(&dest)?;
+        let written = std::io::copy(&mut entry, &mut file)
+            .map_err(|e| format!("Failed to extract {}: {e}", rel.display()))?;
+        if written != declared {
+            return Err(format!(
+                "Tar entry {} was shorter than its declared size",
+                rel.display()
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -887,6 +1039,13 @@ async fn download_tarball_once(
     }
 
     let total_size = response.content_length();
+    if let Some(total) = total_size {
+        if total > MAX_TARBALL_COMPRESSED_BYTES {
+            return Err(format!(
+                "Download compressed size {total} exceeds cap of {MAX_TARBALL_COMPRESSED_BYTES} bytes"
+            ));
+        }
+    }
     let mut bytes =
         Vec::with_capacity(total_size.unwrap_or_default().min(64 * 1024 * 1024) as usize);
     let mut downloaded = 0_u64;
@@ -897,7 +1056,13 @@ async fn download_tarball_once(
         .await
         .map_err(|e| format!("Failed to read download bytes: {}", e))?
     {
-        downloaded += chunk.len() as u64;
+        let next = downloaded.saturating_add(chunk.len() as u64);
+        if next > MAX_TARBALL_COMPRESSED_BYTES {
+            return Err(format!(
+                "Download compressed size exceeds cap of {MAX_TARBALL_COMPRESSED_BYTES} bytes"
+            ));
+        }
+        downloaded = next;
         bytes.extend_from_slice(&chunk);
 
         if let Some(total) = total_size {
@@ -1131,10 +1296,84 @@ fn copy_skills(repo_dir: &Path, target_dir: &Path) -> Result<usize, String> {
     replace_result
 }
 
-/// Recursively copy a directory.
+/// Refuse when `path`, or a missing path's parent component, is a symlink.
+///
+/// Stops at the first existing real directory. Ancestors above that directory
+/// (for example `/var` -> `/private/var`) are not part of the destination.
+fn refuse_dest_symlink(path: &Path) -> Result<(), String> {
+    let mut cur = path.to_path_buf();
+    let mut at_leaf = true;
+    loop {
+        match std::fs::symlink_metadata(&cur) {
+            Ok(meta) => {
+                let file_type = meta.file_type();
+                if file_type.is_symlink() {
+                    return Err(format!(
+                        "Refusing to follow symlink {} while copying skills",
+                        cur.display()
+                    ));
+                }
+                if file_type.is_dir() {
+                    return Ok(());
+                }
+                if at_leaf {
+                    return Ok(());
+                }
+                return Err(format!(
+                    "Refusing to copy through non-directory {}",
+                    cur.display()
+                ));
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                at_leaf = false;
+                if !cur.pop() {
+                    return Ok(());
+                }
+            }
+            Err(err) => {
+                return Err(format!("Failed to stat {}: {}", cur.display(), err));
+            }
+        }
+    }
+}
+
+/// Copy one regular file. `O_NOFOLLOW` on the destination rejects a symlink
+/// planted at the final path; `std::fs::copy` would follow it.
+fn copy_regular_file_nofollow(src: &Path, dst: &Path) -> Result<(), String> {
+    refuse_dest_symlink(dst)?;
+    let mut input =
+        std::fs::File::open(src).map_err(|e| format!("Failed to read {}: {}", src.display(), e))?;
+    let mut output = open_extracted_file(dst)?;
+    std::io::copy(&mut input, &mut output)
+        .map_err(|e| format!("Failed to copy {}: {}", src.display(), e))?;
+    Ok(())
+}
+
+/// Recursively copy a directory without following symlinks.
+///
+/// `symlink_metadata` is required: `Path::is_dir` and `std::fs::copy` follow
+/// links, which would copy a link target into `~/.claude/skills` or write
+/// through a symlink already planted at the destination.
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
+    let src_meta = std::fs::symlink_metadata(src)
+        .map_err(|e| format!("Failed to stat {}: {}", src.display(), e))?;
+    let src_type = src_meta.file_type();
+    if src_type.is_symlink() {
+        return Err(format!(
+            "Refusing to follow symlink {} while copying skills",
+            src.display()
+        ));
+    }
+    if !src_type.is_dir() {
+        return Err(format!("Not a directory: {}", src.display()));
+    }
+
+    refuse_dest_symlink(dst)?;
     std::fs::create_dir_all(dst)
         .map_err(|e| format!("Failed to create dir {}: {}", dst.display(), e))?;
+    // `create_dir_all` follows a directory symlink. Re-check the final path
+    // in case one was planted between the stat and the create.
+    refuse_dest_symlink(dst)?;
 
     let entries = std::fs::read_dir(src)
         .map_err(|e| format!("Failed to read dir {}: {}", src.display(), e))?;
@@ -1142,12 +1381,17 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
     for entry in entries.flatten() {
         let entry_path = entry.path();
         let target = dst.join(entry.file_name());
-
-        if entry_path.is_dir() {
+        let meta = std::fs::symlink_metadata(&entry_path)
+            .map_err(|e| format!("Failed to stat {}: {}", entry_path.display(), e))?;
+        let file_type = meta.file_type();
+        if file_type.is_symlink() {
+            // Skip. Do not copy the target and do not recreate the link.
+            continue;
+        }
+        if file_type.is_dir() {
             copy_dir_recursive(&entry_path, &target)?;
-        } else {
-            std::fs::copy(&entry_path, &target)
-                .map_err(|e| format!("Failed to copy {}: {}", entry_path.display(), e))?;
+        } else if file_type.is_file() {
+            copy_regular_file_nofollow(&entry_path, &target)?;
         }
     }
 
@@ -1616,7 +1860,7 @@ async fn ensure_target_writable(target: &Path) -> Result<(), String> {
     {
         let home = dirs::home_dir().ok_or("Could not determine home directory")?;
         let user = std::env::var("USER").unwrap_or_default();
-        if !is_valid_admin_username(&user) {
+        if !crate::elevation::is_valid_username(&user) {
             return Err(format!(
                 "Could not determine the current user ('{}'), so permissions for {} \
                  cannot be repaired automatically. You can fix this manually by running: \
@@ -1627,57 +1871,17 @@ async fn ensure_target_writable(target: &Path) -> Result<(), String> {
         }
         let claude_dir = home.join(".claude");
 
-        // EVERY interpolation into the privileged script is single-quote
-        // escaped: the target path comes from the frontend, and a project named
-        // `O'Brien's Site` must not be able to append commands inside it. The
-        // username passes the strict shape check above.
-        let script = format!(
-            "mkdir -p {} && chown -R {} {}",
-            shell_single_quote(&target.to_string_lossy()),
-            user,
-            shell_single_quote(&claude_dir.to_string_lossy())
-        );
-
-        // kill_on_drop + a hard timeout: the previous synchronous output()
-        // waited forever on an unanswered admin dialog, holding the whole
-        // install. The bound stays well inside SKILLS_INSTALL_TIMEOUT_SECS so
-        // cancellation reports its own cause.
-        let elevated = tokio::time::timeout(
-            Duration::from_secs(ELEVATION_TIMEOUT_SECS),
-            tokio::process::Command::new("osascript")
-                .args([
-                    "-e",
-                    &format!(
-                        "do shell script \"{}\" with administrator privileges",
-                        script
-                    ),
-                ])
-                .kill_on_drop(true)
-                .output(),
-        )
-        .await;
-
-        let output = match elevated {
-            Ok(Ok(output)) => output,
-            Ok(Err(e)) => return Err(format!("Failed to run osascript: {}", e)),
-            Err(_) => {
-                return Err(format!(
-                    "Administrator prompt was cancelled or timed out after {}s; \
-                     directory permissions were not changed. You can fix this manually \
-                     by running: sudo chown -R $(whoami) ~/.claude",
-                    ELEVATION_TIMEOUT_SECS
-                ));
-            }
-        };
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!(
-                "Failed to fix directory permissions. Error: {}. \
-                 You can fix this manually by running: sudo chown -R $(whoami) ~/.claude",
-                stderr.trim()
-            ));
-        }
+        // Paths are single-quoted and the whole script is AppleScript-escaped
+        // by the elevation helper, so `'\''` cannot terminate `do shell script`.
+        // The helper also enforces the deadline and kill_on_drop.
+        let script = crate::elevation::build_mkdir_chown_script(target, &user, &claude_dir)?;
+        crate::elevation::run_administrator_shell(&script)
+            .await
+            .map_err(|e| {
+                format!(
+                    "{e} You can fix this manually by running: sudo chown -R $(whoami) ~/.claude"
+                )
+            })?;
 
         // Verify writable
         let test_file = target.join(".prism_write_test");
@@ -1942,8 +2146,8 @@ pub async fn get_skill_content(
         }
     }
 
-    // Fallback: fetch from GitHub. The upstream project moved from
-    // claude-scientific-skills/scientific-skills to scientific-agent-skills/skills.
+    // Fallback: fetch SKILL.md from the pinned scientific-agent-skills commit.
+    // The legacy claude-scientific-skills raw path 404s at that commit.
     let client = build_skills_http_client(SKILL_CONTENT_TIMEOUT_SECS, None)
         .map_err(|e| format!("Failed to create GitHub client: {}", e))?;
 
@@ -2191,5 +2395,825 @@ mod tests {
             Some("This is the summary paragraph.")
         );
         assert!(first_markdown_paragraph("# Only a heading\n").is_none());
+    }
+
+    const PINNED_SKILLS_COMMIT: &str = "a25cf9ec00e2745d03f8704acf6f6919694ccd9a";
+
+    #[test]
+    fn skills_download_urls_are_pinned_without_branch_fallback() {
+        let urls: Vec<&str> = TARBALL_URLS
+            .iter()
+            .copied()
+            .chain(RAW_SKILL_URLS.iter().copied())
+            .collect();
+        assert!(!urls.is_empty());
+        for url in urls {
+            assert!(
+                url.contains(PINNED_SKILLS_COMMIT),
+                "url is not pinned: {url}"
+            );
+            assert!(
+                !url.contains("refs/heads/main") && !url.contains("/main/"),
+                "branch fallback is still present: {url}"
+            );
+            assert!(
+                !url.contains("claude-scientific-skills"),
+                "legacy host must be dropped: {url}"
+            );
+            assert!(
+                url.contains("K-Dense-AI/scientific-agent-skills"),
+                "url left the canonical repo: {url}"
+            );
+        }
+    }
+
+    fn gzip_bytes(raw: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        enc.write_all(raw).unwrap();
+        enc.finish().unwrap()
+    }
+
+    fn gzip_tar_with(
+        mut fill: impl FnMut(&mut tar::Builder<flate2::write::GzEncoder<Vec<u8>>>),
+    ) -> Vec<u8> {
+        let enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        let mut builder = tar::Builder::new(enc);
+        fill(&mut builder);
+        let enc = builder.into_inner().unwrap();
+        enc.finish().unwrap()
+    }
+
+    fn append_bytes(
+        builder: &mut tar::Builder<flate2::write::GzEncoder<Vec<u8>>>,
+        path: &str,
+        data: &[u8],
+    ) {
+        let mut header = tar::Header::new_gnu();
+        header.set_mode(0o644);
+        header.set_size(data.len() as u64);
+        header.set_cksum();
+        builder.append_data(&mut header, path, data).unwrap();
+    }
+
+    /// POSIX ustar header. Used when the size field must exceed what we are
+    /// willing to ask `tar::Builder` to read from a real buffer.
+    fn ustar_header(name: &str, size: u64, typeflag: u8, linkname: &str) -> [u8; 512] {
+        fn put_octal(dst: &mut [u8], value: u64) {
+            let text = format!("{value:o}");
+            assert!(text.len() + 1 <= dst.len());
+            dst.fill(b'0');
+            let end = dst.len() - 1;
+            let start = end - text.len();
+            dst[start..end].copy_from_slice(text.as_bytes());
+            dst[end] = 0;
+        }
+        let mut header = [0u8; 512];
+        let name_bytes = name.as_bytes();
+        assert!(name_bytes.len() <= 100);
+        header[..name_bytes.len()].copy_from_slice(name_bytes);
+        put_octal(&mut header[100..108], 0o644);
+        put_octal(&mut header[108..116], 0);
+        put_octal(&mut header[116..124], 0);
+        put_octal(&mut header[124..136], size);
+        put_octal(&mut header[136..148], 0);
+        header[148..156].fill(b' ');
+        header[156] = typeflag;
+        let link_bytes = linkname.as_bytes();
+        assert!(link_bytes.len() <= 100);
+        header[157..157 + link_bytes.len()].copy_from_slice(link_bytes);
+        header[257..262].copy_from_slice(b"ustar");
+        header[263..265].copy_from_slice(b"00");
+        let sum: u32 = header.iter().map(|byte| u32::from(*byte)).sum();
+        let checksum = format!("{sum:06o}");
+        header[148..154].copy_from_slice(checksum.as_bytes());
+        header[154] = 0;
+        header[155] = b' ';
+        header
+    }
+
+    #[test]
+    fn unpack_rejects_compressed_bytes_over_the_cap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let too_big = vec![0u8; MAX_TARBALL_COMPRESSED_BYTES as usize + 1];
+        let err = unpack_tarball(&too_big, tmp.path()).unwrap_err();
+        assert!(
+            err.contains("compressed"),
+            "over-cap gzip container must be rejected before extraction: {err}"
+        );
+        assert!(!tmp.path().join("repo").exists());
+    }
+
+    #[test]
+    fn unpack_rejects_too_many_entries_before_finishing() {
+        let bytes = gzip_tar_with(|builder| {
+            let payload = b"x";
+            for i in 0..=MAX_TARBALL_ENTRIES {
+                append_bytes(builder, &format!("repo/f{i}.txt"), payload);
+            }
+        });
+        let tmp = tempfile::tempdir().unwrap();
+        let err = unpack_tarball(&bytes, tmp.path()).unwrap_err();
+        assert!(
+            err.contains("entry count"),
+            "entry cap must fail the extract: {err}"
+        );
+        let written = tmp
+            .path()
+            .join("repo-raw")
+            .join("repo")
+            .read_dir()
+            .map(|dir| dir.count())
+            .unwrap_or(0);
+        assert!(
+            written <= MAX_TARBALL_ENTRIES,
+            "extraction continued past the entry cap ({written})"
+        );
+    }
+
+    #[test]
+    fn unpack_rejects_declared_uncompressed_size_before_reading_the_body() {
+        let header = ustar_header(
+            "repo/huge.bin",
+            MAX_TARBALL_UNCOMPRESSED_BYTES + 1,
+            b'0',
+            "",
+        );
+        let mut raw = header.to_vec();
+        raw.extend_from_slice(&[0u8; 1024]);
+        let bytes = gzip_bytes(&raw);
+        let tmp = tempfile::tempdir().unwrap();
+        let started = std::time::Instant::now();
+        let err = unpack_tarball(&bytes, tmp.path()).unwrap_err();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "oversized header must be rejected before the body is read"
+        );
+        assert!(
+            err.contains("uncompressed"),
+            "uncompressed cap must be named: {err}"
+        );
+        assert!(!tmp
+            .path()
+            .join("repo-raw")
+            .join("repo")
+            .join("huge.bin")
+            .exists());
+    }
+
+    #[test]
+    fn unpack_skips_symlink_and_hardlink_and_rejects_traversal() {
+        let bytes = gzip_tar_with(|builder| {
+            append_bytes(builder, "repo/skills/demo/SKILL.md", b"hello-skill");
+            let mut link = tar::Header::new_gnu();
+            link.set_entry_type(tar::EntryType::symlink());
+            link.set_size(0);
+            builder
+                .append_link(&mut link, "repo/skills/demo/escape", "/etc/passwd")
+                .unwrap();
+            let mut hard = tar::Header::new_gnu();
+            hard.set_entry_type(tar::EntryType::hard_link());
+            hard.set_size(0);
+            builder
+                .append_link(
+                    &mut hard,
+                    "repo/skills/demo/hard",
+                    "repo/skills/demo/SKILL.md",
+                )
+                .unwrap();
+        });
+        let tmp = tempfile::tempdir().unwrap();
+        unpack_tarball(&bytes, tmp.path()).unwrap();
+        let demo = tmp.path().join("repo").join("skills").join("demo");
+        assert_eq!(
+            std::fs::read_to_string(demo.join("SKILL.md")).unwrap(),
+            "hello-skill"
+        );
+        assert!(
+            std::fs::symlink_metadata(demo.join("escape")).is_err(),
+            "symlink entry was materialized"
+        );
+        assert!(
+            std::fs::symlink_metadata(demo.join("hard")).is_err(),
+            "hardlink entry was materialized"
+        );
+
+        let traversal = gzip_bytes(&{
+            let header = ustar_header("../escaped.txt", 5, b'0', "");
+            let mut raw = header.to_vec();
+            raw.extend_from_slice(b"PWNED");
+            raw.resize(512 + 512, 0);
+            raw.extend_from_slice(&[0u8; 1024]);
+            raw
+        });
+        let tmp = tempfile::tempdir().unwrap();
+        let err = unpack_tarball(&traversal, tmp.path()).unwrap_err();
+        assert!(
+            err.to_lowercase().contains("refus")
+                || err.to_lowercase().contains("parent")
+                || err.to_lowercase().contains("absolute"),
+            "parent entry must be rejected: {err}"
+        );
+        assert!(!tmp.path().join("escaped.txt").exists());
+        assert!(
+            !tree_has_bytes(tmp.path(), b"PWNED"),
+            "traversal entry was written"
+        );
+
+        let absolute = gzip_bytes(&{
+            let header = ustar_header("/tmp/devprism-absolute-escape", 5, b'0', "");
+            let mut raw = header.to_vec();
+            raw.extend_from_slice(b"PWNED");
+            raw.resize(512 + 512, 0);
+            raw.extend_from_slice(&[0u8; 1024]);
+            raw
+        });
+        let tmp = tempfile::tempdir().unwrap();
+        let err = unpack_tarball(&absolute, tmp.path()).unwrap_err();
+        assert!(
+            err.to_lowercase().contains("refus") || err.to_lowercase().contains("absolute"),
+            "absolute entry must be rejected: {err}"
+        );
+        assert!(!std::path::Path::new("/tmp/devprism-absolute-escape").exists());
+        assert!(!tree_has_bytes(tmp.path(), b"PWNED"));
+    }
+
+    fn tree_has_bytes(root: &Path, needle: &[u8]) -> bool {
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Ok(meta) = std::fs::symlink_metadata(&path) else {
+                    continue;
+                };
+                if meta.file_type().is_symlink() {
+                    continue;
+                }
+                if meta.is_dir() {
+                    stack.push(path);
+                } else if meta.is_file() {
+                    if std::fs::read(&path).ok().as_deref() == Some(needle) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_dir_recursive_does_not_follow_symlinks() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("real.txt"), b"ok").unwrap();
+        let outside = tmp.path().join("outside.txt");
+        std::fs::write(&outside, b"SECRET").unwrap();
+        symlink(&outside, src.join("link")).unwrap();
+
+        let dst = tmp.path().join("dst");
+        copy_dir_recursive(&src, &dst).unwrap();
+        assert_eq!(std::fs::read(dst.join("real.txt")).unwrap(), b"ok");
+        assert!(
+            std::fs::symlink_metadata(dst.join("link")).is_err(),
+            "symlink target was copied into the destination"
+        );
+        assert!(!tree_has_bytes(&dst, b"SECRET"));
+
+        let real_dir = tmp.path().join("real-dir");
+        std::fs::create_dir_all(&real_dir).unwrap();
+        std::fs::write(real_dir.join("secret.txt"), b"SECRET").unwrap();
+        let link_dir = tmp.path().join("link-dir");
+        symlink(&real_dir, &link_dir).unwrap();
+        let linked_dst = tmp.path().join("linked-dst");
+        let err = copy_dir_recursive(&link_dir, &linked_dst).unwrap_err();
+        assert!(
+            err.contains("symlink"),
+            "copying a symlink root must fail: {err}"
+        );
+        assert!(!linked_dst.join("secret.txt").exists());
+    }
+
+    /// A symlink or hardlink entry must not be created, and a later file
+    /// entry under that name must not write the link target outside the tree.
+    #[cfg(unix)]
+    #[test]
+    fn adv_unpack_does_not_follow_symlink_or_hardlink_entries() {
+        use std::os::unix::fs::MetadataExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tmp.path().join("outside-dir");
+        std::fs::create_dir_all(&outside).unwrap();
+        let sentinel_dir = tempfile::tempdir().unwrap();
+        let sentinel = sentinel_dir.path().join("hard-sentinel");
+        std::fs::write(&sentinel, b"SECRET-HARDLINK").unwrap();
+        let before_nlink = std::fs::metadata(&sentinel).unwrap().nlink();
+        let outside_link = outside.to_string_lossy().into_owned();
+        let sentinel_link = sentinel.to_string_lossy().into_owned();
+        let bytes = gzip_tar_with(|builder| {
+            append_bytes(builder, "repo/skills/demo/SKILL.md", b"hello-skill");
+            let mut link = tar::Header::new_gnu();
+            link.set_entry_type(tar::EntryType::symlink());
+            link.set_size(0);
+            builder
+                .append_link(&mut link, "repo/escape", &outside_link)
+                .unwrap();
+            append_bytes(builder, "repo/escape/pwned.txt", b"PWNED-SYMLINK");
+            let mut hard = tar::Header::new_gnu();
+            hard.set_entry_type(tar::EntryType::hard_link());
+            hard.set_size(0);
+            builder
+                .append_link(&mut hard, "repo/skills/demo/hard", &sentinel_link)
+                .unwrap();
+        });
+        let unpack_result = unpack_tarball(&bytes, tmp.path());
+        assert!(
+            !outside.join("pwned.txt").exists(),
+            "symlink entry was followed and wrote outside: {unpack_result:?}"
+        );
+        assert!(
+            !tree_has_bytes(&outside, b"PWNED-SYMLINK"),
+            "link target directory received the file body"
+        );
+        let demo = tmp.path().join("repo").join("skills").join("demo");
+        if demo.join("escape").exists() || tmp.path().join("repo").join("escape").exists() {
+            let escape = tmp.path().join("repo").join("escape");
+            if escape.exists() {
+                let meta = std::fs::symlink_metadata(&escape).unwrap();
+                assert!(
+                    !meta.file_type().is_symlink(),
+                    "symlink entry was materialized at {}",
+                    escape.display()
+                );
+            }
+        }
+        assert!(
+            std::fs::symlink_metadata(demo.join("hard")).is_err(),
+            "hardlink entry was materialized"
+        );
+        assert_eq!(
+            std::fs::metadata(&sentinel).unwrap().nlink(),
+            before_nlink,
+            "hardlink entry linked the outside sentinel"
+        );
+        let extracted = tmp.path().join("repo");
+        assert!(
+            !extracted.exists() || !tree_has_bytes(&extracted, b"SECRET-HARDLINK"),
+            "hardlink target contents were written into the extracted tree"
+        );
+        let raw = tmp.path().join("repo-raw");
+        assert!(
+            !raw.exists() || !tree_has_bytes(&raw, b"SECRET-HARDLINK"),
+            "hardlink target contents were written into the raw tree"
+        );
+    }
+
+    fn adv_pax_record(key: &str, value: &str) -> Vec<u8> {
+        let mut len = 1usize;
+        for _ in 0..8 {
+            let rec = format!("{len} {key}={value}\n");
+            if rec.len() == len {
+                return rec.into_bytes();
+            }
+            len = rec.len();
+        }
+        panic!("could not size pax record for {key}");
+    }
+
+    fn adv_pad_512(buf: &mut Vec<u8>) {
+        let rem = buf.len() % 512;
+        if rem != 0 {
+            buf.resize(buf.len() + (512 - rem), 0);
+        }
+    }
+
+    /// Pax `path` can hide `..` or an absolute name past the ustar name field.
+    #[test]
+    fn adv_unpack_refuses_pax_absolute_and_parent_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let abs_target = tmp.path().join("abs-escape-target");
+        let parent_target = tmp.path().join("parent-escape-target");
+        let abs_body = adv_pax_record("path", &abs_target.to_string_lossy());
+        let mut raw = ustar_header("./PaxHeaders/abs", abs_body.len() as u64, b'x', "").to_vec();
+        raw.extend_from_slice(&abs_body);
+        adv_pad_512(&mut raw);
+        raw.extend_from_slice(&ustar_header("repo/local.bin", 5, b'0', ""));
+        raw.extend_from_slice(b"PWNED");
+        adv_pad_512(&mut raw);
+        raw.extend_from_slice(&[0u8; 1024]);
+        let err = unpack_tarball(&gzip_bytes(&raw), tmp.path()).unwrap_err();
+        assert!(
+            err.to_lowercase().contains("refus")
+                || err.to_lowercase().contains("absolute")
+                || err.to_lowercase().contains("parent"),
+            "absolute pax path must be refused: {err}"
+        );
+        assert!(!abs_target.exists(), "absolute pax path was written");
+        assert!(!tree_has_bytes(tmp.path(), b"PWNED"));
+
+        let parent_body = adv_pax_record(
+            "path",
+            &format!(
+                "repo/../../{}",
+                parent_target.file_name().unwrap().to_string_lossy()
+            ),
+        );
+        let mut raw = ustar_header("./PaxHeaders/dot", parent_body.len() as u64, b'x', "").to_vec();
+        raw.extend_from_slice(&parent_body);
+        adv_pad_512(&mut raw);
+        raw.extend_from_slice(&ustar_header("repo/local.bin", 5, b'0', ""));
+        raw.extend_from_slice(b"PWNED");
+        adv_pad_512(&mut raw);
+        raw.extend_from_slice(&[0u8; 1024]);
+        let err = unpack_tarball(&gzip_bytes(&raw), tmp.path()).unwrap_err();
+        assert!(
+            err.to_lowercase().contains("refus") || err.to_lowercase().contains("parent"),
+            "pax parent path must be refused: {err}"
+        );
+        assert!(!parent_target.exists(), "pax .. path was written");
+        assert!(!tree_has_bytes(tmp.path(), b"PWNED"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn adv_copy_dir_does_not_follow_preplanted_destination_symlink() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        let outside_file = outside.join("planted-target.txt");
+        std::fs::write(&outside_file, b"ORIGINAL").unwrap();
+
+        let dst = tmp.path().join("dst");
+        std::fs::create_dir_all(&dst).unwrap();
+        symlink(&outside_file, dst.join("real.txt")).unwrap();
+        symlink(&outside, dst.join("sub")).unwrap();
+
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(src.join("sub")).unwrap();
+        std::fs::write(src.join("real.txt"), b"LEAKED-FILE").unwrap();
+        std::fs::write(src.join("sub").join("secret.txt"), b"LEAKED-DIR").unwrap();
+
+        let copied = copy_dir_recursive(&src, &dst);
+        let file_bytes = std::fs::read(&outside_file).unwrap_or_default();
+        let dir_leak = outside.join("secret.txt");
+        let dir_bytes = std::fs::read(&dir_leak).unwrap_or_default();
+
+        let outside_root = tmp.path().join("outside-root");
+        std::fs::create_dir_all(&outside_root).unwrap();
+        let dst_link = tmp.path().join("dst-link");
+        symlink(&outside_root, &dst_link).unwrap();
+        let src_root = tmp.path().join("src-root");
+        std::fs::create_dir_all(&src_root).unwrap();
+        std::fs::write(src_root.join("note.txt"), b"LEAKED-ROOT").unwrap();
+        let copied_root = copy_dir_recursive(&src_root, &dst_link);
+        let root_bytes = std::fs::read(outside_root.join("note.txt")).unwrap_or_default();
+
+        let mut leaks = Vec::new();
+        if file_bytes == b"LEAKED-FILE" {
+            leaks.push(format!("file symlink followed ({copied:?})"));
+        }
+        if dir_bytes == b"LEAKED-DIR" {
+            leaks.push(format!("directory symlink followed ({copied:?})"));
+        }
+        if root_bytes == b"LEAKED-ROOT" {
+            leaks.push(format!(
+                "destination root symlink followed ({copied_root:?})"
+            ));
+        }
+        assert!(
+            leaks.is_empty(),
+            "pre-planted destination symlinks received file contents outside the tree: {}",
+            leaks.join("; ")
+        );
+    }
+
+    #[test]
+    fn adv_unpack_pax_declared_size_over_cap_does_not_write_body() {
+        let big = MAX_TARBALL_UNCOMPRESSED_BYTES + 1;
+        let pax_body = adv_pax_record("size", &big.to_string());
+        let mut header_bytes = Vec::new();
+        header_bytes.extend_from_slice(&ustar_header(
+            "./PaxHeaders/huge",
+            pax_body.len() as u64,
+            b'x',
+            "",
+        ));
+        header_bytes.extend_from_slice(&pax_body);
+        adv_pad_512(&mut header_bytes);
+        header_bytes.extend_from_slice(&ustar_header("repo/huge.bin", 0, b'0', ""));
+
+        let enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        let mut writer = std::io::BufWriter::new(enc);
+        use std::io::Write;
+        writer.write_all(&header_bytes).unwrap();
+        let chunk = [0u8; 64 * 1024];
+        let mut left = big;
+        while left > 0 {
+            let n = std::cmp::min(left, chunk.len() as u64) as usize;
+            writer.write_all(&chunk[..n]).unwrap();
+            left -= n as u64;
+        }
+        let rem = (big % 512) as usize;
+        if rem != 0 {
+            writer.write_all(&vec![0u8; 512 - rem]).unwrap();
+        }
+        writer.write_all(&[0u8; 1024]).unwrap();
+        writer.flush().unwrap();
+        let enc = writer.into_inner().unwrap();
+        let bytes = enc.finish().unwrap();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let started = std::time::Instant::now();
+        let result = unpack_tarball(&bytes, tmp.path());
+        let huge = tmp.path().join("repo-raw").join("repo").join("huge.bin");
+        let written = std::fs::metadata(&huge).map(|meta| meta.len()).unwrap_or(0);
+        let err = result.expect_err("pax size over the uncompressed cap must fail");
+        assert!(
+            written <= 1024,
+            "pax-declared body wrote {written} bytes before failing: {err} \
+             (elapsed {:?})",
+            started.elapsed()
+        );
+        assert!(
+            err.contains("uncompressed"),
+            "over-cap pax size must be rejected as the uncompressed cap, got {err}"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "over-cap pax size was not rejected before the body write"
+        );
+    }
+
+    /// `dst/link/newfile` where `link` is a symlink to a directory and `newfile`
+    /// does not exist yet. Recursing into that directory must not create it outside.
+    #[cfg(unix)]
+    #[test]
+    fn adv_copy_dir_does_not_create_missing_file_through_dest_dir_symlink() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        let dst = tmp.path().join("dst");
+        std::fs::create_dir_all(&dst).unwrap();
+        symlink(&outside, dst.join("link")).unwrap();
+
+        let src = tmp.path().join("src");
+        let nested = src.join("link").join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(src.join("link").join("newfile"), b"LEAKED-NEW").unwrap();
+        std::fs::write(nested.join("newfile"), b"LEAKED-NESTED").unwrap();
+
+        let copied = copy_dir_recursive(&src, &dst);
+
+        let direct_src = tmp.path().join("direct-src");
+        std::fs::create_dir_all(&direct_src).unwrap();
+        std::fs::write(direct_src.join("newfile"), b"LEAKED-DIRECT").unwrap();
+        let copied_direct = copy_dir_recursive(&direct_src, &dst.join("link").join("newdir"));
+        let mut link_dot = dst.join("link");
+        link_dot.push(".");
+        let copied_dot = copy_dir_recursive(&direct_src, &link_dot);
+        let mut link_slash = dst.join("link");
+        link_slash.push("");
+        let copied_slash = copy_dir_recursive(&direct_src, &link_slash);
+
+        let leaked = [
+            outside.join("newfile"),
+            outside.join("nested"),
+            outside.join("nested").join("newfile"),
+            outside.join("newdir"),
+            outside.join("newdir").join("newfile"),
+        ];
+        let hits: Vec<String> = leaked
+            .iter()
+            .filter(|path| path.exists())
+            .map(|path| path.display().to_string())
+            .collect();
+        assert!(
+            hits.is_empty(),
+            "destination dir symlink created {}: recursive={copied:?} direct={copied_direct:?} dot={copied_dot:?} slash={copied_slash:?} dot_path={} slash_path={}",
+            hits.join(", "),
+            link_dot.display(),
+            link_slash.display()
+        );
+        let err = copied.expect_err("recursing through a destination dir symlink must fail");
+        assert!(
+            err.contains("symlink"),
+            "recursive copy failed closed for a reason other than the symlink: {err}"
+        );
+        let direct_err = copied_direct
+            .expect_err("copy into a missing directory below a destination symlink must fail");
+        assert!(
+            direct_err.contains("symlink"),
+            "direct copy failed closed for a reason other than the symlink: {direct_err}"
+        );
+        // `link/.` and `link/` make lstat report the target directory. The file
+        // copy still walks back to the symlink, because `Path::pop` drops `.`.
+        let dot_err = copied_dot.expect_err("copy through link/. must fail closed");
+        assert!(dot_err.contains("symlink"), "{dot_err}");
+        let slash_err = copied_slash.expect_err("copy through link/ must fail closed");
+        assert!(slash_err.contains("symlink"), "{slash_err}");
+    }
+
+    /// Two declared sizes that each fit under the cap but sum over it.
+    /// The second pax size is one byte over the remaining budget; its payload is a few bytes.
+    #[test]
+    fn adv_unpack_sum_of_pax_sizes_over_cap_does_not_create_second_file() {
+        let first_len: u64 = 32;
+        let second_declared = MAX_TARBALL_UNCOMPRESSED_BYTES - first_len + 1;
+        assert!(second_declared < MAX_TARBALL_UNCOMPRESSED_BYTES);
+        assert!(first_len + second_declared > MAX_TARBALL_UNCOMPRESSED_BYTES);
+        let payload = b"LEAKED!!";
+        let pax_body = adv_pax_record("size", &second_declared.to_string());
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&ustar_header("repo/first.bin", first_len, b'0', ""));
+        raw.extend(std::iter::repeat(b'a').take(first_len as usize));
+        adv_pad_512(&mut raw);
+        raw.extend_from_slice(&ustar_header(
+            "./PaxHeaders/second",
+            pax_body.len() as u64,
+            b'x',
+            "",
+        ));
+        raw.extend_from_slice(&pax_body);
+        adv_pad_512(&mut raw);
+        raw.extend_from_slice(&ustar_header(
+            "repo/second.bin",
+            payload.len() as u64,
+            b'0',
+            "",
+        ));
+        raw.extend_from_slice(payload);
+        adv_pad_512(&mut raw);
+        raw.extend_from_slice(&[0u8; 1024]);
+        let bytes = gzip_bytes(&raw);
+
+        let mut first_size = None;
+        let mut second_size = None;
+        let mut second_header = None;
+        {
+            let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(bytes.as_slice()));
+            let mut entries = archive.entries().unwrap();
+            while let Some(entry) = entries.next() {
+                let mut entry = entry.expect("tar entry");
+                let name = entry.path().unwrap().display().to_string();
+                let size = entry.size();
+                let header_size = entry.header().size().unwrap();
+                if name.ends_with("first.bin") {
+                    first_size = Some(size);
+                    std::io::copy(&mut entry, &mut std::io::sink()).unwrap();
+                } else if name.ends_with("second.bin") {
+                    second_size = Some(size);
+                    second_header = Some(header_size);
+                    break;
+                } else if size <= 1024 * 1024 {
+                    std::io::copy(&mut entry, &mut std::io::sink()).unwrap();
+                } else {
+                    break;
+                }
+            }
+        }
+        let first_size = first_size.expect("first entry missing");
+        let second_size = second_size.expect("second entry missing");
+        let second_header = second_header.expect("second header size missing");
+        assert!(
+            first_size <= MAX_TARBALL_UNCOMPRESSED_BYTES
+                && second_size <= MAX_TARBALL_UNCOMPRESSED_BYTES
+                && first_size + second_size > MAX_TARBALL_UNCOMPRESSED_BYTES,
+            "probe sizes were not each under the cap and over it together: \
+             first={first_size} second={second_size} header={second_header}"
+        );
+
+        let tmp = tempfile::tempdir().unwrap();
+        let result = unpack_tarball(&bytes, tmp.path());
+        let second_paths = [
+            tmp.path().join("repo-raw").join("repo").join("second.bin"),
+            tmp.path().join("repo").join("second.bin"),
+        ];
+        for path in &second_paths {
+            let written = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+            assert!(
+                !path.exists(),
+                "second file was created at {} ({written} bytes) despite declared sizes \
+                 {first_size}+{second_size}: {result:?}",
+                path.display()
+            );
+        }
+        let err = result.expect_err("sum of declared sizes over the cap must fail");
+        assert!(
+            err.contains("uncompressed"),
+            "sum over the cap must be the uncompressed cap, got {err} \
+             (first={first_size} second={second_size} header={second_header})"
+        );
+        assert!(
+            tmp.path()
+                .join("repo-raw")
+                .join("repo")
+                .join("first.bin")
+                .is_file(),
+            "first file was not written before the second entry was rejected: {err}"
+        );
+    }
+
+    /// Global pax `size` (typeflag `g`). tar 0.4.46 does not apply that record to
+    /// the next entry; a body past the cap would be a break, a small ustar body is not.
+    #[test]
+    fn adv_unpack_global_pax_size_does_not_write_over_cap_body() {
+        let big = MAX_TARBALL_UNCOMPRESSED_BYTES + 1;
+        let pax_body = adv_pax_record("size", &big.to_string());
+        let payload = b"tiny";
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&ustar_header(
+            "./PaxHeaders/global",
+            pax_body.len() as u64,
+            b'g',
+            "",
+        ));
+        raw.extend_from_slice(&pax_body);
+        adv_pad_512(&mut raw);
+        raw.extend_from_slice(&ustar_header(
+            "repo/after-global.bin",
+            payload.len() as u64,
+            b'0',
+            "",
+        ));
+        raw.extend_from_slice(payload);
+        adv_pad_512(&mut raw);
+        raw.extend_from_slice(&[0u8; 1024]);
+        let bytes = gzip_bytes(&raw);
+
+        let mut file_size = None;
+        let mut header_size = None;
+        {
+            let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(bytes.as_slice()));
+            let mut entries = archive.entries().unwrap();
+            while let Some(entry) = entries.next() {
+                let mut entry = entry.expect("tar entry");
+                let is_file = entry.header().entry_type().is_file();
+                let size = entry.size();
+                let header = entry.header().size().unwrap();
+                if is_file {
+                    file_size = Some(size);
+                    header_size = Some(header);
+                    if size <= payload.len() as u64 {
+                        std::io::copy(&mut entry, &mut std::io::sink()).unwrap();
+                    }
+                    break;
+                } else if size <= 1024 * 1024 {
+                    std::io::copy(&mut entry, &mut std::io::sink()).unwrap();
+                } else {
+                    break;
+                }
+            }
+        }
+        let file_size = file_size.expect("regular file after global pax missing");
+        let header_size = header_size.expect("header size missing");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let result = unpack_tarball(&bytes, tmp.path());
+        let paths = [
+            tmp.path()
+                .join("repo-raw")
+                .join("repo")
+                .join("after-global.bin"),
+            tmp.path().join("repo").join("after-global.bin"),
+        ];
+        let written = paths
+            .iter()
+            .map(|path| std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0))
+            .max()
+            .unwrap();
+        let exists = paths.iter().any(|path| path.exists());
+        if file_size > MAX_TARBALL_UNCOMPRESSED_BYTES {
+            assert!(
+                !exists && written == 0,
+                "global pax Entry::size {file_size} is over the cap but wrote {written} bytes: {result:?}"
+            );
+            let err = result.expect_err("over-cap global pax size must fail");
+            assert!(
+                err.contains("uncompressed"),
+                "over-cap global pax size was not the uncompressed cap: {err}"
+            );
+        } else {
+            assert!(
+                written <= file_size && written <= payload.len() as u64,
+                "global pax wrote {written} bytes with Entry::size {file_size} header {header_size}: {result:?}"
+            );
+            assert!(
+                written <= MAX_TARBALL_UNCOMPRESSED_BYTES,
+                "global pax body of {written} bytes is past the cap"
+            );
+            let err = result.err();
+            assert!(
+                err.is_none(),
+                "small ustar body after a global pax header failed: {err:?}"
+            );
+            let got = std::fs::read(tmp.path().join("repo").join("after-global.bin")).unwrap();
+            assert_eq!(got, payload);
+        }
     }
 }

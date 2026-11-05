@@ -282,37 +282,23 @@ pub async fn install_uv(window: WebviewWindow) -> Result<(), String> {
         if std::fs::create_dir_all(&local_bin).is_err() {
             let user = std::env::var("USER").unwrap_or_default();
             let local_dir = home.join(".local");
-            let script = format!(
-                "mkdir -p '{}' && chown -R {} '{}'",
-                local_bin.display(),
-                user,
-                local_dir.display()
-            );
-            // The admin-password dialog waits on the user; keep that wait off
-            // the async runtime workers.
-            let output = tauri::async_runtime::spawn_blocking(move || {
-                std::process::Command::new("osascript")
-                    .args([
-                        "-e",
-                        &format!(
-                            "do shell script \"{}\" with administrator privileges",
-                            script
-                        ),
-                    ])
-                    .output()
-                    .map_err(|e| format!("Failed to fix permissions for ~/.local: {}", e))
-            })
-            .await
-            .map_err(|e| format!("Elevation task failed: {e}"))??;
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(format!(
-                    "Failed to create ~/.local/bin: {}. \
-                     Please run: sudo chown -R $(whoami) ~/.local",
-                    stderr.trim()
-                ));
-            }
+            let script = crate::elevation::build_mkdir_chown_script(&local_bin, &user, &local_dir)
+                .map_err(|e| {
+                    format!(
+                        "Failed to create ~/.local/bin: {e} \
+                         Please run: sudo chown -R $(whoami) ~/.local"
+                    )
+                })?;
+            // Bounded osascript. The admin dialog must not wait forever, and
+            // the path is AppleScript-quoted by the elevation helper.
+            crate::elevation::run_administrator_shell(&script)
+                .await
+                .map_err(|e| {
+                    format!(
+                        "Failed to create ~/.local/bin: {e} \
+                         Please run: sudo chown -R $(whoami) ~/.local"
+                    )
+                })?;
         }
     }
 
@@ -523,4 +509,41 @@ pub async fn uv_run_command(
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
         exit_code,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn installer_strings_and_uv_run_command_stay_unconfined() {
+        let src = include_str!("uv.rs");
+        let prod = src.split("#[cfg(test)]").next().unwrap_or(src);
+        assert!(
+            prod.contains("curl -LsSf https://astral.sh/uv/install.sh | sh"),
+            "unix installer string changed"
+        );
+        assert!(
+            prod.contains("irm https://astral.sh/uv/install.ps1 | iex"),
+            "windows installer string changed"
+        );
+        assert!(
+            prod.contains("pub async fn uv_run_command"),
+            "uv_run_command was removed"
+        );
+        let run_fn = prod
+            .split("pub async fn uv_run_command")
+            .nth(1)
+            .unwrap_or("");
+        assert!(
+            !run_fn.contains("allowlist") && !run_fn.contains("allow_list"),
+            "uv_run_command gained an allowlist"
+        );
+        assert!(
+            prod.contains("crate::elevation::build_mkdir_chown_script"),
+            "uv elevation no longer uses the shared helper"
+        );
+        assert!(
+            prod.contains("crate::elevation::run_administrator_shell"),
+            "uv elevation no longer uses the shared helper"
+        );
+    }
 }

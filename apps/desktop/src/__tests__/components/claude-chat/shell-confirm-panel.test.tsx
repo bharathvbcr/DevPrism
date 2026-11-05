@@ -20,9 +20,7 @@ beforeEach(() => {
 });
 
 function renderShell(command: string) {
-  render(
-    <MarkdownRenderer content={"```bash\n" + command + "\n```"} />,
-  );
+  render(<MarkdownRenderer content={"```bash\n" + command + "\n```"} />);
 }
 
 async function openConfirm() {

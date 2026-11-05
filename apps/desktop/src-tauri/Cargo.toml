@@ -91,6 +91,10 @@ tauri-plugin-updater = "2"
 tauri = { version = "2", features = ["devtools", "test"] }
 tempfile = "3"
 
+[[bench]]
+name = "baseline"
+harness = false
+
 # Release build tuning: the binary links Tectonic + Typst + git2 + rusqlite;
 # thin LTO + one codegen unit meaningfully shrink and speed it, and stripping
 # symbols cuts installer/updater payload. `panic = "abort"` was deliberately

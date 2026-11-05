@@ -1,0 +1,458 @@
+{
+  "schema": 1,
+  "measured_at": "2026-11-02T21:42:40.430Z",
+  "machine": {
+    "cpu": "Apple M5 Pro",
+    "model": "Mac17,8",
+    "arch": "arm64"
+  },
+  "os": {
+    "name": "Darwin",
+    "product_version": "27.2",
+    "build": "26B123"
+  },
+  "git_head_at_measurement": "348d14f8f5a116cbacd4cdeed69b1113131d401c",
+  "statistic": "minimum of same-config reruns after one excluded warmup. spread is max minus min of those reruns. The mean is not the reported figure. Smoke uses one sample and is not a noise floor.",
+  "smoke": false,
+  "rust_exit": 0,
+  "ui_exit": 0,
+  "commands": {
+    "all": "bun run --filter=@devprism/desktop bench",
+    "from_desktop": "bun run bench",
+    "ci_smoke": "BENCH_SMOKE=1 bun run --filter=@devprism/desktop bench -- --smoke --skip-rust"
+  },
+  "typst_in_process": {
+    "api": "career_typst::engine::compile_resume_pdf",
+    "deadline_ms": 120000,
+    "deadline_self_check": "a worker that slept past the deadline returned Exceeded before the worker finished",
+    "ipc": {
+      "api": "career_typst_compile returns TypstCompileResult. pdf_bytes is Option<Vec<u8>>. This commit also has typst_compile_document, which returns tauri::ipc::Response. That Response path was not measured.",
+      "json_number_array_byte_length": 213973,
+      "pdf_byte_length": 62464,
+      "ratio_array_over_pdf": 3.425541111680328,
+      "result_json_byte_length": 214060,
+      "shape": "json_number_array",
+      "status": "measured"
+    },
+    "note": "min_ms is the minimum of the same-config reruns after one warmup compile. That warmup is recorded as first_call_ms (font discovery included) and is not part of the spread. In smoke mode the single run is the only sample and is not a noise floor. compile_resume_pdf returns the full PDF; it does not stop at the first page.",
+    "one_page": {
+      "first_call_ms": 0.902416,
+      "max_ms": 0.544917,
+      "min_ms": 0.41141700000000003,
+      "n": 7,
+      "samples_ms": [
+        0.446417,
+        0.544917,
+        0.496875,
+        0.437459,
+        0.4165,
+        0.41141700000000003,
+        0.4505
+      ],
+      "spread_ms": 0.13349999999999995,
+      "status": "measured",
+      "unit": "ms"
+    },
+    "pdf_path": "/Users/bharath/.grok/worktrees/devtools-devprism/wave3-bench/bench-results/thirty-page.pdf",
+    "smoke": false,
+    "status": "measured",
+    "thirty_page": {
+      "first_call_ms": 62.376334,
+      "max_ms": 1.503792,
+      "min_ms": 1.381084,
+      "n": 7,
+      "samples_ms": [
+        1.461375,
+        1.503792,
+        1.3957080000000002,
+        1.397417,
+        1.446208,
+        1.381084,
+        1.4487910000000002
+      ],
+      "spread_ms": 0.12270800000000004,
+      "status": "measured",
+      "unit": "ms"
+    },
+    "warmup_excluded": 1
+  },
+  "raster_first_page": {
+    "status": "measured",
+    "n": 7,
+    "min": 1.6872919999950682,
+    "max": 2.6044999999940046,
+    "spread": 0.9172079999989364,
+    "samples": [
+      1.6872919999950682,
+      1.7032919999983278,
+      2.131042000000889,
+      2.1595000000015716,
+      2.2015410000021802,
+      2.4277079999956186,
+      2.6044999999940046
+    ],
+    "warmup_excluded": 1,
+    "warmup": [
+      1.7384999999994761
+    ],
+    "noise_floor": true,
+    "fixture": "/Users/bharath/.grok/worktrees/devtools-devprism/wave3-bench/bench-results/thirty-page.pdf",
+    "pdf_byte_length": 62464,
+    "dpi": 144,
+    "pages": 30,
+    "dpi_source": "renderScale 1 * 72 * MIN_RENDER_DPR 2",
+    "rgb_to_rgba": "same loop as mupdf-worker methods.drawPage",
+    "smoke": false,
+    "unit": "ms",
+    "what": "raster page 0 of the 30-page PDF at 144 DPI. compile_resume_pdf does not return after the first page; this is the raster, not a partial compile."
+  },
+  "raster_full": {
+    "status": "measured",
+    "n": 7,
+    "min": 54.51258399999642,
+    "max": 65.17904100000305,
+    "spread": 10.66645700000663,
+    "samples": [
+      58.83079100000032,
+      65.17904100000305,
+      60.894415999995545,
+      58.27066599999671,
+      57.78133399999933,
+      54.51258399999642,
+      56.379875000005995
+    ],
+    "warmup_excluded": 1,
+    "warmup": [
+      59.60450000000128
+    ],
+    "noise_floor": true,
+    "fixture": "/Users/bharath/.grok/worktrees/devtools-devprism/wave3-bench/bench-results/thirty-page.pdf",
+    "pdf_byte_length": 62464,
+    "dpi": 144,
+    "pages": 30,
+    "dpi_source": "renderScale 1 * 72 * MIN_RENDER_DPR 2",
+    "rgb_to_rgba": "same loop as mupdf-worker methods.drawPage",
+    "smoke": false,
+    "unit": "ms",
+    "what": "raster all 30 pages at 144 DPI, document already open"
+  },
+  "retained_canvas_bytes": {
+    "status": "measured",
+    "n": 7,
+    "min": 160451520,
+    "max": 160451520,
+    "spread": 0,
+    "samples": [
+      160451520,
+      160451520,
+      160451520,
+      160451520,
+      160451520,
+      160451520,
+      160451520
+    ],
+    "warmup_excluded": 1,
+    "warmup": [
+      160451520
+    ],
+    "noise_floor": true,
+    "fixture": "/Users/bharath/.grok/worktrees/devtools-devprism/wave3-bench/bench-results/thirty-page.pdf",
+    "pdf_byte_length": 62464,
+    "dpi": 144,
+    "pages": 30,
+    "dpi_source": "renderScale 1 * 72 * MIN_RENDER_DPR 2",
+    "rgb_to_rgba": "same loop as mupdf-worker methods.drawPage",
+    "smoke": false,
+    "unit": "bytes",
+    "cap_bytes": 167772160,
+    "what": "pageBitmapCacheBytesForTest after putPageBitmap of pages 0..29 in order. The cache evicts while total bytes exceed the cap and more than one page remains."
+  },
+  "store_50kb": {
+    "status": "measured",
+    "reply_bytes": 50000,
+    "chunk_bytes": 1024,
+    "deltas": 49,
+    "chunk_source": "Rust coalescer FLUSH_BYTES is 1024. 50 KB here is 50000 bytes.",
+    "ai_auto_titles": false,
+    "what": "zustand notifications and milliseconds while _appendMessage merges streaming_delta chunks",
+    "wall_ms": {
+      "status": "measured",
+      "n": 7,
+      "min": 0.0936669999998685,
+      "max": 0.17008400000008805,
+      "spread": 0.07641700000021956,
+      "samples": [
+        0.17008400000008805,
+        0.15012500000011642,
+        0.1224170000000413,
+        0.10791700000004312,
+        0.09825000000000728,
+        0.10687499999994543,
+        0.0936669999998685
+      ],
+      "warmup_excluded": 1,
+      "warmup": [
+        1.913584000000128
+      ],
+      "noise_floor": true,
+      "smoke": false,
+      "unit": "ms"
+    },
+    "store_updates": {
+      "status": "measured",
+      "n": 7,
+      "min": 49,
+      "max": 49,
+      "spread": 0,
+      "samples": [
+        49,
+        49,
+        49,
+        49,
+        49,
+        49,
+        49
+      ],
+      "warmup_excluded": 1,
+      "warmup": [
+        49
+      ],
+      "noise_floor": true,
+      "smoke": false,
+      "unit": "updates_per_reply"
+    },
+    "ms_per_delta": {
+      "status": "measured",
+      "n": 7,
+      "min": 0.0019115714285687449,
+      "max": 0.0034711020408181234,
+      "spread": 0.0015595306122493785,
+      "samples": [
+        0.0034711020408181234,
+        0.0030637755102064573,
+        0.0024983061224498225,
+        0.002202387755102921,
+        0.002005102040816475,
+        0.0021811224489784783,
+        0.0019115714285687449
+      ],
+      "warmup_excluded": 1,
+      "warmup": [
+        0.03905273469388017
+      ],
+      "noise_floor": true,
+      "smoke": false,
+      "unit": "ms"
+    }
+  },
+  "claude_output_events_per_second": {
+    "status": "not_measured",
+    "reason": "No golden NDJSON fixture is in this commit. claude-output is produced by the agent bridges, and a rate was not invented from a synthetic stream."
+  },
+  "keystroke": {
+    "status": "measured",
+    "replaces": "apps/desktop/scripts/bench-typing.ts",
+    "note": "bench-typing timed createDebouncedContentPush.schedule and described that as snapshot stringification. This times a real CodeMirror input transaction and doc.toString().",
+    "by_document_chars": [
+      {
+        "status": "measured",
+        "n": 7,
+        "min": 0.005958000001555774,
+        "max": 0.025333999998110812,
+        "spread": 0.019375999996555038,
+        "samples": [
+          0.025333999998110812,
+          0.01433299999916926,
+          0.007375000001047738,
+          0.006042000000888947,
+          0.019707999999809545,
+          0.0072499999951105565,
+          0.005958000001555774
+        ],
+        "warmup_excluded": 1,
+        "warmup": [
+          0.47312500000407454
+        ],
+        "noise_floor": true,
+        "smoke": false,
+        "document_chars": 4096,
+        "unit": "ms",
+        "what": "EditorState.update insert plus doc.toString, same base state each sample",
+        "environment": "node/bun, no EditorView, no webview",
+        "not_preview_latency": true
+      },
+      {
+        "status": "measured",
+        "n": 7,
+        "min": 0.004332999997131992,
+        "max": 0.05162499999278225,
+        "spread": 0.04729199999565026,
+        "samples": [
+          0.0063339999978779815,
+          0.05162499999278225,
+          0.026917000002868008,
+          0.005249999994703103,
+          0.0049589999980526045,
+          0.004332999997131992,
+          0.012332999998761807
+        ],
+        "warmup_excluded": 1,
+        "warmup": [
+          0.007665999997698236
+        ],
+        "noise_floor": true,
+        "smoke": false,
+        "document_chars": 32768,
+        "unit": "ms",
+        "what": "EditorState.update insert plus doc.toString, same base state each sample",
+        "environment": "node/bun, no EditorView, no webview",
+        "not_preview_latency": true
+      },
+      {
+        "status": "measured",
+        "n": 7,
+        "min": 0.0038329999952111393,
+        "max": 0.01504199999908451,
+        "spread": 0.01120900000387337,
+        "samples": [
+          0.010125000000698492,
+          0.01504199999908451,
+          0.011082999997597653,
+          0.005875000002561137,
+          0.004292000005079899,
+          0.003958000001148321,
+          0.0038329999952111393
+        ],
+        "warmup_excluded": 1,
+        "warmup": [
+          0.03291700000409037
+        ],
+        "noise_floor": true,
+        "smoke": false,
+        "document_chars": 131072,
+        "unit": "ms",
+        "what": "EditorState.update insert plus doc.toString, same base state each sample",
+        "environment": "node/bun, no EditorView, no webview",
+        "not_preview_latency": true
+      },
+      {
+        "status": "measured",
+        "n": 7,
+        "min": 0.0039590000014868565,
+        "max": 0.03345899999840185,
+        "spread": 0.029499999996914994,
+        "samples": [
+          0.006374999997206032,
+          0.004374999996798579,
+          0.0039590000014868565,
+          0.005541999998968095,
+          0.03345899999840185,
+          0.005417000000306871,
+          0.018000000003667083
+        ],
+        "warmup_excluded": 1,
+        "warmup": [
+          0.03012499999749707
+        ],
+        "noise_floor": true,
+        "smoke": false,
+        "document_chars": 524288,
+        "unit": "ms",
+        "what": "EditorState.update insert plus doc.toString, same base state each sample",
+        "environment": "node/bun, no EditorView, no webview",
+        "not_preview_latency": true
+      }
+    ]
+  },
+  "renders_per_keystroke": {
+    "status": "measured",
+    "mount_sidebar_commits": 9,
+    "mount_editor_commits": 7,
+    "cursor_after": 8,
+    "last_sample_document_store_notifications": 2,
+    "environment": "vitest jsdom, real Sidebar and LatexEditor, one EditorView.dispatch per sample",
+    "not_preview_latency": true,
+    "debounced_content_push_included": false,
+    "sidebar_commits": {
+      "status": "measured",
+      "n": 7,
+      "min": 2,
+      "max": 2,
+      "spread": 0,
+      "samples": [
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "warmup_excluded": 1,
+      "warmup": [
+        2
+      ],
+      "noise_floor": true,
+      "smoke": false,
+      "unit": "react_profiler_commits"
+    },
+    "editor_commits": {
+      "status": "measured",
+      "n": 7,
+      "min": 2,
+      "max": 2,
+      "spread": 0,
+      "samples": [
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "warmup_excluded": 1,
+      "warmup": [
+        2
+      ],
+      "noise_floor": true,
+      "smoke": false,
+      "unit": "react_profiler_commits"
+    }
+  },
+  "manvi_cold_turn": {
+    "status": "not_measured",
+    "reason": "devprism is not an executable file on PATH, so the sequence (manvi --version, then manvi run --mcp devprism, then devprism --mcp) cannot finish. /Applications/DevPrism.app was not used: it is not this commit. manvi run was not started.",
+    "manvi": "/Users/bharath/.local/bin/manvi",
+    "devprism": null,
+    "version_probe_is_not_the_sequence": true
+  },
+  "manvi_version_probe": {
+    "status": "measured",
+    "n": 7,
+    "min": 6.596250000002328,
+    "max": 7.817917000000307,
+    "spread": 1.2216669999979786,
+    "samples": [
+      7.817917000000307,
+      7.123583000000508,
+      6.8197090000030585,
+      7.577041999997164,
+      7.047583999999915,
+      6.596250000002328,
+      7.053999999996449
+    ],
+    "warmup_excluded": 1,
+    "warmup": [
+      10.790000000000873
+    ],
+    "noise_floor": true,
+    "smoke": false,
+    "unit": "ms",
+    "command": "manvi --version",
+    "binary": "/Users/bharath/.local/bin/manvi",
+    "version_text": "manvi\n  version    v0.1.0 (-ldflags)\n  revision   6ec2b13cad2cfb9a788d988796243be147e54bb1 (clean)\n  committed  2026-11-01T18:43:52Z\n  module     github.com/bharathvbcr/Manvi/manvi\n  go         go1.27.3\n  platform   darwin/arm64",
+    "counts_as_turn_start": false
+  },
+  "ipc_shape_note": "Payload bytes are the JSON number array produced by serde_json of TypstCompileResult.pdf_bytes (career_typst_compile). typst_compile_document's tauri::ipc::Response was not measured. This commit is before the binary-IPC parity change."
+}

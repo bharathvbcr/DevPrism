@@ -27,7 +27,19 @@ use claude_prism_desktop_lib::career_typst::project::{
 };
 use claude_prism_desktop_lib::career_typst::sync::{typst_sync_forward, typst_sync_inverse};
 
-// Directly load variants module for white-box branch coverage
+// Directly load variants module for white-box branch coverage.
+// variants.rs confines writes through crate::plugins::path_guard. That path
+// exists on the library crate. This file is compiled into the test crate, so
+// the same module has to exist here. path_guard depends only on std.
+// The path attribute is relative to this file, not to an inline module, so
+// the source is loaded at the test-crate root and re-exported.
+#[path = "../src/plugins/path_guard.rs"]
+mod path_guard_src;
+
+mod plugins {
+    pub(crate) use super::path_guard_src as path_guard;
+}
+
 #[path = "../src/variants.rs"]
 mod variants;
 

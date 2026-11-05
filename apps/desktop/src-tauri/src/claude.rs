@@ -423,18 +423,43 @@ fn get_claude_prism_auth_path() -> Result<PathBuf, String> {
     Ok(config_dir.join("DevPrism").join("anthropic-auth.json"))
 }
 
+/// Auth JSON is capped so a huge or hostile file cannot be loaded whole.
+const MAX_AUTH_FILE_BYTES: u64 = 1024 * 1024;
+
 fn read_claude_prism_auth_config() -> Result<DevPrismAuthConfig, String> {
-    let path = get_claude_prism_auth_path()?;
+    read_auth_config_file(&get_claude_prism_auth_path()?)
+}
+
+fn read_auth_config_file(path: &Path) -> Result<DevPrismAuthConfig, String> {
     if !path.exists() {
         return Ok(DevPrismAuthConfig::default());
     }
 
-    let content = std::fs::read_to_string(&path)
+    let meta = std::fs::metadata(path)
+        .map_err(|e| format!("Failed to read auth settings: {}", e))?;
+    if meta.len() > MAX_AUTH_FILE_BYTES {
+        return Err(format!(
+            "Failed to parse auth settings: file exceeds {} bytes",
+            MAX_AUTH_FILE_BYTES
+        ));
+    }
+
+    let content = std::fs::read_to_string(path)
         .map_err(|e| format!("Failed to read auth settings: {}", e))?;
     let content = content.trim_start_matches('\u{feff}');
-    let config = serde_json::from_str(content)
+    // serde_json accepts a JSON array as a positional struct when the type
+    // implements Default. An array is not an auth file: `[]` must not become
+    // "no key", and a positional array must not become a stored key.
+    let value: Value = serde_json::from_str(content)
         .map_err(|e| format!("Failed to parse auth settings: {}", e))?;
-    restrict_auth_file_permissions(&path)?;
+    if !value.is_object() {
+        return Err(
+            "Failed to parse auth settings: auth file must be a JSON object".to_string(),
+        );
+    }
+    let config = serde_json::from_value(value)
+        .map_err(|e| format!("Failed to parse auth settings: {}", e))?;
+    restrict_auth_file_permissions(path)?;
     Ok(config)
 }
 
@@ -444,29 +469,168 @@ fn restrict_auth_file_permissions(path: &Path) -> Result<(), String> {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
             .map_err(|e| format!("Failed to lock down auth settings permissions: {}", e))?;
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        restrict_auth_file_to_owner_windows(path)?;
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = path;
     }
     Ok(())
 }
 
-fn backup_corrupt_auth_config(path: &Path, reason: &str) -> Result<PathBuf, String> {
-    let file_name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "anthropic-auth.json".to_string());
-    let timestamp = chrono::Utc::now().format("%Y%m%d%H%M%S");
-    let backup = path.with_file_name(format!("{}.corrupt-{}.bak", file_name, timestamp));
-    std::fs::rename(path, &backup)
-        .map_err(|e| format!("Failed to back up corrupt auth settings: {}", e))?;
-    let _ = restrict_auth_file_permissions(&backup);
-    eprintln!(
-        "[auth] backed up corrupt auth settings to {}: {}",
-        backup.display(),
-        reason
-    );
-    Ok(backup)
+/// Owner-only DACL. JSON in this file still holds secrets; this is not a keychain.
+#[cfg(windows)]
+fn restrict_auth_file_to_owner_windows(path: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    #[repr(C)]
+    struct SidAndAttributes {
+        sid: *mut core::ffi::c_void,
+        attributes: u32,
+    }
+    #[repr(C)]
+    struct TokenUser {
+        user: SidAndAttributes,
+    }
+    #[repr(C)]
+    struct TrusteeW {
+        multiple_trustee: *mut u16,
+        multiple_trustee_operation: u32,
+        trustee_form: u32,
+        trustee_type: u32,
+        name: *mut u16,
+    }
+    #[repr(C)]
+    struct ExplicitAccessW {
+        permissions: u32,
+        access_mode: u32,
+        inheritance: u32,
+        trustee: TrusteeW,
+    }
+
+    const TOKEN_QUERY: u32 = 0x0008;
+    const TOKEN_USER: u32 = 1;
+    const GENERIC_ALL: u32 = 0x1000_0000;
+    const SET_ACCESS: u32 = 2;
+    const TRUSTEE_IS_USER: u32 = 1;
+    const SE_FILE_OBJECT: u32 = 1;
+    const DACL_SECURITY_INFORMATION: u32 = 0x4;
+    const PROTECTED_DACL_SECURITY_INFORMATION: u32 = 0x8000_0000;
+
+    #[link(name = "advapi32")]
+    extern "system" {
+        fn OpenProcessToken(
+            process: *mut core::ffi::c_void,
+            access: u32,
+            token: *mut *mut core::ffi::c_void,
+        ) -> i32;
+        fn GetTokenInformation(
+            token: *mut core::ffi::c_void,
+            class: u32,
+            info: *mut core::ffi::c_void,
+            length: u32,
+            returned: *mut u32,
+        ) -> i32;
+        fn SetEntriesInAclW(
+            count: u32,
+            entries: *mut ExplicitAccessW,
+            old: *mut core::ffi::c_void,
+            new_acl: *mut *mut core::ffi::c_void,
+        ) -> u32;
+        fn SetNamedSecurityInfoW(
+            name: *mut u16,
+            object_type: u32,
+            security_info: u32,
+            owner: *mut core::ffi::c_void,
+            group: *mut core::ffi::c_void,
+            dacl: *mut core::ffi::c_void,
+            sacl: *mut core::ffi::c_void,
+        ) -> u32;
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetCurrentProcess() -> *mut core::ffi::c_void;
+        fn CloseHandle(handle: *mut core::ffi::c_void) -> i32;
+        fn LocalFree(memory: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
+        fn GetLastError() -> u32;
+    }
+
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    unsafe {
+        let mut token: *mut core::ffi::c_void = core::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return Err(format!(
+                "Failed to lock down auth settings permissions: OpenProcessToken {}",
+                GetLastError()
+            ));
+        }
+        let mut needed = 0u32;
+        let _ = GetTokenInformation(token, TOKEN_USER, core::ptr::null_mut(), 0, &mut needed);
+        if needed < std::mem::size_of::<TokenUser>() as u32 || needed > 64 * 1024 {
+            CloseHandle(token);
+            return Err(
+                "Failed to lock down auth settings permissions: token user unavailable".to_string(),
+            );
+        }
+        // u64 alignment matches the SID pointer inside TOKEN_USER.
+        let mut buf = vec![0u64; (needed as usize).div_ceil(std::mem::size_of::<u64>())];
+        if GetTokenInformation(
+            token,
+            TOKEN_USER,
+            buf.as_mut_ptr().cast(),
+            needed,
+            &mut needed,
+        ) == 0
+        {
+            let err = GetLastError();
+            CloseHandle(token);
+            return Err(format!(
+                "Failed to lock down auth settings permissions: GetTokenInformation {err}"
+            ));
+        }
+        CloseHandle(token);
+        let sid = buf.as_ptr().cast::<TokenUser>().read().user.sid;
+        let mut entry = ExplicitAccessW {
+            permissions: GENERIC_ALL,
+            access_mode: SET_ACCESS,
+            inheritance: 0,
+            trustee: TrusteeW {
+                multiple_trustee: core::ptr::null_mut(),
+                multiple_trustee_operation: 0,
+                trustee_form: 0,
+                trustee_type: TRUSTEE_IS_USER,
+                name: sid.cast(),
+            },
+        };
+        let mut acl: *mut core::ffi::c_void = core::ptr::null_mut();
+        let acl_status = SetEntriesInAclW(1, &mut entry, core::ptr::null_mut(), &mut acl);
+        if acl_status != 0 || acl.is_null() {
+            if !acl.is_null() {
+                LocalFree(acl);
+            }
+            return Err(format!(
+                "Failed to lock down auth settings permissions: SetEntriesInAcl {acl_status}"
+            ));
+        }
+        let status = SetNamedSecurityInfoW(
+            wide.as_ptr().cast_mut(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
+            acl,
+            core::ptr::null_mut(),
+        );
+        LocalFree(acl);
+        if status != 0 {
+            return Err(format!(
+                "Failed to lock down auth settings permissions: SetNamedSecurityInfo {status}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Serializes every auth-config read-modify-write sequence below. Without it,
@@ -487,43 +651,155 @@ fn lock_auth_config() -> std::sync::MutexGuard<'static, ()> {
 }
 
 fn read_claude_prism_auth_config_for_update() -> Result<DevPrismAuthConfig, String> {
-    match read_claude_prism_auth_config() {
-        Ok(config) => Ok(config),
-        Err(err) => {
-            let path = get_claude_prism_auth_path()?;
-            if path.exists() {
-                backup_corrupt_auth_config(&path, &err)?;
-                Ok(DevPrismAuthConfig::default())
-            } else {
-                Err(err)
-            }
-        }
-    }
+    read_auth_config_file_for_update(&get_claude_prism_auth_path()?)
+}
+
+/// A corrupt auth file is reported to the caller. It is not renamed away and
+/// replaced with an empty config — that silently discarded stored secrets.
+fn read_auth_config_file_for_update(path: &Path) -> Result<DevPrismAuthConfig, String> {
+    read_auth_config_file(path)
 }
 
 fn write_claude_prism_auth_config(config: &DevPrismAuthConfig) -> Result<(), String> {
     let path = get_claude_prism_auth_path()?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create auth settings dir: {}", e))?;
-    }
-
+    // JSON may still hold API keys and other secrets. F-13 keychain storage
+    // was not chosen (no keychain crate). The temp file, fsync, and rename
+    // only make the replace atomic and the permissions owner-only.
+    // API key versus Claude CLI login (R1-6 / full A-10) was not chosen:
+    // there is no CLI-login fallback and no Settings change in this path.
     let content = serde_json::to_string_pretty(config)
         .map_err(|e| format!("Failed to serialize auth settings: {}", e))?;
+    atomic_write_private_file(&path, content.as_bytes())
+}
+
+/// Opens the sibling temp file used by [`atomic_write_private_file`].
+///
+/// The destination is not modified. Dropping the file before a write and
+/// rename (a kill between open and write) leaves the previous file intact.
+fn create_auth_temp_file(dest: &Path) -> Result<(std::fs::File, PathBuf), String> {
+    if let Some(parent) = dest.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create auth settings dir: {}", e))?;
+        }
+    }
+    let file_name = dest
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("anthropic-auth.json");
+    let tmp_path = dest.with_file_name(format!(".{file_name}.{}.tmp", uuid::Uuid::new_v4()));
     let mut options = OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         options.mode(0o600);
     }
-    let mut file = options
-        .open(&path)
-        .map_err(|e| format!("Failed to write auth settings: {}", e))?;
-    file.write_all(content.as_bytes())
-        .map_err(|e| format!("Failed to write auth settings: {}", e))?;
-    file.flush()
-        .map_err(|e| format!("Failed to flush auth settings: {}", e))?;
-    restrict_auth_file_permissions(&path)
+    let file = options.open(&tmp_path).map_err(|e| {
+        format!(
+            "Failed to create auth settings temp file: {}",
+            e
+        )
+    })?;
+    if let Err(err) = restrict_auth_file_permissions(&tmp_path) {
+        drop(file);
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(err);
+    }
+    Ok((file, tmp_path))
+}
+
+fn atomic_write_private_file(path: &Path, content: &[u8]) -> Result<(), String> {
+    let (mut file, tmp_path) = create_auth_temp_file(path)?;
+    let write_result = (|| -> Result<(), String> {
+        file.write_all(content)
+            .map_err(|e| format!("Failed to write auth settings: {}", e))?;
+        file.flush()
+            .map_err(|e| format!("Failed to flush auth settings: {}", e))?;
+        file.sync_all()
+            .map_err(|e| format!("Failed to fsync auth settings: {}", e))?;
+        drop(file);
+        replace_auth_file(&tmp_path, path)?;
+        restrict_auth_file_permissions(path)?;
+        sync_auth_parent_dir(path)?;
+        Ok(())
+    })();
+    if write_result.is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+    write_result
+}
+
+fn replace_auth_file(tmp: &Path, dest: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        if dest.exists() {
+            return replace_existing_file_windows(tmp, dest);
+        }
+    }
+    std::fs::rename(tmp, dest).map_err(|e| format!("Failed to replace auth settings: {}", e))
+}
+
+#[cfg(windows)]
+fn replace_existing_file_windows(tmp: &Path, dest: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    const REPLACEFILE_WRITE_THROUGH: u32 = 0x1;
+    const REPLACEFILE_IGNORE_MERGE_ERRORS: u32 = 0x2;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn ReplaceFileW(
+            replaced: *const u16,
+            replacement: *const u16,
+            backup: *const u16,
+            flags: u32,
+            exclude: *mut core::ffi::c_void,
+            reserved: *mut core::ffi::c_void,
+        ) -> i32;
+        fn GetLastError() -> u32;
+    }
+
+    let to_wide = |path: &Path| -> Vec<u16> {
+        path.as_os_str().encode_wide().chain(Some(0)).collect()
+    };
+    let replaced = to_wide(dest);
+    let replacement = to_wide(tmp);
+    let status = unsafe {
+        ReplaceFileW(
+            replaced.as_ptr(),
+            replacement.as_ptr(),
+            core::ptr::null(),
+            REPLACEFILE_WRITE_THROUGH | REPLACEFILE_IGNORE_MERGE_ERRORS,
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
+        )
+    };
+    if status == 0 {
+        let err = unsafe { GetLastError() };
+        return Err(format!("Failed to replace auth settings: ReplaceFile {err}"));
+    }
+    Ok(())
+}
+
+fn sync_auth_parent_dir(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        let Some(parent) = path.parent() else {
+            return Ok(());
+        };
+        if parent.as_os_str().is_empty() {
+            return Ok(());
+        }
+        let dir = std::fs::File::open(parent)
+            .map_err(|e| format!("Failed to open auth settings directory: {}", e))?;
+        dir.sync_all()
+            .map_err(|e| format!("Failed to fsync auth settings directory: {}", e))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(())
 }
 
 fn normalize_api_key(value: &str) -> Result<String, String> {
@@ -722,16 +998,27 @@ pub(crate) struct ClaudeCredentialForManvi {
 }
 
 pub(crate) fn claude_credential_for_manvi() -> Option<ClaudeCredentialForManvi> {
-    let stored = stored_claude_credential()?;
+    // Chat stays unwired: manvi_turn.rs is out of scope, so this Option cannot
+    // report a parse error. That is why full A-10 is not met. A parse error is
+    // not a configured key. API key versus Claude CLI login (R1-6) was not chosen.
+    let Ok(Some(stored)) = stored_claude_credential() else {
+        return None;
+    };
     Some(ClaudeCredentialForManvi {
         api_key: stored.api_key,
         base_url: stored.base_url,
     })
 }
 
-fn stored_claude_credential() -> Option<StoredClaudeCredential> {
-    let config = read_claude_prism_auth_config().ok()?;
-    stored_claude_credential_from_config(&config)
+/// `Ok(None)` is a readable file with no Claude key. A JSON parse or read
+/// failure is `Err` and must not be treated as "no key".
+fn stored_claude_credential() -> Result<Option<StoredClaudeCredential>, String> {
+    stored_claude_credential_at(&get_claude_prism_auth_path()?)
+}
+
+fn stored_claude_credential_at(path: &Path) -> Result<Option<StoredClaudeCredential>, String> {
+    let config = read_auth_config_file(path)?;
+    Ok(stored_claude_credential_from_config(&config))
 }
 
 fn stored_claude_credential_from_config(
@@ -947,7 +1234,7 @@ fn openai_compatible_credential_by_id_from_config(
         .ok_or_else(|| "Configured provider credential not found".to_string())
 }
 
-fn claude_credential_label() -> Option<&'static str> {
+fn claude_credential_label() -> Result<Option<&'static str>, String> {
     if std::env::var("ANTHROPIC_API_KEY")
         .map(|value| !value.trim().is_empty())
         .unwrap_or(false)
@@ -956,27 +1243,26 @@ fn claude_credential_label() -> Option<&'static str> {
             .map(|value| !value.trim().is_empty())
             .unwrap_or(false)
         {
-            return Some("External API key");
+            return Ok(Some("External API key"));
         }
-        return Some("Anthropic API key");
+        return Ok(Some("Anthropic API key"));
     }
 
     if std::env::var("ANTHROPIC_AUTH_TOKEN")
         .map(|value| !value.trim().is_empty())
         .unwrap_or(false)
     {
-        return Some("Anthropic auth token");
+        return Ok(Some("Anthropic auth token"));
     }
 
-    if let Some(credential) = stored_claude_credential() {
-        return Some(if credential.base_url.is_some() {
+    match stored_claude_credential()? {
+        Some(credential) => Ok(Some(if credential.base_url.is_some() {
             "External API key"
         } else {
             "Anthropic API key"
-        });
+        })),
+        None => Ok(None),
     }
-
-    None
 }
 
 fn claude_credential_env_values(
@@ -1011,8 +1297,7 @@ pub async fn save_anthropic_api_key(
         return Err(message);
     }
 
-    // Saving a new key should repair an empty/corrupt legacy auth file after
-    // backing it up, never silently discard parseable credentials.
+    // A corrupt auth file is returned to the caller. It is not reset.
     let _auth_guard = lock_auth_config();
     let mut config = read_claude_prism_auth_config_for_update()?;
     config.provider = Some(provider.clone());
@@ -1263,8 +1548,7 @@ async fn fetch_openai_compatible_models(
 
 #[tauri::command]
 pub async fn clear_anthropic_api_key() -> Result<(), String> {
-    // Clearing should also recover from an empty/corrupt legacy auth file after
-    // preserving the bad file for manual recovery.
+    // A corrupt auth file is returned to the caller. It is not reset.
     let _auth_guard = lock_auth_config();
     let mut config = read_claude_prism_auth_config_for_update()?;
     config.provider = Some(PROVIDER_CLAUDE_CODE.to_string());
@@ -2014,7 +2298,7 @@ fn create_command(
     args: Vec<String>,
     cwd: &str,
     effort_level: Option<&str>,
-) -> Command {
+) -> Result<Command, String> {
     let clean_program = strip_nul(program);
     let clean_args: Vec<Cow<str>> = args.iter().map(|a| strip_nul(a)).collect();
     let clean_cwd = strip_nul(cwd);
@@ -2062,7 +2346,7 @@ fn create_command(
     // Set effort level (default: low for fast responses)
     cmd.env("CLAUDE_CODE_EFFORT_LEVEL", effort_level.unwrap_or("low"));
 
-    if let Some(credential) = stored_claude_credential() {
+    if let Some(credential) = stored_claude_credential()? {
         for (key, value) in claude_credential_env_values(&credential) {
             if std::env::var(key)
                 .map(|value| value.trim().is_empty())
@@ -2159,7 +2443,7 @@ fn create_command(
 
     cmd.env("PATH", current_path);
 
-    cmd
+    Ok(cmd)
 }
 
 fn clear_anthropic_provider_env(cmd: &mut Command) {
@@ -2377,7 +2661,7 @@ fn check_claude_status_blocking() -> Result<ClaudeStatus, String> {
             });
             (true, email)
         }
-        _ => match claude_credential_label() {
+        _ => match claude_credential_label()? {
             Some(label) => (true, Some(label.to_string())),
             None => (false, None),
         },
@@ -2830,14 +3114,37 @@ fn common_claude_args(cwd: &str) -> Vec<String> {
         std::path::Path::new(cwd),
     ));
     system_prompt.push_str(&crate::personalization::build_personalization_prompt());
+    // `--dangerously-skip-permissions` is intentionally not passed (A-4).
+    // Tool use for this shared agent argv is unchanged. The one-shot path
+    // disables tools on its own. API key versus Claude CLI login was not chosen.
     vec![
         "--output-format".to_string(),
         "stream-json".to_string(),
         "--verbose".to_string(),
-        "--dangerously-skip-permissions".to_string(),
         "--append-system-prompt".to_string(),
         system_prompt,
     ]
+}
+
+/// Args for one-shot `claude -p` completion, before prompt transport.
+///
+/// `--tools ""` disables every built-in tool. Confirmed on Claude Code 2.1.316
+/// `--help`: `--tools` "Use \"\" to disable all tools". No other no-tools flag
+/// was added. This does not switch the call to the Messages API or `manvi
+/// --chat-only`, and it does not add a CLI-login fallback.
+fn claude_print_args(system: Option<&str>) -> Vec<String> {
+    let mut args = vec![
+        "-p".to_string(),
+        "--output-format".to_string(),
+        "json".to_string(),
+        "--tools".to_string(),
+        String::new(),
+    ];
+    if let Some(sys) = system.map(str::trim).filter(|s| !s.is_empty()) {
+        args.push("--append-system-prompt".to_string());
+        args.push(sys.to_string());
+    }
+    args
 }
 
 // 鈹€鈹€鈹€ Tauri Commands 鈹€鈹€鈹€
@@ -3380,108 +3687,255 @@ pub async fn complete_claude_print(
     let cwd = std::env::temp_dir();
     let cwd_str = cwd.to_string_lossy().to_string();
 
-    let mut args = vec![
-        "-p".to_string(),
-        "--output-format".to_string(),
-        "json".to_string(),
-        "--dangerously-skip-permissions".to_string(),
-    ];
-    if let Some(sys) = system.map(str::trim).filter(|s| !s.is_empty()) {
-        args.push("--append-system-prompt".to_string());
-        args.push(sys.to_string());
-    }
+    let args = claude_print_args(system);
     let (args, stdin_payload) = with_prompt_transport(args, user.to_string());
 
-    let mut cmd = create_command(&claude_path, args, &cwd_str, None);
+    let mut cmd = create_command(&claude_path, args, &cwd_str, None)?;
     if stdin_payload.is_some() {
         cmd.stdin(std::process::Stdio::piped());
     }
+    cmd.kill_on_drop(true);
 
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to spawn Claude Code: {e}"))?;
 
-    if let Some(payload) = stdin_payload {
-        if let Some(mut stdin) = child.stdin.take() {
-            use tokio::io::AsyncWriteExt;
-            let _ = stdin.write_all(payload.as_bytes()).await;
-            let _ = stdin.shutdown().await;
+    finish_claude_print_child(
+        &mut child,
+        stdin_payload,
+        std::time::Duration::from_secs(PRINT_TIMEOUT_SECS),
+        cancel_flag.as_deref(),
+        cancel_notify.as_deref(),
+        MAX_PRINT_OUTPUT_BYTES,
+    )
+    .await
+}
+
+/// Writes the prompt, reads stdout, and waits, all inside one timeout/cancel
+/// select. After stdout is already closed, `wait` stays on that same deadline
+/// and cancel. A child that does not exit is killed, then waited, and the
+/// timeout or cancelled error is returned. Descendants are signaled first so
+/// a shell that only execs a redirection cannot leave `sleep` running. Stdin
+/// write and shutdown errors propagate. A child that never reads stdin blocks
+/// the write, and the select then times out and kills it.
+#[cfg(unix)]
+pub(crate) fn direct_child_pids(pid: i32) -> Vec<i32> {
+    #[cfg(target_os = "macos")]
+    {
+        // `proc_listchildpids` writes `pid_t`s. A NULL buffer does not report
+        // this parent's child count, so the buffer is a fixed cap.
+        let mut buf = vec![0i32; 64];
+        let reported = unsafe {
+            extern "C" {
+                fn proc_listchildpids(
+                    ppid: i32,
+                    buffer: *mut libc::c_void,
+                    buffersize: i32,
+                ) -> i32;
+            }
+            proc_listchildpids(
+                pid,
+                buf.as_mut_ptr().cast(),
+                (buf.len() * std::mem::size_of::<i32>()) as i32,
+            )
+        };
+        if reported <= 0 {
+            return Vec::new();
+        }
+        let count = (reported as usize).min(buf.len());
+        buf.truncate(count);
+        buf.retain(|child| *child > 1);
+        buf
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let mut children = Vec::new();
+        let Ok(entries) = std::fs::read_dir("/proc") else {
+            return children;
+        };
+        for entry in entries.flatten() {
+            let Ok(child) = entry.file_name().to_string_lossy().parse::<i32>() else {
+                continue;
+            };
+            if child <= 1 {
+                continue;
+            }
+            let Ok(status) = std::fs::read_to_string(format!("/proc/{child}/status")) else {
+                continue;
+            };
+            let is_child = status.lines().any(|line| {
+                line.strip_prefix("PPid:")
+                    .is_some_and(|rest| rest.trim() == pid.to_string())
+            });
+            if is_child {
+                children.push(child);
+            }
+            if children.len() >= 64 {
+                break;
+            }
+        }
+        children
+    }
+}
+
+#[cfg(unix)]
+fn kill_spawned_descendants(pid: u32) {
+    fn collect(pid: i32, depth: usize, out: &mut Vec<i32>) {
+        if depth > 8 || out.len() >= 64 {
+            return;
+        }
+        for child in direct_child_pids(pid) {
+            collect(child, depth + 1, out);
+            if out.len() >= 64 {
+                return;
+            }
+            out.push(child);
         }
     }
+    let mut descendants = Vec::new();
+    collect(pid as i32, 0, &mut descendants);
+    for child in descendants {
+        unsafe {
+            libc::kill(child, libc::SIGKILL);
+        }
+    }
+}
 
+/// Discards piped stderr so a full pipe cannot stall `wait` after stdout is done.
+/// Drop aborts the task. Dropping the `JoinHandle` alone would detach it.
+pub(crate) struct PrintStderrDrain {
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for PrintStderrDrain {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+pub(crate) fn start_print_stderr_drain(
+    stderr: Option<tokio::process::ChildStderr>,
+) -> Option<PrintStderrDrain> {
+    let stderr = stderr?;
+    let task = tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let mut reader = tokio::io::BufReader::new(stderr);
+        let mut chunk = [0u8; 8192];
+        loop {
+            match reader.read(&mut chunk).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
+    });
+    Some(PrintStderrDrain { task })
+}
+
+pub(crate) async fn stop_print_child(child: &mut tokio::process::Child) {
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        kill_spawned_descendants(pid);
+    }
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+}
+async fn finish_claude_print_child(
+    child: &mut tokio::process::Child,
+    stdin_payload: Option<String>,
+    timeout: std::time::Duration,
+    cancel_flag: Option<&std::sync::atomic::AtomicBool>,
+    cancel_notify: Option<&tokio::sync::Notify>,
+    max_output: u64,
+) -> Result<String, String> {
+    use tokio::io::AsyncWriteExt;
+
+    let mut stdin = child.stdin.take();
+    let _stderr_drain = start_print_stderr_drain(child.stderr.take());
     let stdout = child
         .stdout
         .take()
         .ok_or_else(|| "Claude Code stdout missing".to_string())?;
     let reader = BufReader::new(stdout);
-    let mut buf = Vec::new();
 
-    let read_stdout = async { read_bounded_output(reader, MAX_PRINT_OUTPUT_BYTES, &mut buf).await };
-
-    let deadline = tokio::time::sleep(std::time::Duration::from_secs(PRINT_TIMEOUT_SECS));
-    tokio::pin!(deadline);
-
-    let outcome = if let Some(notify) = cancel_notify {
-        tokio::select! {
-            _ = notify.notified() => {
-                let _ = child.kill().await;
-                let _ = child.wait().await;
-                Err("cancelled".into())
-            }
-            _ = &mut deadline => {
-                let _ = child.kill().await;
-                let _ = child.wait().await;
-                Err(format!(
-                    "[E_CLI_TIMEOUT] Claude Code print mode timed out after {PRINT_TIMEOUT_SECS}s."
-                ))
-            }
-            read = read_stdout => {
-                read?;
-                let status = child
-                    .wait()
-                    .await
-                    .map_err(|e| format!("Claude Code wait failed: {e}"))?;
-                if !status.success() {
-                    let preview = String::from_utf8_lossy(&buf);
-                    return Err(format!(
-                        "Claude Code exited with status {status}. Output: {}",
-                        preview.chars().take(400).collect::<String>()
-                    ));
-                }
-                extract_claude_print_result(&String::from_utf8_lossy(&buf))
-            }
+    let write_and_read = async move {
+        let mut buf = Vec::new();
+        if let Some(payload) = stdin_payload {
+            let mut stdin = stdin
+                .take()
+                .ok_or_else(|| "Claude Code stdin missing".to_string())?;
+            stdin
+                .write_all(payload.as_bytes())
+                .await
+                .map_err(|e| format!("Failed to write Claude Code prompt: {e}"))?;
+            stdin
+                .shutdown()
+                .await
+                .map_err(|e| format!("Failed to close Claude Code prompt stream: {e}"))?;
         }
-    } else {
-        tokio::select! {
-            _ = &mut deadline => {
-                let _ = child.kill().await;
-                let _ = child.wait().await;
-                Err(format!(
-                    "[E_CLI_TIMEOUT] Claude Code print mode timed out after {PRINT_TIMEOUT_SECS}s."
-                ))
-            }
-            read = read_stdout => {
-                read?;
-                let status = child
-                    .wait()
-                    .await
-                    .map_err(|e| format!("Claude Code wait failed: {e}"))?;
-                if !status.success() {
-                    let preview = String::from_utf8_lossy(&buf);
-                    return Err(format!(
-                        "Claude Code exited with status {status}. Output: {}",
-                        preview.chars().take(400).collect::<String>()
-                    ));
+        read_bounded_output(reader, max_output, &mut buf).await?;
+        Ok::<Vec<u8>, String>(buf)
+    };
+
+    let deadline = tokio::time::sleep(timeout);
+    tokio::pin!(deadline);
+    tokio::pin!(write_and_read);
+    let cancelled = async {
+        match cancel_notify {
+            Some(notify) => notify.notified().await,
+            None => std::future::pending::<()>().await,
+        }
+    };
+    tokio::pin!(cancelled);
+
+    let outcome = tokio::select! {
+        _ = &mut cancelled => {
+            stop_print_child(child).await;
+            Err("cancelled".to_string())
+        }
+        _ = &mut deadline => {
+            stop_print_child(child).await;
+            Err(format!(
+                "[E_CLI_TIMEOUT] Claude Code print mode timed out after {}s.",
+                timeout.as_secs()
+            ))
+        }
+        read = &mut write_and_read => {
+            let buf = match read {
+                Ok(buf) => buf,
+                Err(err) => {
+                    stop_print_child(child).await;
+                    return Err(err);
                 }
-                extract_claude_print_result(&String::from_utf8_lossy(&buf))
+            };
+            tokio::select! {
+                _ = &mut cancelled => {
+                    stop_print_child(child).await;
+                    Err("cancelled".to_string())
+                }
+                _ = &mut deadline => {
+                    stop_print_child(child).await;
+                    Err(format!(
+                        "[E_CLI_TIMEOUT] Claude Code print mode timed out after {}s.",
+                        timeout.as_secs()
+                    ))
+                }
+                status = child.wait() => {
+                    let status = status
+                        .map_err(|e| format!("Claude Code wait failed: {e}"))?;
+                    if !status.success() {
+                        let preview = String::from_utf8_lossy(&buf);
+                        return Err(format!(
+                            "Claude Code exited with status {status}. Output: {}",
+                            preview.chars().take(400).collect::<String>()
+                        ));
+                    }
+                    extract_claude_print_result(&String::from_utf8_lossy(&buf))
+                }
             }
         }
     };
 
-    if cancel_flag
-        .as_ref()
-        .is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed))
-    {
+    if cancel_flag.is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed)) {
         return Err("cancelled".into());
     }
     outcome
@@ -3582,7 +4036,7 @@ async fn execute_openai_compatible_via_claude_proxy(
     args.push("sonnet".to_string());
     args.extend(common_claude_args(&project_path));
 
-    let mut cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref());
+    let mut cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref())?;
     clear_anthropic_provider_env(&mut cmd);
     // The CLI presents this as `x-api-key`; the proxy checks it before forwarding
     // with the real provider key (which never leaves the proxy).
@@ -3656,7 +4110,7 @@ async fn execute_openai_compatible_via_native_anthropic(
     let (mut args, stdin_payload) = with_prompt_transport(args_prefix, prompt);
     args.extend(common_claude_args(&project_path));
 
-    let mut cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref());
+    let mut cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref())?;
     apply_native_anthropic_provider_env(&mut cmd, &credential, &anthropic_base_url);
 
     spawn_claude_process(
@@ -3845,7 +4299,7 @@ pub async fn execute_claude_code(
     }
     args.extend(common_claude_args(&project_path));
 
-    let cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref());
+    let cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref())?;
     spawn_claude_process(window, cmd, tab_id, stdin_payload, None).await
 }
 
@@ -3888,7 +4342,7 @@ pub async fn continue_claude_code(
     }
     args.extend(common_claude_args(&project_path));
 
-    let cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref());
+    let cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref())?;
     spawn_claude_process(window, cmd, tab_id, stdin_payload, None).await
 }
 
@@ -3933,7 +4387,7 @@ pub async fn resume_claude_code(
     }
     args.extend(common_claude_args(&project_path));
 
-    let cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref());
+    let cmd = create_command(&claude_path, args, &project_path, effort_level.as_deref())?;
     spawn_claude_process(window, cmd, tab_id, stdin_payload, None).await
 }
 
@@ -4605,10 +5059,8 @@ pub async fn generate_claude_session_title(
     let Some(excerpt) = session_excerpt_for_model_title(&session_path) else {
         return Ok(None);
     };
-    let Some(credential) = read_claude_prism_auth_config()
-        .ok()
-        .and_then(|config| session_title_credential_from_config(&config))
-    else {
+    let config = read_claude_prism_auth_config()?;
+    let Some(credential) = session_title_credential_from_config(&config) else {
         return Ok(None);
     };
     let Ok(client) = reqwest::Client::builder()
@@ -4802,7 +5254,7 @@ pub async fn run_shell_command(command: String, cwd: String) -> Result<ShellComm
     let (shell, args) = ("sh", vec!["-c".to_string(), command]);
     #[cfg(target_os = "windows")]
     let (shell, args) = ("cmd", vec!["/C".to_string(), command]);
-    let mut cmd = create_command(shell, args, &cwd, None);
+    let mut cmd = create_command(shell, args, &cwd, None)?;
     cmd.kill_on_drop(true);
 
     let child = cmd
@@ -5273,8 +5725,34 @@ mod tests {
         assert!(args.contains(&"--output-format".to_string()));
         assert!(args.contains(&"stream-json".to_string()));
         assert!(args.contains(&"--verbose".to_string()));
-        assert!(args.contains(&"--dangerously-skip-permissions".to_string()));
+        assert!(!args.contains(&"--dangerously-skip-permissions".to_string()));
         assert!(args.contains(&"--append-system-prompt".to_string()));
+    }
+
+    #[test]
+    fn test_one_shot_print_args_disable_tools_without_skipping_permissions() {
+        let args = claude_print_args(Some("stay on the page"));
+        assert!(
+            !args
+                .iter()
+                .any(|arg| arg == "--dangerously-skip-permissions")
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair[0] == "--tools" && pair[1].is_empty()),
+            "claude --help documents --tools \"\" as disabling all tools"
+        );
+        let (transported, _) = with_prompt_transport(args, "prompt".to_string());
+        assert!(
+            !transported
+                .iter()
+                .any(|arg| arg == "--dangerously-skip-permissions")
+        );
+        assert!(
+            transported
+                .windows(2)
+                .any(|pair| pair[0] == "--tools" && pair[1].is_empty())
+        );
     }
 
     #[test]
@@ -5811,7 +6289,8 @@ mod tests {
     #[test]
     fn test_create_command_sets_args_and_cwd() {
         let args = vec!["--version".to_string()];
-        let cmd = create_command("/usr/bin/claude", args, "/tmp/project", None);
+        let cmd = create_command("/usr/bin/claude", args, "/tmp/project", None)
+            .expect("create command");
         // Command is created 鈥?we can verify via its Debug representation
         let debug_str = format!("{:?}", cmd);
         assert!(debug_str.contains("--version"));
@@ -5819,7 +6298,7 @@ mod tests {
 
     #[test]
     fn test_create_command_default_effort_level() {
-        let cmd = create_command("/usr/bin/claude", vec![], "/tmp", None);
+        let cmd = create_command("/usr/bin/claude", vec![], "/tmp", None).expect("create command");
         let debug_str = format!("{:?}", cmd);
         // The env setup is internal; just verify the command is created
         assert!(debug_str.contains("claude"));
@@ -5827,7 +6306,8 @@ mod tests {
 
     #[test]
     fn test_create_command_custom_effort_level() {
-        let cmd = create_command("/usr/bin/claude", vec![], "/tmp", Some("high"));
+        let cmd =
+            create_command("/usr/bin/claude", vec![], "/tmp", Some("high")).expect("create command");
         let debug_str = format!("{:?}", cmd);
         assert!(debug_str.contains("claude"));
     }
@@ -6182,5 +6662,1159 @@ mod tests {
         // Paths are single-quoted to handle spaces
         assert!(script.contains("'/Users/my user/.local/bin'"));
         assert!(script.contains("'/Users/my user/.local'"));
+    }
+
+    #[test]
+    fn corrupt_auth_file_is_reported_and_not_reset() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("anthropic-auth.json");
+        let garbage = b"{not-json";
+        std::fs::write(&path, garbage).expect("seed corrupt file");
+
+        let err = match read_auth_config_file(&path) {
+            Err(err) => err,
+            Ok(_) => panic!("parse error expected"),
+        };
+        assert!(
+            err.to_ascii_lowercase().contains("parse"),
+            "parse error must surface, got {err}"
+        );
+        assert_eq!(std::fs::read(&path).expect("read"), garbage);
+
+        let update_err = match read_auth_config_file_for_update(&path) {
+            Err(err) => err,
+            Ok(_) => panic!("update must not reset a corrupt file"),
+        };
+        assert!(
+            update_err.to_ascii_lowercase().contains("parse"),
+            "update must report the parse error, got {update_err}"
+        );
+        assert_eq!(
+            std::fs::read(&path).expect("previous bytes"),
+            garbage,
+            "a corrupt file must stay in place"
+        );
+    }
+
+    #[test]
+    fn auth_file_kill_between_open_and_write_keeps_previous() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("anthropic-auth.json");
+        let previous = br#"{"anthropic_api_key":"test-key-not-a-secret","anthropic_base_url":"https://example.test/v1"}"#;
+        atomic_write_private_file(&path, previous).expect("seed");
+
+        let (file, tmp) = create_auth_temp_file(&path).expect("open temp");
+        drop(file);
+        assert_eq!(
+            std::fs::read(&path).expect("destination"),
+            previous,
+            "killing after open and before write must not replace the previous file"
+        );
+        assert_ne!(tmp, path);
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn atomic_auth_write_round_trips_and_is_owner_only() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("anthropic-auth.json");
+        let body = br#"{"anthropic_api_key":"test-key-not-a-secret","anthropic_base_url":"https://example.test/v1"}"#;
+        atomic_write_private_file(&path, body).expect("write");
+        assert_eq!(std::fs::read(&path).expect("read"), body);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path)
+                .expect("meta")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        let cred = match stored_claude_credential_at(&path) {
+            Ok(Some(cred)) => cred,
+            Ok(None) => panic!("stored key missing"),
+            Err(err) => panic!("auth file should parse: {err}"),
+        };
+        assert_eq!(cred.api_key, "test-key-not-a-secret");
+    }
+
+    #[test]
+    fn stored_credential_parse_error_is_not_a_missing_key() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("anthropic-auth.json");
+        std::fs::write(&path, b"{").expect("corrupt");
+        let err = match stored_claude_credential_at(&path) {
+            Err(err) => err,
+            Ok(_) => panic!("parse error must not look like a missing key"),
+        };
+        assert!(
+            err.to_ascii_lowercase().contains("parse"),
+            "got {err}"
+        );
+
+        std::fs::write(&path, b"{}").expect("empty object");
+        match stored_claude_credential_at(&path) {
+            Ok(None) => {}
+            Ok(Some(_)) => panic!("empty config must not invent a key"),
+            Err(err) => panic!("valid file must not be a parse error: {err}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn print_child_that_never_reads_stdin_times_out() {
+        let mut cmd = tokio::process::Command::new("sh");
+        // Stdout is closed so a finished stdin write cannot look like success.
+        // Stdin stays open and unread, so the prompt write blocks until timeout.
+        cmd.args(["-c", "exec 1>&-; sleep 30"]);
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().expect("sleep");
+        let started = std::time::Instant::now();
+        let err = finish_claude_print_child(
+            &mut child,
+            Some("x".repeat(8 * 1024 * 1024)),
+            std::time::Duration::from_secs(2),
+            None,
+            None,
+            1024 * 1024,
+        )
+        .await
+        .expect_err("blocked stdin write must time out");
+        assert!(
+            err.contains("E_CLI_TIMEOUT"),
+            "expected timeout, got {err}"
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn print_child_stdin_write_error_is_not_discarded() {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", "exec 0<&-; sleep 30"]);
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().expect("sh");
+        let started = std::time::Instant::now();
+        let err = finish_claude_print_child(
+            &mut child,
+            Some("x".repeat(8 * 1024 * 1024)),
+            std::time::Duration::from_secs(5),
+            None,
+            None,
+            1024 * 1024,
+        )
+        .await
+        .expect_err("broken pipe");
+        assert!(
+            err.contains("Failed to write Claude Code prompt")
+                || err.contains("Failed to close Claude Code prompt stream"),
+            "stdin errors must propagate, got {err}"
+        );
+        assert!(
+            !err.contains("E_CLI_TIMEOUT"),
+            "a write failure must not be ignored until timeout: {err}"
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn print_child_shutdown_lets_the_fake_child_finish() {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args([
+            "-c",
+            r#"cat >/dev/null; printf '%s' '{"result":"ok-from-fake"}'"#,
+        ]);
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().expect("sh");
+        let text = finish_claude_print_child(
+            &mut child,
+            Some("prompt-from-test".to_string()),
+            std::time::Duration::from_secs(5),
+            None,
+            None,
+            1024 * 1024,
+        )
+        .await
+        .expect("fake child result");
+        assert_eq!(text, "ok-from-fake");
+    }
+
+    fn adv_cred_production_source() -> &'static str {
+        include_str!("claude.rs")
+            .split("#[cfg(test)]\nmod tests {")
+            .next()
+            .expect("production source precedes tests")
+    }
+
+    fn adv_cred_code_without_comments(line: &str) -> &str {
+        line.split("//").next().unwrap_or(line)
+    }
+
+    /// Every Claude argv composition, including ones that do not go through
+    /// `common_claude_args` alone. A later push of the permission-skip flag
+    /// has to show up here or in the production source scan.
+    fn adv_cred_every_claude_argv(cwd: &str) -> Vec<(&'static str, Vec<String>)> {
+        let common = common_claude_args(cwd);
+        let print = claude_print_args(Some("stay on the page"));
+        let (print_transported, _) = with_prompt_transport(print, "prompt-body".to_string());
+        let (mut execute, _) = with_prompt_transport(Vec::new(), "prompt-body".to_string());
+        execute.push("--model".to_string());
+        execute.push("sonnet".to_string());
+        execute.extend(common.clone());
+        let (mut continue_args, _) =
+            with_prompt_transport(vec!["-c".to_string()], "prompt-body".to_string());
+        continue_args.extend(common.clone());
+        let (mut resume_args, _) = with_prompt_transport(
+            vec!["--resume".to_string(), "session-id".to_string()],
+            "prompt-body".to_string(),
+        );
+        resume_args.extend(common.clone());
+        let (mut proxy_args, _) =
+            with_prompt_transport(vec!["-c".to_string()], "prompt-body".to_string());
+        proxy_args.push("--model".to_string());
+        proxy_args.push("sonnet".to_string());
+        proxy_args.extend(common.clone());
+        vec![
+            ("common_claude_args", common),
+            ("complete_claude_print", print_transported),
+            ("execute_claude_code", execute),
+            ("continue_claude_code", continue_args),
+            ("resume_claude_code", resume_args),
+            ("execute_openai_compatible_via_claude_proxy", proxy_args),
+        ]
+    }
+
+    #[test]
+    fn adv_cred_no_argv_builder_passes_skip_permissions() {
+        let cwd = std::env::temp_dir().join("devprism_adv_cred_args");
+        let cwd = cwd.to_str().expect("utf8 temp");
+        for (name, args) in adv_cred_every_claude_argv(cwd) {
+            assert!(
+                !args.iter().any(|arg| arg == "--dangerously-skip-permissions"),
+                "{name} still passes --dangerously-skip-permissions: {args:?}"
+            );
+        }
+        let print = adv_cred_every_claude_argv(cwd)
+            .into_iter()
+            .find(|(name, _)| *name == "complete_claude_print")
+            .expect("print argv")
+            .1;
+        assert!(
+            print
+                .windows(2)
+                .any(|pair| pair[0] == "--tools" && pair[1].is_empty()),
+            "print argv lost the empty --tools value: {print:?}"
+        );
+        for line in adv_cred_production_source().lines() {
+            let code = adv_cred_code_without_comments(line);
+            assert!(
+                !code.contains("dangerously-skip-permissions"),
+                "production argv builder still mentions the flag outside a comment: {line}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn adv_cred_print_empty_tools_survives_process_argv() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script = dir.path().join("dump-argv.sh");
+        let dump = dir.path().join("argv.bin");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf '%s\\0' \"$@\" > \"$DUMP_ARGV\"\n",
+        )
+        .expect("script");
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&script).expect("meta").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).expect("chmod");
+
+        let (_, argv) = adv_cred_every_claude_argv(dir.path().to_str().expect("utf8"))
+            .into_iter()
+            .find(|(name, _)| *name == "complete_claude_print")
+            .expect("print argv");
+        let argv: Vec<String> = argv.iter().map(|arg| strip_nul(arg).into_owned()).collect();
+        let mut cmd = tokio::process::Command::new(&script);
+        cmd.args(&argv);
+        cmd.env("DUMP_ARGV", &dump);
+        cmd.current_dir(dir.path());
+        let status = cmd.status().await.expect("dump argv");
+        assert!(status.success(), "dump script failed");
+        let bytes = std::fs::read(&dump).expect("argv dump");
+        let mut slots: Vec<String> = bytes
+            .split(|byte| *byte == 0)
+            .map(|slot| String::from_utf8(slot.to_vec()).expect("argv utf8"))
+            .collect();
+        if slots.last().is_some_and(|slot| slot.is_empty()) {
+            slots.pop();
+        }
+        assert!(
+            slots
+                .windows(2)
+                .any(|pair| pair[0] == "--tools" && pair[1].is_empty()),
+            "empty --tools value was stripped from the spawned argv: {slots:?}"
+        );
+        assert!(
+            !slots
+                .iter()
+                .any(|arg| arg == "--dangerously-skip-permissions"),
+            "spawned print argv contains the permission-skip flag: {slots:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn adv_cred_unread_stdin_times_out_without_hanging() {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", "exec 1>&-; sleep 3600"]);
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().expect("sleep");
+        let started = std::time::Instant::now();
+        let bounded = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            finish_claude_print_child(
+                &mut child,
+                Some("x".repeat(8 * 1024 * 1024)),
+                std::time::Duration::from_secs(1),
+                None,
+                None,
+                1024 * 1024,
+            ),
+        )
+        .await;
+        let err = match bounded {
+            Ok(result) => result.expect_err("a child that never reads stdin must time out"),
+            Err(_) => panic!("finish_claude_print_child hung past the outer bound"),
+        };
+        assert!(
+            err.contains("E_CLI_TIMEOUT"),
+            "expected a timeout error, got {err}"
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(8));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn adv_cred_short_stdin_write_error_surfaces() {
+        let mut cmd = tokio::process::Command::new("sh");
+        // Read one byte, then close stdin. write_all must surface the short
+        // write / broken pipe instead of waiting out the timeout.
+        cmd.args([
+            "-c",
+            "dd ibs=1 count=1 of=/dev/null 2>/dev/null; exec 0<&-; sleep 3600",
+        ]);
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().expect("sh");
+        let bounded = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            finish_claude_print_child(
+                &mut child,
+                Some("y".repeat(256 * 1024)),
+                std::time::Duration::from_secs(5),
+                None,
+                None,
+                1024 * 1024,
+            ),
+        )
+        .await;
+        let err = match bounded {
+            Ok(result) => result.expect_err("broken pipe must not look like success"),
+            Err(_) => panic!("stdin write error was discarded and the wait hung"),
+        };
+        assert!(
+            err.contains("Failed to write Claude Code prompt")
+                || err.contains("Failed to close Claude Code prompt stream"),
+            "stdin write error must surface, got {err}"
+        );
+        assert!(
+            !err.contains("E_CLI_TIMEOUT"),
+            "a short write must not be ignored until timeout: {err}"
+        );
+    }
+
+    #[test]
+    fn adv_cred_partial_write_dropped_before_rename_keeps_previous_bytes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("anthropic-auth.json");
+        let previous = br#"{"anthropic_api_key":"test-key-not-a-secret","anthropic_base_url":"https://example.test/v1"}"#;
+        std::fs::write(&path, previous).expect("seed");
+
+        let (mut file, tmp) = create_auth_temp_file(&path).expect("temp");
+        file.write_all(br#"{"anthropic_api_key":"replacement""#)
+            .expect("partial write");
+        file.flush().expect("flush");
+        drop(file);
+        std::fs::remove_file(&tmp).expect("drop temp file before rename");
+
+        let err = replace_auth_file(&tmp, &path).expect_err("missing temp must be an error");
+        assert!(!err.is_empty(), "recovery error must be visible");
+        assert_eq!(std::fs::read(&path).expect("dest"), previous);
+        assert_ne!(std::fs::read(&path).expect("dest"), b"{}");
+        assert_ne!(std::fs::read(&path).expect("dest"), b"");
+    }
+
+    #[test]
+    fn adv_cred_corrupt_json_is_not_replaced_with_empty_valid_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("anthropic-auth.json");
+        let garbage = b"{not-json test-key-not-a-secret";
+        std::fs::write(&path, garbage).expect("seed");
+
+        let err = match read_auth_config_file_for_update(&path) {
+            Err(err) => err,
+            Ok(_) => panic!("corrupt auth file recovery must be an error the caller can see"),
+        };
+        assert!(
+            err.to_ascii_lowercase().contains("parse"),
+            "expected a visible parse error, got {err}"
+        );
+        assert_eq!(std::fs::read(&path).expect("bytes"), garbage);
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&std::fs::read(&path).expect("bytes"))
+                .is_err(),
+            "corrupt file must not become valid JSON"
+        );
+    }
+
+    #[test]
+    fn adv_cred_parse_errors_are_not_reported_as_no_key() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("anthropic-auth.json");
+        let cases: &[(&[u8], &str)] = &[
+            (br"{" , "truncated object"),
+            (
+                br#"{"anthropic_api_key":"sk-ant-test-key-not-a-secret""#,
+                "truncated after key",
+            ),
+            (b"\"test-key-not-a-secret\"", "json string"),
+            (b"null", "json null"),
+            (b"1", "json number"),
+            (b"[]", "json array"),
+            (
+                br#"["claude-code","sk-ant-test-key-not-a-secret"]"#,
+                "json array in field order",
+            ),
+            (
+                br#"{"anthropic_api_key":["test-key-not-a-secret"]}"#,
+                "key is an array",
+            ),
+            (br#"{"anthropic_api_key":1}"#, "key is a number"),
+            (
+                b"{\"anthropic_api_key\":\"test-key-not-a-secret\xff\"}",
+                "key is not valid utf-8",
+            ),
+        ];
+        for (bytes, label) in cases {
+            std::fs::write(&path, bytes).unwrap_or_else(|err| panic!("{label}: {err}"));
+            match stored_claude_credential_at(&path) {
+                Err(err) => {
+                    assert!(
+                        !err.to_ascii_lowercase().contains("no key"),
+                        "{label} was worded as a missing key: {err}"
+                    );
+                    assert!(!err.is_empty(), "{label}");
+                }
+                Ok(None) => panic!("{label}: parse or read failure reported as no key"),
+                Ok(Some(cred)) => panic!("{label}: invented key {}", cred.api_key),
+            }
+            assert_eq!(std::fs::read(&path).expect("unchanged"), *bytes, "{label}");
+        }
+
+        std::fs::write(
+            &path,
+            br#"{"anthropic_api_key":"sk-ant-test-key-not-a-secret"}"#,
+        )
+        .expect("valid");
+        match stored_claude_credential_at(&path) {
+            Ok(Some(cred)) => assert_eq!(cred.api_key, "sk-ant-test-key-not-a-secret"),
+            Ok(None) => panic!("a real stored key must not be reported as no key"),
+            Err(err) => panic!("valid auth file must parse: {err}"),
+        }
+
+        std::fs::write(&path, b"{}").expect("object with no key");
+        match stored_claude_credential_at(&path) {
+            Ok(None) => {}
+            Ok(Some(cred)) => panic!("object with no key invented {}", cred.api_key),
+            Err(err) => panic!("a valid object with no key may still be no key, got {err}"),
+        }
+    }
+
+    #[test]
+    fn adv_cred_windows_acl_source_is_owner_only() {
+        let src = adv_cred_production_source();
+        let start = src
+            .find("fn restrict_auth_file_to_owner_windows")
+            .expect("windows acl function");
+        let rest = &src[start..];
+        let end = rest
+            .find("\n/// Serializes every auth-config")
+            .expect("function end");
+        let body = &rest[..end];
+        let code_lines = body
+            .lines()
+            .filter(|line| {
+                let trimmed = adv_cred_code_without_comments(line).trim();
+                !trimmed.is_empty()
+            })
+            .count();
+        assert!(code_lines > 20, "windows acl looks empty: {body}");
+        assert!(body.contains("SetNamedSecurityInfoW"), "{body}");
+        assert!(body.contains("SetEntriesInAclW(1,"), "acl must be a single entry");
+        assert!(body.contains("PROTECTED_DACL_SECURITY_INFORMATION"));
+        assert!(body.contains("TOKEN_USER"));
+        assert!(body.contains("TRUSTEE_IS_USER"));
+        let lower = body.to_ascii_lowercase();
+        assert!(!lower.contains("everyone"), "acl names Everyone");
+        assert!(!body.contains("S-1-1-0"), "acl grants World");
+        assert!(!lower.contains("builtin"), "acl names a builtin group");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn adv_cred_windows_acl_compiles_against_a_temp_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("anthropic-auth.json");
+        let body = br#"{"anthropic_api_key":"test-key-not-a-secret"}"#;
+        std::fs::write(&path, body).expect("seed");
+        restrict_auth_file_to_owner_windows(&path).expect("owner-only acl");
+        assert_eq!(std::fs::read(&path).expect("unchanged"), body);
+    }
+
+    #[test]
+    fn adv2_cred_non_object_auth_json_is_a_parse_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("anthropic-auth.json");
+        let cases: &[(&[u8], &str)] = &[
+            (b"[]", "empty array"),
+            (b"[null]", "array of null"),
+            (b"[{}]", "array of empty object"),
+            (
+                br#"["claude-code","test-key-not-a-secret"]"#,
+                "positional string array",
+            ),
+            (
+                br#"[{"anthropic_api_key":"test-key-not-a-secret"}]"#,
+                "array wrapping the key object",
+            ),
+            (b"\"test-key-not-a-secret\"", "top-level string"),
+            (b"1", "top-level number"),
+            (b"0", "top-level zero"),
+            (b"-2.5", "top-level negative number"),
+            (b"{", "truncated object"),
+            (b"\xef\xbb\xbf[]", "bom then empty array"),
+        ];
+        for (bytes, label) in cases {
+            std::fs::write(&path, bytes).unwrap_or_else(|err| panic!("{label}: {err}"));
+            match stored_claude_credential_at(&path) {
+                Err(err) => {
+                    let lower = err.to_ascii_lowercase();
+                    assert!(
+                        lower.contains("parse") || lower.contains("read"),
+                        "{label}: expected a parse error, got {err}"
+                    );
+                    assert!(
+                        !lower.contains("no key"),
+                        "{label}: worded as a missing key: {err}"
+                    );
+                }
+                Ok(None) => panic!("{label}: reported as no key"),
+                Ok(Some(cred)) => panic!("{label}: stored key {}", cred.api_key),
+            }
+            assert_eq!(std::fs::read(&path).expect("unchanged"), *bytes, "{label}");
+        }
+
+        std::fs::write(&path, b"{}").expect("object with no key");
+        match stored_claude_credential_at(&path) {
+            Ok(None) => {}
+            Ok(Some(cred)) => panic!("object with no key invented {}", cred.api_key),
+            Err(err) => panic!("a valid object with no key may still be no key, got {err}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn adv2_cred_small_unread_stdin_with_open_stdout_times_out() {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", "sleep 3600"]);
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().expect("sleep");
+        let started = std::time::Instant::now();
+        let bounded = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            finish_claude_print_child(
+                &mut child,
+                Some("x".to_string()),
+                std::time::Duration::from_secs(1),
+                None,
+                None,
+                1024 * 1024,
+            ),
+        )
+        .await;
+        let err = match bounded {
+            Ok(result) => result.expect_err("a child that never reads stdin must time out"),
+            Err(_) => panic!("finish_claude_print_child hung past the outer bound"),
+        };
+        assert!(
+            err.contains("E_CLI_TIMEOUT"),
+            "expected a timeout error, got {err}"
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(8));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn adv2_cred_small_unread_stdin_with_closed_stdout_times_out() {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", "exec 1>&-; sleep 3600"]);
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().expect("sleep");
+        let started = std::time::Instant::now();
+        let bounded = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            finish_claude_print_child(
+                &mut child,
+                Some("x".to_string()),
+                std::time::Duration::from_secs(1),
+                None,
+                None,
+                1024 * 1024,
+            ),
+        )
+        .await;
+        let err = match bounded {
+            Ok(result) => result.expect_err("a child that never reads stdin must time out"),
+            Err(_) => panic!("finish_claude_print_child hung past the outer bound"),
+        };
+        assert!(err.contains("E_CLI_TIMEOUT"), "expected a timeout error, got {err}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(8));
+    }
+
+    #[cfg(unix)]
+    fn adv3_process_running(pid: i32) -> bool {
+        if pid <= 1 {
+            return false;
+        }
+        let output = std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output();
+        match output {
+            Ok(output) if output.status.success() => {
+                let stat = String::from_utf8_lossy(&output.stdout);
+                let stat = stat.trim();
+                !stat.is_empty() && !stat.starts_with('Z')
+            }
+            _ => false,
+        }
+    }
+
+    #[cfg(unix)]
+    fn adv3_kill_pid(pid: i32) {
+        if pid > 1 {
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+            }
+        }
+    }
+
+    /// `ps` can still see a pid for a few milliseconds after it is reaped.
+    #[cfg(unix)]
+    async fn adv3_wait_until_stopped(pid: i32) -> bool {
+        for _ in 0..15 {
+            if !adv3_process_running(pid) {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        }
+        !adv3_process_running(pid)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn adv3_cred_closed_stdout_exec_sleep_is_reaped_on_timeout() {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", "exec 1>&-; sleep 3600"]);
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().expect("sleep");
+        let child_pid = child.id().expect("child pid") as i32;
+        let started = std::time::Instant::now();
+        let bounded = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            finish_claude_print_child(
+                &mut child,
+                Some("x".to_string()),
+                std::time::Duration::from_secs(1),
+                None,
+                None,
+                1024 * 1024,
+            ),
+        )
+        .await;
+        let err = match bounded {
+            Ok(result) => result.expect_err("closed stdout and a live sleep must time out"),
+            Err(_) => {
+                adv3_kill_pid(child_pid);
+                panic!("finish_claude_print_child hung past the outer bound");
+            }
+        };
+        let elapsed = started.elapsed();
+        let gone = adv3_wait_until_stopped(child_pid).await;
+        if !gone {
+            adv3_kill_pid(child_pid);
+        }
+        assert!(
+            err.contains("E_CLI_TIMEOUT"),
+            "expected a timeout error, got {err}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(8),
+            "timeout return took {elapsed:?}, not well under 8s"
+        );
+        assert!(
+            gone,
+            "exec sleep pid {child_pid} still running after timeout return"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn adv3_cred_shell_wait_leaves_no_sleep_grandchild() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pid_path = dir.path().join("sleep.pid");
+        let script = format!(
+            "sleep 3600 >/dev/null & echo $! > '{}'; exec 1>&-; wait",
+            pid_path.display()
+        );
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", &script]);
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().expect("shell");
+        let shell_pid = child.id().expect("shell pid") as i32;
+        let started = std::time::Instant::now();
+        let finish = finish_claude_print_child(
+            &mut child,
+            Some("x".to_string()),
+            std::time::Duration::from_secs(1),
+            None,
+            None,
+            1024 * 1024,
+        );
+        tokio::pin!(finish);
+        let mut sleep_pid = 0i32;
+        let mut saw_two_live = false;
+        let err = loop {
+            tokio::select! {
+                result = &mut finish => {
+                    break result;
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_millis(40)) => {
+                    if sleep_pid == 0 {
+                        if let Ok(text) = std::fs::read_to_string(&pid_path) {
+                            sleep_pid = text.trim().parse::<i32>().unwrap_or(0);
+                        }
+                    }
+                    if sleep_pid > 1
+                        && sleep_pid != shell_pid
+                        && adv3_process_running(sleep_pid)
+                        && adv3_process_running(shell_pid)
+                    {
+                        saw_two_live = true;
+                    }
+                    if started.elapsed() >= std::time::Duration::from_secs(8) {
+                        adv3_kill_pid(sleep_pid);
+                        adv3_kill_pid(shell_pid);
+                        panic!("finish_claude_print_child hung past the outer bound");
+                    }
+                }
+            }
+        };
+        let err = err.expect_err("shell blocked in wait must time out");
+        let elapsed = started.elapsed();
+        if sleep_pid == 0 {
+            if let Ok(text) = std::fs::read_to_string(&pid_path) {
+                sleep_pid = text.trim().parse::<i32>().unwrap_or(0);
+            }
+        }
+        let sleep_gone = adv3_wait_until_stopped(sleep_pid).await;
+        if !sleep_gone {
+            adv3_kill_pid(sleep_pid);
+        }
+        adv3_kill_pid(shell_pid);
+        assert!(
+            saw_two_live,
+            "construction was not a live shell {shell_pid} plus a different sleep {sleep_pid}"
+        );
+        assert!(
+            err.contains("E_CLI_TIMEOUT"),
+            "expected a timeout error, got {err}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(8),
+            "timeout return took {elapsed:?}, not well under 8s"
+        );
+        assert!(
+            sleep_pid > 1 && sleep_pid != shell_pid,
+            "sleep pid {sleep_pid} is not a different process from shell {shell_pid}"
+        );
+        assert!(
+            sleep_gone,
+            "sleep pid {sleep_pid} still running after the shell timed out"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn adv3_cred_fast_exit_after_one_byte_is_not_a_timeout() {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args([
+            "-c",
+            "read dummy; printf '%s' '{\"result\":\"ok-fast\"}'; exit 0",
+        ]);
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().expect("sh");
+        let started = std::time::Instant::now();
+        let bounded = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            finish_claude_print_child(
+                &mut child,
+                Some("x".to_string()),
+                std::time::Duration::from_secs(5),
+                None,
+                None,
+                1024 * 1024,
+            ),
+        )
+        .await;
+        let elapsed = started.elapsed();
+        let result = match bounded {
+            Ok(result) => result,
+            Err(_) => panic!("finish_claude_print_child hung past the outer bound"),
+        };
+        match &result {
+            Ok(text) => assert_eq!(text, "ok-fast"),
+            Err(err) => {
+                assert!(
+                    !err.contains("E_CLI_TIMEOUT"),
+                    "a fast exit 0 was reported as a timeout after {elapsed:?}: {err}"
+                );
+                let parsed = extract_claude_print_result("{\"result\":\"ok-fast\"}");
+                assert_eq!(
+                    parsed.ok().as_deref(),
+                    Some(err.as_str()),
+                    "fast exit must be Ok or that extract error, got {err}"
+                );
+            }
+        }
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "fast success took {elapsed:?}, not well under the 5s timeout"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn adv3_cred_cancel_during_wait_reaps_closed_stdout_sleep() {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", "exec 1>&-; sleep 3600"]);
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().expect("sleep");
+        let child_pid = child.id().expect("child pid") as i32;
+        let notify = std::sync::Arc::new(tokio::sync::Notify::new());
+        let notify_later = std::sync::Arc::clone(&notify);
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            notify_later.notify_one();
+        });
+        let started = std::time::Instant::now();
+        let bounded = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            finish_claude_print_child(
+                &mut child,
+                Some("x".to_string()),
+                std::time::Duration::from_secs(30),
+                None,
+                Some(notify.as_ref()),
+                1024 * 1024,
+            ),
+        )
+        .await;
+        let err = match bounded {
+            Ok(result) => result.expect_err("cancel during wait must not succeed"),
+            Err(_) => {
+                adv3_kill_pid(child_pid);
+                panic!("finish_claude_print_child hung past the outer bound");
+            }
+        };
+        let elapsed = started.elapsed();
+        let gone = adv3_wait_until_stopped(child_pid).await;
+        if !gone {
+            adv3_kill_pid(child_pid);
+        }
+        assert_eq!(err, "cancelled", "cancel during wait returned {err}");
+        assert!(
+            elapsed < std::time::Duration::from_secs(8),
+            "cancel took {elapsed:?}"
+        );
+        assert!(gone, "child pid {child_pid} still running after cancel");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn adv3_cred_closed_stdin_write_names_the_prompt_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let flag = dir.path().join("stdin-closed");
+        // Close stdin, then signal. The write starts only after that signal,
+        // so one byte cannot land in the pipe before the read end is gone.
+        let script = format!("exec 0<&-; echo closed > '{}'; sleep 30", flag.display());
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", &script]);
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().expect("sh");
+        let child_pid = child.id().expect("child pid") as i32;
+        let ready = std::time::Instant::now();
+        loop {
+            if flag.is_file() {
+                break;
+            }
+            if ready.elapsed() >= std::time::Duration::from_secs(2) {
+                adv3_kill_pid(child_pid);
+                panic!("child never closed stdin");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let started = std::time::Instant::now();
+        let bounded = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            finish_claude_print_child(
+                &mut child,
+                Some("x".to_string()),
+                std::time::Duration::from_secs(5),
+                None,
+                None,
+                1024 * 1024,
+            ),
+        )
+        .await;
+        let err = match bounded {
+            Ok(result) => result.expect_err("closed stdin must fail the write"),
+            Err(_) => {
+                adv3_kill_pid(child_pid);
+                panic!("finish_claude_print_child hung past the outer bound");
+            }
+        };
+        adv3_kill_pid(child_pid);
+        assert!(
+            err.contains("Failed to write Claude Code prompt"),
+            "write failure must name the prompt write, got {err}"
+        );
+        assert!(
+            !err.contains("E_CLI_TIMEOUT"),
+            "a write failure must not become a timeout: {err}"
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn adv3_cred_eight_mib_unread_stdin_times_out_inside_outer_bound() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pid_path = dir.path().join("sleep.pid");
+        let script = format!(
+            "sleep 3600 >/dev/null & echo $! > '{}'; wait",
+            pid_path.display()
+        );
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", &script]);
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().expect("shell");
+        let shell_pid = child.id().expect("shell pid") as i32;
+        let started = std::time::Instant::now();
+        let bounded = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            finish_claude_print_child(
+                &mut child,
+                Some("x".repeat(8 * 1024 * 1024)),
+                std::time::Duration::from_secs(1),
+                None,
+                None,
+                1024 * 1024,
+            ),
+        )
+        .await;
+        let err = match bounded {
+            Ok(result) => result.expect_err("unread 8MiB stdin must time out"),
+            Err(_) => {
+                adv3_kill_pid(shell_pid);
+                if let Ok(text) = std::fs::read_to_string(&pid_path) {
+                    if let Ok(pid) = text.trim().parse::<i32>() {
+                        adv3_kill_pid(pid);
+                    }
+                }
+                panic!("finish_claude_print_child hung past the outer bound");
+            }
+        };
+        let elapsed = started.elapsed();
+        if let Ok(text) = std::fs::read_to_string(&pid_path) {
+            if let Ok(pid) = text.trim().parse::<i32>() {
+                if !adv3_wait_until_stopped(pid).await {
+                    adv3_kill_pid(pid);
+                }
+            }
+        }
+        adv3_kill_pid(shell_pid);
+        assert!(
+            err.contains("E_CLI_TIMEOUT"),
+            "expected a timeout error, got {err}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(8),
+            "8MiB unread stdin took {elapsed:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cred_claude_hello_not_lost_to_unread_stderr() {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args([
+            "-c",
+            "printf hello; exec 1>&-; dd if=/dev/zero bs=1024 count=1024 of=/dev/stderr status=none; exit 0",
+        ]);
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        cmd.stdin(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().expect("hello");
+        let child_pid = child.id().expect("child pid") as i32;
+        let started = std::time::Instant::now();
+        let bounded = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            finish_claude_print_child(
+                &mut child,
+                None,
+                std::time::Duration::from_secs(2),
+                None,
+                None,
+                1024 * 1024,
+            ),
+        )
+        .await;
+        let result = match bounded {
+            Ok(result) => result,
+            Err(_) => {
+                adv3_kill_pid(child_pid);
+                for pid in direct_child_pids(child_pid) {
+                    adv3_kill_pid(pid);
+                }
+                panic!("finish_claude_print_child hung past the outer bound");
+            }
+        };
+        if adv3_process_running(child_pid) {
+            adv3_kill_pid(child_pid);
+        }
+        let text = result.expect("stdout already read must not become a timeout");
+        assert_eq!(text, "hello");
+        assert!(
+            !text.contains("E_CLI_TIMEOUT"),
+            "stderr backpressure became a timeout: {text}"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "hello plus a full stderr pipe took {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// Stderr fills the pipe before any stdout byte. `read_to_end` cannot
+    /// finish until the child is unblocked, so the drain has to run concurrently
+    /// with the stdout read, not only after it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cred_claude_hello_after_stderr_flood_while_stdout_open() {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args([
+            "-c",
+            "dd if=/dev/zero bs=1024 count=1024 >&2; printf hello; exec 1>&-; exit 0",
+        ]);
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        cmd.stdin(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().expect("hello");
+        let child_pid = child.id().expect("child pid") as i32;
+        let started = std::time::Instant::now();
+        let bounded = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            finish_claude_print_child(
+                &mut child,
+                None,
+                std::time::Duration::from_secs(2),
+                None,
+                None,
+                1024 * 1024,
+            ),
+        )
+        .await;
+        let result = match bounded {
+            Ok(result) => result,
+            Err(_) => {
+                adv3_kill_pid(child_pid);
+                for pid in direct_child_pids(child_pid) {
+                    adv3_kill_pid(pid);
+                }
+                panic!("finish_claude_print_child hung past the outer bound");
+            }
+        };
+        if adv3_process_running(child_pid) {
+            adv3_kill_pid(child_pid);
+        }
+        let text = result.expect("stderr-first flood must not become a timeout");
+        assert_eq!(text, "hello");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "stderr-first hello took {:?}",
+            started.elapsed()
+        );
     }
 }

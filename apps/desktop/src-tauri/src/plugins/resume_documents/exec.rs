@@ -5,7 +5,8 @@ use crate::mcp::protocol::{
     InputRequest, InputRequiredResult, JsonRpcError, ERR_ELICITATION_FAILED,
 };
 use crate::plugins::path_guard::{
-    atomic_write, backup_file, canonicalize_existing, confine, sha1_hex,
+    atomic_write, backup_file, canonicalize_existing, confine, path_is_within, paths_equivalent,
+    sha1_hex,
 };
 use crate::plugins::PluginContext;
 use crate::variants;
@@ -108,7 +109,7 @@ fn resolve_known_project_blocking(
 
     for k in &known {
         if let Some(c) = canonicalize_existing(Path::new(&k.path)) {
-            if same_path(&target, &c) || starts_with_path(&target, &c) {
+            if path_is_within(&target, &c) {
                 return Ok(target);
             }
         }
@@ -122,7 +123,7 @@ fn resolve_known_project_blocking(
         if let Some(owner_canon) = canonicalize_existing(&derived_owner) {
             for k in &known {
                 if let Some(c) = canonicalize_existing(Path::new(&k.path)) {
-                    if same_path(&owner_canon, &c) {
+                    if paths_equivalent(&owner_canon, &c) {
                         return Ok(target);
                     }
                 }
@@ -142,32 +143,6 @@ async fn resolve_known_project(ctx: &PluginContext, args: &Value) -> Result<Path
     tokio::task::spawn_blocking(move || resolve_known_project_blocking(&db, &raw))
         .await
         .map_err(|e| JsonRpcError::internal_error(format!("project resolution task error: {e}")))?
-}
-
-fn same_path(a: &Path, b: &Path) -> bool {
-    if a == b {
-        return true;
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
-    }
-    #[cfg(target_os = "linux")]
-    false
-}
-
-fn starts_with_path(path: &Path, base: &Path) -> bool {
-    if path.starts_with(base) {
-        return true;
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        path.to_string_lossy()
-            .to_lowercase()
-            .starts_with(&base.to_string_lossy().to_lowercase())
-    }
-    #[cfg(target_os = "linux")]
-    false
 }
 
 // --- File helpers ---

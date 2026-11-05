@@ -7,6 +7,7 @@
 // A small polling watcher emits a `comments-changed` event so external writes
 // (e.g. from a Claude Code session) appear live in the UI.
 
+use crate::plugins::path_guard::atomic_write;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -72,34 +73,20 @@ fn notifications_path(project_root: &str) -> PathBuf {
 
 fn read_file_or_default(project_root: &str) -> Result<CommentsFile, String> {
     let path = comments_path(project_root);
-    if !path.exists() {
-        return Ok(CommentsFile::default());
+    match fs::symlink_metadata(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(CommentsFile::default());
+        }
+        Err(e) => return Err(format!("read {:?}: {}", path, e)),
+        // A planted symlink must not be followed. The writer replaces the link.
+        Ok(meta) if meta.file_type().is_symlink() => return Ok(CommentsFile::default()),
+        Ok(_) => {}
     }
     let raw = fs::read_to_string(&path).map_err(|e| format!("read {:?}: {}", path, e))?;
     if raw.trim().is_empty() {
         return Ok(CommentsFile::default());
     }
     serde_json::from_str::<CommentsFile>(&raw).map_err(|e| format!("parse comments.json: {}", e))
-}
-
-fn atomic_write(path: &Path, data: &str) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| "destination has no parent".to_string())?;
-    fs::create_dir_all(parent).map_err(|e| format!("mkdir {:?}: {}", parent, e))?;
-    let file_name = path
-        .file_name()
-        .ok_or_else(|| "destination has no file name".to_string())?
-        .to_string_lossy();
-    let tmp = parent.join(format!(".{}.tmp", file_name));
-    {
-        let mut f = fs::File::create(&tmp).map_err(|e| format!("create tmp {:?}: {}", tmp, e))?;
-        f.write_all(data.as_bytes())
-            .map_err(|e| format!("write tmp: {}", e))?;
-        f.sync_all().map_err(|e| format!("sync tmp: {}", e))?;
-    }
-    fs::rename(&tmp, path).map_err(|e| format!("rename tmp -> dest: {}", e))?;
-    Ok(())
 }
 
 fn append_notification(project_root: &str, event: &serde_json::Value) -> Result<(), String> {
@@ -128,7 +115,7 @@ fn gen_id() -> String {
 
 fn write_all(project_root: &str, file: &CommentsFile) -> Result<(), String> {
     let serialized = serde_json::to_string_pretty(file).map_err(|e| format!("serialize: {}", e))?;
-    atomic_write(&comments_path(project_root), &serialized)
+    atomic_write(&comments_path(project_root), serialized.as_bytes())
 }
 
 // ---------- Commands ----------
@@ -341,4 +328,46 @@ pub fn comments_stop_watcher(state: tauri::State<'_, CommentsWatcherState>) -> R
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn comments_write_does_not_follow_planted_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("secret.json");
+        fs::write(&secret, "ORIGINAL").unwrap();
+        let project = tmp.path();
+        let comments = project.join(".claudeprism").join("comments.json");
+        fs::create_dir_all(comments.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&secret, &comments).unwrap();
+
+        let saved = comments_add(AddCommentInput {
+            project_root: project.to_string_lossy().to_string(),
+            file_path: "main.tex".to_string(),
+            anchor: CommentAnchor {
+                line_start: 1,
+                line_end: 1,
+                char_start: 0,
+                char_end: 1,
+                quoted_text: "a".to_string(),
+            },
+            ty: "comment".to_string(),
+            author: "test".to_string(),
+            comment: "note".to_string(),
+            proposed_replacement: None,
+        })
+        .unwrap();
+
+        assert_eq!(fs::read_to_string(&secret).unwrap(), "ORIGINAL");
+        let meta = fs::symlink_metadata(&comments).unwrap();
+        assert!(!meta.file_type().is_symlink());
+        let on_disk = fs::read_to_string(&comments).unwrap();
+        assert!(on_disk.contains(&saved.id));
+        assert!(on_disk.contains("note"));
+    }
 }

@@ -2,11 +2,6 @@ import { BROWSER_FILE_SCHEME } from "./constants";
 
 const stagedFiles = new Map<string, File>();
 
-export type StagedBrowserFile = {
-  path: string;
-  file: File;
-};
-
 export function isStagedBrowserFilePath(path: string): boolean {
   return path.startsWith(BROWSER_FILE_SCHEME);
 }

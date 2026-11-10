@@ -19,9 +19,8 @@ pub(crate) mod stress;
 mod tests;
 
 use crate::career_db::CareerDbState;
-use protocol::{HttpHeaders, JsonRpcRequest, JsonRpcResponse, ResourceDefinition, ToolDefinition};
+use protocol::{ResourceDefinition, ToolDefinition};
 use server::StatelessMcpServer;
-use std::collections::HashMap;
 use std::sync::Arc;
 use tasks::TaskRecord;
 
@@ -39,20 +38,6 @@ impl McpServerState {
 }
 
 // --- Tauri Commands ---
-
-#[tauri::command]
-pub async fn mcp_execute_request(
-    state: tauri::State<'_, McpServerState>,
-    request: JsonRpcRequest,
-    headers: Option<HashMap<String, String>>,
-) -> Result<JsonRpcResponse, String> {
-    let http_headers = headers.as_ref().map(HttpHeaders::from_map);
-    let resp = state
-        .server
-        .handle_request(http_headers.as_ref(), request)
-        .await;
-    Ok(resp)
-}
 
 #[tauri::command]
 pub async fn mcp_list_tools(

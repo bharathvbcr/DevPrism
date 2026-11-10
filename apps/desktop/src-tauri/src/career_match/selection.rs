@@ -1,14 +1,13 @@
-//! Budget-constrained block selection: knapsack, bullet trimming, and the MMR
-//! primitive.
+//! Budget-constrained block selection: knapsack and bullet trimming.
 //!
 //! [`knapsack_select`] packs by score under a line budget with per-section caps,
-//! one-entry-per-org de-duplication and must-have coverage repair. It does
-//! **not** run MMR. [`mmr_select`] is provided as a tested primitive for callers
-//! that have embeddings and want diversity, and is deliberately described that
-//! way rather than as part of the packing path — claiming MMR while running a
-//! greedy pass is the exact defect this module replaced.
+//! one-entry-per-org de-duplication and must-have coverage repair. It does not
+//! diversify by embedding similarity. Rust `mmr_select` was removed: its only
+//! callers were its own tests, and packing does not need a second selector.
+//! TypeScript `mmrSelect` stays; `resume-synthesis/orchestrator.ts` uses it
+//! to diversify evidence chunks.
 //!
-//! Faithful Rust port of `src/lib/resume-synthesis/selection.ts`.
+//! Rust port of the knapsack path in `src/lib/resume-synthesis/selection.ts`.
 //!
 //! The MCP tool this replaces advertised "knapsack optimization and MMR
 //! diversity" in its own tool description while implementing a greedy first-fit
@@ -22,7 +21,6 @@ use std::collections::{HashMap, HashSet};
 
 use super::scoring::ScoredBlock;
 use super::text::text_covers_skill;
-use crate::semantic_layer::math::cosine_similarity;
 
 /// Approximate printable characters per rendered resume line.
 pub const CHARS_PER_LINE: usize = 95;
@@ -459,54 +457,6 @@ pub fn budget_violations(selected: &[ScoredBlock], budget: &SelectionBudget) -> 
         }
     }
     violations
-}
-
-/// One candidate for [`mmr_select`]: the item, its relevance, and the embedding
-/// diversity is measured over.
-pub struct MmrCandidate<T> {
-    pub item: T,
-    pub relevance: f64,
-    pub vec: Vec<f32>,
-}
-
-/// Maximal Marginal Relevance: `lambda` toward 1 favours relevance, toward 0
-/// favours diversity.
-///
-/// Similarity goes through [`crate::semantic_layer::math::cosine_similarity`],
-/// the canonical owner already used by `career_db::vectors`, rather than a
-/// second local copy.
-pub fn mmr_select<T: Clone>(candidates: &[MmrCandidate<T>], k: usize, lambda: f64) -> Vec<T> {
-    if k == 0 || candidates.is_empty() {
-        return Vec::new();
-    }
-    let mut remaining: Vec<usize> = (0..candidates.len()).collect();
-    let mut chosen: Vec<usize> = Vec::new();
-
-    while chosen.len() < k && !remaining.is_empty() {
-        let mut best_pos = 0usize;
-        let mut best_score = f64::NEG_INFINITY;
-        for (pos, &idx) in remaining.iter().enumerate() {
-            let c = &candidates[idx];
-            let mut max_sim = 0.0f64;
-            for &s in &chosen {
-                let sim = cosine_similarity(&c.vec, &candidates[s].vec) as f64;
-                if sim > max_sim {
-                    max_sim = sim;
-                }
-            }
-            let mmr = lambda * c.relevance - (1.0 - lambda) * max_sim;
-            if mmr > best_score {
-                best_score = mmr;
-                best_pos = pos;
-            }
-        }
-        chosen.push(remaining.remove(best_pos));
-    }
-
-    chosen
-        .into_iter()
-        .map(|i| candidates[i].item.clone())
-        .collect()
 }
 
 #[cfg(test)]
@@ -1014,91 +964,6 @@ mod tests {
                 .any(|m| m.contains("totalLines")),
             "an overrun across several blocks must be reported"
         );
-    }
-
-    #[test]
-    fn mmr_at_lambda_one_is_pure_relevance() {
-        let cands = vec![
-            MmrCandidate {
-                item: "low",
-                relevance: 0.1,
-                vec: vec![1.0, 0.0],
-            },
-            MmrCandidate {
-                item: "high",
-                relevance: 0.9,
-                vec: vec![1.0, 0.0],
-            },
-            MmrCandidate {
-                item: "mid",
-                relevance: 0.5,
-                vec: vec![0.0, 1.0],
-            },
-        ];
-        assert_eq!(mmr_select(&cands, 3, 1.0), vec!["high", "mid", "low"]);
-    }
-
-    #[test]
-    fn mmr_below_one_prefers_a_dissimilar_second_pick() {
-        // "near" is more relevant than "far" but is a duplicate of "top".
-        let cands = vec![
-            MmrCandidate {
-                item: "top",
-                relevance: 0.90,
-                vec: vec![1.0, 0.0],
-            },
-            MmrCandidate {
-                item: "near",
-                relevance: 0.80,
-                vec: vec![1.0, 0.0],
-            },
-            MmrCandidate {
-                item: "far",
-                relevance: 0.70,
-                vec: vec![0.0, 1.0],
-            },
-        ];
-        assert_eq!(
-            mmr_select(&cands, 2, 1.0),
-            vec!["top", "near"],
-            "pure relevance takes the near-duplicate"
-        );
-        assert_eq!(
-            mmr_select(&cands, 2, 0.5),
-            vec!["top", "far"],
-            "diversity must break the near-duplicate tie"
-        );
-    }
-
-    #[test]
-    fn mmr_handles_degenerate_requests() {
-        let cands = vec![MmrCandidate {
-            item: "a",
-            relevance: 0.5,
-            vec: vec![1.0],
-        }];
-        assert!(mmr_select(&cands, 0, 0.7).is_empty());
-        assert_eq!(
-            mmr_select(&cands, 99, 0.7),
-            vec!["a"],
-            "k above len yields all"
-        );
-        let empty: Vec<MmrCandidate<&str>> = Vec::new();
-        assert!(mmr_select(&empty, 3, 0.7).is_empty());
-        // A zero vector cannot produce a NaN similarity and stall the loop.
-        let zeros = vec![
-            MmrCandidate {
-                item: "z1",
-                relevance: 0.5,
-                vec: vec![0.0, 0.0],
-            },
-            MmrCandidate {
-                item: "z2",
-                relevance: 0.4,
-                vec: vec![0.0, 0.0],
-            },
-        ];
-        assert_eq!(mmr_select(&zeros, 2, 0.5).len(), 2);
     }
 
     #[test]

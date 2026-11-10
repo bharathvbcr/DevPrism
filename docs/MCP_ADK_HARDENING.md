@@ -196,11 +196,12 @@ directory, and the other two were already guarded.
 
 The blast radius was worse than the panic. `with_conn` **propagated** lock
 poisoning, so one panic disabled every career operation — UI and MCP — for the
-life of the process. And `ingest_source`'s delete → update-hash → insert ran in
-autocommit, so a failure between them left the source recorded as ingested with
-the new hash and zero chunks; re-ingesting the same file then short-circuits as
-`skipped`, so it could never self-heal. Poisoning is now recovered, and the
-sequence is one transaction.
+life of the process. And the removed path ingest (`ingest_source`) deleted,
+updated the hash, and inserted in autocommit, so a failure between them left
+the source recorded as ingested with the new hash and zero chunks; re-ingesting
+the same file then short-circuited as `skipped`, so it could never self-heal.
+Poisoning is now recovered. The remaining write, `upsert_prepared_source`,
+still replaces chunks and the source hash inside one transaction.
 
 Two more: the brute-force vector sort used `partial_cmp(...).unwrap_or(Equal)`,
 an intransitive comparator that since Rust 1.81 can panic outright — now

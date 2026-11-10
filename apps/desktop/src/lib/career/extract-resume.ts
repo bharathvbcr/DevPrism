@@ -894,10 +894,3 @@ export async function extractResumeFromSource(
       : new Error("Could not extract any experience blocks.");
   }
 }
-
-/** LLM extraction → draft blocks. Caller must review; never auto-commits. */
-export async function extractBlocksFromResume(
-  source: string,
-): Promise<ExperienceBlock[]> {
-  return (await extractResumeFromSource(source)).blocks;
-}

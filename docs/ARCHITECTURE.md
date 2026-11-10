@@ -28,7 +28,7 @@ devprism/
 │       ├── src/career_match/     # Deterministic JD-matching core + 4-phase Vani tailoring (`tailor.rs`)
 │       ├── src/career_typst/     # In-process Typst 0.15 engine (`BufferWorld`, binary IPC, forward/inverse sync)
 │       ├── src/variants.rs       # `.prism/variants/` manifest and version DAG persistence
-│       ├── src/semantic_layer/   # Context compaction primitives and model-scoped vector cache
+│       ├── src/semantic_layer/   # Rust context compaction and model-scoped vector cache
 │       ├── src/skills.rs         # Scientific skill installation (~/.claude/skills)
 │       ├── src/slash_commands.rs # Project/global slash command discovery
 │       ├── src/uv.rs             # uv install and virtualenv orchestration

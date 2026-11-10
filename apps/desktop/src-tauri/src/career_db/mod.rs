@@ -962,20 +962,6 @@ pub async fn career_delete_persona(
         .map_err(|e| format!("career_delete_persona task failed: {e}"))?
 }
 
-#[tauri::command]
-pub async fn career_ingest_source(
-    state: tauri::State<'_, CareerDbState>,
-    path: String,
-    source_type: String,
-) -> Result<IngestReport, String> {
-    let state = state.inner().clone();
-    tokio::task::spawn_blocking(move || {
-        state.with_conn(|c| ingest::ingest_source(c, &path, &source_type))
-    })
-    .await
-    .map_err(|e| format!("career_ingest_source task failed: {e}"))?
-}
-
 /// Upsert frontend-prepared chunks (heading-aware markdown/PDF/OPML).
 /// Unchanged `meta.contentHash` values reuse chunk ids and embeddings.
 #[tauri::command]

@@ -114,7 +114,12 @@ fn default_signature() -> Result<Signature<'static>, String> {
 fn tag_map(repo: &Repository) -> HashMap<Oid, Vec<String>> {
     let mut map: HashMap<Oid, Vec<String>> = HashMap::new();
     if let Ok(tags) = repo.tag_names(None) {
-        for tag_name in tags.iter().flatten() {
+        // git2 0.21 yields Result<Option<&str>, Error>: Err is a non-UTF-8 name,
+        // Ok(None) is out of range. Skip both, as the old Option flatten did.
+        for tag_name in tags.iter() {
+            let Ok(Some(tag_name)) = tag_name else {
+                continue;
+            };
             if let Ok(reference) = repo.revparse_single(tag_name) {
                 let oid = reference
                     .peel_to_commit()
@@ -344,7 +349,7 @@ pub fn history_snapshot_blocking(
     // Check if there are actual changes vs HEAD
     if let Ok(head) = repo.head() {
         if let Ok(head_commit) = head.peel_to_commit() {
-            if head_commit.tree().map(|t| t.id()).unwrap_or(Oid::zero()) == tree_oid {
+            if head_commit.tree().map(|t| t.id()).unwrap_or(Oid::ZERO_SHA1) == tree_oid {
                 // No changes — skip snapshot
                 return Ok(None);
             }
@@ -518,7 +523,7 @@ fn compact_repo_with(
         }
         head_ref
             .name()
-            .ok_or_else(|| "Refusing to compact: non-UTF8 branch name".to_string())?
+            .map_err(|e| format!("Refusing to compact: non-UTF8 branch name: {e}"))?
             .to_string()
     };
 
@@ -1199,7 +1204,7 @@ mod tests {
         let tree = commit.tree().unwrap();
         let mut tracked: Vec<String> = Vec::new();
         tree.walk(git2::TreeWalkMode::PreOrder, |root, entry| {
-            if let Some(name) = entry.name() {
+            if let Ok(name) = entry.name() {
                 let path = if root.is_empty() {
                     name.to_string()
                 } else {

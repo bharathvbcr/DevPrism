@@ -39,13 +39,12 @@ export {
   type PdfChunkOptions,
 } from "./pdf";
 
-export { sha1Hex, sha1HexSync } from "./hash";
+export { sha1HexSync } from "./hash";
 
 export {
   EMBED_BATCH_SIZE,
   embedChunks,
   backfillKbEmbeddings,
-  isEmbedDeferred,
   type EmbedChunksOptions,
 } from "./embed";
 

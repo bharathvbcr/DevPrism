@@ -1,27 +1,8 @@
 /** SHA-1 hex digests for KB content addressing. */
 
-/** Async SHA-1 via Web Crypto (browser / Tauri webview / Node 19+). */
-export async function sha1Hex(input: string | Uint8Array): Promise<string> {
-  const bytes =
-    typeof input === "string" ? new TextEncoder().encode(input) : input;
-  // Copy into a fresh ArrayBuffer-backed view for BufferSource typing (TS 5.7+).
-  const view = new Uint8Array(bytes);
-  const digest = await crypto.subtle.digest("SHA-1", view);
-  return bufferToHex(digest);
-}
-
 /** Sync SHA-1 for chunk builders (pure JS — works in webview and vitest). */
 export function sha1HexSync(input: string): string {
   return sha1Pure(Array.from(new TextEncoder().encode(input)));
-}
-
-function bufferToHex(buf: ArrayBuffer): string {
-  const bytes = new Uint8Array(buf);
-  let out = "";
-  for (let i = 0; i < bytes.length; i++) {
-    out += bytes[i]!.toString(16).padStart(2, "0");
-  }
-  return out;
 }
 
 /** Compact SHA-1 over raw UTF-8 bytes. */

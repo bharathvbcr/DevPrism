@@ -104,7 +104,6 @@ suppresses PDF bytes.
 ```bash
 cd apps/desktop/src-tauri && cargo test --lib plugins
 cd apps/desktop/src-tauri && cargo test --lib mcp::stress   # filesystem properties
-cd apps/desktop && bun run test src/__tests__/lib/mcp-client.test.ts
 ```
 
 Live smoke test through the real stdio transport:

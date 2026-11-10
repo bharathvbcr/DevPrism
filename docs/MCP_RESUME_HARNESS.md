@@ -42,7 +42,7 @@ MCP client (Claude Code / kon / any agent)
     scoring.rs      0.40 embedding + 0.30 skills + 0.15 persona
                     + 0.10 recency + 0.05 seniority
     selection.rs    knapsack + per-section caps + one-per-org + coverage
-                    repair; mmr_select is a primitive, not part of packing
+                    repair; packing does not run MMR
     metrics.rs      metric preservation AND fabrication detection
     gap.rs          must-have coverage and ATS percentage
     text.rs         skill normalisation and word-boundary matching

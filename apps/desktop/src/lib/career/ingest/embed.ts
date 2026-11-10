@@ -145,8 +145,3 @@ export async function backfillKbEmbeddings(options?: {
     itemLabel: options?.sourceId ? "Backfill source" : "Backfill all chunks",
   });
 }
-
-/** True when the error / result indicates embeddings were deferred. */
-export function isEmbedDeferred(result: EmbedPipelineResult): boolean {
-  return result.deferred;
-}

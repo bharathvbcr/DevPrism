@@ -86,10 +86,6 @@ import {
   CommentsPanel,
   CommentsHeader,
 } from "@/components/workspace/comments-panel";
-import {
-  ScholarLMPanel,
-  ScholarLMHeader,
-} from "@/components/scholarlm/scholarlm-research-panel";
 import { OPEN_SIDEBAR_SECTION_EVENT } from "@/components/command-palette";
 import { useCommentsStore } from "@/stores/comments-store";
 import { Button } from "@/components/ui/button";
@@ -156,7 +152,6 @@ export type SidebarSection =
   | "resume-organizer"
   | "bibliography"
   | "zotero"
-  | "research"
   | "comments"
   | "environment";
 
@@ -170,7 +165,6 @@ const SIDEBAR_SECTIONS: {
   { id: "resume-organizer", label: "Resume Organizer", icon: BriefcaseIcon },
   { id: "bibliography", label: "BibTeX", icon: BookOpenIcon },
   { id: "zotero", label: "Zotero", icon: FileTextIcon },
-  { id: "research", label: "ScholarLM", icon: FlaskConicalIcon },
   { id: "comments", label: "Comments", icon: MessageSquareIcon },
   { id: "environment", label: "Environment", icon: AppWindowIcon },
 ];
@@ -2167,24 +2161,6 @@ export function Sidebar({
               </div>
               <div className="min-h-0 flex-1 overflow-hidden">
                 <ZoteroPanel />
-              </div>
-            </div>
-
-            {/* ScholarLM Research (WisDev ARC) */}
-            <div
-              id="sidebar-panel-research"
-              role="tabpanel"
-              aria-labelledby="sidebar-tab-research"
-              className={cn(
-                "flex min-h-0 flex-1 flex-col",
-                activeSection !== "research" && "hidden",
-              )}
-            >
-              <div className="flex h-8 shrink-0 items-center border-sidebar-border border-b">
-                <ScholarLMHeader />
-              </div>
-              <div className="min-h-0 flex-1 overflow-hidden">
-                <ScholarLMPanel />
               </div>
             </div>
 

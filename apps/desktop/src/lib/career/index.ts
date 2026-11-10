@@ -42,7 +42,6 @@ export * from "./ingest";
 export * from "./block-helpers";
 export * from "./block-embed";
 export {
-  extractBlocksFromResume,
   extractResumeDeterministic,
   extractResumeFromSource,
   mergeResumeHeader,
@@ -64,7 +63,6 @@ export {
   RESUME_SOURCE_MAX_BYTES,
   type ResumeSource,
 } from "./resume-source";
-export * from "../mcp";
 
 export function listBlocks(
   missingEmbeddingsOnly = false,

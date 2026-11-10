@@ -28,7 +28,7 @@ hmac = "0.12"
 sha1 = "0.10"
 base64 = "0.22"
 dotenvy = "0.15"
-git2 = { version = "0.20", default-features = false, features = ["vendored-libgit2"] }
+git2 = { version = "0.21", default-features = false, features = ["vendored-libgit2"] }
 chrono = "0.4"
 uuid = { version = "1", features = ["v4"] }
 which = "7"
@@ -37,8 +37,14 @@ which = "7"
 typst = "0.15"
 typst-layout = "0.15"
 typst-pdf = "0.15"
-typst-assets = { version = "0.15", features = ["fonts"] }
+# Fonts come from typst-kit's `embedded-fonts` feature, which already depends
+# on typst-assets. A direct typst-assets dependency duplicated that.
 typst-kit = { version = "0.15", default-features = false, features = ["embedded-fonts", "scan-fonts"] }
+# tectonic 0.15 depends on tectonic_geturl unconditionally, and that crate
+# pins reqwest 0.11. The app also uses reqwest 0.12, and the updater pulls
+# 0.13, so the lockfile carries three reqwest copies and two hyper copies.
+# Dropping geturl would remove tectonic's network fetch of TeX support files;
+# an offline build would have to ship those bytes itself. Keep the dependency.
 tectonic = { version = "0.15", default-features = true, features = ["external-harfbuzz"] }
 # NOTE: Building tectonic requires external harfbuzz/graphite2/icu/freetype:
 #   macOS:   brew install icu4c harfbuzz pkg-config

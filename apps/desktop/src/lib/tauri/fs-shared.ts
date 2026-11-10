@@ -1,3 +1,5 @@
+import ignoredExtensionList from "./ignored-extensions.json";
+
 export type ProjectFileType =
   | "tex"
   /**
@@ -50,35 +52,8 @@ const IGNORED_DIRECTORY_NAMES = new Set([
   "env",
 ]);
 
-const IGNORED_EXTENSIONS = new Set([
-  ".aux",
-  ".log",
-  ".out",
-  ".toc",
-  ".lof",
-  ".lot",
-  ".fls",
-  ".fdb_latexmk",
-  ".synctex.gz",
-  ".synctex",
-  ".blg",
-  ".bbl",
-  ".nav",
-  ".snm",
-  ".vrb",
-  ".run.xml",
-  ".bcf",
-  ".pyc",
-  ".pyo",
-  ".pyd",
-  ".so",
-  ".dylib",
-  ".o",
-  ".obj",
-  ".dll",
-  ".exe",
-  ".bin",
-]);
+/** Single owner of extensions the project scan hides. Rust reads the same file. */
+export const IGNORED_EXTENSIONS: readonly string[] = ignoredExtensionList;
 
 export function shouldSkipProjectDirectory(name: string): boolean {
   return (

@@ -45,14 +45,6 @@ const ASK_ACTION_ID = "ask";
 /** Dispatched to ask the sidebar to switch to a section (expanding it if collapsed). */
 export const OPEN_SIDEBAR_SECTION_EVENT = "devprism:open-sidebar-section";
 
-function openSidebarSection(section: string, focusInput = false) {
-  window.dispatchEvent(
-    new CustomEvent(OPEN_SIDEBAR_SECTION_EVENT, {
-      detail: { section, focusInput },
-    }),
-  );
-}
-
 /** Build the action registry from live store setters. Memoized per-open. */
 function buildActions(): PaletteAction[] {
   const settings = () => useSettingsStore.getState();
@@ -107,39 +99,6 @@ function buildActions(): PaletteAction[] {
       ],
       hint: "Career",
       run: () => useCareerStore.getState().openCareer("knowledge"),
-    },
-    {
-      id: "open-scholarlm-research",
-      label: "ScholarLM: Research a question",
-      keywords: [
-        "scholar",
-        "wisdev",
-        "research",
-        "papers",
-        "evidence",
-        "literature",
-        "rag",
-        "hypothesis",
-      ],
-      hint: "Sidebar",
-      run: () => openSidebarSection("research", true),
-    },
-    {
-      id: "open-scholarlm-draft",
-      label: "ScholarDoc: Generate a manuscript",
-      keywords: [
-        "scholar",
-        "scholardoc",
-        "wisdev",
-        "manuscript",
-        "docgen",
-        "latex",
-        "draft",
-        "paper",
-        "write",
-      ],
-      hint: "Sidebar",
-      run: () => openSidebarSection("research", true),
     },
     {
       id: "compile-project",

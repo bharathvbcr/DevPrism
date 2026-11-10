@@ -36,7 +36,6 @@ mod skills;
 mod slash_commands;
 mod uv;
 mod variants;
-mod wisdev;
 mod zotero;
 
 use std::path::Path;
@@ -427,36 +426,19 @@ mod project_scan {
 
     const IGNORED_DIRECTORY_NAMES: [&str; 4] = ["node_modules", "__pycache__", "venv", "env"];
 
-    /// Keep in sync with `IGNORED_EXTENSIONS` in `src/lib/tauri/fs-shared.ts`.
-    const IGNORED_EXTENSIONS: [&str; 27] = [
-        ".aux",
-        ".log",
-        ".out",
-        ".toc",
-        ".lof",
-        ".lot",
-        ".fls",
-        ".fdb_latexmk",
-        ".synctex.gz",
-        ".synctex",
-        ".blg",
-        ".bbl",
-        ".nav",
-        ".snm",
-        ".vrb",
-        ".run.xml",
-        ".bcf",
-        ".pyc",
-        ".pyo",
-        ".pyd",
-        ".so",
-        ".dylib",
-        ".o",
-        ".obj",
-        ".dll",
-        ".exe",
-        ".bin",
-    ];
+    /// Same file `IGNORED_EXTENSIONS` is imported from in `src/lib/tauri/fs-shared.ts`.
+    fn ignored_extensions() -> &'static [String] {
+        static EXTENSIONS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+        EXTENSIONS.get_or_init(|| {
+            // Compile-time JSON. `classify_matches_fs_shared_ts_rules` parses the
+            // same file, so a bad list fails the test rather than shipping quietly.
+            #[allow(clippy::expect_used)]
+            serde_json::from_str(include_str!(
+                "../../src/lib/tauri/ignored-extensions.json"
+            ))
+            .expect("ignored-extensions.json must be a JSON array of strings")
+        })
+    }
 
     const IMAGE_EXTENSIONS: [&str; 7] = [".png", ".jpg", ".jpeg", ".gif", ".svg", ".bmp", ".webp"];
 
@@ -472,7 +454,7 @@ mod project_scan {
 
     fn classify(name: &str) -> Option<&'static str> {
         let lower = name.to_ascii_lowercase();
-        for ext in IGNORED_EXTENSIONS {
+        for ext in ignored_extensions() {
             if lower.ends_with(ext) {
                 return None;
             }
@@ -566,6 +548,20 @@ mod project_scan {
             assert_eq!(classify("custom.sty"), Some("style"));
             assert_eq!(classify("notes.md"), Some("other"));
             assert_eq!(classify("script.py"), Some("other"));
+            // A user reference named `.bin` stays visible unless the shared list says otherwise.
+            assert_eq!(classify("reference.bin"), Some("other"));
+            assert_eq!(classify("weights.BIN"), Some("other"));
+            let listed: Vec<String> = serde_json::from_str(include_str!(
+                "../../src/lib/tauri/ignored-extensions.json"
+            ))
+            .unwrap();
+            assert!(
+                !listed.iter().any(|ext| ext.eq_ignore_ascii_case(".bin")),
+                ".bin is hidden only when the shared list names it"
+            );
+            for ext in &listed {
+                assert_eq!(classify(&format!("sample{ext}")), None, "{ext}");
+            }
 
             // Compiled artifacts are dropped entirely.
             for artifact in [
@@ -578,7 +574,6 @@ mod project_scan {
                 "app.exe",
                 "obj.o",
                 "lib.dylib",
-                "blob.bin",
                 "main.fls",
                 "main.bbl",
             ] {
@@ -906,7 +901,6 @@ pub fn command_handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Se
         career_db::career_list_personas,
         career_db::career_upsert_persona,
         career_db::career_delete_persona,
-        career_db::career_ingest_source,
         career_db::career_upsert_kb_source,
         career_db::career_list_kb_sources,
         career_db::career_list_kb_chunks,
@@ -919,7 +913,6 @@ pub fn command_handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Se
         career_db::career_upsert_known_project,
         career_db::career_remove_known_project,
         career_db::career_list_known_projects,
-        mcp::mcp_execute_request,
         mcp::mcp_list_tools,
         mcp::mcp_list_resources,
         mcp::mcp_get_task_status,
@@ -1029,10 +1022,6 @@ pub fn command_handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Se
         cursor_agent::stream_spawn::execute_cursor_agent,
         cursor_agent::stream_spawn::resume_cursor_agent,
         cursor_agent::stream_spawn::cancel_cursor_agent,
-        wisdev::wisdev_check,
-        wisdev::wisdev_build,
-        wisdev::wisdev_research,
-        wisdev::wisdev_docgen,
         skills::check_skills_installed,
         skills::list_installed_skills,
         skills::delete_installed_skill,

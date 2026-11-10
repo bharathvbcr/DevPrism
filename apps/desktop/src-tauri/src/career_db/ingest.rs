@@ -1,20 +1,14 @@
 //! KB source ingestion.
 //!
-//! Path-based `ingest_source` keeps a minimal fallback chunker. Prefer the
-//! frontend prepared-chunk path (`upsert_prepared_source`) for heading-aware
-//! markdown/PDF/OPML chunking with per-chunk content-hash re-embedding.
+//! Sources arrive as frontend-prepared chunks (`upsert_prepared_source`)
+//! with per-chunk content-hash re-embedding.
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
-use sha1::{Digest, Sha1};
 use std::collections::{HashMap, VecDeque};
-use std::fs;
-use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
-const TARGET_CHUNK_CHARS: usize = 1200;
-const OVERLAP_CHARS: usize = 180;
 /// Most chunks one prepared source may carry. The byte cap below bounds text
 /// volume; this bounds row count so a pathological chunker cannot stall the
 /// DB mutex with tens of thousands of inserts.
@@ -81,120 +75,12 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-fn content_hash(bytes: &[u8]) -> String {
-    let digest = Sha1::digest(bytes);
-    format!("{digest:x}")
-}
-
 fn meta_content_hash(meta: &serde_json::Value) -> Option<String> {
     meta.get("contentHash")
         .and_then(|v| v.as_str())
         .map(str::to_string)
 }
 
-fn read_source_text(path: &Path) -> Result<(String, String), String> {
-    // Stat before reading: refuse non-regular files outright and never pull an
-    // unbounded file into memory (same cap the MCP ingest path enforces).
-    let meta = fs::metadata(path).map_err(|e| format!("Failed to stat {}: {e}", path.display()))?;
-    if !meta.is_file() {
-        return Err(format!("Source is not a regular file: {}", path.display()));
-    }
-    let max_bytes = crate::mcp::tools_career::MAX_TEXT_BYTES;
-    if meta.len() > max_bytes as u64 {
-        return Err(format!(
-            "Source {} is {} bytes, exceeding the {max_bytes}-byte limit",
-            path.display(),
-            meta.len()
-        ));
-    }
-    let bytes = fs::read(path).map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
-    let title = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("untitled")
-        .to_string();
-    // Minimal fallback: UTF-8 text. Binary PDFs should use the TS MuPDF path.
-    match String::from_utf8(bytes) {
-        Ok(text) => Ok((title, text)),
-        Err(_) => Ok((
-            title,
-            format!(
-                "[binary source; use frontend PDF/markdown ingest]\npath={}",
-                path.display()
-            ),
-        )),
-    }
-}
-
-/// Split text into overlapping character windows (fallback for path ingest).
-pub fn chunk_text_minimal(text: &str) -> Vec<String> {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return Vec::new();
-    }
-    let paragraphs: Vec<&str> = trimmed
-        .split("\n\n")
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
-        .collect();
-
-    let mut chunks: Vec<String> = Vec::new();
-    let mut buf = String::new();
-    for para in paragraphs {
-        if buf.is_empty() {
-            buf.push_str(para);
-        } else if buf.len() + 2 + para.len() <= TARGET_CHUNK_CHARS {
-            buf.push_str("\n\n");
-            buf.push_str(para);
-        } else {
-            chunks.push(buf.clone());
-            let overlap = if buf.len() > OVERLAP_CHARS {
-                // `buf.len() - OVERLAP_CHARS` is a byte offset, and slicing a
-                // `str` at a non-boundary byte panics. The two slices a few lines
-                // below already guard with `floor_char_boundary`; this one did
-                // not, so any multi-byte character straddling `len - 180` — an
-                // apostrophe, an em dash, any CJK or emoji text — crashed the
-                // ingest and poisoned the career DB mutex for the process.
-                let start = floor_char_boundary(&buf, buf.len() - OVERLAP_CHARS);
-                buf[start..].to_string()
-            } else {
-                buf.clone()
-            };
-            buf = overlap;
-            if !buf.is_empty() {
-                buf.push_str("\n\n");
-            }
-            buf.push_str(para);
-            if buf.len() > TARGET_CHUNK_CHARS * 2 {
-                while buf.len() > TARGET_CHUNK_CHARS {
-                    let cut = floor_char_boundary(&buf, TARGET_CHUNK_CHARS);
-                    chunks.push(buf[..cut].to_string());
-                    let start = cut.saturating_sub(OVERLAP_CHARS);
-                    let start = floor_char_boundary(&buf, start);
-                    buf = buf[start..].to_string();
-                }
-            }
-        }
-    }
-    if !buf.trim().is_empty() {
-        chunks.push(buf);
-    }
-    if chunks.is_empty() {
-        chunks.push(trimmed.to_string());
-    }
-    chunks
-}
-
-fn floor_char_boundary(s: &str, index: usize) -> usize {
-    if index >= s.len() {
-        return s.len();
-    }
-    let mut i = index;
-    while i > 0 && !s.is_char_boundary(i) {
-        i -= 1;
-    }
-    i
-}
 
 fn find_source_by_uri(
     conn: &Connection,
@@ -230,117 +116,6 @@ fn delete_chunks_and_embeddings(tx: &Transaction<'_>, chunk_ids: &[String]) -> R
             .map_err(|e| format!("Failed to delete chunk {cid}: {e}"))?;
     }
     Ok(())
-}
-
-/// Path-based ingest with minimal chunker (legacy / simple text files).
-pub fn ingest_source(
-    conn: &Connection,
-    path: &str,
-    source_type: &str,
-) -> Result<IngestReport, String> {
-    let path_buf = Path::new(path);
-    if !path_buf.exists() {
-        return Err(format!("Source path does not exist: {path}"));
-    }
-    let (title, text) = read_source_text(path_buf)?;
-    let hash = content_hash(text.as_bytes());
-
-    if let Some((source_id, existing_hash)) = find_source_by_uri(conn, path)? {
-        if existing_hash.as_deref() == Some(hash.as_str()) {
-            let chunk_ids = list_chunk_ids(conn, &source_id)?;
-            return Ok(IngestReport {
-                source_id,
-                chunk_count: chunk_ids.len(),
-                content_hash: hash,
-                skipped: true,
-                needs_embedding: Vec::new(),
-                chunk_ids,
-                title,
-            });
-        }
-        // Re-ingest must be all-or-nothing.
-        //
-        // These three steps ran in autocommit, so each committed independently:
-        // the old chunks and their embeddings were deleted, the source row was
-        // updated to record the *new* content hash, and then the insert could
-        // still fail (a panic in the chunker, or plain `SQLITE_BUSY`). The
-        // source was then permanently recorded as ingested with zero chunks —
-        // and because the stored hash already matched, re-ingesting the same
-        // file short-circuits as `skipped: true`, so it could never self-heal.
-        let tx = conn
-            .unchecked_transaction()
-            .map_err(|e| format!("Failed to begin re-ingest transaction: {e}"))?;
-
-        let old_ids = list_chunk_ids(&tx, &source_id)?;
-        delete_chunks_and_embeddings(&tx, &old_ids)?;
-        tx.execute(
-            "UPDATE kb_sources SET source_type = ?1, title = ?2, content_hash = ?3, ingested_at = ?4 WHERE id = ?5",
-            params![source_type, title, hash, now_ms(), source_id],
-        )
-        .map_err(|e| format!("Failed to update kb_sources: {e}"))?;
-
-        let report = insert_chunks_minimal(&tx, &source_id, &title, &text, &hash)?;
-        tx.commit()
-            .map_err(|e| format!("Failed to commit re-ingest: {e}"))?;
-        return Ok(report);
-    }
-
-    // New sources are all-or-nothing too: the source row and every chunk land
-    // in one transaction, so a mid-loop failure cannot leave a hash recorded
-    // as ingested with chunks missing (that short-circuits future re-ingests
-    // of identical content as 'skipped' forever).
-    let source_id = format!("src_{}", Uuid::new_v4().simple());
-    let tx = conn
-        .unchecked_transaction()
-        .map_err(|e| format!("Failed to begin ingest transaction: {e}"))?;
-    tx.execute(
-        "INSERT INTO kb_sources (id, source_type, uri, title, content_hash, ingested_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![source_id, source_type, path, title, hash, now_ms()],
-    )
-    .map_err(|e| format!("Failed to insert kb_sources: {e}"))?;
-
-    let report = insert_chunks_minimal(&tx, &source_id, &title, &text, &hash)?;
-    tx.commit()
-        .map_err(|e| format!("Failed to commit ingest: {e}"))?;
-    Ok(report)
-}
-
-fn insert_chunks_minimal(
-    conn: &Connection,
-    source_id: &str,
-    title: &str,
-    text: &str,
-    hash: &str,
-) -> Result<IngestReport, String> {
-    let chunks = chunk_text_minimal(text);
-    let mut chunk_ids = Vec::with_capacity(chunks.len());
-    for (i, chunk) in chunks.iter().enumerate() {
-        let chunk_id = format!("chk_{}", Uuid::new_v4().simple());
-        let chunk_hash = content_hash(chunk.as_bytes());
-        let meta = serde_json::json!({
-            "sourceTitle": title,
-            "headingPath": [],
-            "index": i,
-            "contentHash": chunk_hash,
-        });
-        let meta_json = serde_json::to_string(&meta)
-            .map_err(|e| format!("Failed to serialize chunk meta: {e}"))?;
-        conn.execute(
-            "INSERT INTO kb_chunks (id, source_id, text, meta_json) VALUES (?1, ?2, ?3, ?4)",
-            params![chunk_id, source_id, chunk, meta_json],
-        )
-        .map_err(|e| format!("Failed to insert chunk: {e}"))?;
-        chunk_ids.push(chunk_id);
-    }
-    Ok(IngestReport {
-        source_id: source_id.to_string(),
-        chunk_count: chunk_ids.len(),
-        content_hash: hash.to_string(),
-        skipped: false,
-        needs_embedding: chunk_ids.clone(),
-        chunk_ids,
-        title: title.to_string(),
-    })
 }
 
 /// Upsert a frontend-prepared source. Unchanged chunk contentHashes keep their
@@ -889,37 +664,13 @@ pub fn delete_kb_source(conn: &Connection, source_id: &str) -> Result<(), String
 #[cfg(test)]
 mod tests {
 
-    /// The overlap slice was the one byte-offset cut in this function without a
-    /// `floor_char_boundary` guard, while the two below it had one. Any
-    /// multi-byte character straddling `len - OVERLAP_CHARS` panicked — and the
-    /// panic poisoned the career DB mutex for the rest of the process.
-    #[test]
-    fn chunking_survives_multibyte_text_at_the_overlap_boundary() {
-        // Sweep paragraph lengths so a multi-byte char lands on the cut.
-        for pad in 0..12usize {
-            let para_a = format!("{}é", "a".repeat(TARGET_CHUNK_CHARS - pad));
-            let para_b = "b".repeat(TARGET_CHUNK_CHARS);
-            let text = format!("{para_a}\n\n{para_b}");
-            let chunks = chunk_text_minimal(&text);
-            assert!(!chunks.is_empty(), "pad {pad} produced no chunks");
-        }
-    }
-
-    #[test]
-    fn chunking_survives_text_that_is_entirely_multibyte() {
-        let text = format!(
-            "{}\n\n{}",
-            "日本語のテキストです。".repeat(400),
-            "🙂🙃".repeat(400)
-        );
-        let chunks = chunk_text_minimal(&text);
-        assert!(!chunks.is_empty());
-        // Every chunk must still be valid UTF-8 that round-trips.
-        for c in &chunks {
-            assert_eq!(c.as_str(), String::from_utf8_lossy(c.as_bytes()));
-        }
-    }
+    use sha1::{Digest, Sha1};
     use super::*;
+
+    fn content_hash(bytes: &[u8]) -> String {
+        let digest = Sha1::digest(bytes);
+        format!("{digest:x}")
+    }
 
     fn mem_conn() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
@@ -953,13 +704,6 @@ mod tests {
         assert!(counted >= 2);
     }
 
-    #[test]
-    fn chunk_text_splits_paragraphs() {
-        let text = "para one\n\npara two\n\npara three that is longer";
-        let chunks = chunk_text_minimal(text);
-        assert!(!chunks.is_empty());
-        assert!(chunks.iter().any(|c| c.contains("para one")));
-    }
 
     fn chunk_of(text: &str, title: &str) -> PreparedChunk {
         PreparedChunk {
@@ -1242,38 +986,6 @@ mod tests {
             })
             .unwrap();
         assert_eq!(hash, "v1", "failed upsert still advanced the source hash");
-    }
-
-    /// Path-based `ingest_source` gets the same all-or-nothing treatment on
-    /// brand-new sources.
-    #[test]
-    fn failed_path_ingest_leaves_no_partial_state() {
-        use std::fs;
-        let dir = tempfile::TempDir::new().unwrap();
-        let file = dir.path().join("path-doom.md");
-        // Two chunks: a >TARGET_CHUNK_CHARS paragraph, then one containing the
-        // trigger marker so the second insert fails.
-        fs::write(
-            &file,
-            format!("{}\n\nBOOM", "a".repeat(TARGET_CHUNK_CHARS + 100)),
-        )
-        .unwrap();
-
-        let conn = mem_conn();
-        create_boom_trigger(&conn, false);
-
-        let err = ingest_source(&conn, file.to_str().unwrap(), "markdown").unwrap_err();
-        assert!(err.contains("boom"), "unexpected error: {err}");
-        assert_eq!(
-            count_rows(&conn, "SELECT COUNT(*) FROM kb_sources"),
-            0,
-            "path ingest left a source row behind"
-        );
-        assert_eq!(
-            count_rows(&conn, "SELECT COUNT(*) FROM kb_chunks"),
-            0,
-            "path ingest left chunks behind"
-        );
     }
 
     /// A stored row whose text disagrees with its claimed contentHash must not

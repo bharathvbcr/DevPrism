@@ -1,8 +1,7 @@
 # Semantic Layer — Production Architecture Blueprint
 
 > **Status:** Reference architecture aligned with DevPrism in-progress implementation  
-> **Reference code:** [`docs/semantic-layer-reference/`](semantic-layer-reference/)  
-> **DevPrism canonical:** `apps/desktop/src/lib/semantic-layer/` (TS) · `apps/desktop/src-tauri/src/semantic_layer/` (Rust)
+> **Canonical code:** `apps/desktop/src/lib/semantic-layer/` (TypeScript) · `apps/desktop/src-tauri/src/semantic_layer/` (Rust)
 
 ---
 
@@ -41,9 +40,9 @@ The Semantic Layer sits **before** the target LLM inference engine as a fail-ope
                                    │
                                    ▼
           ┌────────────────────────────────────────────────┐
-          │   3. SEMANTIC CACHE (FAISS interceptor)        │
+          │   3. SEMANTIC CACHE (in-memory)                │
           │   a) exact key hit (system\0prompt) → return   │
-          │   b) FAISS top-k cosine search                 │
+          │   b) in-memory top-k cosine search             │
           │   c) threshold / gray-zone decision            │
           │   HIT → return cached response (skip LLM)      │
           │   ~1–5ms                                     │
@@ -68,7 +67,7 @@ The Semantic Layer sits **before** the target LLM inference engine as a fail-ope
                                ▼
           ┌────────────────────────────────────────────────┐
           │   6. CACHE STORE (async / best-effort)         │
-          │   embed + FAISS add + TTL/LRU bookkeeping      │
+          │   embed + cache insert + TTL/LRU bookkeeping   │
           └────────────────────────────────────────────────┘
 ```
 
@@ -76,7 +75,7 @@ The Semantic Layer sits **before** the target LLM inference engine as a fail-ope
 
 | Component | Role | DevPrism module | Target latency |
 |-----------|------|-----------------|----------------|
-| **Embedder** | Vectorize query + chunks | Ollama embed / ST MiniLM | 3–8 ms |
+| **Embedder** | Vectorize query + chunks | Ollama embed | 3–8 ms |
 | **Compressor** | MMR chunk selection | `compressor.ts` | <1 ms |
 | **Cache** | Exact + semantic dedup | `cache.ts` / `cache.rs` | 1–5 ms |
 | **Router** | Complexity → model tier | `router.ts` / `router.rs` | <0.5 ms |
@@ -95,16 +94,16 @@ This mirrors DevPrism's `prepareSemanticInference` try/catch and gray-zone logic
 
 ### Alignment with DevPrism
 
-| Pattern | DevPrism | Python reference |
-|---------|----------|------------------|
-| Cache key | `system\0prompt` | `cache_key_for()` |
-| Embed text | `system\n---\nprompt` | `embed_text()` |
-| Hit threshold | 0.92 + fill×0.03 | `effective_hit_threshold()` |
-| Gray zone | [0.85, 0.92) → miss | `classify_similarity()` |
-| MMR λ | 0.7 | `select_chunks_mmr()` |
-| Complexity tiers | 0.38 / 0.62 | `tier_for_complexity()` |
-| TTL / LRU | 30 min / 256 entries | `SemanticCache` |
-| Shared cache | Tauri IPC | N/A (in-process FAISS) |
+| Pattern | DevPrism |
+|---------|----------|
+| Cache key | `system\0prompt` |
+| Embed text | `system\n---\nprompt` |
+| Hit threshold | 0.92 + fill×0.03 |
+| Gray zone | [0.85, 0.92) → miss |
+| MMR λ | 0.7 |
+| Complexity tiers | 0.38 / 0.62 |
+| TTL / LRU | 30 min / 256 entries |
+| Shared cache | Tauri IPC |
 
 ---
 
@@ -118,7 +117,7 @@ For L2-normalized embeddings **q**, **d**:
 sim(q, d) = q · d = cos(θ)
 ```
 
-FAISS `IndexFlatIP` on normalized vectors computes this in O(n) for n cache entries. At 256 entries, brute-force IP is <1 ms on modern CPU.
+`cache.ts` and `cache.rs` scan stored embeddings with cosine similarity. The cache is capped at 256 entries.
 
 ### Dynamic Hit Threshold
 
@@ -141,7 +140,7 @@ function LOOKUP(query_vec, cache_key):
     if EXACT_MATCH(cache_key):
         return HIT(score=1.0)
 
-    (score, entry) = FAISS_TOP1(query_vec)
+    (score, entry) = TOP1_COSINE(query_vec)
     τ = effective_hit_threshold(|C|)
 
     if score >= τ:
@@ -209,65 +208,16 @@ tier = LIGHT   if score < 0.38
 
 ---
 
-## Production-Grade Python Implementation (Modular, commented, and type-hinted)
+## Implementation
 
-### Directory Layout
+The semantic layer ships in the two trees the app runs:
 
-```
-docs/semantic-layer-reference/
-├── __init__.py          # Public API exports
-├── cache.py             # FAISS semantic cache (TTL, LRU, gray zone)
-├── router.py            # Complexity-based model routing
-├── compressor.py        # MMR context compression
-├── threshold.py         # Dynamic threshold + auto-tuning + OOD detection
-├── pipeline.py          # Orchestrator + embedder + benchmark hooks
-└── requirements.txt
-```
+- TypeScript: `apps/desktop/src/lib/semantic-layer/` (`pipeline.ts`, `cache.ts`, `compressor.ts`, `router.ts`)
+- Rust: `apps/desktop/src-tauri/src/semantic_layer/` (`cache.rs`, `math.rs`, `router.rs`)
 
-### Quick Start
+A standalone Python tree under `docs/semantic-layer-reference/` was removed. The Rust `semantic_layer` suite never compared against it, so it was not an oracle.
 
-```bash
-cd docs/semantic-layer-reference
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-python -m pipeline
-```
-
-### Usage
-
-```python
-from pipeline import SemanticPipeline, SentenceTransformerEmbedder
-
-embedder = SentenceTransformerEmbedder()
-pipeline = SemanticPipeline(embedder)
-
-prepared = pipeline.prepare(
-    "Analyze microservice trade-offs for payments",
-    system="You are a senior architect.",
-    default_model="llama3.1:8b",
-    context_chunks=["chunk1...", "chunk2..."],
-)
-
-if prepared.cached_response:
-    print(prepared.cached_response)  # cache hit — skip LLM
-else:
-    # invoke LLM with prepared.prompt, prepared.model
-    response = my_llm(prepared.prompt, prepared.model)
-    pipeline.store(prepared.prompt, response, system="You are a senior architect.")
-```
-
-### Benchmark Hooks
-
-```python
-report = pipeline.benchmark(
-    ["Fix typo: teh", "Analyze CAP theorem"],
-    budget_ms=15.0,
-)
-print(report.total_ms, report.phases, report.cache)
-print("Within budget:", report.within_budget)
-```
-
-`SemanticCache.benchmark_summary()` reports p50/p99 lookup latency and hit rate.
+The latency, cache, and routing notes below describe the design those modules follow.
 
 ---
 
@@ -278,8 +228,8 @@ print("Within budget:", report.within_budget)
 | Phase | Warm CPU | Cold start | Notes |
 |-------|----------|------------|-------|
 | Embed (MiniLM) | 3–8 ms | 200–500 ms | Model load once |
-| Compress (MMR) | <1 ms | <1 ms | Pure NumPy |
-| Cache (FAISS 256) | 1–3 ms | 1–3 ms | IndexFlatIP |
+| Compress (MMR) | <1 ms | <1 ms | In-process cosine (`compressor.ts`) |
+| Cache (256 cap) | 1–3 ms | 1–3 ms | In-memory scan (`cache.ts`, `cache.rs`) |
 | Router | <0.5 ms | <0.5 ms | Regex heuristics |
 | **Total** | **5–12 ms** | — | Within budget |
 
@@ -293,7 +243,7 @@ The embedding model and primary LLM compete for GPU memory on single-GPU setups.
 
 | Strategy | When | Implementation |
 |----------|------|----------------|
-| **CPU embedder** | Default for MiniLM (~90 MB RAM) | `SentenceTransformer(device="cpu")` |
+| **CPU embedder** | Default | Ollama embedding endpoint |
 | **Quantized LLM on GPU** | LLM needs VRAM | 4-bit/8-bit GGUF via Ollama |
 | **Sequential scheduling** | Same GPU | Embed on CPU → release → LLM on GPU |
 | **Dedicated embed pod** | Production | Sidecar service, gRPC embed API |
@@ -308,12 +258,12 @@ TTL:  30 minutes (configurable)
 LRU:  evict least-recently-accessed when |C| >= 256
 ```
 
-Expired entries removed on every lookup/store. FAISS IDs recycled via `IndexIDMap2`.
+Expired entries are removed on every lookup and store. The in-memory map drops those keys; there is no separate vector-index id space.
 
 ### Benchmarking Checklist
 
 1. **Warm-up:** 10 dummy embeds before timing.
-2. **Phase breakdown:** `pipeline.prepare()` → `meta.phase_ms`.
+2. **Phase breakdown:** time each stage the in-tree pipeline already records.
 3. **Cache hit rate:** Run query set twice; measure second-pass hits.
 4. **Threshold sweep:** Plot HR vs FP at τ ∈ [0.80, 0.98].
 5. **OOD injection:** Random unicode / code-switching text → verify gray-zone misses.
@@ -325,8 +275,8 @@ Expired entries removed on every lookup/store. FAISS IDs recycled via `IndexIDMa
 
 Out-of-distribution text (random tokens, adversarial unicode, domain mismatch) produces embeddings with low, high-variance neighbor scores.
 
-**Detection:** `ood_confidence()` — low mean + low spread of recent top-k scores.  
-**Response:** Widen gray zone (treat as miss), skip cache store, optionally force heavy tier.
+**Detection:** low mean and low spread of recent top-k neighbor scores.  
+**Response:** Widen the gray zone (treat as a miss), skip the cache store, optionally force the heavy tier.
 
 #### Cold Starts (Empty Cache)
 
@@ -336,22 +286,18 @@ Out-of-distribution text (random tokens, adversarial unicode, domain mismatch) p
 
 #### Hardware Resource Contention
 
-- Pin MiniLM to CPU threads (`torch.set_num_threads(4)`).
-- Use `faiss-cpu` (not GPU) for ≤10k entries — GPU transfer overhead exceeds search savings.
-- Monitor with `BenchmarkReport.within_budget` flag in CI.
+- Keep the embedder off the LLM's GPU when they share a machine. DevPrism calls Ollama's embedding endpoint for this.
+- Keep the vector index on CPU for caches of a few thousand entries.
+- Fail a benchmark when warm semantic overhead exceeds the 15 ms budget.
 
 ---
 
 ## DevPrism Integration Notes
 
-The Python reference is **standalone** for portability. To integrate into DevPrism:
-
-1. **Frontend path:** Already wired via `prepareSemanticInference()` → Tauri IPC for shared cache.
+1. **Frontend path:** Wired via `prepareSemanticInference()` → Tauri IPC for the shared cache.
 2. **Proxy path:** Rust `prepare_proxy_inference()` handles Anthropic proxy requests.
-3. **Embedding:** DevPrism uses Ollama; Python reference uses sentence-transformers — swap `Embedder` protocol impl.
-4. **Settings:** Map `SemanticLayerConfig` fields to `settings-store` toggles (`semanticLayerEnabled`, tier models, etc.).
-
-Future: expose Python reference as optional sidecar for batch/RAG-heavy workloads while keeping <15 ms in-process path in TS/Rust.
+3. **Embedding:** DevPrism uses Ollama's embedding endpoint.
+4. **Settings:** `SemanticLayerConfig` maps to `settings-store` toggles (`semanticLayerEnabled`, tier models).
 
 ---
 

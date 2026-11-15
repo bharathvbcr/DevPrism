@@ -330,6 +330,9 @@ const MUST_HAVE_HEADINGS: &[&str] = &[
     "skills and qualifications",
     "skills & qualifications",
     "skills and experience",
+    "skills you'll need",
+    "skills you'll need to bring",
+    "experience",
 ];
 
 /// Headings that open a "nice to have" section.
@@ -337,7 +340,8 @@ const NICE_TO_HAVE_HEADINGS: &[&str] = &[
     "preferred qualifications",
     "preferred requirements",
     "preferred skills",
-    "preferred experience",
+    // Not "preferred experience": AMD titles its requirements
+    // "PREFERRED EXPERIENCE:", and reading it as nice-to-have emptied them.
     "nice to have",
     "nice to haves",
     "bonus points",
@@ -457,6 +461,16 @@ fn heading_for(line: &str) -> Option<Section> {
         return None;
     }
 
+    // A bulleted line is a list item unless it is a multi-word section
+    // heading ("- Minimum Qualifications"). One-word bullets such as
+    // "- Privacy", "• Bonus" or "* Required" are requirements, and a bullet
+    // never opens a footer or a company blurb.
+    let raw = line.trim_start();
+    let bulleted = raw.starts_with(['•', '·'])
+        || (raw.starts_with(['-', '*'])
+            && !raw.starts_with("**")
+            && raw[1..].starts_with(char::is_whitespace));
+
     // A heading is the WHOLE line, not a prefix of it. Matching on `starts_with`
     // swallowed ordinary content: "Requirements gathering with stakeholders"
     // opened a must-have section, and everything after it was misfiled.
@@ -465,6 +479,9 @@ fn heading_for(line: &str) -> Option<Section> {
     // length so "Additional Information - We Take Care of Our People" does.
     let matches = |headings: &[&str]| -> bool {
         headings.iter().any(|h| {
+            if bulleted && !h.contains(' ') {
+                return false;
+            }
             if l == *h {
                 return true;
             }
@@ -490,14 +507,20 @@ fn heading_for(line: &str) -> Option<Section> {
     if matches(RESPONSIBILITY_HEADINGS) {
         return Some(Section::Responsibilities);
     }
+    if bulleted {
+        return None;
+    }
     if matches(FOOTER_HEADINGS) {
         return Some(Section::Footer);
     }
     // "About Lambda", "About Iso": a company blurb. Short enough to be a
-    // heading, never a requirement list ("About you" matched above).
-    if l.strip_prefix("about ")
-        .is_some_and(|name| !name.is_empty() && name.split(' ').count() <= 3)
-    {
+    // heading, never a requirement list ("About you" matched above). A name
+    // led by a digit is prose: "About 5 years of experience".
+    if l.strip_prefix("about ").is_some_and(|name| {
+        !name.is_empty()
+            && name.split(' ').count() <= 3
+            && !name.starts_with(|c: char| c.is_ascii_digit())
+    }) {
         return Some(Section::Other);
     }
     None
@@ -1334,6 +1357,8 @@ Please see here for our Privacy Statement.
             "You Might Be a Good Fit If You",
             "We expect you to:",
             "What You Bring Along",
+            "SKILLS YOU\u{2019}LL NEED TO BRING",
+            "Experience:",
             "**What You Bring**",
             "## Required",
         ] {
@@ -1457,6 +1482,52 @@ Please see here for our Privacy Statement.
             );
         }
         assert!(has(&p.nice_to_have_skills, "docker"));
+    }
+
+    /// AMD titles its requirements "PREFERRED EXPERIENCE:". Read as a
+    /// nice-to-have heading, it emptied must-haves on postings the old parser
+    /// covered through the headingless promotion.
+    #[test]
+    fn amd_preferred_experience_is_not_a_nice_to_have_heading() {
+        let jd = format!(
+            "THE ROLE:\nRun our datacenter fleet.\nKEY RESPONSIBILITIES:\n* Keep servers healthy\nPREFERRED EXPERIENCE:\n* Strong Python and SQL scripting\nACADEMIC CREDENTIALS:\n* A technical certification\n{}",
+            "Filler line, more.\n".repeat(20)
+        );
+        let p = extract_profile(&jd).profile;
+        assert!(
+            has(&p.must_have_skills, "python") && p.nice_to_have_skills.is_empty(),
+            "must={:?} nice={:?}",
+            p.must_have_skills,
+            p.nice_to_have_skills
+        );
+    }
+
+    /// A one-word bullet is a list item, not a heading. Bullet stripping let
+    /// "- Privacy" open a footer, "- Bonus" a nice-to-have section and
+    /// "- About 5 years experience" a company blurb, each dropping the
+    /// requirements after it.
+    #[test]
+    fn bulleted_one_word_items_do_not_open_sections() {
+        let jd = format!(
+            "Engineer\n\nMinimum Qualifications\n- Python\n- Privacy\n- SQL\n• Bonus\n- Docker\n* Required\n- About 5 years experience\n- Kubernetes\n- Benefits\n- Rust\n\nPreferred\n* Scala\n{}",
+            "Filler line, more.\n".repeat(20)
+        );
+        let p = extract_profile(&jd).profile;
+        for expected in ["python", "privacy", "sql", "docker", "kubernetes", "rust"] {
+            assert!(
+                has(&p.must_have_skills, expected),
+                "{expected:?} lost: must={:?} nice={:?}",
+                p.must_have_skills,
+                p.nice_to_have_skills
+            );
+        }
+        assert_eq!(p.nice_to_have_skills, vec!["scala".to_string()]);
+        // A multi-word bulleted heading is still a heading.
+        let e = extract_profile(&format!(
+            "Engineer\n\n- Minimum Qualifications\n* Strong Python\n\nNice to have\n* Kubernetes\n{}",
+            "Filler line, more.\n".repeat(20)
+        ));
+        assert!(has(&e.profile.must_have_skills, "python"));
     }
 
     #[test]

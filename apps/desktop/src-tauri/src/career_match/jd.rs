@@ -277,7 +277,16 @@ const DOMAIN_VOCABULARY: &[&str] = &[
     "human factors",
 ];
 
+// Heading lists are written in the normalised form `normalize_heading`
+// produces: lowercase, straight apostrophes, and a hyphen joining two words
+// read as a space ("Must-Have Skills" → "must have skills").
+
 /// Headings that open a "must have" section.
+///
+/// The second group came from a sweep of postings that extracted no
+/// must-haves at all (Quadric `REQUIRED`, Elastic `What You Bring`, Lambda
+/// `You` / `Must-Have Skills`, Isomorphic `Essential:`, Applied Intuition
+/// `WE'RE LOOKING FOR SOMEONE WHO HAS:`).
 const MUST_HAVE_HEADINGS: &[&str] = &[
     "minimum qualifications",
     "minimum requirements",
@@ -287,15 +296,52 @@ const MUST_HAVE_HEADINGS: &[&str] = &[
     "what you'll need",
     "what you need",
     "qualifications",
+    "required",
+    "required skills",
+    "required experience",
+    "what we're looking for",
+    "what we are looking for",
+    "who we're looking for",
+    "what we look for",
+    "we're looking for someone who has",
+    "we are looking for someone who has",
+    "we expect you to",
+    "you might thrive in this role if you",
+    "you might thrive in this role if you have",
+    "you'll thrive in this role if you",
+    "you might be a good fit if you",
+    "what you bring",
+    "what you bring along",
+    "what you'll bring",
+    "what you will bring",
+    "what you have",
+    "you have",
+    "you",
+    "who you are",
+    "about you",
+    "must have",
+    "must haves",
+    "must have skills",
+    "must have qualifications",
+    "essential",
+    "essential skills",
+    "essential qualifications",
+    "essential requirements",
+    "skills and qualifications",
+    "skills & qualifications",
+    "skills and experience",
 ];
 
 /// Headings that open a "nice to have" section.
 const NICE_TO_HAVE_HEADINGS: &[&str] = &[
     "preferred qualifications",
     "preferred requirements",
+    "preferred skills",
+    "preferred experience",
     "nice to have",
-    "nice-to-have",
+    "nice to haves",
     "bonus points",
+    "bonus",
     "desired qualifications",
     "preferred",
 ];
@@ -305,10 +351,56 @@ const RESPONSIBILITY_HEADINGS: &[&str] = &[
     "responsibilities",
     "what you'll do",
     "what you will do",
+    "what you'll be doing",
+    "what you will be doing",
     "the role",
     "about the role",
+    "the opportunity",
+    "your role",
+    "your impact",
+    "the impact you will have",
+    "the impact you'll have",
+    "in this role you will",
+    "in this role, you will",
     "key responsibilities",
     "duties",
+];
+
+/// Headings that open a benefits, legal or privacy footer. Nothing under them
+/// is a requirement, so they close the open section and feed no skill list.
+const FOOTER_HEADINGS: &[&str] = &[
+    "what we offer",
+    "what we offer you",
+    "benefits",
+    "our benefits",
+    "benefits and perks",
+    "perks and benefits",
+    "perks",
+    "compensation",
+    "compensation and benefits",
+    "salary range",
+    "salary range information",
+    "pay range",
+    "pay transparency",
+    "equal employment opportunity",
+    "equal opportunity",
+    "equal opportunity employer",
+    "eeo statement",
+    "e verify",
+    "e verify and right to work notices",
+    "privacy",
+    "privacy notice",
+    "privacy policy",
+    "privacy statement",
+    "applicant privacy notice",
+    "culture and values",
+    "our values",
+    "hybrid working",
+    "why join us",
+    "additional information",
+    "how to apply",
+    "accommodations",
+    "reasonable accommodations",
 ];
 
 /// Which bucket a line of the JD currently belongs to.
@@ -318,6 +410,40 @@ enum Section {
     Responsibilities,
     MustHave,
     NiceToHave,
+    /// A recognised heading that is none of the above ("About Lambda"). It
+    /// closes the section before it; its skills are only ATS keywords.
+    Other,
+    /// Benefits, legal and privacy text. Feeds nothing.
+    Footer,
+}
+
+/// Lowercase a candidate heading line and strip its list/markdown ornament,
+/// so "## Minimum Qualifications", "**What You Bring**", "What You’ll Do" and
+/// "MUST-HAVE:" compare against the heading lists.
+fn normalize_heading(line: &str) -> String {
+    let l = line
+        .trim()
+        .trim_start_matches(['#', '*', '-', '•', '=', '_', ' '])
+        .trim_end_matches(['*', '#', '_', ':', '.', ' '])
+        .to_lowercase();
+    let chars: Vec<char> = l
+        .chars()
+        .map(|c| match c {
+            '\u{2018}' | '\u{2019}' => '\'',
+            c => c,
+        })
+        .collect();
+    let mut out = String::with_capacity(l.len());
+    for (i, &c) in chars.iter().enumerate() {
+        // Only a hyphen joining two words is folded; " - " stays a separator
+        // so "Additional Information - We Take Care of Our People" keeps it.
+        let joins_words = c == '-'
+            && i > 0
+            && chars.get(i + 1).is_some_and(|n| n.is_alphanumeric())
+            && chars[i - 1].is_alphanumeric();
+        out.push(if joins_words { ' ' } else { c });
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Classify a line as a section heading, if it is one.
@@ -326,12 +452,7 @@ enum Section {
 /// bare "qualifications" heading, otherwise every preferred skill would be
 /// promoted to must-have.
 fn heading_for(line: &str) -> Option<Section> {
-    // Strip list/markdown ornament so "## Minimum Qualifications" and
-    // "**Preferred Qualifications**" are recognised.
-    let mut l = line.trim();
-    l = l.trim_start_matches(['#', '*', '-', '•', '=', '_', ' ']);
-    l = l.trim_end_matches(['*', '#', '_', ':', '.', ' ']);
-    let l = l.to_lowercase();
+    let l = normalize_heading(line);
     if l.is_empty() || l.chars().count() > 60 {
         return None;
     }
@@ -340,7 +461,8 @@ fn heading_for(line: &str) -> Option<Section> {
     // swallowed ordinary content: "Requirements gathering with stakeholders"
     // opened a must-have section, and everything after it was misfiled.
     // A short trailing remainder is tolerated so "Minimum Qualifications (US)"
-    // still reads as a heading.
+    // still reads as a heading, and a dash- or pipe-separated tail of any
+    // length so "Additional Information - We Take Care of Our People" does.
     let matches = |headings: &[&str]| -> bool {
         headings.iter().any(|h| {
             if l == *h {
@@ -350,9 +472,12 @@ fn heading_for(line: &str) -> Option<Section> {
                 return false;
             };
             let rest = rest.trim();
-            // Only punctuation-led fragments count as heading decoration.
+            // Only punctuation-led fragments count as heading decoration. An
+            // apostrophe does not: "You're fluent in Kubernetes" is content.
             rest.is_empty()
-                || (rest.chars().count() <= 12 && rest.starts_with(|c: char| !c.is_alphanumeric()))
+                || rest.starts_with(['-', '\u{2013}', '\u{2014}', '|'])
+                || (rest.chars().count() <= 12
+                    && rest.starts_with(|c: char| !c.is_alphanumeric() && c != '\''))
         })
     };
 
@@ -364,6 +489,16 @@ fn heading_for(line: &str) -> Option<Section> {
     }
     if matches(RESPONSIBILITY_HEADINGS) {
         return Some(Section::Responsibilities);
+    }
+    if matches(FOOTER_HEADINGS) {
+        return Some(Section::Footer);
+    }
+    // "About Lambda", "About Iso": a company blurb. Short enough to be a
+    // heading, never a requirement list ("About you" matched above).
+    if l.strip_prefix("about ")
+        .is_some_and(|name| !name.is_empty() && name.split(' ').count() <= 3)
+    {
+        return Some(Section::Other);
     }
     None
 }
@@ -515,8 +650,21 @@ pub fn extract_profile(jd_text: &str) -> JdExtraction {
     let mut qualifications = String::new();
 
     let mut section = Section::Preamble;
+    let mut seen_content_section = false;
     for line in jd_text.lines() {
-        if let Some(next) = heading_for(line) {
+        if let Some(mut next) = heading_for(line) {
+            // A footer heading ahead of every content section is a header line
+            // ("Compensation: $150k") on a posting that may have no other
+            // headings; treating it as a footer would discard the posting.
+            if next == Section::Footer && !seen_content_section {
+                next = Section::Other;
+            }
+            if matches!(
+                next,
+                Section::Responsibilities | Section::MustHave | Section::NiceToHave
+            ) {
+                seen_content_section = true;
+            }
             section = next;
             continue;
         }
@@ -529,7 +677,10 @@ pub fn extract_profile(jd_text: &str) -> JdExtraction {
                 qualifications.push_str(line);
                 qualifications.push('\n');
             }
-            Section::Preamble => {}
+            Section::Preamble | Section::Other | Section::Footer => {}
+        }
+        if section == Section::Footer {
+            continue;
         }
 
         for skill in VOCABULARY {
@@ -1020,6 +1171,292 @@ Preferred Qualifications
         let must = extract_profile(&jd).profile.must_have_skills;
         let go_like = must.iter().filter(|s| *s == "go" || *s == "golang").count();
         assert_eq!(go_like, 1, "alias duplicate emitted: {must:?}");
+    }
+
+    // --- Regressions from the Vani coverage sweep (2026-11-14). ---
+    //
+    // A recognised nice-to-have heading paired with an unrecognised requirement
+    // heading left `must_have_skills` empty: the requirement lines fell into
+    // the preamble, and the headingless promotion never fired because the
+    // nice-to-have section was non-empty. Nothing closed that section either,
+    // so benefits, EEO and privacy footers were read as nice-to-have skills.
+
+    /// Minimal excerpt of the Quadric "AI Inference Optimization Engineer"
+    /// posting (Ashby): ALL-CAPS headings, a bare `REQUIRED` under
+    /// `WHAT WE'RE LOOKING FOR`, and a `PRIVACY` footer.
+    const QUADRIC_JD: &str = "AI Inference Optimization Engineer
+THE OPPORTUNITY
+You'll own getting the latest AI models running fast on the GPNPU, from CNN perception models to LLMs.
+WHAT YOU'LL DO
+- Write and tune kernels and optimize model compute graphs
+- Develop profiling tools and agentic automation
+WHAT WE'RE LOOKING FOR
+REQUIRED
+- 3+ years experience in AI model deployment or kernel optimization
+- BS/MS in CS/CE or related fields
+- Strong C/C++ and Python
+PREFERRED
+- Hands-on experience in pruning and sparsification
+- Understanding of compiler code generation and kernel scheduling
+WHAT WE OFFER
+The base salary range for this position is $160,000 to $195,000.
+- Medical, dental, and vision insurance from day one
+EQUAL EMPLOYMENT OPPORTUNITY
+Quadric is an equal opportunity employer.
+PRIVACY
+By submitting an application, you acknowledge that Quadric will collect and process your personal information. Please review our Privacy Policy.
+";
+
+    /// Minimal excerpt of the Elastic "Full Stack Technical Developer" posting
+    /// (Greenhouse): Title-Case headings, un-bulleted wrapped requirement lines,
+    /// and a footer heading carrying a long dash-separated tail.
+    const ELASTIC_JD: &str = "Full Stack Technical Developer
+What You Will Be Doing
+Build and maintain backend services, RESTful APIs, and database structures.
+• Contribute to features in the frontend codebase (React/TypeScript).
+What You Bring
+2+ years of experience as a full stack or backend-leaning developer, with solid experience in server-side
+development (e.g., Node.js, Python, or Go).
+Working proficiency in frontend development using React and TypeScript
+Experience working with CI/CD pipelines and GitOps-style development workflows.
+Bonus Points
+Familiarity with Google Cloud services (e.g., Cloud Functions, BigQuery)
+Experience with NoSQL databases, specifically Elasticsearch
+Additional Information - We Take Care of Our People
+Health coverage for you and your family in many locations
+Elastic is an equal opportunity employer and is committed to creating an inclusive culture.
+Please see here for our Privacy Statement.
+";
+
+    fn has(list: &[String], skill: &str) -> bool {
+        list.iter().any(|s| s == skill)
+    }
+
+    #[test]
+    fn quadric_bare_required_heading_feeds_must_have() {
+        let p = extract_profile(QUADRIC_JD).profile;
+        for expected in ["c++", "python"] {
+            assert!(
+                has(&p.must_have_skills, expected),
+                "must-have {expected:?} missing from {:?}",
+                p.must_have_skills
+            );
+        }
+        assert!(
+            p.qualifications_text.starts_with("- 3+ years"),
+            "qualificationsText must open at the REQUIRED bullets: {:?}",
+            p.qualifications_text
+        );
+    }
+
+    #[test]
+    fn quadric_footers_do_not_feed_skills_or_qualifications() {
+        let p = extract_profile(QUADRIC_JD).profile;
+        for list in [&p.must_have_skills, &p.nice_to_have_skills, &p.ats_keywords] {
+            assert!(!has(list, "privacy"), "PRIVACY footer leaked into {list:?}");
+        }
+        for footer in ["salary", "insurance", "equal opportunity", "Privacy Policy"] {
+            assert!(
+                !p.qualifications_text.contains(footer),
+                "footer text {footer:?} leaked into qualificationsText: {:?}",
+                p.qualifications_text
+            );
+        }
+        // The PREFERRED bullets are still qualifications.
+        assert!(p.qualifications_text.contains("pruning and sparsification"));
+    }
+
+    #[test]
+    fn elastic_what_you_bring_feeds_must_have() {
+        let p = extract_profile(ELASTIC_JD).profile;
+        for expected in ["python", "go", "typescript", "ci/cd"] {
+            assert!(
+                has(&p.must_have_skills, expected),
+                "must-have {expected:?} missing from {:?}",
+                p.must_have_skills
+            );
+        }
+        for expected in ["bigquery", "elasticsearch"] {
+            assert!(
+                has(&p.nice_to_have_skills, expected),
+                "nice-to-have {expected:?} missing from {:?}",
+                p.nice_to_have_skills
+            );
+        }
+        assert!(
+            p.responsibilities_text
+                .starts_with("Build and maintain backend services"),
+            "responsibilitiesText: {:?}",
+            p.responsibilities_text
+        );
+    }
+
+    #[test]
+    fn elastic_additional_information_footer_is_closed() {
+        let p = extract_profile(ELASTIC_JD).profile;
+        for list in [&p.must_have_skills, &p.nice_to_have_skills, &p.ats_keywords] {
+            assert!(!has(list, "privacy"), "privacy footer leaked into {list:?}");
+        }
+        assert!(
+            !p.qualifications_text.contains("Health coverage"),
+            "benefits leaked into qualificationsText: {:?}",
+            p.qualifications_text
+        );
+    }
+
+    /// Every requirement heading the sweep found unrecognised, in the casings
+    /// postings actually use. A nice-to-have section follows so the headingless
+    /// promotion cannot paper over a missed heading.
+    #[test]
+    fn requirement_heading_variants_open_must_have() {
+        for heading in [
+            "REQUIRED",
+            "Required:",
+            "Required Qualifications",
+            "WHAT WE'RE LOOKING FOR",
+            "What We\u{2019}re Looking For",
+            "What we are looking for:",
+            "WE'RE LOOKING FOR SOMEONE WHO HAS:",
+            "What You Bring",
+            "What you'll bring",
+            "You Have:",
+            "You",
+            "Who You Are",
+            "Must Have",
+            "MUST-HAVE:",
+            "Must-Have Skills",
+            "Essential:",
+            "Skills and Qualifications",
+            "What We Look For",
+            "WHO WE\u{2019}RE LOOKING FOR:",
+            "You might thrive in this role if you have:",
+            "You\u{2019}ll thrive in this role if you:",
+            "You Might Be a Good Fit If You",
+            "We expect you to:",
+            "What You Bring Along",
+            "**What You Bring**",
+            "## Required",
+        ] {
+            let jd = format!(
+                "Engineer\n\n{heading}\n* Strong Python and SQL\n\nNice to have\n* Kubernetes\n{}",
+                "Filler line, more.\n".repeat(20)
+            );
+            let p = extract_profile(&jd).profile;
+            assert!(
+                has(&p.must_have_skills, "python") && !has(&p.must_have_skills, "kubernetes"),
+                "heading {heading:?} not recognised: must={:?} nice={:?}",
+                p.must_have_skills,
+                p.nice_to_have_skills
+            );
+        }
+    }
+
+    #[test]
+    fn responsibility_heading_variants_are_recognised() {
+        for heading in [
+            "What You\u{2019}ll Do",
+            "What You Will Be Doing",
+            "The Impact You Will Have",
+            "The impact you\u{2019}ll have:",
+            "IN THIS ROLE, YOU WILL:",
+            "THE OPPORTUNITY",
+        ] {
+            let jd = format!(
+                "Engineer\n\n{heading}\n* Ship Rust services\n\nMinimum Qualifications\n* Python\n{}",
+                "Filler line, more.\n".repeat(20)
+            );
+            let p = extract_profile(&jd).profile;
+            assert_eq!(
+                p.responsibilities_text, "* Ship Rust services",
+                "heading {heading:?} not recognised"
+            );
+        }
+    }
+
+    /// Each footer closes the open section and feeds nothing.
+    #[test]
+    fn footer_headings_close_the_section_and_feed_nothing() {
+        for footer in [
+            "WHAT WE OFFER",
+            "Benefits",
+            "Perks and Benefits:",
+            "Salary Range Information",
+            "Equal Opportunity Employer",
+            "EQUAL EMPLOYMENT OPPORTUNITY",
+            "E-VERIFY AND RIGHT TO WORK NOTICES",
+            "PRIVACY",
+            "Culture and values",
+            "Additional Information - We Take Care of Our People",
+        ] {
+            let jd = format!(
+                "Engineer\n\nMinimum Qualifications\n* Python\n\nNice to have\n* Kubernetes\n{footer}\n* Docker swag and a privacy-first culture\n{}",
+                "Filler line, more.\n".repeat(20)
+            );
+            let p = extract_profile(&jd).profile;
+            for skill in ["docker", "privacy"] {
+                for list in [&p.must_have_skills, &p.nice_to_have_skills, &p.ats_keywords] {
+                    assert!(
+                        !has(list, skill),
+                        "footer {footer:?} fed {skill:?} into {list:?}"
+                    );
+                }
+            }
+            assert!(has(&p.nice_to_have_skills, "kubernetes"));
+            assert!(!p.qualifications_text.contains("Docker"));
+        }
+    }
+
+    /// A company blurb ("About Lambda") ends the section before it, but its
+    /// skills are still worth echoing as ATS keywords.
+    #[test]
+    fn about_company_heading_closes_the_section_into_ats_only() {
+        let jd = format!(
+            "Engineer\n\nNice to have\n* Kubernetes\nAbout Acme\nAcme runs a Docker platform.\n{}",
+            "Filler line, more.\n".repeat(20)
+        );
+        let p = extract_profile(&jd).profile;
+        assert!(
+            !has(&p.nice_to_have_skills, "docker"),
+            "{:?}",
+            p.nice_to_have_skills
+        );
+        assert!(has(&p.ats_keywords, "docker"), "{:?}", p.ats_keywords);
+    }
+
+    // Guards: behaviour the new headings must not break.
+
+    /// A footer-looking line at the top of a headingless posting must not
+    /// swallow everything after it.
+    #[test]
+    fn a_leading_footer_heading_does_not_swallow_a_headingless_jd() {
+        let jd = format!(
+            "Compensation: $150k\nWe want someone strong in Python and Kubernetes. {}",
+            "Additional context. ".repeat(20)
+        );
+        let p = extract_profile(&jd).profile;
+        assert!(
+            has(&p.must_have_skills, "python"),
+            "{:?}",
+            p.must_have_skills
+        );
+    }
+
+    /// Content lines that start with a heading word stay content.
+    #[test]
+    fn content_lines_starting_with_new_heading_words_stay_content() {
+        let jd = format!(
+            "Engineer\n\nMinimum Qualifications\n* Benefits administration tooling in Python\n* You're fluent in Kubernetes\n* Required to know SQL well\n\nPreferred\n* Docker\n{}",
+            "Filler line, more.\n".repeat(20)
+        );
+        let p = extract_profile(&jd).profile;
+        for expected in ["python", "kubernetes", "sql"] {
+            assert!(
+                has(&p.must_have_skills, expected),
+                "{expected:?} lost: must={:?}",
+                p.must_have_skills
+            );
+        }
+        assert!(has(&p.nice_to_have_skills, "docker"));
     }
 
     #[test]
